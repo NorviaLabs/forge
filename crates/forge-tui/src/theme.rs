@@ -825,7 +825,7 @@ pub fn composer_text() -> Style {
     text().add_modifier(Modifier::BOLD)
 }
 
-/// Composer placeholder ("Describe a task…") style — dim, distinct from
+/// Composer placeholder ("Ask Forge…") style — dim, distinct from
 /// [`composer_text`]'s bold emphasis for actual typed content, signaling
 /// "type here" rather than "this is content." No italic modifier: many
 /// terminal fonts render their italic variant with a different baseline/

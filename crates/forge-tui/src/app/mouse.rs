@@ -154,13 +154,21 @@ impl TuiApp {
             self.use_start_prompt(*index);
             return Ok(());
         }
-        if let Some((block, _)) = self
+        if let Some((tab, _)) = self
             .workspace_tab_areas
             .iter()
             .find(|(_, area)| cell_inside(*area, col, row))
         {
-            self.focus_block(*block);
+            self.select_workspace_tab(*tab);
             return Ok(());
+        }
+        // With the navigator column collapsed, the status-bar sessions chip is
+        // the explicit entry into the session chooser.
+        if let Some(area) = self.sessions_chip_area {
+            if cell_inside(area, col, row) {
+                self.open_session_switcher();
+                return Ok(());
+            }
         }
         // The `+` cell is checked before the tab row: it shares the `Sessions`
         // tab's right edge and the `Files` tab's left edge, so the tab branch
@@ -186,7 +194,7 @@ impl TuiApp {
                 // focus change is invisible — the pane paints unfocused and
                 // every bare key still goes to the row.
                 self.navigator_tab_row_focused = false;
-                if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Sessions {
+                if self.workspace_navigation.selected_tab() == WorkspaceTab::Agent {
                     self.click_session_row(row, area, double).await?;
                 } else {
                     self.click_file_row(row, area, double).await?;
@@ -395,29 +403,16 @@ impl TuiApp {
         }
     }
 
-    /// A click on the navigator tab bar switches to the painted tab.
+    /// A click on the navigator's `Sessions` heading hands the keyboard to the
+    /// session list. Files and Git are main-workspace tabs, not navigator tabs.
     fn click_navigator_tab(&mut self, col: u16, area: Rect) {
-        use crate::widgets::NavigatorTab;
-        let Some(tab) = navigator_tab_at(col, area, self.navigator_git_available()) else {
+        let sessions_width = crate::widgets::navigator::SESSIONS_TAB_WIDTH.min(area.width);
+        if col >= area.x.saturating_add(sessions_width) {
             return;
-        };
-        self.navigator_tab = tab;
-        self.navigator_tab_explicit = true;
-        // A click hands the keyboard to the tab's pane, so the row stops holding
-        // it. The keyboard path deliberately does the opposite and keeps the row
-        // up while switching (`FORGE-DESIGN §8.3`).
-        self.navigator_tab_row_focused = false;
-        self.focus_block(match tab {
-            NavigatorTab::Sessions => FocusBlock::TaskStrip,
-            NavigatorTab::Files => FocusBlock::Files,
-            NavigatorTab::Git => FocusBlock::Files,
-        });
-        self.apply_navigator_git_tab(tab == NavigatorTab::Git);
-        self.git_grouped_list = tab == NavigatorTab::Git;
-        if self.git_grouped_list {
-            self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
-            self.refresh_diff_entries();
         }
+        // A click hands the keyboard to the pane, so the row stops holding it.
+        self.navigator_tab_row_focused = false;
+        self.focus_block(FocusBlock::TaskStrip);
     }
 
     /// A click on the navigator row's `+` cell creates a session: the same verb
@@ -427,7 +422,6 @@ impl TuiApp {
         // A click stops the row holding the keyboard, exactly as a tab click
         // does, so the pane on screen takes the keys back with the click.
         self.navigator_tab_row_focused = false;
-        self.select_navigator_tab_from_row(self.effective_navigator_tab());
         self.create_session_now();
     }
 
@@ -481,8 +475,8 @@ impl TuiApp {
             }
             return Ok(());
         }
-        match self.effective_navigator_tab() {
-            crate::widgets::NavigatorTab::Files => {
+        match self.workspace_navigation.selected_tab() {
+            WorkspaceTab::Files => {
                 let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
                 if row < tree_top {
                     if row > area.y {
@@ -501,7 +495,7 @@ impl TuiApp {
                         .await?;
                 }
             }
-            crate::widgets::NavigatorTab::Git => {
+            WorkspaceTab::Git => {
                 let local = row.saturating_sub(area.y) as usize;
                 if let Some(index) = crate::widgets::git_changes::GitChangesList::absolute_file_at(
                     &self.diff_view.entries,
@@ -524,7 +518,7 @@ impl TuiApp {
                     }
                 }
             }
-            crate::widgets::NavigatorTab::Sessions => {}
+            WorkspaceTab::Agent => {}
         }
         Ok(())
     }

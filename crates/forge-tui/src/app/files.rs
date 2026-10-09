@@ -309,6 +309,8 @@ impl TuiApp {
                 .as_ref()
                 .is_some_and(|editor| editor.is_dirty())
         {
+            self.workspace_navigation
+                .navigate_to(WorkspaceView::File(path.to_path_buf()));
             self.focus_block(FocusBlock::Workspace);
             self.set_feedback(FeedbackSeverity::Info, "Unsaved editor changes kept");
             return;

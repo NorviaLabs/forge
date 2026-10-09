@@ -105,60 +105,78 @@ impl TuiApp {
         if area.is_empty() {
             return;
         }
-        let resource = self.workspace_navigation.current().map(|view| match view {
-            WorkspaceView::File(path) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let dirty = self
-                    .editor_session
-                    .as_ref()
-                    .is_some_and(|editor| editor.is_dirty());
-                (name.into_owned(), dirty)
+        crate::theme::fill(area, frame.buffer_mut(), theme::panel());
+        // Selected-session identity: title left, workspace branch right, on the
+        // row above the workspace tabs.
+        let (title, branch) = self.selected_session_identity();
+        if area.height >= 2 {
+            let branch_cols = branch.chars().count().min(area.width as usize / 2) as u16;
+            let title_cols = area
+                .width
+                .saturating_sub(branch_cols + u16::from(branch_cols > 0))
+                .max(1);
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    crate::path_display::elide_middle(&title, title_cols as usize),
+                    theme::text().add_modifier(ratatui::style::Modifier::BOLD),
+                )),
+                ratatui::layout::Rect::new(area.x, area.y, title_cols, 1),
+            );
+            if branch_cols > 0 {
+                frame.render_widget(
+                    Paragraph::new(Line::styled(
+                        crate::path_display::elide_middle(&branch, branch_cols as usize),
+                        theme::muted(),
+                    ))
+                    .alignment(ratatui::layout::Alignment::Right),
+                    ratatui::layout::Rect::new(
+                        area.right().saturating_sub(branch_cols),
+                        area.y,
+                        branch_cols,
+                        1,
+                    ),
+                );
             }
-            WorkspaceView::Diff => ("Git review".into(), false),
-            WorkspaceView::GithubIssues => ("GitHub issues".into(), false),
-        });
-        let hint = if resource.is_some() {
+        }
+        let hint = if self.workspace_navigation.has_retained_resource() {
             "F6 switch"
         } else {
             "Ctrl+P files · / commands"
         };
         let hint_width = hint.chars().count() as u16;
         let tabs_width = area.width.saturating_sub(hint_width + 2);
-        let conversation = self
+        let agent_label = self
             .child_view
             .as_ref()
-            .map(|view| format!("Conversation ‹ {}", view.label))
-            .unwrap_or_else(|| "Conversation".into());
-        let conversation_width = if resource.is_some() && self.child_view.is_some() {
-            40.min(tabs_width / 2)
-        } else if resource.is_some() {
-            18.min(tabs_width)
-        } else {
-            if self.child_view.is_some() { 40 } else { 18 }.min(tabs_width)
-        };
-        let mut tabs = vec![(FocusBlock::Sidebar, conversation, false, conversation_width)];
-        if let Some((label, dirty)) = resource {
-            tabs.push((
-                FocusBlock::Workspace,
-                label,
-                dirty,
-                tabs_width.saturating_sub(conversation_width),
-            ));
-        }
-        // The navbar is a band at least as thick as the composer; its labels sit
-        // on the band's centre row and the selected ground fills the whole tile.
+            .map(|view| format!("Agent ‹ {}", view.label))
+            .unwrap_or_else(|| "Agent".into());
+        let file_dirty = self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty());
+        let selected = self.workspace_navigation.selected_tab();
+        let tabs = [
+            (WorkspaceTab::Agent, agent_label, false),
+            (WorkspaceTab::Files, "Files".to_string(), file_dirty),
+            (WorkspaceTab::Git, "Git".to_string(), false),
+        ];
+        // Selection belongs to the label; the separate > marker owns focus.
+        // Keep the workspace ground neutral so navigation doesn't outshine chat.
+        let slot = (tabs_width / 3).max(4);
         let center_y = area.y + area.height.saturating_sub(1) / 2;
-        crate::theme::fill(area, frame.buffer_mut(), theme::panel());
         let mut x = area.x;
-        for (block, label, dirty, width) in tabs {
+        for (tab, label, dirty) in tabs {
+            let width = if tab == WorkspaceTab::Git {
+                area.x.saturating_add(tabs_width).saturating_sub(x)
+            } else {
+                slot
+            };
             if width < 4 {
                 continue;
             }
-            let tile = ratatui::layout::Rect::new(x, area.y, width, area.height);
-            let rect = ratatui::layout::Rect::new(x, center_y, width, 1);
-            let focused = !modal_open && self.focus.block() == block;
-            let selected =
-                (block == FocusBlock::Workspace) == self.workspace_navigation.resource_selected();
+            let tile = ratatui::layout::Rect::new(x, center_y, width, 1);
+            let focused = !modal_open && self.workspace_tab_focused(tab);
+            let is_selected = tab == selected;
             let label = crate::path_display::elide_middle(
                 &label
                     .chars()
@@ -166,27 +184,18 @@ impl TuiApp {
                     .collect::<String>(),
                 width.saturating_sub(3 + u16::from(dirty) * 2) as usize,
             );
-            let label_style = if focused || selected {
+            let label_style = if focused || is_selected {
                 theme::text().add_modifier(ratatui::style::Modifier::BOLD)
             } else {
                 theme::muted()
             };
-            let label_style = if selected {
+            let label_style = if is_selected {
                 label_style
                     .patch(theme::accent_style())
-                    .bg(theme::accent_soft_bg())
+                    .add_modifier(ratatui::style::Modifier::UNDERLINED)
             } else {
                 label_style
             };
-            crate::theme::fill(
-                tile,
-                frame.buffer_mut(),
-                if selected {
-                    theme::panel().bg(theme::accent_soft_bg())
-                } else {
-                    theme::panel()
-                },
-            );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
@@ -200,14 +209,10 @@ impl TuiApp {
                     Span::styled(label, label_style),
                     Span::styled(if dirty { " *" } else { "" }, theme::warn()),
                 ]))
-                .style(if selected {
-                    theme::panel().bg(theme::accent_soft_bg())
-                } else {
-                    theme::panel()
-                }),
-                rect,
+                .style(theme::panel()),
+                tile,
             );
-            self.workspace_tab_areas.push((block, tile));
+            self.workspace_tab_areas.push((tab, tile));
             x = x.saturating_add(width);
         }
         frame.render_widget(
@@ -218,6 +223,104 @@ impl TuiApp {
                 hint_width,
                 1,
             ),
+        );
+    }
+
+    /// Which workspace tab owns the keyboard, for the tab-row focus marker.
+    fn workspace_tab_focused(&self, tab: WorkspaceTab) -> bool {
+        match tab {
+            WorkspaceTab::Agent => self.focus.block() == FocusBlock::Sidebar,
+            WorkspaceTab::Files => {
+                self.workspace_navigation.selected_tab() == WorkspaceTab::Files
+                    && matches!(
+                        self.focus.block(),
+                        FocusBlock::Search | FocusBlock::Files | FocusBlock::Workspace
+                    )
+            }
+            WorkspaceTab::Git => {
+                self.workspace_navigation.selected_tab() == WorkspaceTab::Git
+                    && matches!(
+                        self.focus.block(),
+                        FocusBlock::Files | FocusBlock::Workspace
+                    )
+            }
+        }
+    }
+
+    /// Selected session title and workspace branch for the workspace header.
+    fn selected_session_identity(&self) -> (String, String) {
+        if let Some(item) = self
+            .session_chrome
+            .iter()
+            .find(|item| item.session_id == self.selected_session_id)
+        {
+            let title = if item.label.is_empty() {
+                "Session".to_string()
+            } else {
+                item.label.clone()
+            };
+            // `HEAD` is Git's detached marker, not a branch name; an empty
+            // branch means the worktree has no branch metadata yet.
+            let branch = match item.branch.as_str() {
+                "" => String::new(),
+                "HEAD" => "detached".to_string(),
+                branch => branch.to_string(),
+            };
+            return (title, branch);
+        }
+        ("Session".to_string(), String::new())
+    }
+
+    /// The GitHub issues subview's list, drawn in the Git tab's list pane.
+    fn render_github_issues_list(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let visible = self.github_view.visible();
+        let lines: Vec<Line> = std::iter::once(Line::from(format!(
+            "Issues · / {}",
+            self.github_view.filter
+        )))
+        .chain(
+            visible
+                .iter()
+                .skip(
+                    self.github_view
+                        .list_start(area.height.saturating_sub(3) as usize),
+                )
+                .map(|index| {
+                    let issue = &self.github_view.items[*index];
+                    Line::styled(
+                        format!(
+                            "{} #{} {}",
+                            if *index == self.github_view.selected {
+                                ">"
+                            } else {
+                                " "
+                            },
+                            issue.number,
+                            issue
+                                .title
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .collect::<String>()
+                        ),
+                        if *index == self.github_view.selected
+                            && self.focus.block() == FocusBlock::Files
+                        {
+                            crate::theme::selected_row()
+                        } else {
+                            crate::theme::text()
+                        },
+                    )
+                }),
+        )
+        .collect();
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(crate::theme::panel_border()),
+            ),
+            area,
         );
     }
 
@@ -295,16 +398,18 @@ impl TuiApp {
         let modal_open = self.overlay.is_some();
         let slash_mode = !modal_open && self.input.text.starts_with('/');
         let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
-        // Resolve this before measuring the composer so wrapping uses the
-        // same horizontal geometry that the layout will paint.
-        let expand_conversation = !matches!(
-            self.workspace_navigation.current(),
-            Some(WorkspaceView::File(_) | WorkspaceView::Diff | WorkspaceView::GithubIssues)
-        );
         let task_mode = self.supervisor.is_some();
+        // A pending decision renders over the Agent surface so it stays
+        // reachable from any workspace tab, without discarding the tab state.
         let decision_pending = self.child_view.is_none()
             && (self.session_view.is_awaiting_approval()
                 || self.session_view.is_awaiting_question());
+        // Agent owns the conversation; Files and Git own the work surface even
+        // before a resource is open.
+        let agent_surface = self.workspace_navigation.selected_tab() == WorkspaceTab::Agent
+            || decision_pending
+            || self.child_view.is_some();
+        let expand_conversation = agent_surface;
         let navigator_active = !decision_pending
             && matches!(
                 self.focus.block(),
@@ -327,7 +432,7 @@ impl TuiApp {
         let show_files = self.workspace_files.visible || task_mode;
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
-        } else {
+        } else if expand_conversation {
             composer_input_height(
                 &self.input,
                 area,
@@ -337,6 +442,9 @@ impl TuiApp {
                 self.pane_resize.preferences,
                 show_start,
             )
+        } else {
+            // The composer belongs to Agent; Files and Git reclaim its rows.
+            0
         };
         // At compact heights the active body needs the terminal's rows for
         // navigation, inspection or a decision. Keep the shell open; focusing
@@ -497,6 +605,7 @@ impl TuiApp {
         self.navigator_list_area = None;
         self.task_strip_area = None;
         self.task_strip_chips.clear();
+        self.sessions_chip_area = None;
         self.footer_area = None;
         self.background_area = None;
         self.dock_paint = DockPaintState {
@@ -515,24 +624,25 @@ impl TuiApp {
         // Questions reuse `FocusBlock::Approval` (same inline transcript
         // prompt as HITL); omitting them here kicks focus off the menu on the
         // first frame, so ↑↓ never move the selection.
-        let navigator_tab = if regions.files.is_some() {
-            self.effective_navigator_tab()
+        // The navigator column is dedicated to sessions at every tab; Files and
+        // Git render in the main work surface.
+        let active_tab = if agent_surface {
+            WorkspaceTab::Agent
         } else {
-            crate::widgets::NavigatorTab::Files
+            self.workspace_navigation.selected_tab()
         };
-        let navigator_sessions = navigator_tab == crate::widgets::NavigatorTab::Sessions;
         let available = FocusAvailability {
-            task_strip: regions.task_strip.height > 0
-                || (navigator_sessions && regions.files.is_some()),
-            search: regions.files.is_some()
-                && !navigator_sessions
-                && navigator_tab != crate::widgets::NavigatorTab::Git,
-            files: regions.files.is_some() && !navigator_sessions,
-            workspace: regions.chat.width > 0,
-            sidebar: regions.sidebar.is_some() || start_group.is_some(),
+            task_strip: regions.files.is_some(),
+            search: active_tab == WorkspaceTab::Files
+                && (regions.sidebar.is_some() || regions.chat.width > 0),
+            files: matches!(active_tab, WorkspaceTab::Files | WorkspaceTab::Git)
+                && (regions.sidebar.is_some() || regions.chat.width > 0),
+            workspace: active_tab != WorkspaceTab::Agent && regions.chat.width > 0,
+            sidebar: active_tab == WorkspaceTab::Agent
+                && (regions.sidebar.is_some() || start_group.is_some()),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
             approval: decision_pending && regions.sidebar.is_some(),
-            composer: self.child_view.is_none(),
+            composer: self.child_view.is_none() && agent_surface,
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
@@ -581,8 +691,15 @@ impl TuiApp {
                 self.session_row_step,
                 self.runtime.reduced_motion,
             );
+            // The chip is the explicit Sessions entry while the column is
+            // collapsed, so it always shows — naming live work when there is
+            // any, and the session count otherwise.
+            let total = self.session_chrome.len();
             match (need, working) {
-                (0, 0) => None,
+                (0, 0) => Some(format!(
+                    "⌄ {total} {}",
+                    if total == 1 { "session" } else { "sessions" }
+                )),
                 (n, 0) => Some(format!("⌄ {n} need")),
                 (0, w) => Some(format!("⌄ {frame} {w} working")),
                 (n, w) => Some(format!("⌄ {n} need · {frame} {w} working")),
@@ -596,6 +713,10 @@ impl TuiApp {
                 sessions_chip: sessions_chip.as_deref(),
             },
             regions.status,
+        );
+        self.sessions_chip_area = crate::widgets::status::StatusBar::sessions_chip_rect(
+            regions.status,
+            sessions_chip.as_deref(),
         );
         if regions.approve_all_warning.height > 0 {
             frame.render_widget(
@@ -648,10 +769,6 @@ impl TuiApp {
             frame.render_widget(strip, regions.task_strip);
         }
         if let Some(files) = regions.files {
-            let active_file = match self.workspace_navigation.current() {
-                Some(WorkspaceView::File(path)) => Some(path),
-                _ => None,
-            };
             let navigator_focused = self.focus.block() == FocusBlock::TaskStrip
                 && !modal_open
                 && !self.navigator_tab_row_focused
@@ -684,7 +801,7 @@ impl TuiApp {
                     crate::widgets::navigator::new_session_cell(tabs_area);
                 self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
-                if navigator_sessions {
+                {
                     let list_area = rows[1];
                     self.navigator_list_area = Some(list_area);
                     let mut unnamed = 0usize;
@@ -784,127 +901,15 @@ impl TuiApp {
                         },
                         list_area,
                     );
-                } else if matches!(
-                    self.workspace_navigation.current(),
-                    Some(WorkspaceView::GithubIssues)
-                ) {
-                    let visible = self.github_view.visible();
-                    let lines: Vec<Line> = std::iter::once(Line::from(format!(
-                        "Issues · / {}",
-                        self.github_view.filter
-                    )))
-                    .chain(
-                        visible
-                            .iter()
-                            .skip(
-                                self.github_view
-                                    .list_start(rows[1].height.saturating_sub(3) as usize),
-                            )
-                            .map(|index| {
-                                let issue = &self.github_view.items[*index];
-                                Line::styled(
-                                    format!(
-                                        "{} #{} {}",
-                                        if *index == self.github_view.selected {
-                                            ">"
-                                        } else {
-                                            " "
-                                        },
-                                        issue.number,
-                                        issue
-                                            .title
-                                            .chars()
-                                            .filter(|c| !c.is_control())
-                                            .collect::<String>()
-                                    ),
-                                    if *index == self.github_view.selected
-                                        && self.focus.block() == FocusBlock::Files
-                                    {
-                                        crate::theme::selected_row()
-                                    } else {
-                                        crate::theme::text()
-                                    },
-                                )
-                            }),
-                    )
-                    .collect();
-                    frame.render_widget(
-                        Paragraph::new(lines).block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(ratatui::widgets::BorderType::Rounded)
-                                .border_style(crate::theme::panel_border()),
-                        ),
-                        rows[1],
-                    );
-                } else if navigator_tab == crate::widgets::NavigatorTab::Git {
-                    let git_list_focused = self.focus.block() == FocusBlock::Files
-                        && !modal_open
-                        && !self.navigator_tab_row_focused;
-                    let git_hover = git_list_focused.then_some(self.hover_file).flatten();
-                    frame.render_widget(
-                        crate::widgets::git_changes::GitChangesList {
-                            entries: &self.diff_view.entries,
-                            selected: self.diff_view.selected,
-                            focused: self.focus.block() == FocusBlock::Files
-                                && !modal_open
-                                && !self.navigator_tab_row_focused,
-                            hover: git_hover,
-                        },
-                        rows[1],
-                    );
-                    if self.diff_view.entries.is_empty() && rows[1].height > 3 {
-                        frame.render_widget(
-                            Paragraph::new(Line::styled(
-                                "No staged or unstaged changes",
-                                crate::theme::muted(),
-                            )),
-                            ratatui::layout::Rect {
-                                x: rows[1].x + 1,
-                                y: rows[1].y,
-                                width: rows[1].width.saturating_sub(2),
-                                height: 1,
-                            },
-                        );
-                    }
-                } else {
-                    frame.render_widget(
-                        FileExplorerWidget {
-                            explorer: &mut self.workspace_files.explorer,
-                            active_file: active_file.as_deref(),
-                            show_search: true,
-                            focused: crate::widgets::background_focused(
-                                matches!(
-                                    self.focus.block(),
-                                    FocusBlock::Files | FocusBlock::Search
-                                ),
-                                modal_open,
-                            ) && !self.navigator_tab_row_focused,
-                            search_active: self.focus.block() == FocusBlock::Search
-                                && !modal_open
-                                && !self.navigator_tab_row_focused,
-                            hover: self.hover_file,
-                        },
-                        rows[1],
-                    );
-                    // The search field bleeds one cell into the shell inset
-                    // (`file_explorer.rs`); widen the pointer area to match so
-                    // that gutter stays clickable.
-                    let bleed = rows[1].x.min(crate::design::PANE_PAD_X);
-                    self.navigator_list_area = Some(ratatui::layout::Rect::new(
-                        rows[1].x.saturating_sub(bleed),
-                        rows[1].y,
-                        rows[1].width.saturating_add(bleed),
-                        rows[1].height,
-                    ));
                 }
                 // Paint tabs last so the list cannot erase the active ground
                 // on their shared divider.
                 frame.render_widget(
                     crate::widgets::NavigatorTabs {
-                        tab: navigator_tab,
+                        tab: crate::widgets::NavigatorTab::Sessions,
                         needs_you,
                         git: self.navigator_git_available(),
+                        sessions_only: true,
                         focused: self.navigator_tab_row_focused && !modal_open,
                         hover: self.hover_navigator_tab,
                         row_stop: self.navigator_row_stop,
@@ -1085,15 +1090,29 @@ impl TuiApp {
             .then(|| self.activity_summary_cache_key())
             .flatten();
         // Hiding a retained pane must not rebuild its history at zero width or
-        // clamp its reading position against an invisible viewport.
-        let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or_else(|| {
-            self.render_cache
-                .conversation
-                .as_ref()
-                .map(|cache| cache.key.width)
-                .unwrap_or(60)
-        });
-        let sidebar_inner_h = regions.sidebar.map(|r| r.height as usize).unwrap_or(0);
+        // clamp its reading position against an invisible viewport. When a
+        // resource tab owns `regions.sidebar`, keep the conversation's cached
+        // width so switching tabs does not churn the transcript cache.
+        let conversation_visible = active_tab == WorkspaceTab::Agent;
+        let cached_conversation_width = self
+            .render_cache
+            .conversation
+            .as_ref()
+            .map(|cache| cache.key.width)
+            .unwrap_or(60);
+        let sidebar_width = if conversation_visible {
+            regions
+                .sidebar
+                .map(|r| r.width)
+                .unwrap_or(cached_conversation_width)
+        } else {
+            cached_conversation_width
+        };
+        let sidebar_inner_h = if conversation_visible {
+            regions.sidebar.map(|r| r.height as usize).unwrap_or(0)
+        } else {
+            0
+        };
         // Follow-mode only paints the viewport plus overscan. Scrolling up
         // raises the window so earlier blocks are materialized on demand. The
         // bucket keeps each small scroll from rebuilding the transcript.
@@ -1480,7 +1499,7 @@ impl TuiApp {
         let cached_complete = cached.complete;
         let plan_dock = cached.plan_dock.clone();
         // The retained conversation is independent of the resource history.
-        if let Some(sidebar) = regions.sidebar {
+        if let (true, Some(sidebar)) = (conversation_visible, regions.sidebar) {
             let sidebar_focused = crate::widgets::background_focused(
                 self.focus.block() == FocusBlock::Sidebar,
                 modal_open,
@@ -1715,10 +1734,90 @@ impl TuiApp {
             }
             self.conversation_all_rows = all_rows;
         }
+        // Files and Git render their list beside the selected resource in the
+        // main work surface. A narrow layout shows the list in place of the
+        // resource while the list holds focus.
+        let narrow_resource_list = active_tab != WorkspaceTab::Agent
+            && regions.sidebar.is_none()
+            && matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
+        let resource_list_area = if active_tab == WorkspaceTab::Agent {
+            None
+        } else {
+            regions
+                .sidebar
+                .or_else(|| narrow_resource_list.then_some(regions.chat))
+        }
+        .filter(|area| !area.is_empty());
+        if let Some(list_area) = resource_list_area {
+            self.navigator_list_area = Some(list_area);
+            match active_tab {
+                WorkspaceTab::Git => {
+                    if matches!(
+                        self.workspace_navigation.current(),
+                        Some(WorkspaceView::GithubIssues)
+                    ) {
+                        // The GitHub subview shows its issue list in the list
+                        // pane and the selected issue in the content pane.
+                        self.render_github_issues_list(frame, list_area);
+                    } else {
+                        let git_list_focused =
+                            self.focus.block() == FocusBlock::Files && !modal_open;
+                        frame.render_widget(
+                            crate::widgets::git_changes::GitChangesList {
+                                entries: &self.diff_view.entries,
+                                selected: self.diff_view.selected,
+                                focused: git_list_focused,
+                                hover: git_list_focused.then_some(self.hover_file).flatten(),
+                            },
+                            list_area,
+                        );
+                        if self.diff_view.entries.is_empty() && list_area.height > 3 {
+                            let message = if self.workspace_is_git_repository() {
+                                "No staged or unstaged changes"
+                            } else {
+                                "Not a git repository"
+                            };
+                            frame.render_widget(
+                                Paragraph::new(Line::styled(message, crate::theme::muted())),
+                                ratatui::layout::Rect {
+                                    x: list_area.x + 1,
+                                    y: list_area.y,
+                                    width: list_area.width.saturating_sub(2),
+                                    height: 1,
+                                },
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    let active_file = match self.workspace_navigation.current() {
+                        Some(WorkspaceView::File(path)) => Some(path),
+                        _ => None,
+                    };
+                    frame.render_widget(
+                        FileExplorerWidget {
+                            explorer: &mut self.workspace_files.explorer,
+                            active_file: active_file.as_deref(),
+                            show_search: true,
+                            focused: crate::widgets::background_focused(
+                                matches!(
+                                    self.focus.block(),
+                                    FocusBlock::Files | FocusBlock::Search
+                                ),
+                                modal_open,
+                            ),
+                            search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                            hover: self.hover_file,
+                        },
+                        list_area,
+                    );
+                }
+            }
+        }
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
         // height — no docked card carving out a strip at its bottom.
-        if regions.chat.width > 0 && regions.chat.height > 0 {
+        if regions.chat.width > 0 && regions.chat.height > 0 && !narrow_resource_list {
             let chat_area = regions.chat;
             match self.workspace_navigation.current().clone() {
                 None => {
@@ -2119,7 +2218,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     );
                 }
             }
-        } else {
+        } else if regions.input.height > 0 {
             self.composer_area = Some(regions.input);
             let composer_focused = crate::widgets::background_focused(
                 self.child_view.is_none()
@@ -2146,6 +2245,8 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     frame.set_cursor_position((x, y));
                 }
             }
+        } else {
+            self.composer_area = None;
         }
         // Floating search owns its cells after the task group and composer
         // have painted; otherwise the start screen covers the selected row.
@@ -2160,8 +2261,23 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             .scratchpad_status()
             .map(|(lines, dirty)| crate::widgets::footer::ScratchpadChip { lines, dirty });
 
+        // A narrow resource tab shows either its list or the selected resource;
+        // name the key that swaps them so the back action is discoverable.
+        let narrow_resource = active_tab != WorkspaceTab::Agent
+            && regions.sidebar.is_none()
+            && regions.chat.width > 0;
+        let footer_hint = contextual_hint.clone().or_else(|| {
+            narrow_resource.then(|| {
+                if self.focus.block() == FocusBlock::Workspace {
+                    "⇧Tab list · Ctrl+E agent".to_string()
+                } else {
+                    "Tab content · Ctrl+E agent".to_string()
+                }
+            })
+        });
+
         let footer = FooterModel {
-            hints: contextual_hint.unwrap_or_default(),
+            hints: footer_hint.unwrap_or_default(),
             // The footer's own per-chip hint and the task strip's session
             // hint share the row with the chips; every other hint source
             // (HITL/dialog/transient) is blocking and takes the whole row.

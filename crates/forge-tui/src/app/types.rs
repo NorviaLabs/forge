@@ -82,12 +82,9 @@ impl PaneResizeState {
 /// or live handles that are expensive or impossible to duplicate, and a task
 /// only ever has one live copy of its own view state anyway.
 ///
-/// Deliberately excluded, and why:
-/// - provider credentials and the connect model — authentication is global,
-///   only the *model choice* is per-task;
-/// - the explorer tree and its dialogs — those are rooted at a workspace path,
-///   and file paths still resolve against the primary workspace, so carrying
-///   them per task would show one task's tree against another's files.
+/// Provider credentials and the connect model stay global; model choice is
+/// per-task. Explorer, editor, Git and terminal state move with the session,
+/// and workspace synchronization roots them at the selected session's path.
 pub(crate) struct SessionViewState {
     pub(crate) input: InputModel,
     pub(crate) workspace_navigation: WorkspaceNavigation,
@@ -223,8 +220,7 @@ pub(crate) struct SupervisorUiState {
         std::collections::HashMap<uuid::Uuid, forge_session::SessionRuntimeSnapshot>,
 }
 
-/// Center-pane content. Conversation isn't a variant here — it's always
-/// shown in the persistent sidebar instead (see [[project_ide_layout_design_round2]]).
+/// Retained resource content, independent of the selected workspace tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceView {
     File(PathBuf),
@@ -243,7 +239,24 @@ pub(crate) enum WorkspaceViewKind {
     GithubIssues,
 }
 
+/// Session-local workspace selection. Keyboard focus may temporarily belong
+/// to navigation, a terminal, or a decision without changing this selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum WorkspaceTab {
+    #[default]
+    Agent,
+    Files,
+    Git,
+}
+
 impl WorkspaceView {
+    pub(crate) fn tab(&self) -> WorkspaceTab {
+        match self {
+            Self::File(_) => WorkspaceTab::Files,
+            Self::Diff | Self::GithubIssues => WorkspaceTab::Git,
+        }
+    }
+
     pub(crate) fn kind(&self) -> WorkspaceViewKind {
         match self {
             Self::File(_) => WorkspaceViewKind::File,
@@ -253,61 +266,128 @@ impl WorkspaceView {
     }
 }
 
-/// `current == None` means the center pane is empty (nothing open) — the
-/// widget renders a placeholder in that case; see `render.rs`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WorkspaceNavigation {
+struct ResourceNavigation {
     current: Option<WorkspaceView>,
     history: Vec<WorkspaceView>,
-    /// Which pane occupies the work surface when the terminal cannot fit both.
-    /// Keeping this with navigation preserves it across session switches.
-    resource_selected: bool,
+}
+
+/// Files and Git retain separate resource histories. Agent hides neither
+/// buffer; switching to Agent keeps the resource retained and restores it on
+/// the next Files/Git selection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceNavigation {
+    files: ResourceNavigation,
+    git: ResourceNavigation,
+    /// Last resource tab selected, so Agent can restore it and focus-driven
+    /// selection does not have to guess.
+    resource_tab: WorkspaceTab,
+    /// Kept with navigation so selection moves with the existing session state.
+    selected_tab: WorkspaceTab,
+}
+
+impl Default for WorkspaceNavigation {
+    fn default() -> Self {
+        Self {
+            files: ResourceNavigation::default(),
+            git: ResourceNavigation::default(),
+            resource_tab: WorkspaceTab::Files,
+            selected_tab: WorkspaceTab::Agent,
+        }
+    }
 }
 
 impl WorkspaceNavigation {
+    fn resource_for(&self, tab: WorkspaceTab) -> &ResourceNavigation {
+        match tab {
+            WorkspaceTab::Git => &self.git,
+            WorkspaceTab::Agent | WorkspaceTab::Files => &self.files,
+        }
+    }
+
+    fn resource_mut_for(&mut self, tab: WorkspaceTab) -> &mut ResourceNavigation {
+        match tab {
+            WorkspaceTab::Git => &mut self.git,
+            WorkspaceTab::Agent | WorkspaceTab::Files => &mut self.files,
+        }
+    }
+
+    fn resource(&self) -> &ResourceNavigation {
+        self.resource_for(self.resource_tab)
+    }
+
+    fn resource_mut(&mut self) -> &mut ResourceNavigation {
+        self.resource_mut_for(self.resource_tab)
+    }
+
+    /// The center pane content for the selected tab. Agent owns the
+    /// conversation, so it reports no resource even while Files/Git retain one.
     pub(crate) fn current(&self) -> Option<WorkspaceView> {
-        self.current.clone()
+        match self.selected_tab {
+            WorkspaceTab::Agent => None,
+            tab => self.resource_for(tab).current.clone(),
+        }
+    }
+
+    pub(crate) fn selected_tab(&self) -> WorkspaceTab {
+        self.selected_tab
+    }
+
+    /// Whether the last resource tab still holds content, even while Agent is
+    /// selected. Pane switching uses this so F6 can return to a retained
+    /// resource without reopening it.
+    pub(crate) fn has_retained_resource(&self) -> bool {
+        self.resource().current.is_some()
     }
 
     pub(crate) fn resource_selected(&self) -> bool {
-        self.resource_selected && self.current.is_some()
+        self.current().is_some()
+    }
+
+    pub(crate) fn select_tab(&mut self, tab: WorkspaceTab) {
+        self.selected_tab = tab;
+        if tab != WorkspaceTab::Agent {
+            self.resource_tab = tab;
+        }
     }
 
     pub(crate) fn select_conversation(&mut self) {
-        self.resource_selected = false;
+        self.select_tab(WorkspaceTab::Agent);
     }
 
     pub(crate) fn select_resource(&mut self) {
-        self.resource_selected = self.current.is_some();
+        self.select_tab(self.resource_tab);
     }
 
     #[cfg(test)]
     pub(crate) fn history(&self) -> &[WorkspaceView] {
-        &self.history
+        self.resource_for(self.selected_tab).history.as_slice()
     }
 
     pub(crate) fn push_view(&mut self, view: WorkspaceView) {
-        self.resource_selected = true;
-        if self.current.as_ref() == Some(&view) {
+        self.select_tab(view.tab());
+        let resource = self.resource_mut();
+        if resource.current.as_ref() == Some(&view) {
             return;
         }
-        if let Some(current) = self.current.take() {
-            self.history.push(current);
-            if self.history.len() > WORKSPACE_HISTORY_LIMIT {
-                let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
-                self.history.drain(0..overflow);
+        if let Some(current) = resource.current.take() {
+            resource.history.push(current);
+            if resource.history.len() > WORKSPACE_HISTORY_LIMIT {
+                let overflow = resource.history.len() - WORKSPACE_HISTORY_LIMIT;
+                resource.history.drain(0..overflow);
             }
         }
-        self.current = Some(view);
+        resource.current = Some(view);
     }
 
     pub(crate) fn replace_view(&mut self, view: WorkspaceView) {
-        self.resource_selected = true;
-        self.current = Some(view);
+        self.select_tab(view.tab());
+        self.resource_mut().current = Some(view);
     }
 
     pub(crate) fn navigate_to(&mut self, view: WorkspaceView) {
-        if self.current.as_ref().map(WorkspaceView::kind) == Some(view.kind()) {
+        self.select_tab(view.tab());
+        if self.resource().current.as_ref().map(WorkspaceView::kind) == Some(view.kind()) {
             self.replace_view(view);
         } else {
             self.push_view(view);
@@ -315,24 +395,22 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn home(&mut self) {
-        self.resource_selected = false;
-        self.history.clear();
-        self.current = None;
+        *self = Self::default();
     }
 
     pub(crate) fn pop_previous_valid(
         &mut self,
         is_valid: impl Fn(&WorkspaceView) -> bool,
     ) -> Option<WorkspaceView> {
-        while let Some(candidate) = self.history.pop() {
+        while let Some(candidate) = self.resource_mut().history.pop() {
             if is_valid(&candidate) {
-                self.resource_selected = true;
-                self.current = Some(candidate.clone());
+                self.selected_tab = candidate.tab();
+                self.resource_mut().current = Some(candidate.clone());
                 return Some(candidate);
             }
         }
-        self.current = None;
-        self.resource_selected = false;
+        self.resource_mut().current = None;
+        self.selected_tab = WorkspaceTab::Agent;
         None
     }
 }
@@ -1732,7 +1810,7 @@ impl StreamState {
 }
 
 /// Composer placeholder on an empty workspace.
-pub(crate) const COMPOSER_OPENER: &str = "Describe a task…";
+pub(crate) const COMPOSER_OPENER: &str = "Ask Forge…";
 
 /// Composer placeholder once a turn has run.
 pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
@@ -1831,11 +1909,6 @@ pub struct TuiApp {
     /// this is `Some`, the transcript pane shows that session, not this one's.
     pub(crate) child_view: Option<ChildSessionView>,
     pub(crate) task_strip_selection: usize,
-    /// Which tab the left navigator shows (`FORGE-DESIGN §7.7`).
-    pub(crate) navigator_tab: crate::widgets::NavigatorTab,
-    /// Set once the operator picks a tab explicitly; until then the default
-    /// derives from the number of sessions (`Sessions` when >1, else `Files`).
-    pub(crate) navigator_tab_explicit: bool,
     /// True while the navigator's **tab row** owns the keyboard: `↑` at the top
     /// of either tab's list moves up into the row, where `←`/`→` switch tabs and
     /// `Enter`/`↓` step back into the pane (`FORGE-DESIGN §8.3`).
@@ -2042,7 +2115,7 @@ pub struct TuiApp {
     /// Open right-click context menu, if any.
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     pub(crate) conversation_area: Option<ratatui::layout::Rect>,
-    pub(crate) workspace_tab_areas: Vec<(FocusBlock, ratatui::layout::Rect)>,
+    pub(crate) workspace_tab_areas: Vec<(WorkspaceTab, ratatui::layout::Rect)>,
     pub(crate) conversation_rows: Vec<String>,
     pub(crate) conversation_all_rows: Vec<String>,
     pub(crate) conversation_copy_top: usize,
@@ -2056,6 +2129,9 @@ pub struct TuiApp {
     pub(crate) navigator_list_area: Option<ratatui::layout::Rect>,
     /// Session task-strip rect from the last draw.
     pub(crate) task_strip_area: Option<ratatui::layout::Rect>,
+    /// Collapsed-navigator sessions chip rect from the last draw. A click opens
+    /// the session switcher.
+    pub(crate) sessions_chip_area: Option<ratatui::layout::Rect>,
     pub(crate) task_strip_chips: Vec<(usize, ratatui::layout::Rect)>,
     pub(crate) horizontal_session_strip_focused: bool,
     /// Footer rect from the last draw.

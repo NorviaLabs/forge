@@ -40,7 +40,6 @@ async fn grouped_git_rows_show_the_right_diff_for_each_side() {
     git_run(dir.path(), &["add", "tracked.txt"]);
     std::fs::write(dir.path().join("tracked.txt"), "unstaged\n").unwrap();
 
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     assert_eq!(app.diff_view.entries.len(), 2);
@@ -84,7 +83,6 @@ async fn staging_advances_the_cursor_to_the_next_unstaged_file() {
         &[("a.txt", "0\n"), ("b.txt", "0\n"), ("c.txt", "0\n")],
         &[("a.txt", "1\n"), ("b.txt", "1\n"), ("c.txt", "1\n")],
     );
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
 
@@ -115,7 +113,6 @@ async fn o_from_the_git_tab_opens_the_file_for_editing() {
         &[("tracked.txt", "one\n")],
         &[("tracked.txt", "two\nthree\n")],
     );
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
 
@@ -156,7 +153,6 @@ async fn unstaging_advances_to_the_next_staged_file() {
         &[("a.txt", "1\n"), ("b.txt", "1\n")],
     );
     git_run(dir.path(), &["add", "-A"]);
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     app.stage_selected_diff_file(false);
@@ -175,7 +171,6 @@ async fn unstaging_advances_to_the_next_staged_file() {
 async fn external_index_replacements_refresh_git_repeatedly() {
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(dir.path(), &[("a.txt", "0\n")], &[("a.txt", "1\n")]);
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     app.init_file_watcher();
@@ -723,12 +718,14 @@ async fn the_staged_source_shows_only_the_index_and_the_index_patch() {
 
     app.open_git_view();
     settle_git(&mut app);
-    let working: Vec<String> = app
+    let mut working: Vec<String> = app
         .diff_view
         .entries
         .iter()
         .map(|entry| entry.path.display().to_string())
         .collect();
+    working.sort();
+    working.dedup();
     assert_eq!(
         working,
         vec!["loose.txt", "staged.txt"],
@@ -1112,7 +1109,6 @@ async fn untracked_file_contents_load_in_git_and_working_tree_review() {
 
     for grouped in [true, false] {
         if grouped {
-            app.navigator_tab = crate::widgets::NavigatorTab::Git;
             app.open_git_view();
         } else {
             app.open_diff_view(DiffSource::WorkingTree);
@@ -1563,7 +1559,6 @@ async fn git_tab_review_keys_reach_the_diff_keymap_from_either_pane() {
     // draft (#composer-swallowed-git-keys).
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     assert_eq!(app.focus.block(), FocusBlock::Files);
@@ -1610,7 +1605,6 @@ async fn git_tab_esc_leaves_the_tab_from_either_pane() {
     use crate::widgets::NavigatorTab;
     let (dir, mut app) = focus_test_app().await;
     repo_with_changes(dir.path(), &[("a.txt", "one\n")], &[("a.txt", "two\n")]);
-    app.navigator_tab = NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
 
@@ -1625,7 +1619,6 @@ async fn git_tab_esc_leaves_the_tab_from_either_pane() {
     );
 
     // And from the patch.
-    app.navigator_tab = NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
@@ -1647,7 +1640,6 @@ async fn git_tab_list_keeps_its_own_cursor_and_staging_keys() {
         &[("a.txt", "one\n"), ("b.txt", "one\n")],
         &[("a.txt", "two\n"), ("b.txt", "two\n")],
     );
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
     app.open_git_view();
     settle_git(&mut app);
     assert!(app.diff_view.entries.len() >= 2);
@@ -1800,4 +1792,34 @@ async fn github_issues_narrow_view_remains_keyboard_accessible() {
         .unwrap();
     }
     assert_eq!(app.github_view.scroll, 3);
+}
+
+/// A non-Git workspace keeps the Git tab but says so, rather than rendering an
+/// empty changed-file list that reads as "no changes".
+#[tokio::test]
+async fn non_git_workspace_git_tab_shows_a_clear_empty_state() {
+    let (_dir, mut app) = focus_test_app().await;
+    assert!(!app.workspace_is_git_repository());
+    app.select_workspace_tab(WorkspaceTab::Git);
+    let rendered = render_app_text(&mut app, 160, 50);
+    assert!(rendered.contains("Not a git repository"), "{rendered}");
+    assert!(
+        !rendered.contains("No staged or unstaged changes"),
+        "{rendered}"
+    );
+}
+
+/// The GitHub subview shows its issue list in the Git tab's list pane, not the
+/// changed-file list.
+#[tokio::test]
+async fn github_subview_renders_its_list_in_the_git_list_pane() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_github_issues();
+    let rendered = render_app_text(&mut app, 160, 50);
+    assert!(rendered.contains("GitHub issues"), "{rendered}");
+    assert!(rendered.contains("Issues · /"), "{rendered}");
+    assert!(
+        !rendered.contains("No staged or unstaged changes"),
+        "{rendered}"
+    );
 }

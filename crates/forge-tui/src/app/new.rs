@@ -22,7 +22,7 @@ impl TuiApp {
         let theme_id = registry.resolve_startup_id(&runtime.theme_id);
         crate::theme::install(registry, theme_id);
         let mut input = InputModel::default();
-        input.hint = "Describe a task…".into();
+        input.hint = crate::app::types::COMPOSER_OPENER.into();
         let history_store = history_store_for_workspace(&workspace_root);
         let mut history = InputHistory::default();
         history.load_resumed(history_store.load(crate::history::MAX_INPUT_HISTORY));
@@ -62,8 +62,6 @@ impl TuiApp {
             }],
             child_view: None,
             task_strip_selection: 0,
-            navigator_tab: crate::widgets::NavigatorTab::Files,
-            navigator_tab_explicit: false,
             navigator_tab_row_focused: false,
             navigator_tab_row_block: FocusBlock::TaskStrip,
             navigator_row_stop: crate::widgets::NavigatorRowStop::Sessions,
@@ -213,6 +211,7 @@ impl TuiApp {
             navigator_tabs_area: None,
             navigator_list_area: None,
             task_strip_area: None,
+            sessions_chip_area: None,
             task_strip_chips: Vec::new(),
             horizontal_session_strip_focused: false,
             footer_area: None,
@@ -270,7 +269,7 @@ impl TuiApp {
         crate::theme::install(registry, theme_id);
 
         let mut input = InputModel::default();
-        input.hint = "Describe a task…".into();
+        input.hint = crate::app::types::COMPOSER_OPENER.into();
         let history_store = history_store_for_workspace(&workspace_root);
         let mut history = InputHistory::default();
         history.load_resumed(history_store.load(crate::history::MAX_INPUT_HISTORY));
@@ -308,8 +307,6 @@ impl TuiApp {
             session_chrome,
             child_view: None,
             task_strip_selection: 0,
-            navigator_tab: crate::widgets::NavigatorTab::Files,
-            navigator_tab_explicit: false,
             navigator_tab_row_focused: false,
             navigator_tab_row_block: FocusBlock::TaskStrip,
             navigator_row_stop: crate::widgets::NavigatorRowStop::Sessions,
@@ -461,6 +458,7 @@ impl TuiApp {
             navigator_tabs_area: None,
             navigator_list_area: None,
             task_strip_area: None,
+            sessions_chip_area: None,
             task_strip_chips: Vec::new(),
             horizontal_session_strip_focused: false,
             footer_area: None,

@@ -25,26 +25,6 @@ impl TuiApp {
         }
     }
 
-    /// Enter or leave the navigator's `Git` tab. Its changed-file list is split
-    /// into staged and unstaged groups; the patch renders in the Workspace pane.
-    pub(super) fn apply_navigator_git_tab(&mut self, on_git: bool) {
-        if on_git {
-            self.open_git_view();
-        } else if matches!(
-            self.workspace_navigation.current(),
-            Some(WorkspaceView::GithubIssues)
-        ) {
-            self.close_github_issues();
-            if self.diff_view_is_open() {
-                self.git_grouped_list = false;
-                self.close_diff_view();
-            }
-        } else if self.diff_view_is_open() {
-            self.git_grouped_list = false;
-            self.close_diff_view();
-        }
-    }
-
     /// Enter `/diff`. Focuses the workspace pane and filters the explorer to
     /// the changed files, remembering nothing else so `Esc` can put both back.
     // Retained as the seam for the Git workflow redesign.
@@ -68,25 +48,16 @@ impl TuiApp {
         self.status_state.message = format!("Reviewing changes · {}", source.label());
     }
 
-    /// Leave `/diff`, restoring the full explorer listing and the pane's
-    /// previous contents. One `Esc` closes the mode outright — it does not
-    /// unwind level by level.
+    /// Leave review for Files without discarding the retained patch or editor.
     pub(super) fn close_diff_view(&mut self) {
+        self.select_workspace_tab(WorkspaceTab::Files);
         if let Some(previous) = self.diff_explorer_was_visible.take() {
             self.workspace_files.visible = previous;
         }
-        if !self.git_grouped_list {
-            self.workspace_files.explorer.set_diff_filter(None);
-        }
-        self.git_grouped_list = false;
-        let restored = self
-            .workspace_navigation
-            .pop_previous_valid(|view| !matches!(view, WorkspaceView::Diff));
-        if let Some(WorkspaceView::File(path)) = restored {
-            self.show_file_in_editor(&path.clone());
-        } else {
+        if self.workspace_navigation.current().is_none() {
             self.status_state.message = "Ready".into();
         }
+        self.normalize_focus();
     }
 
     pub(super) fn diff_view_is_open(&self) -> bool {
@@ -101,8 +72,6 @@ impl TuiApp {
     /// `Esc` from either pane of the tab — the list and the patch are one
     /// surface spread across two blocks.
     pub(super) fn leave_git_tab(&mut self) {
-        self.navigator_tab = crate::widgets::NavigatorTab::Files;
-        self.navigator_tab_explicit = true;
         self.git_grouped_list = false;
         self.close_diff_view();
         self.focus_block(FocusBlock::Search);
@@ -135,7 +104,7 @@ impl TuiApp {
         }
         let grouped = self.git_grouped_list
             && self.diff_view.source == DiffSource::WorkingTree
-            && self.navigator_tab == crate::widgets::NavigatorTab::Git;
+            && self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git;
         let entries = if grouped {
             crate::diff_view::entries_for_sides(
                 &self.workspace_files.explorer.git_status.changed_files(),

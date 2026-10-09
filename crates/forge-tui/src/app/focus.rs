@@ -8,35 +8,59 @@ use super::*;
 
 impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
+        let decision =
+            self.selected_pending_hitl().is_some() || self.selected_pending_question().is_some();
+        let agent = self.workspace_navigation.selected_tab() == WorkspaceTab::Agent
+            || decision
+            || self.child_view.is_some();
         FocusAvailability {
             task_strip: true,
-            search: self.workspace_files.visible,
-            files: self.workspace_files.visible,
-            workspace: self.workspace_navigation.current().is_some() || self.last_frame_width == 0,
+            search: !agent,
+            files: !agent,
+            workspace: !agent
+                && (self.workspace_navigation.current().is_some() || self.last_frame_width == 0),
             // Selecting chat reveals its retained surface at narrow widths.
             // draw() additionally checks the actual frame geometry.
-            sidebar: true,
+            sidebar: agent,
             bottom_panel: self.bottom_panel.open,
-            approval: self.selected_pending_hitl().is_some()
-                || self.selected_pending_question().is_some(),
-            composer: self.child_view.is_none(),
+            approval: decision,
+            composer: self.child_view.is_none() && agent,
         }
     }
 
     pub(super) fn normalize_focus(&mut self) {
         match self.focus.block() {
-            FocusBlock::Sidebar | FocusBlock::Approval => {
-                self.workspace_navigation.select_conversation()
-            }
+            FocusBlock::Sidebar => self.workspace_navigation.select_conversation(),
             FocusBlock::Workspace => self.workspace_navigation.select_resource(),
+            // The explorer only exists on the Files tab, so focusing it (or its
+            // search) selects Files. A Git list shares the `Files` block and
+            // keeps the Git tab.
+            FocusBlock::Search => {
+                if self.workspace_navigation.selected_tab() != WorkspaceTab::Files {
+                    self.workspace_files.visible = true;
+                    self.workspace_navigation.select_tab(WorkspaceTab::Files);
+                }
+            }
+            FocusBlock::Files
+                if self.workspace_navigation.selected_tab() == WorkspaceTab::Agent =>
+            {
+                self.workspace_files.visible = true;
+                self.workspace_navigation.select_tab(WorkspaceTab::Files);
+            }
             _ => {}
         }
         let available = self.focus_availability();
         if !available.contains(self.focus.block()) {
-            self.focus.set_navigation(if self.child_view.is_some() {
+            let decision = self.selected_pending_hitl().is_some()
+                || self.selected_pending_question().is_some();
+            // Land on a block the frame actually owns: a decision, the Agent
+            // conversation, or the resource list. Never the hidden composer.
+            self.focus.set_navigation(if decision {
+                FocusBlock::Approval
+            } else if available.sidebar {
                 FocusBlock::Sidebar
             } else {
-                FocusBlock::Composer
+                FocusBlock::Files
             });
             if self.child_view.is_some() {
                 self.workspace_navigation.select_conversation();
@@ -141,8 +165,6 @@ impl TuiApp {
     /// the row never hides an invisible key owner.
     pub(super) fn select_navigator_tab_from_row(&mut self, tab: crate::widgets::NavigatorTab) {
         let row_was_focused = self.navigator_tab_row_focused;
-        self.navigator_tab = tab;
-        self.navigator_tab_explicit = true;
         self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
         self.navigator_peek = None;
         self.navigator_reply.clear();
@@ -154,16 +176,11 @@ impl TuiApp {
             crate::widgets::NavigatorTab::Files => FocusBlock::Search,
             crate::widgets::NavigatorTab::Git => FocusBlock::Files,
         };
-        self.apply_navigator_git_tab(tab == crate::widgets::NavigatorTab::Git);
-        self.git_grouped_list = tab == crate::widgets::NavigatorTab::Git;
-        if tab == crate::widgets::NavigatorTab::Git {
-            self.workspace_files.visible = true;
-            self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
-            self.git_grouped_list = true;
-            self.refresh_diff_entries();
-        } else {
-            self.git_grouped_list = false;
-        }
+        self.select_workspace_tab(match tab {
+            crate::widgets::NavigatorTab::Sessions => WorkspaceTab::Agent,
+            crate::widgets::NavigatorTab::Files => WorkspaceTab::Files,
+            crate::widgets::NavigatorTab::Git => WorkspaceTab::Git,
+        });
         // Moving the keyboard to the new tab's pane is deliberate, so the row
         // travels with it instead of being dropped as a block change.
         self.navigator_tab_row_block = pane;
@@ -195,31 +212,15 @@ impl TuiApp {
         self.navigator_reply.clear();
     }
 
-    /// Move the row's cursor one stop. Stops run `Sessions · + · Files` left to
-    /// right and the cursor stops at each end rather than wrapping, so the
-    /// movement always matches what the eye sees on the row. The `+` is skipped
-    /// when the row does not render it.
+    /// Move the row's cursor one stop. The sessions-only row runs
+    /// `Sessions · +`; the cursor stops at each end rather than wrapping. The
+    /// `+` is skipped when the row does not render it.
     pub(super) fn move_navigator_row_stop(&mut self, forward: bool) {
         use crate::widgets::{NavigatorRowStop, NavigatorTab};
-        let git = self.navigator_git_available();
-        let stops: &[NavigatorRowStop] = match (self.navigator_row_has_new_session(), git) {
-            (true, true) => &[
-                NavigatorRowStop::Sessions,
-                NavigatorRowStop::NewSession,
-                NavigatorRowStop::Files,
-                NavigatorRowStop::Git,
-            ],
-            (true, false) => &[
-                NavigatorRowStop::Sessions,
-                NavigatorRowStop::NewSession,
-                NavigatorRowStop::Files,
-            ],
-            (false, true) => &[
-                NavigatorRowStop::Sessions,
-                NavigatorRowStop::Files,
-                NavigatorRowStop::Git,
-            ],
-            (false, false) => &[NavigatorRowStop::Sessions, NavigatorRowStop::Files],
+        let stops: &[NavigatorRowStop] = if self.navigator_row_has_new_session() {
+            &[NavigatorRowStop::Sessions, NavigatorRowStop::NewSession]
+        } else {
+            &[NavigatorRowStop::Sessions]
         };
         let current = stops
             .iter()
@@ -234,15 +235,13 @@ impl TuiApp {
             NavigatorRowStop::Sessions => {
                 self.select_navigator_tab_from_row(NavigatorTab::Sessions)
             }
-            NavigatorRowStop::Files => self.select_navigator_tab_from_row(NavigatorTab::Files),
-            NavigatorRowStop::Git => self.select_navigator_tab_from_row(NavigatorTab::Git),
             NavigatorRowStop::NewSession => self.select_navigator_row_new_session(),
+            NavigatorRowStop::Files | NavigatorRowStop::Git => {}
         }
     }
 
     pub(super) fn enter_chat_composer(&mut self) {
-        self.focus_block(FocusBlock::Composer);
-        self.normalize_focus();
+        self.select_workspace_tab(WorkspaceTab::Agent);
     }
 
     pub(super) fn enter_transient(&mut self, owner: TransientOwner) {

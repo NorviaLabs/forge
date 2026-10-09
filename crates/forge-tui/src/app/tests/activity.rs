@@ -27,19 +27,20 @@ async fn agent_streaming_while_viewing_file_does_not_navigate() {
         Some(WorkspaceView::File(path.clone()))
     );
     assert!(rendered.contains("fn main()"), "{rendered}");
-    // Both panes remain available while streaming; a narrow inspector never
-    // gets displaced by model activity. Switching back is the user's action.
-    assert!(
-        rendered.contains("partial answer"),
-        "Streaming should stay visible beside inspection:\n{rendered}"
-    );
-    render_app_text(&mut app, 80, 18);
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    // Streaming lives on the Agent surface, so it does not crowd the file.
+    assert!(!rendered.contains("partial answer"), "{rendered}");
+    // Switching to Agent reveals the live answer without losing the file.
     app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
         .await
         .unwrap();
-    let rendered = render_app_text(&mut app, 80, 18);
+    let rendered = render_app_text(&mut app, 120, 40);
     assert!(rendered.contains("partial answer"), "{rendered}");
+    assert_eq!(app.workspace_navigation.current(), None);
+    app.handle_key(press(KeyCode::F(6), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("fn main()"), "{rendered}");
     assert_eq!(
         app.workspace_navigation.current(),
         Some(WorkspaceView::File(path))

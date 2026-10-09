@@ -111,7 +111,7 @@ async fn approval_leaves_underlying_workspace_untouched() {
     // card gained two rows with the wider grant and the refusal note, and at
     // 100 columns the sidebar copy now scrolls its own title off.
     let rendered = render_app_text(&mut app, 160, 40);
-    assert!(rendered.contains("Forge wants to run"), "{rendered}");
+    assert!(rendered.contains("Approval"), "{rendered}");
     assert!(rendered.contains("Run once"), "{rendered}");
     assert_eq!(app.workspace_navigation, before);
     assert!(app.activity_summary().is_none());

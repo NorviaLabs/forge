@@ -1,22 +1,50 @@
 //! Workspace view navigation for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. Conversation and file views share one
-//! navigation stack; these methods push, replace and validate views.
-//! Methods are moved verbatim.
+//! Session-local tab selection and retained resource navigation.
 
 use super::*;
 
 impl TuiApp {
+    /// Reveal a retained workspace without reopening its buffers or closing
+    /// its resources. First entry into Git initializes the existing review.
+    pub(super) fn select_workspace_tab(&mut self, tab: WorkspaceTab) {
+        self.workspace_navigation.select_tab(tab);
+        match tab {
+            WorkspaceTab::Agent => {
+                self.focus_block(FocusBlock::Composer);
+            }
+            WorkspaceTab::Files => {
+                self.git_grouped_list = false;
+                self.workspace_files.explorer.set_diff_filter(None);
+                self.focus_block(FocusBlock::Search);
+            }
+            WorkspaceTab::Git => {
+                if self.workspace_navigation.current().is_none() {
+                    self.open_git_view();
+                } else if self.diff_view_is_open() {
+                    self.git_grouped_list =
+                        self.diff_view.source == crate::diff_view::DiffSource::WorkingTree;
+                    if self.workspace_is_git_repository() {
+                        self.workspace_files.explorer.refresh_git_status();
+                        self.refresh_diff_entries();
+                    }
+                }
+                self.focus_block(FocusBlock::Files);
+            }
+        }
+        self.normalize_focus();
+    }
+
     /// Reveal the other retained pane. This changes presentation and focus,
     /// never the navigation stack or the open editor buffer.
     pub(super) fn switch_workspace_pane(&mut self) {
-        if self.workspace_navigation.current().is_none() {
+        if !self.workspace_navigation.has_retained_resource() {
             return;
         }
-        let next = if self.workspace_navigation.resource_selected() {
-            FocusBlock::Sidebar
-        } else {
+        let next = if self.workspace_navigation.selected_tab() == WorkspaceTab::Agent {
             FocusBlock::Workspace
+        } else {
+            FocusBlock::Sidebar
         };
         self.focus_block(next);
     }
@@ -44,22 +72,14 @@ impl TuiApp {
     /// a text-mutating surface is now only reachable deliberately, from the
     /// explorer itself.
     pub(super) fn toggle_files_panel(&mut self) {
-        let already_in_files = matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
+        let already_in_files = self.workspace_navigation.selected_tab() == WorkspaceTab::Files
+            && matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
 
-        if self.workspace_files.visible && !already_in_files {
-            self.focus_block(FocusBlock::Search);
-            self.normalize_focus();
-            return;
-        }
-
-        self.workspace_files.visible = !self.workspace_files.visible;
-        self.save_ui_state();
-        if self.workspace_files.visible {
-            self.focus_block(FocusBlock::Search);
+        if already_in_files {
+            self.select_workspace_tab(WorkspaceTab::Agent);
         } else {
-            self.restore_focus_after_closing(FocusBlock::Files);
+            self.select_workspace_tab(WorkspaceTab::Files);
         }
-        self.normalize_focus();
     }
 
     pub(super) fn workspace_view_is_valid(view: &WorkspaceView) -> bool {

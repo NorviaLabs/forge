@@ -83,6 +83,13 @@ impl TuiApp {
         use FocusBlock::*;
         use KeyCode::*;
         match (self.focus.block(), key) {
+            // Files/Git list: Right widens the list beside the resource.
+            (Files | Search, Right)
+                if self.workspace_navigation.selected_tab() != WorkspaceTab::Agent
+                    && self.pane_resize.conversation_separator.is_some() =>
+            {
+                Some((ResizeBoundary::Conversation, 1))
+            }
             (TaskStrip | Search | Files, Right) if self.pane_resize.files_separator.is_some() => {
                 Some((ResizeBoundary::Files, 1))
             }

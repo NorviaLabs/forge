@@ -16,9 +16,7 @@ fn wheel_up() -> event::MouseEvent {
 #[tokio::test]
 async fn horizontal_session_chip_click_keeps_the_files_navbar_selected() {
     let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
-    app.workspace_files.visible = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     render_app_text(&mut app, 140, 45);
     let (_, chip) = app.task_strip_chips[0];
     app.handle_mouse(left_click(chip.x + 3, chip.y))
@@ -34,7 +32,6 @@ async fn horizontal_session_chip_click_keeps_the_files_navbar_selected() {
     let strip = app.task_strip_area.unwrap();
     let tabs = app.navigator_tabs_area.unwrap();
     assert_eq!(tabs.y, strip.bottom() + 1);
-    assert_eq!(app.navigator_list_area.unwrap().y, tabs.bottom());
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -529,17 +526,13 @@ async fn click_navigator_tab_switches_between_sessions_and_files() {
     let (_dir, mut app) = focus_test_app().await;
     app.navigator_tabs_area = Some(ratatui::layout::Rect::new(0, 0, 40, 1));
 
-    // `▌Sessions` occupies x 0..9, then ` │ `, then the Files tab.
+    // The `Sessions` heading hands the keyboard to the session list.
     app.handle_mouse(left_click(1, 0)).await.unwrap();
-    assert_eq!(
-        app.effective_navigator_tab(),
-        crate::widgets::NavigatorTab::Sessions
-    );
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    // Files and Git are main-workspace tabs, so a click past the heading is
+    // inert rather than switching the navigator.
     app.handle_mouse(left_click(20, 0)).await.unwrap();
-    assert_eq!(
-        app.effective_navigator_tab(),
-        crate::widgets::NavigatorTab::Files
-    );
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
 }
 
 /// The `+` cell shares an edge with the tab boxes, so pointer routing has to
@@ -573,8 +566,6 @@ async fn hovering_the_new_session_cell_does_not_read_as_a_tab() {
 #[tokio::test]
 async fn click_selects_a_navigator_session_row() {
     let (_dir, mut app) = focus_test_app().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
 
     app.task_strip_selection = 99;
@@ -589,10 +580,8 @@ async fn click_opens_a_file_tree_row() {
     let (dir, mut app) = focus_test_app().await;
     std::fs::write(dir.path().join("clickme.txt"), "hi").unwrap();
     app.workspace_files.explorer.refresh_workspace();
-    app.workspace_files.visible = true;
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
-    render_app_text(&mut app, 140, 45);
+    app.select_workspace_tab(WorkspaceTab::Files);
+    render_app_text(&mut app, 160, 50);
 
     let index = app
         .workspace_files
@@ -629,8 +618,7 @@ async fn motion_sets_file_hover_without_moving_focus() {
     std::fs::write(dir.path().join("hoverme.txt"), "hi").unwrap();
     app.workspace_files.explorer.refresh_workspace();
     app.workspace_files.visible = true;
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     render_app_text(&mut app, 140, 45);
 
     let index = app
@@ -662,8 +650,6 @@ async fn motion_sets_file_hover_without_moving_focus() {
 async fn clicking_search_focuses_input_without_opening_a_tree_row() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
     render_app_text(&mut app, 120, 40);
     let list = app.navigator_list_area.expect("file list drawn");
     let selected = app.workspace_files.explorer.selected_path.clone();
@@ -681,8 +667,6 @@ async fn clicking_search_focuses_input_without_opening_a_tree_row() {
 #[tokio::test]
 async fn motion_hovers_a_session_row() {
     let (_dir, mut app) = focus_test_app().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
     let before = app.focus.block();
 
@@ -916,8 +900,6 @@ async fn click_on_a_navigator_row_drops_the_tab_row_focus() {
         attention: false,
         updated_at: chrono::Utc::now(),
     });
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
     app.focus_navigator_tab_row();
     assert!(app.navigator_tab_row_focused, "the row holds the keyboard");
@@ -944,8 +926,7 @@ async fn click_on_a_navigator_row_drops_the_tab_row_focus() {
 async fn double_click_on_a_git_row_hands_the_keyboard_to_the_patch() {
     use crate::diff_view::{DiffEntry, DiffSide};
     let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Git;
-    app.navigator_tab_explicit = true;
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
     app.git_grouped_list = true;
     app.diff_view.entries = ["a.txt", "b.txt"]
         .into_iter()
@@ -1474,11 +1455,9 @@ async fn a_click_behind_the_source_search_prompt_is_ignored() {
 #[tokio::test]
 async fn navigator_flush_tiles_and_file_footer_do_not_activate_rows() {
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Files);
-    render_app_text(&mut app, 120, 40);
+    render_app_text(&mut app, 160, 50);
     let tabs = app.navigator_tabs_area.unwrap();
     let plus = app.navigator_new_session_area.unwrap();
     let list = app.navigator_list_area.unwrap();
@@ -1489,13 +1468,31 @@ async fn navigator_flush_tiles_and_file_footer_do_not_activate_rows() {
         .unwrap();
     assert_eq!(app.workspace_files.explorer.selected_path, selected);
     assert!(!app.current_workspace_is_file());
-    // Tiles are flush: the column left of `+` belongs to the Sessions tile, so
-    // clicking it selects Sessions rather than falling into a dead gutter.
-    app.handle_mouse(left_click(plus.x - 1, tabs.y))
+    // The `Sessions` heading hands the keyboard to the session list.
+    app.handle_mouse(left_click(plus.x.saturating_sub(1), tabs.y))
         .await
         .unwrap();
-    assert_eq!(
-        app.effective_navigator_tab(),
-        crate::widgets::NavigatorTab::Sessions
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+}
+
+/// With the navigator column collapsed, the status-bar sessions chip is the
+/// explicit entry into the session chooser.
+#[tokio::test]
+async fn clicking_the_collapsed_sessions_chip_opens_the_switcher() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.sessions_chip_area = Some(ratatui::layout::Rect::new(0, 0, 12, 1));
+
+    app.handle_mouse(left_click(2, 0)).await.unwrap();
+
+    assert!(
+        matches!(
+            app.overlay,
+            Some(crate::overlays::Overlay::SessionSwitcher { .. })
+        ),
+        "a chip click opens the session chooser"
     );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
 }

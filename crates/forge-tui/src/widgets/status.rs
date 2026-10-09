@@ -453,6 +453,33 @@ pub struct StatusBar<'a> {
     pub sessions_chip: Option<&'a str>,
 }
 
+impl StatusBar<'_> {
+    /// The right-aligned sessions chip's rect, matching [`StatusBar::render`].
+    /// `None` when no chip is shown. Used to hit-test a click that opens the
+    /// session switcher while the navigator column is collapsed.
+    pub(crate) fn sessions_chip_rect(area: Rect, chip: Option<&str>) -> Option<Rect> {
+        let chip = chip.filter(|chip| !chip.is_empty())?;
+        if area.height == 0 || area.width == 0 {
+            return None;
+        }
+        let area = if area.height >= 3 {
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .inner(area)
+        } else {
+            area
+        };
+        let inset = crate::design::COMPOSER_PAD_X.min(area.width / 2);
+        let area = Rect::new(area.x + inset, area.y, area.width - inset * 2, area.height);
+        let width = area.width as usize;
+        let chip_width = chip.chars().count() as u16;
+        let x = area.x + width.saturating_sub(chip.chars().count() + 1) as u16;
+        let y = area.y + area.height.saturating_sub(1) / 2;
+        Some(Rect::new(x, y, chip_width, 1))
+    }
+}
+
 impl Widget for StatusBar<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         if area.height == 0 || area.width == 0 {
@@ -790,5 +817,27 @@ mod tests {
         assert_eq!(durable.current_state_label(), "Cancelled");
         let durable_busy = status_model(TaskLifecycle::Cancelled, true, BusyPhase::Idle);
         assert_eq!(durable_busy.current_state_label(), "Cancelled");
+    }
+
+    #[test]
+    fn sessions_chip_rect_matches_the_rendered_chip() {
+        let area = Rect::new(0, 0, 80, 1);
+        assert!(StatusBar::sessions_chip_rect(area, None).is_none());
+        assert!(StatusBar::sessions_chip_rect(area, Some("")).is_none());
+        let rect = StatusBar::sessions_chip_rect(area, Some("⌄ 2 need")).unwrap();
+        assert_eq!(rect.height, 1);
+        assert_eq!(rect.width, "⌄ 2 need".chars().count() as u16);
+        assert!(rect.right() <= area.right());
+        // The chip paints on the same row it reports.
+        let mut buf = Buffer::empty(area);
+        StatusBar {
+            model: &status_model(TaskLifecycle::Ready, false, BusyPhase::Idle),
+            sessions_chip: Some("⌄ 2 need"),
+        }
+        .render(area, &mut buf);
+        let painted: String = (rect.x..rect.right())
+            .map(|x| buf[(x, rect.y)].symbol())
+            .collect();
+        assert_eq!(painted, "⌄ 2 need");
     }
 }

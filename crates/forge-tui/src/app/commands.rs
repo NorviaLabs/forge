@@ -25,8 +25,6 @@ impl TuiApp {
     pub(super) fn open_github_issues(&mut self) {
         self.workspace_navigation
             .navigate_to(WorkspaceView::GithubIssues);
-        self.navigator_tab = crate::widgets::NavigatorTab::Git;
-        self.navigator_tab_explicit = true;
         self.github_view
             .load(self.session_view.workspace_root().to_path_buf());
         self.focus_block(FocusBlock::Workspace);
@@ -35,10 +33,14 @@ impl TuiApp {
     pub(super) fn close_github_issues(&mut self) {
         self.github_view.preview = false;
         self.github_view = Default::default();
-        self.workspace_navigation.pop_previous_valid(|view| {
+        let previous = self.workspace_navigation.pop_previous_valid(|view| {
             !matches!(view, WorkspaceView::GithubIssues) && Self::workspace_view_is_valid(view)
         });
-        self.focus_block(FocusBlock::Workspace);
+        if previous.is_some() {
+            self.focus_block(FocusBlock::Workspace);
+        } else {
+            self.select_workspace_tab(WorkspaceTab::Files);
+        }
     }
 
     pub(super) fn open_session_switcher(&mut self) {
@@ -367,7 +369,7 @@ impl TuiApp {
             KeyCode::F(3) if key.modifiers.is_empty() => Some(SemanticCommand::OpenSessionSwitcher),
             KeyCode::F(6)
                 if key.modifiers.is_empty()
-                    && self.workspace_navigation.current().is_some()
+                    && self.workspace_navigation.has_retained_resource()
                     && self.editor_command.is_none() =>
             {
                 Some(SemanticCommand::SwitchWorkspacePane)

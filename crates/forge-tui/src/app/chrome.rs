@@ -23,22 +23,14 @@ use super::util::relative_display;
 use super::*;
 
 impl TuiApp {
-    /// The tab the navigator should show: explicit choice wins, otherwise
-    /// `Sessions` when more than one session exists and `Files` otherwise.
+    /// The navigator's active tab, derived from the workspace selection: the
+    /// navigator is a sessions sidebar, and Files/Git are workspace tabs.
     pub(crate) fn effective_navigator_tab(&self) -> crate::widgets::NavigatorTab {
-        if self.navigator_tab_explicit {
-            // An explicit `Git` only stands while the tab exists: leaving the
-            // repository must not leave the row with no tab drawn as active.
-            if self.navigator_tab == crate::widgets::NavigatorTab::Git
-                && !self.navigator_git_available()
-            {
-                return crate::widgets::NavigatorTab::Files;
-            }
-            self.navigator_tab
-        } else if self.session_chrome.len() > 1 {
-            crate::widgets::NavigatorTab::Sessions
-        } else {
-            crate::widgets::NavigatorTab::Files
+        // Derive from the workspace selection so routing and paint stay in step.
+        match self.workspace_navigation.selected_tab() {
+            WorkspaceTab::Agent => crate::widgets::NavigatorTab::Sessions,
+            WorkspaceTab::Files => crate::widgets::NavigatorTab::Files,
+            WorkspaceTab::Git => crate::widgets::NavigatorTab::Git,
         }
     }
 
