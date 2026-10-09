@@ -325,10 +325,60 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
 }
 
 #[tokio::test]
+async fn workspace_git_tab_only_appears_for_repository_directories_and_gitdir_files() {
+    let (dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    for (width, height) in [(80, 18), (120, 40), (160, 50)] {
+        draw_app(&mut app, width, height);
+        let tabs: Vec<_> = app
+            .workspace_tab_areas
+            .iter()
+            .map(|(tab, _)| *tab)
+            .collect();
+        assert_eq!(tabs, [WorkspaceTab::Agent, WorkspaceTab::Files]);
+        let agent = app.workspace_tab_areas[0].1;
+        let files = app.workspace_tab_areas[1].1;
+        assert_eq!(agent.right(), files.x);
+        assert!(agent.width.abs_diff(files.width) <= 1);
+    }
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Agent);
+
+    init_repo(dir.path());
+    for gitdir_file in [false, true] {
+        if gitdir_file {
+            // Git also uses a .git pointer file in linked worktrees. Keep the
+            // fixture valid by relocating its metadata and pointing at it.
+            fs::rename(dir.path().join(".git"), dir.path().join("repo-git")).unwrap();
+            fs::write(dir.path().join(".git"), "gitdir: repo-git\n").unwrap();
+        }
+        for (width, height) in [(80, 18), (120, 40), (160, 50)] {
+            draw_app(&mut app, width, height);
+            let tabs: Vec<_> = app
+                .workspace_tab_areas
+                .iter()
+                .map(|(tab, _)| *tab)
+                .collect();
+            assert_eq!(
+                tabs,
+                [WorkspaceTab::Agent, WorkspaceTab::Files, WorkspaceTab::Git]
+            );
+        }
+    }
+    app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Git);
+}
+
+#[tokio::test]
 async fn workspace_tab_selection_remains_visible_without_keyboard_focus() {
     use ratatui::style::Modifier;
 
-    let (_dir, mut app) = focus_test_app().await;
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
     app.workspace_navigation.navigate_to(WorkspaceView::Diff);
     app.bottom_panel.open = true;
     app.focus_block(FocusBlock::BottomPanel);
@@ -464,7 +514,7 @@ async fn start_prioritizes_prompt_and_reveals_navigation_only_when_requested() {
     draw_app(&mut app, 120, 40);
     assert!(app.navigator_list_area.is_none());
     assert!(!app.start_prompt_rows.is_empty());
-    assert_eq!(app.workspace_tab_areas.len(), 3);
+    assert_eq!(app.workspace_tab_areas.len(), 2);
     assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert!(!app.pending_turn.has_prompt());
 
@@ -496,7 +546,7 @@ async fn task_first_start_keeps_views_choices_and_draft_reachable_at_all_sizes()
     for (width, height) in [(80, 18), (115, 40), (116, 40), (120, 40), (160, 50)] {
         let rendered = render_app_text(&mut app, width, height);
         assert!(app.navigator_list_area.is_none());
-        assert_eq!(app.workspace_tab_areas.len(), 3);
+        assert_eq!(app.workspace_tab_areas.len(), 2);
         assert_eq!(app.start_prompt_rows.len(), 3);
         let composer = app.composer_area.unwrap();
         for (_, tab) in &app.workspace_tab_areas {
