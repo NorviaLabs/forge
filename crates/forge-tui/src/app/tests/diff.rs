@@ -1808,3 +1808,18 @@ async fn non_git_workspace_git_tab_shows_a_clear_empty_state() {
         "{rendered}"
     );
 }
+
+/// The GitHub subview shows its issue list in the Git tab's list pane, not the
+/// changed-file list.
+#[tokio::test]
+async fn github_subview_renders_its_list_in_the_git_list_pane() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_github_issues();
+    let rendered = render_app_text(&mut app, 160, 50);
+    assert!(rendered.contains("GitHub issues"), "{rendered}");
+    assert!(rendered.contains("Issues · /"), "{rendered}");
+    assert!(
+        !rendered.contains("No staged or unstaged changes"),
+        "{rendered}"
+    );
+}

@@ -271,6 +271,59 @@ impl TuiApp {
         ("Session".to_string(), String::new())
     }
 
+    /// The GitHub issues subview's list, drawn in the Git tab's list pane.
+    fn render_github_issues_list(&self, frame: &mut ratatui::Frame, area: ratatui::layout::Rect) {
+        let visible = self.github_view.visible();
+        let lines: Vec<Line> = std::iter::once(Line::from(format!(
+            "Issues · / {}",
+            self.github_view.filter
+        )))
+        .chain(
+            visible
+                .iter()
+                .skip(
+                    self.github_view
+                        .list_start(area.height.saturating_sub(3) as usize),
+                )
+                .map(|index| {
+                    let issue = &self.github_view.items[*index];
+                    Line::styled(
+                        format!(
+                            "{} #{} {}",
+                            if *index == self.github_view.selected {
+                                ">"
+                            } else {
+                                " "
+                            },
+                            issue.number,
+                            issue
+                                .title
+                                .chars()
+                                .filter(|c| !c.is_control())
+                                .collect::<String>()
+                        ),
+                        if *index == self.github_view.selected
+                            && self.focus.block() == FocusBlock::Files
+                        {
+                            crate::theme::selected_row()
+                        } else {
+                            crate::theme::text()
+                        },
+                    )
+                }),
+        )
+        .collect();
+        frame.render_widget(
+            Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_type(ratatui::widgets::BorderType::Rounded)
+                    .border_style(crate::theme::panel_border()),
+            ),
+            area,
+        );
+    }
+
     /// Drive the live streaming preview from a test.
     ///
     /// The preview is the one part of the draw path whose cost grows with the
@@ -1692,31 +1745,41 @@ impl TuiApp {
             self.navigator_list_area = Some(list_area);
             match active_tab {
                 WorkspaceTab::Git => {
-                    let git_list_focused = self.focus.block() == FocusBlock::Files && !modal_open;
-                    frame.render_widget(
-                        crate::widgets::git_changes::GitChangesList {
-                            entries: &self.diff_view.entries,
-                            selected: self.diff_view.selected,
-                            focused: git_list_focused,
-                            hover: git_list_focused.then_some(self.hover_file).flatten(),
-                        },
-                        list_area,
-                    );
-                    if self.diff_view.entries.is_empty() && list_area.height > 3 {
-                        let message = if self.workspace_is_git_repository() {
-                            "No staged or unstaged changes"
-                        } else {
-                            "Not a git repository"
-                        };
+                    if matches!(
+                        self.workspace_navigation.current(),
+                        Some(WorkspaceView::GithubIssues)
+                    ) {
+                        // The GitHub subview shows its issue list in the list
+                        // pane and the selected issue in the content pane.
+                        self.render_github_issues_list(frame, list_area);
+                    } else {
+                        let git_list_focused =
+                            self.focus.block() == FocusBlock::Files && !modal_open;
                         frame.render_widget(
-                            Paragraph::new(Line::styled(message, crate::theme::muted())),
-                            ratatui::layout::Rect {
-                                x: list_area.x + 1,
-                                y: list_area.y,
-                                width: list_area.width.saturating_sub(2),
-                                height: 1,
+                            crate::widgets::git_changes::GitChangesList {
+                                entries: &self.diff_view.entries,
+                                selected: self.diff_view.selected,
+                                focused: git_list_focused,
+                                hover: git_list_focused.then_some(self.hover_file).flatten(),
                             },
+                            list_area,
                         );
+                        if self.diff_view.entries.is_empty() && list_area.height > 3 {
+                            let message = if self.workspace_is_git_repository() {
+                                "No staged or unstaged changes"
+                            } else {
+                                "Not a git repository"
+                            };
+                            frame.render_widget(
+                                Paragraph::new(Line::styled(message, crate::theme::muted())),
+                                ratatui::layout::Rect {
+                                    x: list_area.x + 1,
+                                    y: list_area.y,
+                                    width: list_area.width.saturating_sub(2),
+                                    height: 1,
+                                },
+                            );
+                        }
                     }
                 }
                 _ => {
