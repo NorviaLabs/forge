@@ -470,6 +470,7 @@ impl Widget for StatusBar<'_> {
         } else {
             area
         };
+        theme::fill(area, buf, theme::status_bar());
         let inset = crate::design::COMPOSER_PAD_X.min(area.width / 2);
         let area = Rect::new(area.x + inset, area.y, area.width - inset * 2, area.height);
         let width = area.width as usize;
@@ -487,7 +488,6 @@ impl Widget for StatusBar<'_> {
             .model
             .identity_line_within(width.saturating_sub(reserved + 8));
 
-        theme::fill(area, buf, theme::status_bar());
         let line = Line::from(vec![
             Span::styled(
                 "FORGE",

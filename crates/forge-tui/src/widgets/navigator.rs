@@ -190,14 +190,14 @@ pub struct SessionRow {
 pub(crate) const SESSIONS_TAB_WIDTH: u16 = 10;
 
 /// Width of the navigator row's `+` action, with breathing room around its glyph.
-pub(crate) const NEW_SESSION_CELL_WIDTH: u16 = 5;
+pub(crate) const NEW_SESSION_CELL_WIDTH: u16 = 3;
 
 /// Keep creation reachable at the navigator's normal minimum width.
-pub(crate) const MIN_NEW_SESSION_ROW_WIDTH: u16 = crate::design::NAVIGATOR_MIN_WIDTH;
+pub(crate) const MIN_NEW_SESSION_ROW_WIDTH: u16 = 22;
 
 /// The `+` cell's rect on the navigator tab row, or `None` when the row cannot
-/// carry it. The cell sits directly beside the `Sessions` tab, sharing its
-/// edge with it, so the create verb reads as acting on sessions. Painting,
+/// carry it. It sits flush against the Sessions tab, so the selected ground
+/// reaches the tile edge instead of stopping at a blank gutter. Painting,
 /// keyboard stops and pointer routing all read this, so the three can never
 /// disagree about whether the cell exists or where it is.
 pub(crate) fn new_session_cell(area: Rect) -> Option<Rect> {
@@ -205,7 +205,7 @@ pub(crate) fn new_session_cell(area: Rect) -> Option<Rect> {
         return None;
     }
     Some(Rect::new(
-        area.x + SESSIONS_TAB_WIDTH.saturating_sub(1),
+        area.x + SESSIONS_TAB_WIDTH,
         area.y,
         NEW_SESSION_CELL_WIDTH,
         area.height,
@@ -227,8 +227,8 @@ pub(crate) fn navigator_tab_rects(area: Rect, git: bool) -> Vec<(NavigatorTab, R
     let sessions = Rect::new(area.x, area.y, split, area.height);
     let new_session = new_session_cell(area);
     let start = match new_session {
-        Some(cell) => cell.x + cell.width.saturating_sub(1),
-        None => area.x + split.saturating_sub(1),
+        Some(cell) => cell.right(),
+        None => area.x + split,
     };
     let remaining = area.right().saturating_sub(start);
     if !git || remaining < 2 {
@@ -240,10 +240,10 @@ pub(crate) fn navigator_tab_rects(area: Rect, git: bool) -> Vec<(NavigatorTab, R
             ),
         ];
     }
-    // `Files` and `Git` share one edge column, the way the `Sessions` tab and
-    // the `+` cell do, so the row keeps reading as one strip.
+    // Tiles sit flush: each owns its cells edge-to-edge so the selected ground
+    // reaches the tile boundary instead of stopping short at a blank gutter.
     let files_width = remaining.div_ceil(2);
-    let git_x = start + files_width.saturating_sub(1);
+    let git_x = start + files_width;
     vec![
         (NavigatorTab::Sessions, sessions),
         (
@@ -262,21 +262,16 @@ pub(crate) fn navigator_tab_rects(area: Rect, git: bool) -> Vec<(NavigatorTab, R
     ]
 }
 
-/// The tab whose box covers `col`, for pointer routing. Falls back to the
-/// nearest tab so a click in a shared edge column still lands somewhere.
-pub(crate) fn navigator_tab_at(col: u16, area: Rect, git: bool) -> NavigatorTab {
-    let rects = navigator_tab_rects(area, git);
-    let mut fallback = NavigatorTab::Sessions;
-    for (tab, rect) in &rects {
-        fallback = *tab;
-        if col >= rect.x && col < rect.right() {
-            return *tab;
-        }
-    }
-    fallback
+/// The tab whose tile covers `col`, if any. Tiles sit flush, so the only
+/// columns that return `None` are the `+` cell's, which is routed separately.
+pub(crate) fn navigator_tab_at(col: u16, area: Rect, git: bool) -> Option<NavigatorTab> {
+    navigator_tab_rects(area, git)
+        .into_iter()
+        .find(|(_, rect)| col >= rect.x && col < rect.right())
+        .map(|(tab, _)| tab)
 }
 
-/// Framed tabs across the top of the navigator column.
+/// Single-row tiles across the top of the navigator column.
 pub struct NavigatorTabs {
     pub tab: NavigatorTab,
     pub needs_you: usize,
@@ -284,9 +279,8 @@ pub struct NavigatorTabs {
     /// tab exists in.
     pub git: bool,
     /// The row itself holds the keyboard (`↑` at the top of either tab's list,
-    /// `FORGE-DESIGN §8.3`). Both outlines then take the L3 accent step while
-    /// the active tab keeps its `accent_soft` ground, so the row reads as the
-    /// thing being driven without impersonating a different active tab.
+    /// `FORGE-DESIGN §8.3`). Only the cursor tile takes the neutral selection
+    /// ground and `>` marker; the selected tab remains independently marked.
     pub focused: bool,
     /// Tab under the pointer. The hovered *inactive* tab gets a raised ground
     /// and a weight step, so a pointer user can tell it is clickable; the
@@ -309,14 +303,14 @@ impl Widget for NavigatorTabs {
         }
         theme::fill(area, buf, theme::panel());
         let inactive = theme::metadata_style();
-        // The `+` cell sits directly beside the `Sessions` tab, sharing its
-        // edge with it, so the create verb reads as acting on sessions.
+        // Keep the creation action beside Sessions, flush with it.
         // One source of truth for painting, keyboard stops and pointer routing.
         let new_session = new_session_cell(area);
         let rects = navigator_tab_rects(area, self.git);
         // Grounds first, edge to edge across each tab; the labels and the `+`
         // glyph repaint their own cells on top of them.
         for (tab, rect) in &rects {
+            theme::fill(*rect, buf, theme::panel());
             if *tab == self.tab {
                 fill_tab_background(buf, *rect, Some(theme::accent_soft_bg()));
             } else if self.hover == Some(*tab) {
@@ -324,25 +318,10 @@ impl Widget for NavigatorTabs {
             }
         }
         if let Some(cell) = new_session {
+            theme::fill(cell, buf, theme::panel());
             if self.hover_new_session {
-                let inner = Rect::new(
-                    cell.x,
-                    cell.y + cell.height.saturating_sub(1) / 2,
-                    cell.width,
-                    1,
-                );
-                fill_tab_background(buf, inner, theme::surface_hover().bg);
+                fill_tab_background(buf, cell, theme::surface_hover().bg);
             }
-        }
-        // Neutral boundary cells separate tabs without doubled border strokes.
-        // Painted before the labels so a narrow tab whose label reaches a shared
-        // edge still renders its full text.
-        let label_y = area.y + area.height.saturating_sub(1) / 2;
-        for (_, rect) in rects.iter().skip(1) {
-            buf.set_string(rect.x, label_y, " ", theme::panel());
-        }
-        if let Some(cell) = new_session {
-            buf.set_string(cell.x, label_y, " ", theme::panel());
         }
         for (index, (tab, tab_area)) in rects.into_iter().enumerate() {
             let is_active = tab == self.tab;
@@ -354,8 +333,16 @@ impl Widget for NavigatorTabs {
                 tab_area.width,
                 1,
             );
-            let label_style = if is_active {
-                theme::accent_style()
+            let owner = self.focused && self.row_stop == NavigatorRowStop::for_tab(tab);
+            if owner {
+                // The keyboard cursor ground fills the whole tile, not just the
+                // label row, so a taller tab band stays covered.
+                theme::fill(tab_area, buf, theme::focused_selection_style());
+            }
+            let label_style = if owner {
+                theme::focused_selection_style().add_modifier(Modifier::BOLD)
+            } else if is_active {
+                theme::text()
                     .add_modifier(Modifier::BOLD)
                     .bg(theme::accent_soft_bg())
             } else if hovered {
@@ -371,11 +358,25 @@ impl Widget for NavigatorTabs {
             }
             let label = truncate(tab.label(), inner.width as usize);
             let label_width = label.chars().count() as u16;
-            // Centred in the tab box, not in the space a badge would leave:
-            // the two tabs own different widths, so the latter would centre
-            // them on different axes.
-            let label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
+            // Centred in the tab tile, both axes: the label sits on the band's
+            // centre row and is centred across the full tile width.
+            let mut label_x = inner.x + inner.width.saturating_sub(label_width) / 2;
+            // A focused stop needs a two-cell marker slot (`>` plus a space) to
+            // the left; nudge the label right only when centring would not leave
+            // room, so the unfocused row stays truly centred.
+            if owner && label_x < inner.x + 2 {
+                label_x = inner.x + 2;
+            }
             buf.set_string(label_x, inner.y, &label, label_style);
+            if self.focused && self.row_stop == NavigatorRowStop::for_tab(tab) && label_x > inner.x
+            {
+                buf.set_string(
+                    label_x.saturating_sub(2).max(inner.x),
+                    inner.y,
+                    theme::FOCUS_MARKER,
+                    theme::accent_style().add_modifier(Modifier::BOLD),
+                );
+            }
             if index == 1 && self.tab != NavigatorTab::Sessions && self.needs_you > 0 {
                 // The Sessions tab (10 wide, 8-cell label) cannot hold a
                 // badge beside its label, so the wide Files tab hosts it —
@@ -406,7 +407,8 @@ impl Widget for NavigatorTabs {
             if inner.width > 0 && inner.height > 0 {
                 let selected = self.focused && self.row_stop == NavigatorRowStop::NewSession;
                 let glyph_style = if selected {
-                    theme::accent_style().add_modifier(Modifier::BOLD)
+                    theme::fill(cell, buf, theme::focused_selection_style());
+                    theme::focused_selection_style().add_modifier(Modifier::BOLD)
                 } else if self.hover_new_session {
                     inactive
                         .patch(theme::surface_hover())
@@ -414,8 +416,19 @@ impl Widget for NavigatorTabs {
                 } else {
                     inactive
                 };
-                let glyph_x = inner.x + inner.width.saturating_sub(1) / 2;
+                let mut glyph_x = inner.x + inner.width / 2;
+                if selected && glyph_x < inner.x + 2 {
+                    glyph_x = inner.x + 2;
+                }
                 buf.set_string(glyph_x, inner.y, "+", glyph_style);
+                if selected {
+                    buf.set_string(
+                        glyph_x.saturating_sub(2).max(inner.x),
+                        inner.y,
+                        theme::FOCUS_MARKER,
+                        glyph_style,
+                    );
+                }
             }
         }
     }
@@ -761,48 +774,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn selected_tab_background_stays_inside_frame() {
-        for height in [1, 2, 3] {
-            let area = Rect::new(0, 0, 40, height);
-            let mut buf = Buffer::empty(area);
-            NavigatorTabs {
-                tab: NavigatorTab::Files,
-                needs_you: 0,
-                git: true,
-                focused: false,
-                hover: None,
-                row_stop: NavigatorRowStop::Files,
-                hover_new_session: false,
+    fn tab_row_marks_only_the_keyboard_cursor() {
+        let area = Rect::new(0, 0, 46, 1);
+        for focused in [false, true] {
+            for stop in [
+                NavigatorRowStop::Sessions,
+                NavigatorRowStop::Files,
+                NavigatorRowStop::Git,
+                NavigatorRowStop::NewSession,
+            ] {
+                let mut buf = Buffer::empty(area);
+                NavigatorTabs {
+                    tab: NavigatorTab::Files,
+                    needs_you: 0,
+                    git: true,
+                    focused,
+                    hover: None,
+                    row_stop: stop,
+                    hover_new_session: false,
+                }
+                .render(area, &mut buf);
+                let row: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+                assert_eq!(row.matches('>').count(), usize::from(focused), "{row}");
+                for label in ["Sessions", "Files", "Git", "+"] {
+                    assert!(row.contains(label), "{row}");
+                }
+                if focused {
+                    let label = match stop {
+                        NavigatorRowStop::Sessions => "Sessions",
+                        NavigatorRowStop::Files => "Files",
+                        NavigatorRowStop::Git => "Git",
+                        NavigatorRowStop::NewSession => "+",
+                    };
+                    assert!(row.contains(&format!("> {label}")), "{row}");
+                }
             }
-            .render(area, &mut buf);
-            let row = |y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            };
-            let label_row = if height == 3 { 1 } else { 0 };
-            for label in ["Sessions", "+", "Files", "Git"] {
-                assert!(row(label_row).contains(label), "{}", row(label_row));
-            }
+        }
+    }
+
+    #[test]
+    fn tiles_are_flush_and_cover_every_column() {
+        for width in [30, 40, 60] {
+            let area = Rect::new(2, 0, width, 1);
             let tabs = navigator_tab_rects(area, true);
-            for (tab, rect) in tabs {
-                for y in rect.y..rect.bottom() {
-                    for x in rect.x..rect.right() {
-                        if tab == NavigatorTab::Files
-                            && !(y == label_row && (x == rect.x || x + 1 == rect.right()))
-                        {
-                            assert_eq!(buf[(x, y)].bg, theme::accent_soft_bg());
-                        } else if x > rect.x && x + 1 < rect.right() {
-                            assert_ne!(buf[(x, y)].bg, theme::accent_soft_bg());
-                        }
-                    }
+            let plus = new_session_cell(area).unwrap();
+            let sessions = tabs[0].1;
+            let files = tabs[1].1;
+            let git = tabs[2].1;
+            assert_eq!(plus.x, sessions.right(), "plus flush after Sessions");
+            assert_eq!(files.x, plus.right(), "Files flush after the + cell");
+            assert_eq!(git.x, files.right(), "Git flush after Files");
+            assert_eq!(git.right(), area.right(), "Git reaches the row edge");
+            for col in area.x..area.right() {
+                let inside_plus = col >= plus.x && col < plus.right();
+                if inside_plus {
+                    assert_eq!(
+                        navigator_tab_at(col, area, true),
+                        None,
+                        "the + cell is not a tab"
+                    );
+                } else {
+                    assert!(
+                        navigator_tab_at(col, area, true).is_some(),
+                        "column {col} maps to no tab"
+                    );
                 }
             }
-            assert!(!row(label_row).contains('│'));
-            if height == 3 {
-                for y in [0, 2] {
-                    assert!(row(y).trim().is_empty());
-                }
+            for (tab, rect) in tabs {
+                assert_eq!(navigator_tab_at(rect.x, area, true), Some(tab));
+                assert_eq!(navigator_tab_at(rect.right() - 1, area, true), Some(tab));
+                assert!(rect.right() <= area.right());
             }
         }
     }

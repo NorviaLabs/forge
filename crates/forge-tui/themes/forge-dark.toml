@@ -10,7 +10,7 @@ surface_raised = "#252C35"
 # as a selected one. Selection stays at the darkest step that keeps the muted
 # `tag`/secondary grey at WCAG AA (4.5:1) on the selected ground.
 surface_hover = "#2A333E"
-border = "#394350"
+border = "#526071"
 border_muted = "#2A333E"
 text_primary = "#EDF0F5"
 text_secondary = "#B5BECB"

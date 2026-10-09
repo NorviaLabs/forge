@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Block, Paragraph, Widget};
 
 use forge_config::FileIconMode;
 use forge_search::{
@@ -1322,7 +1322,11 @@ fn content_match_line(
             theme::selection_inactive()
         }
     });
-    let prefix = format!("{}    {}  ", if selected { ">" } else { " " }, hit.line);
+    let prefix = format!(
+        "{}    {}  ",
+        if selected && focused { ">" } else { " " },
+        hit.line
+    );
     let budget = width.saturating_sub(prefix.len());
     let mut text = hit.text.replace('\t', " ");
     // Keep the match visible even when it occurs far along a source line.
@@ -1584,14 +1588,15 @@ fn match_byte_range_case_insensitive(haystack: &str, needle: &str) -> Option<(us
     })
 }
 
-/// Borderless search surface with balanced vertical padding.
-const SEARCH_ROW_HEIGHT: u16 = 3;
+/// One canvas separator followed by a padded, single-line composer surface.
+pub(crate) const SEARCH_ROW_HEIGHT: u16 = 4;
+const SEARCH_TEXT_ROW: u16 = 2;
 /// Vertical origin of the tree after the search surface and spacing.
 const TREE_TOP_OFFSET: u16 = SEARCH_ROW_HEIGHT + crate::design::TREE_TOP_GAP_Y;
 /// Shared left inset for the search text and tree selection gutter.
-const TREE_LEAD_INSET: u16 = crate::widgets::input::TEXT_INSET;
+const TREE_LEAD_INSET: u16 = 1;
 /// Tree origin relative to the explorer's outer rectangle, shared with mouse routing.
-pub(crate) const TREE_ROW_OFFSET: u16 = 1 + TREE_TOP_OFFSET;
+pub(crate) const TREE_ROW_OFFSET: u16 = TREE_TOP_OFFSET;
 
 pub struct FileExplorerWidget<'a> {
     pub explorer: &'a mut FileExplorer,
@@ -1611,19 +1616,14 @@ impl Widget for FileExplorerWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         self.explorer.poll_search_load();
         self.explorer.poll_workspace_refresh();
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(theme::panel_border())
-            .style(theme::panel());
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = area;
+        theme::fill(area, buf, theme::panel());
         // The footer row (selected relative path) always reserves 1 row;
-        // the tree's own budget sits below the search box + rule.
+        // the tree's own budget sits directly below the search field.
         let tree_top = if self.show_search {
             TREE_TOP_OFFSET
         } else {
-            1 + crate::design::TREE_TOP_GAP_Y
+            crate::design::TREE_TOP_GAP_Y
         };
         let height = inner.height.saturating_sub(tree_top + 1) as usize;
         self.explorer.ensure_selection_visible(height);
@@ -1631,6 +1631,7 @@ impl Widget for FileExplorerWidget<'_> {
         let content_mode = self.explorer.search_mode == FileSearchMode::Content;
         let visible = &self.explorer.visible;
         let mut lines = Vec::new();
+        let mut selected_line = None;
         if self.explorer.root.is_none() {
             lines.push(Line::from("No repository detected"));
         } else if let Some(root) = self.explorer.root.as_ref() {
@@ -1731,6 +1732,9 @@ impl Widget for FileExplorerWidget<'_> {
                             theme::surface_hover().add_modifier(ratatui::style::Modifier::BOLD),
                         );
                     }
+                    if selected && node.content_match.is_none() {
+                        selected_line = Some(lines.len());
+                    }
                     lines.push(line);
                     if let Some(error) = &node.error {
                         lines.push(Line::styled(
@@ -1772,14 +1776,28 @@ impl Widget for FileExplorerWidget<'_> {
             }
         }
         if self.show_search && inner.height >= TREE_TOP_OFFSET {
-            let search_area = Rect::new(inner.x, inner.y, inner.width, SEARCH_ROW_HEIGHT);
+            // Full-bleed across the navigator column: consume the one-cell
+            // shell inset on the left so the field's surface runs edge-to-edge
+            // like the composer's. The query keeps the composer's text inset.
+            let bleed = inner.x.min(crate::design::PANE_PAD_X);
+            let search_area = Rect::new(
+                inner.x.saturating_sub(bleed),
+                inner.y,
+                inner.width.saturating_add(bleed),
+                SEARCH_ROW_HEIGHT,
+            );
             Block::default()
                 .style(theme::composer_surface())
                 .render(search_area, buf);
+            theme::fill(
+                Rect::new(search_area.x, search_area.y, search_area.width, 1),
+                buf,
+                theme::canvas(),
+            );
             let inset = crate::widgets::input::TEXT_INSET;
             let search_inner = Rect::new(
                 search_area.x + inset,
-                search_area.y + 1,
+                search_area.y + SEARCH_TEXT_ROW,
                 search_area.width.saturating_sub(inset * 2),
                 1,
             );
@@ -1788,17 +1806,25 @@ impl Widget for FileExplorerWidget<'_> {
             // first and the query truncates around it. A listing that hit the
             // cap still has to be able to say so.
             let count = self.explorer.search_result_count().unwrap_or_default();
-            let count_width = count.chars().count() as u16;
+            let count_width = Span::raw(&count).width() as u16;
             let field_width = search_inner.width;
             let reserved = count_width.min(field_width);
             let query_room = field_width
                 .saturating_sub(reserved)
                 .saturating_sub(u16::from(text_focused)) as usize;
+            let mut query_width = 0;
             let shown_query: String = self
                 .explorer
                 .search_query
                 .chars()
-                .take(query_room)
+                .take_while(|ch| {
+                    let width = Span::raw(ch.to_string()).width();
+                    if query_width + width > query_room {
+                        return false;
+                    }
+                    query_width += width;
+                    true
+                })
                 .collect();
             let placeholder = if content_mode {
                 "Find in files..."
@@ -1817,7 +1843,7 @@ impl Widget for FileExplorerWidget<'_> {
             };
             let mut spans = vec![Span::styled(search.clone(), search_style)];
             if reserved > 0 {
-                let used = search.chars().count() as u16;
+                let used = Span::raw(&search).width() as u16;
                 spans.push(Span::raw(
                     " ".repeat(field_width.saturating_sub(used + reserved) as usize),
                 ));
@@ -1825,7 +1851,7 @@ impl Widget for FileExplorerWidget<'_> {
             }
             Paragraph::new(Line::from(spans)).render(search_inner, buf);
             if text_focused {
-                let cursor_x = search_inner.x + shown_query.chars().count() as u16;
+                let cursor_x = search_inner.x + query_width as u16;
                 if cursor_x < search_inner.right() {
                     if self.explorer.search_query.is_empty() {
                         buf[(cursor_x, search_inner.y)].set_style(theme::caret());
@@ -1846,6 +1872,14 @@ impl Widget for FileExplorerWidget<'_> {
                 ),
                 buf,
             );
+        }
+        if self.focused && !self.search_active {
+            if let Some(offset) = selected_line {
+                let y = inner.y + tree_top + offset as u16;
+                if y < inner.bottom().saturating_sub(1) {
+                    buf.set_string(inner.x, y, theme::FOCUS_MARKER, theme::accent_style());
+                }
+            }
         }
         if inner.height > 0 {
             // `selected_relative_path` is "." at the workspace root, which
@@ -1927,7 +1961,7 @@ mod tests {
             .style
             .add_modifier
             .contains(ratatui::style::Modifier::BOLD));
-        assert_eq!(TREE_LEAD_INSET, crate::widgets::input::TEXT_INSET);
+        assert_eq!(TREE_LEAD_INSET, 1);
     }
 
     fn wait_for_search_load(explorer: &mut FileExplorer) {
@@ -2422,9 +2456,14 @@ mod tests {
                 .unwrap() as u16;
             let content_row = &rows[content_y as usize];
             assert!(
-                content_row.contains(">    2  second needle"),
+                content_row.contains(if focused {
+                    ">    2  second needle"
+                } else {
+                    "     2  second needle"
+                }),
                 "{content_row}"
             );
+            assert_eq!(content_row.matches('>').count(), usize::from(focused));
             let label_x = content_row.find("needle").unwrap() as u16;
             let style = if focused {
                 theme::selection_active()
@@ -2756,16 +2795,19 @@ mod tests {
                 explorer.search_focused = true;
                 let focused = render_widget(&mut explorer, area, true);
 
-                assert_eq!(row_text(&idle, area, 2), row_text(&focused, area, 2));
-                let text_x = 1 + crate::widgets::input::TEXT_INSET;
-                assert_eq!(focused[(text_x, 2)].symbol(), &placeholder[..1]);
-                assert_eq!(focused[(text_x, 2)].bg, theme::caret().bg.unwrap());
-                for y in [1, 3] {
-                    for x in 2..width - 2 {
-                        assert_eq!(focused[(x, y)].symbol(), " ");
-                        assert_eq!(Some(focused[(x, y)].bg), theme::composer_surface().bg);
-                    }
-                }
+                assert_eq!(
+                    row_text(&idle, area, SEARCH_TEXT_ROW),
+                    row_text(&focused, area, SEARCH_TEXT_ROW)
+                );
+                let text_x = crate::widgets::input::TEXT_INSET;
+                assert_eq!(
+                    focused[(text_x, SEARCH_TEXT_ROW)].symbol(),
+                    &placeholder[..1]
+                );
+                assert_eq!(
+                    focused[(text_x, SEARCH_TEXT_ROW)].bg,
+                    theme::caret().bg.unwrap()
+                );
             }
         }
     }
@@ -2776,9 +2818,12 @@ mod tests {
         let area = Rect::new(0, 0, 40, 18);
         explorer.search_query = "main.rs".into();
         let buf = render_widget(&mut explorer, area, true);
-        let text_x = 1 + crate::widgets::input::TEXT_INSET;
-        assert_eq!(buf[(text_x, 2)].symbol(), "m");
-        assert_eq!(buf[(text_x + 7, 2)].bg, theme::caret().bg.unwrap());
+        let text_x = crate::widgets::input::TEXT_INSET;
+        assert_eq!(buf[(text_x, SEARCH_TEXT_ROW)].symbol(), "m");
+        assert_eq!(
+            buf[(text_x + 7, SEARCH_TEXT_ROW)].bg,
+            theme::caret().bg.unwrap()
+        );
         for mode in [FileSearchMode::Names, FileSearchMode::Content] {
             explorer.set_search_mode(mode);
             let buf = render_widget(&mut explorer, area, true);
@@ -2787,7 +2832,6 @@ mod tests {
                 .collect::<String>();
             assert!(!text.contains("Ctrl+Shift+F"));
             assert!(!text.contains("Ctrl+P"));
-            assert!(row_text(&buf, area, 4).trim_matches([' ', '│']).is_empty());
         }
     }
 

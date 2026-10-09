@@ -2,7 +2,8 @@ use crate::theme;
 use forge_types::TaskLifecycle;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::text::{Line, Span};
+use ratatui::style::Modifier;
+use ratatui::text::Span;
 use ratatui::widgets::Widget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,78 +50,244 @@ pub struct TaskStrip<'a> {
     pub focused: bool,
 }
 
+impl TaskStrip<'_> {
+    /// Shared painting and hit-test geometry. Scroll the window just enough to
+    /// retain the cursor (or the open session when the strip is unfocused).
+    pub fn chip_rects(&self, area: Rect) -> Vec<(usize, Rect)> {
+        if area.height == 0 || area.width < 4 || self.items.is_empty() {
+            return Vec::new();
+        }
+        let anchor = self
+            .items
+            .iter()
+            .position(|item| {
+                if self.focused {
+                    item.focused
+                } else {
+                    item.selected
+                }
+            })
+            .unwrap_or(0);
+        let total_width = self
+            .items
+            .iter()
+            .map(|item| (Span::raw(&item.label).width() + 4).min(32))
+            .sum::<usize>()
+            + self.items.len().saturating_sub(1);
+        let reserve = if self.overflow > 0 || total_width > usize::from(area.width) {
+            Span::raw(format!(" +{} more", self.items.len() + self.overflow - 1)).width() as u16
+        } else {
+            0
+        };
+        let budget = area.width.saturating_sub(reserve).max(4).min(area.width);
+        let width = |index: usize| {
+            (Span::raw(&self.items[index].label).width() + 4)
+                .min(32)
+                .min(budget as usize) as u16
+        };
+        let mut start = 0;
+        while start < anchor
+            && (start..=anchor)
+                .map(|i| usize::from(width(i)) + usize::from(i > start))
+                .sum::<usize>()
+                > usize::from(budget)
+        {
+            start += 1;
+        }
+        let mut x = area.x;
+        let mut rects = Vec::new();
+        for index in start..self.items.len() {
+            let w = width(index);
+            if x + w > area.x + budget {
+                break;
+            }
+            rects.push((index, Rect::new(x, area.y, w, area.height)));
+            x += w + 1;
+        }
+        rects
+    }
+}
+
 impl Widget for TaskStrip<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if area.width == 0 || area.height == 0 {
-            return;
-        }
-        let mut used = 0;
-        let mut spans = Vec::new();
-        let mut hidden = self.overflow;
-        for (position, item) in self.items.iter().enumerate() {
-            let separator_width = if position > 0 { 3 } else { 0 };
-            let style = if item.focused && self.focused {
+        theme::fill(area, buf, theme::panel());
+        let center_y = area.y + area.height.saturating_sub(1) / 2;
+        let rects = self.chip_rects(area);
+        for (index, rect) in &rects {
+            let item = &self.items[*index];
+            let owner = self.focused && item.focused;
+            // The chip is one solid tile: a single ground across every row, with
+            // no per-row rule. The open session gets a filled accent ground so
+            // it reads as the selected tab; only the keyboard cursor takes the
+            // neutral selection ground and the `>` marker.
+            let ground = if owner {
                 theme::focused_selection_style()
             } else if item.selected {
-                // The active session keeps the accent even when the strip is
-                // unfocused or the cursor rests on a sibling, so the user can
-                // always see which tab they are viewing.
-                theme::brand()
+                theme::text().bg(theme::accent_soft_bg())
             } else {
                 theme::metadata_style()
             };
-            let mut item_spans = vec![
-                Span::styled("[", theme::border_muted()),
-                Span::styled(format!(" {}", item.label), style),
-            ];
-            item_spans.push(Span::styled("]", theme::border_muted()));
-            let item_width = item_spans.iter().map(Span::width).sum::<usize>();
-            let remaining = (area.width as usize).saturating_sub(used + separator_width);
-            if item_width > remaining {
-                // Keep a focused item discoverable even when neighboring
-                // tasks consume the strip; its label is truncated by cell
-                // width rather than clipped by the terminal buffer.
-                if !(item.focused && self.focused) {
-                    hidden += 1;
-                    hidden += self.items.len().saturating_sub(position + 1);
-                    break;
-                }
-                let text = format!("[ {} ]", item.label);
-                let reserve = if self.items.len() > 1 && remaining > 10 {
-                    10
-                } else {
-                    0
-                };
-                let shown = truncate(&text, remaining.saturating_sub(reserve));
-                if position > 0 {
-                    spans.push(Span::styled(" · ", theme::border_muted()));
-                }
-                spans.push(Span::styled(shown, style));
-                hidden += self.items.len().saturating_sub(1);
-                break;
+            theme::fill(*rect, buf, ground);
+            // An open session reads as an active tab: a rounded accent outline
+            // with a bright base rule, so the tile reads as a tab rather than a
+            // plain block. It stays one component — no rule crosses a row.
+            if item.selected && rect.height >= 3 {
+                let border = theme::accent_style();
+                let width = rect.width as usize;
+                let top = format!("╭{}╮", "─".repeat(width.saturating_sub(2)));
+                buf.set_string(rect.x, rect.y, &top, border);
+                buf.set_string(rect.x, center_y, "│", border);
+                buf.set_string(rect.right() - 1, center_y, "│", border);
+                buf.set_string(rect.x, rect.bottom() - 1, "─".repeat(width), border);
             }
-            if position > 0 {
-                spans.push(Span::styled(" · ", theme::border_muted()));
+            let label_style = if item.selected {
+                ground.add_modifier(Modifier::BOLD)
+            } else {
+                ground
+            };
+            let label = truncate(&item.label, rect.width.saturating_sub(4) as usize);
+            let label_width = Span::raw(&label).width() as u16;
+            // Centre the label across the chip; a focused chip nudges right only
+            // when centring would not leave the two-cell `>` marker slot.
+            let mut label_x = rect.x + rect.width.saturating_sub(label_width) / 2;
+            if owner && label_x < rect.x + 2 {
+                label_x = rect.x + 2;
             }
-            used += separator_width + item_width;
-            spans.extend(item_spans);
+            if owner {
+                buf.set_string(
+                    label_x.saturating_sub(2).max(rect.x),
+                    center_y,
+                    ">",
+                    ground.patch(theme::accent_style()),
+                );
+            }
+            buf.set_string(label_x, center_y, label, label_style);
         }
-        if hidden > 0 {
-            if !spans.is_empty() {
-                spans.push(Span::styled(" · ", theme::border_muted()));
+        let hidden = self.items.len() + self.overflow - rects.len();
+        if hidden > 0 && area.height > 0 {
+            let x = rects.last().map_or(area.x, |(_, rect)| rect.right() + 1);
+            if x < area.right() {
+                buf.set_stringn(
+                    x,
+                    center_y,
+                    format!("+{hidden} more"),
+                    usize::from(area.right() - x),
+                    theme::metadata_style(),
+                );
             }
-            spans.push(Span::styled(format!("+{} more", hidden), theme::brand()));
         }
-        buf.set_line(area.x, area.y, &Line::from(spans), area.width);
     }
 }
 
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
+    if Span::raw(text).width() <= width {
         return text.to_string();
     }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
+    if width == 0 {
+        return String::new();
     }
-    format!("{}…", text.chars().take(width - 1).collect::<String>())
+    let mut result = String::new();
+    for ch in text.chars() {
+        if Span::raw(&result).width() + Span::raw(ch.to_string()).width() > width - 1 {
+            break;
+        }
+        result.push(ch);
+    }
+    result.push('…');
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn item(label: &str, selected: bool, focused: bool) -> TaskStripItem {
+        TaskStripItem {
+            slot: None,
+            label: label.into(),
+            branch: String::new(),
+            state: TaskStripState::Idle,
+            secondary: None,
+            selected,
+            focused,
+            attention: false,
+        }
+    }
+    #[test]
+    fn selected_chip_draws_a_tab_outline() {
+        let items = [item("forge", true, false)];
+        let area = Rect::new(0, 0, 20, 3);
+        let strip = TaskStrip {
+            items: &items,
+            overflow: 0,
+            focused: false,
+        };
+        let rect = strip.chip_rects(area)[0].1;
+        let mut buf = Buffer::empty(area);
+        strip.render(area, &mut buf);
+        let center_y = rect.y + rect.height / 2;
+        assert_eq!(buf[(rect.x, rect.y)].symbol(), "╭");
+        assert_eq!(buf[(rect.right() - 1, rect.y)].symbol(), "╮");
+        assert_eq!(buf[(rect.x, center_y)].symbol(), "│");
+        assert_eq!(buf[(rect.right() - 1, center_y)].symbol(), "│");
+        assert_eq!(buf[(rect.x, rect.bottom() - 1)].symbol(), "─");
+        assert_eq!(buf[(rect.right() - 1, rect.bottom() - 1)].symbol(), "─");
+        assert_eq!(buf[(rect.x, center_y)].bg, theme::accent_soft_bg());
+    }
+
+    #[test]
+    fn chips_have_fixed_gutters_and_separate_open_and_cursor_styles() {
+        let items = [item("first", true, false), item("second", false, true)];
+        let area = Rect::new(2, 1, 60, 1);
+        let strip = TaskStrip {
+            items: &items,
+            overflow: 0,
+            focused: true,
+        };
+        let rects = strip.chip_rects(area);
+        assert_eq!(rects[1].1.x, rects[0].1.right() + 1);
+        let mut buf = Buffer::empty(area);
+        strip.render(area, &mut buf);
+        let label_x = |rect: Rect, label: &str| {
+            rect.x + rect.width.saturating_sub(Span::raw(label).width() as u16) / 2
+        };
+        // The focused chip carries the `>` marker in the slot left of the label.
+        let focused = rects[1].1;
+        let focused_label = label_x(focused, "second");
+        assert_eq!(buf[(focused.x, 1)].symbol(), ">");
+        assert_eq!(buf[(focused_label, 1)].symbol(), "s");
+        // The open-but-unfocused chip is a solid accent tile with a bold label,
+        // and no per-row rule anywhere on the strip.
+        let selected = rects[0].1;
+        let selected_label = label_x(selected, "first");
+        assert_eq!(buf[(selected_label, 1)].bg, theme::accent_soft_bg());
+        assert!(buf[(selected_label, 1)].modifier.contains(Modifier::BOLD));
+        assert_ne!(buf[(selected.x, 1)].symbol(), ">");
+        for (_, rect) in &rects {
+            for x in rect.x..rect.right() {
+                assert!(!buf[(x, rect.y)].modifier.contains(Modifier::UNDERLINED));
+            }
+        }
+    }
+    #[test]
+    fn overflow_keeps_the_cursor_visible_and_uses_cell_width() {
+        let items = [
+            item("a very long session name", true, false),
+            item("second", false, false),
+            item("界界界界界界界界", false, true),
+        ];
+        let area = Rect::new(0, 0, 22, 1);
+        let strip = TaskStrip {
+            items: &items,
+            overflow: 0,
+            focused: true,
+        };
+        let rects = strip.chip_rects(area);
+        assert!(rects.iter().any(|(i, _)| *i == 2));
+        assert!(rects.iter().all(|(_, r)| r.right() <= area.right()));
+        let mut buf = Buffer::empty(area);
+        strip.render(area, &mut buf);
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("+2 more"), "{text}");
+        assert_eq!(truncate("界界界", 4), "界…");
+    }
 }

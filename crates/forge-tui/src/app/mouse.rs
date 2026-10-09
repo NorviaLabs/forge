@@ -179,6 +179,7 @@ impl TuiApp {
         }
         if let Some(area) = self.navigator_list_area {
             if cell_inside(area, col, row) {
+                self.horizontal_session_strip_focused = false;
                 // Same rule as the tab click above: a click on the row's own
                 // surface hands the keyboard to the pane the row sits above,
                 // so the tab row stops holding it. Without this the click's
@@ -195,7 +196,25 @@ impl TuiApp {
         }
         if let Some(area) = self.task_strip_area {
             if cell_inside(area, col, row) {
+                let Some(index) = self
+                    .task_strip_chips
+                    .iter()
+                    .find(|(_, rect)| cell_inside(*rect, col, row))
+                    .map(|(index, _)| *index)
+                else {
+                    return Ok(());
+                };
+                self.task_strip_selection = index;
+                self.navigator_tab_row_focused = false;
+                self.horizontal_session_strip_focused = true;
                 self.focus_block(FocusBlock::TaskStrip);
+                if double {
+                    self.handle_task_strip_key(crossterm::event::KeyEvent::new(
+                        KeyCode::Enter,
+                        KeyModifiers::NONE,
+                    ))
+                    .await?;
+                }
                 return Ok(());
             }
         }
@@ -379,7 +398,9 @@ impl TuiApp {
     /// A click on the navigator tab bar switches to the painted tab.
     fn click_navigator_tab(&mut self, col: u16, area: Rect) {
         use crate::widgets::NavigatorTab;
-        let tab = navigator_tab_at(col, area, self.navigator_git_available());
+        let Some(tab) = navigator_tab_at(col, area, self.navigator_git_available()) else {
+            return;
+        };
         self.navigator_tab = tab;
         self.navigator_tab_explicit = true;
         // A click hands the keyboard to the tab's pane, so the row stops holding
@@ -469,6 +490,9 @@ impl TuiApp {
                     }
                     return Ok(());
                 }
+                if row >= area.bottom().saturating_sub(1) {
+                    return Ok(());
+                }
                 let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
                 if index < self.workspace_files.explorer.visible_nodes().len() {
                     self.focus_block(FocusBlock::Files);
@@ -478,12 +502,12 @@ impl TuiApp {
                 }
             }
             crate::widgets::NavigatorTab::Git => {
-                let local = row.saturating_sub(area.y + 1) as usize;
+                let local = row.saturating_sub(area.y) as usize;
                 if let Some(index) = crate::widgets::git_changes::GitChangesList::absolute_file_at(
                     &self.diff_view.entries,
                     local,
                     self.diff_view.selected,
-                    area.height.saturating_sub(2) as usize,
+                    area.height as usize,
                 ) {
                     self.diff_view.select(index);
                     self.focus_block(FocusBlock::Files);
@@ -562,7 +586,7 @@ impl TuiApp {
             if let Some(area) = self.navigator_tabs_area {
                 if cell_inside(area, col, row) {
                     self.hover_navigator_tab =
-                        Some(navigator_tab_at(col, area, self.navigator_git_available()));
+                        navigator_tab_at(col, area, self.navigator_git_available());
                 }
             }
         }
@@ -580,17 +604,17 @@ impl TuiApp {
                 }
             }
             crate::widgets::NavigatorTab::Git => {
-                let local = row.saturating_sub(area.y + 1) as usize;
+                let local = row.saturating_sub(area.y) as usize;
                 self.hover_file = crate::widgets::git_changes::GitChangesList::absolute_file_at(
                     &self.diff_view.entries,
                     local,
                     self.diff_view.selected,
-                    area.height.saturating_sub(2) as usize,
+                    area.height as usize,
                 );
             }
             crate::widgets::NavigatorTab::Files => {
                 let tree_top = area.y + crate::file_explorer::TREE_ROW_OFFSET;
-                if row >= tree_top {
+                if row >= tree_top && row < area.bottom().saturating_sub(1) {
                     let index = self.workspace_files.explorer.scroll + (row - tree_top) as usize;
                     if index < self.workspace_files.explorer.visible_nodes().len() {
                         self.hover_file = Some(index);
@@ -1203,7 +1227,7 @@ impl TuiApp {
 /// The `+` cell straddles these columns and is claimed before this runs, so
 /// anything that reaches here is either left of the `Sessions` tab's edge or
 /// right of the `Files` tab's, never the cell itself.
-fn navigator_tab_at(col: u16, area: Rect, git: bool) -> crate::widgets::NavigatorTab {
+fn navigator_tab_at(col: u16, area: Rect, git: bool) -> Option<crate::widgets::NavigatorTab> {
     crate::widgets::navigator::navigator_tab_at(col, area, git)
 }
 

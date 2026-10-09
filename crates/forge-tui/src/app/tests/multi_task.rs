@@ -2006,11 +2006,11 @@ async fn the_top_session_strip_names_sessions_in_every_navigator_tab() {
         for (width, height) in [(140, 40), (80, 18)] {
             let rendered = render_app_text(&mut app, width, height);
             assert!(
-                rendered.contains("[ main]"),
+                rendered.contains("main"),
                 "{tab:?} at {width}x{height} keeps the session strip: {rendered}"
             );
             assert!(
-                rendered.contains("[ session 1]"),
+                rendered.contains("session 1"),
                 "{tab:?} at {width}x{height} names the new session: {rendered}"
             );
         }

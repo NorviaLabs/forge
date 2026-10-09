@@ -275,7 +275,13 @@ pub fn split_areas_with_preferences(
     let resource_open = !expand_conversation;
     let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
     let status_h = 1;
-    let fixed_h = status_h + footer_h + fb + CHROME_GAP_Y + gap_bottom;
+    let task_strip_h = if show_task_strip {
+        crate::design::SESSION_STRIP_H
+    } else {
+        0
+    };
+    let chrome_gap = u16::from(show_task_strip);
+    let fixed_h = status_h + footer_h + fb + chrome_gap + task_strip_h + gap_bottom;
     let requested_panel_h = if bottom_panel_h > 0 {
         preferences
             .bottom_panel_height_ratio
@@ -288,7 +294,7 @@ pub fn split_areas_with_preferences(
     let available_panel_h = content_area
         .height
         .saturating_sub(fixed_h)
-        .saturating_sub(warning_h.min(1) + u16::from(show_task_strip))
+        .saturating_sub(warning_h.min(1))
         .saturating_sub(PANE_GAP_Y)
         .saturating_sub(1 + TRANSCRIPT_MIN_ROWS + input_h + qh + COMPOSER_GAP_Y);
     let panel_h = if requested_panel_h > 0 {
@@ -304,14 +310,14 @@ pub fn split_areas_with_preferences(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(status_h),               // status
-            Constraint::Length(warning_h.min(1)),       // approve-all warning
-            Constraint::Length(show_task_strip as u16), // task strip
-            Constraint::Length(CHROME_GAP_Y),           // gutter under chrome
-            Constraint::Min(3),                         // main
-            Constraint::Length(gap_bottom),             // gutter above the shell band
-            Constraint::Length(fb),                     // status line
-            Constraint::Length(footer_h),               // contextual hint
+            Constraint::Length(status_h),         // status
+            Constraint::Length(warning_h.min(1)), // approve-all warning
+            Constraint::Length(task_strip_h),     // task strip
+            Constraint::Length(chrome_gap),       // gutter under chrome
+            Constraint::Min(3),                   // main
+            Constraint::Length(gap_bottom),       // gutter above the shell band
+            Constraint::Length(fb),               // status line
+            Constraint::Length(footer_h),         // contextual hint
         ])
         .split(content_area);
     let status = rows[0];
@@ -329,7 +335,11 @@ pub fn split_areas_with_preferences(
         navigator_active,
         preferences,
     );
-    let tabs_h = u16::from(!navigator_overlay);
+    let tabs_h = if navigator_overlay {
+        0
+    } else {
+        crate::design::CHROME_BAND_H
+    };
     let input_h = input_h.min(
         work.height
             .saturating_sub(
