@@ -33,6 +33,26 @@ fn set_pending_question_focused(app: &mut TuiApp, payload: QuestionPayload) {
     app.sync_question_menu();
 }
 
+#[tokio::test]
+async fn scratchpad_input_does_not_answer_the_question_underneath_it() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_question_focused(&mut app, db_question());
+    app.open_scratchpad();
+    render_app_text(&mut app, 120, 40);
+    for code in [
+        KeyCode::Char('i'),
+        KeyCode::Char('h'),
+        KeyCode::Enter,
+        KeyCode::Char('1'),
+    ] {
+        app.handle_key(press(code, KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.scratchpad.as_ref().unwrap().editor().text(), "h\n1");
+    assert!(app.selected_pending_question().is_some());
+}
+
 fn multi_question() -> QuestionPayload {
     QuestionPayload {
         call_id: "q-multi".into(),

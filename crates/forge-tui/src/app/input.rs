@@ -2273,7 +2273,7 @@ impl TuiApp {
         // A child view is a mode, so leaving it is checked before anything else
         // can claim the key — from whatever block happens to hold focus. An
         // overlay still wins, because it is a mode on top of this one.
-        if self.child_view.is_some() && self.overlay.is_none() {
+        if self.child_view.is_some() && self.overlay.is_none() && self.scratchpad.is_none() {
             match key.code {
                 KeyCode::Left if key.modifiers.is_empty() => {
                     self.close_child_session();
@@ -2353,13 +2353,17 @@ impl TuiApp {
         }
 
         if self.overlay.is_none()
+            && self.scratchpad.is_none()
             && self.selected_pending_question().is_some()
             && self.handle_question_menu_key(key).await?
         {
             return Ok(());
         }
 
-        if self.selected_pending_hitl().is_some() && self.handle_approval_menu_key(key).await? {
+        if self.scratchpad.is_none()
+            && self.selected_pending_hitl().is_some()
+            && self.handle_approval_menu_key(key).await?
+        {
             return Ok(());
         }
 

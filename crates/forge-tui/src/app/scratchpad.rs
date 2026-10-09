@@ -378,7 +378,7 @@ impl super::TuiApp {
         }
         status.push(Span::raw("  "));
         status.push(Span::styled(
-            ":w save · ⎋ close · i insert",
+            ":w save · Ctrl+N close · i insert",
             ratatui::style::Style::default().fg(theme::text_dim_color()),
         ));
         if let Some(row) = editor_area.height.checked_add(inner.y) {

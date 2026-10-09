@@ -2293,8 +2293,6 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
 
         if let Some(dialog) = self.explorer_dialog.current() {
             self.render_explorer_dialog(dialog, area, frame.buffer_mut());
-        } else if self.scratchpad.is_some() {
-            self.render_scratchpad(area, frame.buffer_mut());
         } else if let Some(ref ov) = self.overlay {
             match ov {
                 Overlay::Help => self.render_help_overlay(area, frame.buffer_mut()),
@@ -2314,6 +2312,8 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     area,
                 ),
             }
+        } else if self.scratchpad.is_some() {
+            self.render_scratchpad(area, frame.buffer_mut());
         }
 
         // The right-click context menu is the topmost interactive layer.

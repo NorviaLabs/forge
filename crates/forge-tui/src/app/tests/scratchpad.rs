@@ -7,6 +7,60 @@
 use super::prelude::*;
 
 #[tokio::test]
+async fn session_switcher_over_notes_is_visible_and_can_be_dismissed() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_scratchpad();
+    app.handle_key(press(KeyCode::F(3), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_some());
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(
+        !text.contains("Scratchpad"),
+        "dialog must not be hidden by notes: {text}"
+    );
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.overlay.is_none());
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(
+        text.contains("Scratchpad"),
+        "notes return after dismissing dialog: {text}"
+    );
+    assert!(
+        text.contains("Ctrl+N close"),
+        "show the actual close shortcut: {text}"
+    );
+}
+
+#[tokio::test]
+async fn notes_keep_keyboard_ownership_when_an_approval_is_pending() {
+    let (_dir, mut app) = focus_test_app().await;
+    set_pending_hitl(&mut app, direct_hitl_payload("pending", "file.txt"));
+    app.sync_approval_focus();
+    app.open_scratchpad();
+    render_app_text(&mut app, 120, 40);
+    for code in [
+        KeyCode::Char('i'),
+        KeyCode::Char('n'),
+        KeyCode::Enter,
+        KeyCode::Char('h'),
+    ] {
+        app.handle_key(press(code, KeyModifiers::NONE))
+            .await
+            .unwrap();
+    }
+    assert_eq!(app.scratchpad.as_ref().unwrap().editor().text(), "n\nh");
+    assert!(app.selected_pending_hitl().is_some());
+    app.handle_key(press(KeyCode::Char('n'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert!(app.scratchpad.is_none());
+    assert!(app.selected_pending_hitl().is_some());
+}
+
+#[tokio::test]
 async fn scratchpad_paste_owns_input_and_preserves_insert_undo_and_command_text() {
     let (_dir, mut app) = focus_test_app().await;
     app.input.set_text("pending draft");
