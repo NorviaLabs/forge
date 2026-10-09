@@ -149,7 +149,7 @@ impl TuiApp {
         // `↑` always lands on the tab on screen, never on the `+` cell a
         // previous visit left the cursor on.
         self.navigator_row_stop = if self.focus.block() == FocusBlock::TaskStrip {
-            crate::widgets::NavigatorRowStop::Sessions
+            crate::widgets::NavigatorRowStop::NewSession
         } else {
             crate::widgets::NavigatorRowStop::for_tab(self.effective_navigator_tab())
         };

@@ -1,4 +1,3 @@
-pub mod background_strip;
 pub mod bottom_panel;
 pub mod feedback;
 pub mod footer;
@@ -13,15 +12,13 @@ pub mod task_strip;
 pub mod toasts;
 pub mod turn_line;
 
-pub use background_strip::BackgroundStripWidget;
 pub use bottom_panel::{BottomPanel, BottomPanelModel, BottomPanelState};
 pub use feedback::{classify_operator_error, FeedbackModel, FeedbackSeverity};
 pub use footer::{footer_short_model_id, FooterActivity, FooterBar, FooterFocus, FooterModel};
 pub use input::{composer_cursor_position, composer_text_area_width, InputBar, InputModel};
 pub(crate) use navigator::TEXT_COL;
 pub use navigator::{
-    NavigatorRowStop, NavigatorTab, NavigatorTabs, PeekPanel, SessionList, SessionRow,
-    SessionRowState,
+    NavigatorRowStop, NavigatorTab, PeekPanel, SessionList, SessionRow, SessionRowState,
 };
 pub use panel::background_focused;
 pub use queued_messages::QueuedMessages;

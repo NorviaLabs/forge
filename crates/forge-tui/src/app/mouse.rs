@@ -277,12 +277,6 @@ impl TuiApp {
                 return Ok(());
             }
         }
-        if let Some(area) = self.background_area {
-            if cell_inside(area, col, row) {
-                self.click_background_row(col, row, area, double).await?;
-                return Ok(());
-            }
-        }
         if let Some(area) = self.footer_area {
             if cell_inside(area, col, row) {
                 self.focus_block(FocusBlock::Footer);
@@ -351,42 +345,6 @@ impl TuiApp {
             self.task_selection
                 .select_queue(self.selected_session_id, self.dock_paint.queue_ids[index]);
         }
-    }
-
-    /// A click on a background-task row selects it and takes the keyboard,
-    /// matching the strip's own grammar. A double click opens the matching
-    /// live task filter without inserting a result or resolving a request.
-    async fn click_background_row(
-        &mut self,
-        col: u16,
-        row: u16,
-        area: Rect,
-        double: bool,
-    ) -> Result<(), TuiError> {
-        self.focus_block(FocusBlock::Sidebar);
-        if self.dock_paint.owner != self.selected_session_id {
-            return Ok(());
-        }
-        if let Some(index) = crate::widgets::background_strip::row_index_at(
-            &self.dock_paint.background.rows,
-            area,
-            col,
-            row,
-        ) {
-            self.task_selection.select_task(
-                self.selected_session_id,
-                self.dock_paint.background.rows[index].id,
-            );
-            if double {
-                let filter = if self.dock_paint.background.rows[index].subagent {
-                    crate::tasks_strip::TaskFilter::Agents
-                } else {
-                    crate::tasks_strip::TaskFilter::Jobs
-                };
-                self.open_tasks_view(Some(filter));
-            }
-        }
-        Ok(())
     }
 
     /// Use the editor's native viewport mapping. Transformed previews
@@ -541,7 +499,6 @@ impl TuiApp {
         self.hover_navigator_tab = None;
         self.hover_navigator_new_session = false;
         self.hover_queue = None;
-        self.hover_background = None;
         self.hover_option = self.option_at(col, row);
         self.hover_overlay = self.overlay_row_at(col, row);
         self.hover_resize = None;
@@ -569,14 +526,6 @@ impl TuiApp {
             self.hover_queue = crate::widgets::queued_messages::message_index_at(
                 self.dock_paint.queue_ids.len(),
                 self.dock_paint.queue_selected,
-                area,
-                col,
-                row,
-            );
-        }
-        if let Some(area) = self.background_area {
-            self.hover_background = crate::widgets::background_strip::row_index_at(
-                &self.dock_paint.background.rows,
                 area,
                 col,
                 row,

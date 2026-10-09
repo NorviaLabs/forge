@@ -1183,7 +1183,6 @@ pub(crate) struct DockPaintState {
     pub(crate) owner: uuid::Uuid,
     pub(crate) queue_ids: Vec<forge_session::QueuedPromptId>,
     pub(crate) queue_selected: Option<usize>,
-    pub(crate) background: crate::tasks_strip::BackgroundStrip,
     pub(crate) chips: Vec<(crate::tasks_strip::TaskFilter, ratatui::layout::Rect)>,
 }
 
@@ -2140,8 +2139,6 @@ pub struct TuiApp {
     pub(crate) footer_area: Option<ratatui::layout::Rect>,
     /// Outbound queue strip rect from the last draw.
     pub(crate) queue_area: Option<ratatui::layout::Rect>,
-    /// Background-activity strip rect from the last draw.
-    pub(crate) background_area: Option<ratatui::layout::Rect>,
     pub(crate) dock_paint: DockPaintState,
     pub(crate) task_view_paint: TaskViewPaintState,
     pub(crate) task_stop_paint: Option<TaskStopPaint>,
@@ -2150,9 +2147,6 @@ pub struct TuiApp {
         uuid::Uuid,
         std::collections::HashSet<forge_types::BackgroundTaskId>,
     >,
-    /// Hovered background-task index (pointer motion; never moves the
-    /// selection).
-    pub(crate) hover_background: Option<usize>,
     /// Slash-command suggestion rows `(index, rect)` from the last draw.
     /// They paint over the transcript, so the click has to be claimed before
     /// the transcript's own area can take focus.

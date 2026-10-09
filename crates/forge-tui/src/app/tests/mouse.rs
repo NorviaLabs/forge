@@ -30,6 +30,15 @@ async fn sessions_sidebar_routes_clicks_hover_and_keys_on_every_workspace_tab() 
             .unwrap();
         }
         let sessions = app.sessions_list_area.expect("Sessions sidebar drawn");
+        let action = app.navigator_new_session_area.unwrap();
+        assert!(action.y > sessions.y + (app.session_chrome.len() * 2) as u16);
+        assert!(action.bottom() <= app.footer_area.unwrap().y);
+        app.handle_mouse(moved(action.x + 2, action.y))
+            .await
+            .unwrap();
+        assert!(app.hover_navigator_new_session);
+        assert_eq!(app.hover_session, None);
+
         if tab != WorkspaceTab::Agent {
             assert_ne!(Some(sessions), app.navigator_list_area);
         }
@@ -58,7 +67,7 @@ async fn sessions_sidebar_routes_clicks_hover_and_keys_on_every_workspace_tab() 
         app.focus_navigator_tab_row();
         assert_eq!(
             app.navigator_row_stop,
-            crate::widgets::NavigatorRowStop::Sessions
+            crate::widgets::NavigatorRowStop::NewSession
         );
         app.move_navigator_row_stop(true);
         app.move_navigator_row_stop(false);
@@ -1087,25 +1096,6 @@ async fn a_queue_count_chip_opens_its_live_view_over_an_approval_and_keeps_the_d
     assert_eq!(app.focus.block(), FocusBlock::Approval);
 }
 
-/// A click inside the background-activity strip is claimed by the strip and
-/// hands the keyboard to the block it belongs to. The strip's own rows are
-/// exercised in `widgets::background_strip`; this pins the routing, so the
-/// click can never fall through to the transcript underneath it.
-#[tokio::test]
-async fn click_in_the_background_strip_takes_the_keyboard() {
-    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
-    app.background_area = Some(ratatui::layout::Rect::new(0, 40, 40, 4));
-    app.focus_block(FocusBlock::Composer);
-
-    app.handle_mouse(left_click(6, 42)).await.unwrap();
-
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
-    handle
-        .command(forge_session::SupervisorCommand::Shutdown)
-        .await
-        .unwrap();
-}
-
 /// A slash-command suggestion row is selectable by pointer, and the click keeps
 /// the keyboard in the composer. The palette floats over the transcript, so
 /// before the renderer recorded its rows the click fell through to the
@@ -1524,7 +1514,7 @@ async fn navigator_flush_tiles_and_file_footer_do_not_activate_rows() {
     assert_eq!(app.workspace_files.explorer.selected_path, selected);
     assert!(!app.current_workspace_is_file());
     // The `Sessions` heading hands the keyboard to the session list.
-    app.handle_mouse(left_click(plus.x.saturating_sub(1), tabs.y))
+    app.handle_mouse(left_click(plus.x + 2, tabs.y))
         .await
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::TaskStrip);

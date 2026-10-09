@@ -2038,7 +2038,7 @@ async fn ctrl_tab_switches_the_navigator() {
 /// `↑` at the top of the session list reaches the navigator's tab row; below the
 /// first row it keeps its cursor meaning (`FORGE-DESIGN §8.3`).
 #[tokio::test]
-async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
+async fn session_heading_is_not_a_keyboard_stop() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let _ = create_promptless_session(&mut app).await;
     app.focus_block(FocusBlock::TaskStrip);
@@ -2057,8 +2057,8 @@ async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
         .await
         .unwrap();
     assert!(
-        app.navigator_tab_row_focused,
-        "the second `↑` reaches the row"
+        !app.navigator_tab_row_focused,
+        "the heading stays outside keyboard navigation"
     );
     assert_eq!(
         app.focus.block(),
@@ -2074,46 +2074,28 @@ async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
 /// From the file tree the same `↑` reaches the row, `←`/`→` walk it without
 /// leaving it, and `↓` drops back into the pane the tab shows.
 #[tokio::test]
-async fn the_tab_row_switches_tabs_without_leaving_the_row() {
+async fn new_session_action_is_the_last_keyboard_stop() {
     use crate::widgets::NavigatorRowStop;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
-
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(
-        app.navigator_tab_row_focused,
-        "an empty list is already at the top, so one `↑` reaches the row"
-    );
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
-
-    // The sessions-only row runs `Sessions · +`; the cursor stops at each end.
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    assert!(
-        app.navigator_tab_row_focused,
-        "arrows keep the keyboard on the row"
-    );
-
+    assert!(!app.navigator_tab_row_focused, "heading is not selectable");
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert!(
-        !app.navigator_tab_row_focused,
-        "`↓` steps back into the pane"
-    );
+    assert!(app.navigator_tab_row_focused);
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(app.navigator_tab_row_focused, "creation is the final stop");
+    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(!app.navigator_tab_row_focused);
+    assert_eq!(app.task_strip_selection, app.session_chrome.len() - 1);
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -2128,7 +2110,7 @@ async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
 
-    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.navigator_tab_row_focused);
@@ -2198,27 +2180,15 @@ async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() 
 /// stop at each end, and `Enter` on the `+` cell creates a session — the same
 /// prompt-less create the Sessions list's `n` runs (`FORGE-DESIGN §7.7`).
 #[tokio::test]
-async fn the_tab_rows_plus_cell_creates_a_session() {
+async fn the_new_session_row_creates_a_session() {
     use crate::widgets::NavigatorRowStop;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
-
-    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    // `↑` lands on the tab on screen, never on the `+` cell.
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
-
-    // `→` reaches the `+` cell; the cursor stops at the row's end.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
+    assert!(app.navigator_tab_row_focused);
 
     let known: Vec<uuid::Uuid> = app
         .session_chrome
@@ -2291,7 +2261,7 @@ async fn tab_still_cycles_blocks_from_the_tab_row() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
 
-    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.navigator_tab_row_focused);
@@ -2317,7 +2287,7 @@ async fn session_verbs_do_not_fire_from_the_tab_row() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
 
-    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.navigator_tab_row_focused);
@@ -2353,7 +2323,7 @@ async fn leaving_the_navigator_clears_the_tab_row() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     app.focus_block(FocusBlock::TaskStrip);
 
-    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.navigator_tab_row_focused);
@@ -2366,7 +2336,7 @@ async fn leaving_the_navigator_clears_the_tab_row() {
     );
     assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
 
-    app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::End, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(app.navigator_tab_row_focused);

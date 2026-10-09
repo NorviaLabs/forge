@@ -275,21 +275,15 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             .find(|(candidate, _)| *candidate == WorkspaceTab::Agent)
             .copied()
             .unwrap();
-        // The tab tile is a thin label row, not a filled block.
+        // The tab bar is one label row; the baseline rule sits under it.
         assert_eq!(agent_tab.height, 1);
         let row: String = (agent_tab.x..agent_tab.right())
             .map(|x| buffer[(x, agent_tab.y)].symbol())
             .collect();
-        assert!(
-            row.starts_with(if focus == FocusBlock::Sidebar {
-                ">[Agent]"
-            } else {
-                " [Agent]"
-            }),
-            "{row:?}"
-        );
+        // No cursor marker: selection is the ground and the weight, never a `>`.
+        assert!(row.starts_with("  Agent"), "{row:?}");
         // Tabs occupy the first workspace row; no session header is reserved.
-        assert_eq!(agent_tab.y, 2);
+        assert_eq!(agent_tab.y, 1);
         for (candidate, tile) in &app.workspace_tab_areas {
             let selected = *candidate == tab;
             let expected_bg = if selected {
@@ -298,8 +292,22 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
                 theme::panel().bg.unwrap()
             };
             for x in tile.x..tile.right() {
-                assert_eq!(buffer[(x, tile.y)].bg, expected_bg);
+                assert_eq!(buffer[(x, tile.y)].bg, expected_bg, "{candidate:?} col {x}");
                 assert!(!buffer[(x, tile.y)].modifier.contains(Modifier::UNDERLINED));
+            }
+            let label_x = tile.x + 2;
+            assert_eq!(
+                buffer[(label_x, tile.y)].modifier.contains(Modifier::BOLD),
+                selected,
+                "{candidate:?}"
+            );
+            // The active tab interrupts the baseline rule; inactive tabs sit on it.
+            for x in tile.x..tile.right() {
+                assert_eq!(
+                    buffer[(x, tile.y + 1)].symbol() == "─",
+                    !selected,
+                    "{candidate:?} rule col {x}"
+                );
             }
         }
         if tab == WorkspaceTab::Files {
@@ -389,8 +397,7 @@ async fn workspace_tab_selection_remains_visible_without_keyboard_focus() {
 }
 
 #[tokio::test]
-async fn selected_navigator_tab_background_stays_inside_shared_frame() {
-    use crate::widgets::NavigatorTab;
+async fn sessions_header_row_carries_a_background_band() {
     use ratatui::backend::TestBackend;
 
     let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
@@ -400,32 +407,18 @@ async fn selected_navigator_tab_background_stays_inside_shared_frame() {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let area = app.navigator_tabs_area.expect("visible navigator tabs");
         assert_eq!(area.height, crate::design::NAVIGATOR_TAB_H);
-        let rect =
-            crate::widgets::navigator::navigator_tab_rects(area, app.navigator_git_available())
-                .into_iter()
-                .find_map(|(candidate, rect)| (candidate == NavigatorTab::Sessions).then_some(rect))
-                .unwrap();
         let buffer = terminal.backend().buffer();
-        // Flush tile: the active ground fills its whole tile edge to edge.
-        for y in rect.y..rect.bottom() {
-            for x in rect.x..rect.right() {
-                assert_eq!(
-                    buffer[(x, y)].bg,
-                    theme::accent_soft_bg(),
-                    "{width}x{height} x={x} rect={rect:?}"
-                );
-            }
-        }
-        // The active ground never spills past the tile's own frame.
-        for x in area.x..area.right() {
-            if x < rect.x || x >= rect.right() {
-                assert_ne!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
-            }
-        }
-        let label_row: String = (area.x..area.right())
+        let text: String = (area.x..area.right())
             .map(|x| buffer[(x, area.y)].symbol())
             .collect();
-        assert!(label_row.contains("Sessions"), "{label_row}");
+        assert!(text.contains("Sessions"));
+        assert!(!text.contains('+'));
+        // The whole Sessions column row is banded, not just behind the label.
+        for x in area.x..area.right() {
+            assert_eq!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
+        }
+        let action = app.navigator_new_session_area.unwrap();
+        assert!(action.y >= app.sessions_list_area.unwrap().y + 3);
     }
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
@@ -490,30 +483,29 @@ async fn composer_centers_placeholder_and_short_draft_at_comfortable_heights() {
 }
 
 #[tokio::test]
-async fn start_prioritizes_prompt_and_reveals_navigation_only_when_requested() {
+async fn start_shows_the_prompt_with_the_sessions_sidebar_present() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);
     draw_app(&mut app, 120, 40);
-    assert!(app.navigator_list_area.is_none());
+    // The start screen keeps the same chrome as a live session: the sessions
+    // sidebar is present, only the Agent surface content differs.
+    assert!(app.navigator_tabs_area.is_some());
+    assert!(app.navigator_list_area.is_some());
     assert!(!app.start_prompt_rows.is_empty());
     assert_eq!(app.workspace_tab_areas.len(), 2);
     assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert!(!app.pending_turn.has_prompt());
 
-    app.focus_block(FocusBlock::TaskStrip);
-    draw_app(&mut app, 120, 40);
-    assert!(app.navigator_list_area.is_some());
-    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
-    app.focus_block(FocusBlock::Composer);
-
+    // The saved navigation preference still hides the column entirely.
     app.workspace_files.visible = false;
     draw_app(&mut app, 120, 40);
-    assert!(app.navigator_list_area.is_none());
+    assert!(app.navigator_tabs_area.is_none());
     assert!(!app.start_prompt_rows.is_empty());
 
+    // Too narrow for a persistent column: the work surface takes the frame.
     app.workspace_files.visible = true;
     draw_app(&mut app, 80, 18);
-    assert!(app.navigator_list_area.is_none());
+    assert!(app.navigator_tabs_area.is_none());
     app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Files);
     draw_app(&mut app, 80, 18);
@@ -527,7 +519,12 @@ async fn task_first_start_keeps_views_choices_and_draft_reachable_at_all_sizes()
     app.input.set_text("Keep λ/東京.rs unchanged.");
     for (width, height) in [(80, 18), (115, 40), (116, 40), (120, 40), (160, 50)] {
         let rendered = render_app_text(&mut app, width, height);
-        assert!(app.navigator_list_area.is_none());
+        let sidebar_fits = width >= crate::design::FILES_VISIBLE_FRAME_W;
+        assert_eq!(
+            app.navigator_tabs_area.is_some(),
+            sidebar_fits,
+            "sessions sidebar presence at {width}x{height}"
+        );
         assert_eq!(app.workspace_tab_areas.len(), 2);
         assert_eq!(app.start_prompt_rows.len(), 3);
         let composer = app.composer_area.unwrap();
@@ -1413,7 +1410,7 @@ async fn workspace_tabs_do_not_repeat_session_identity() {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let area = app.workspace_tab_areas[0].1;
         assert_eq!(area.height, 1);
-        assert_eq!(area.y, 2);
+        assert_eq!(area.y, 1);
         let row: String = (area.x..area.right())
             .map(|x| terminal.backend().buffer()[(x, area.y)].symbol())
             .collect();

@@ -830,14 +830,7 @@ async fn shell_spacing_preserves_draft_and_cursor_at_all_sizes() {
         assert!(composer.bottom() <= height);
         assert!(app.task_strip_area.is_none());
         let tabs_y = app.workspace_tab_areas[0].1.y;
-        assert_eq!(
-            tabs_y,
-            if height < crate::design::COMPACT_FRAME_H {
-                1
-            } else {
-                2
-            }
-        );
+        assert_eq!(tabs_y, 1);
         if let Some(sessions) = app.sessions_list_area {
             assert_eq!(
                 sessions.y,

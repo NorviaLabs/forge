@@ -290,7 +290,7 @@ pub fn split_areas_with_preferences(
     } else {
         0
     };
-    let chrome_gap = u16::from(show_task_strip || !compact);
+    let chrome_gap = CHROME_GAP_Y;
     let fixed_h = status_h + footer_h + fb + chrome_gap + task_strip_h + gap_bottom;
     let requested_panel_h = if bottom_panel_h > 0 {
         preferences
@@ -345,7 +345,7 @@ pub fn split_areas_with_preferences(
         navigator_active,
         preferences,
     );
-    let tabs_h = crate::design::WORKSPACE_HEADER_H + u16::from(!compact);
+    let tabs_h = crate::design::WORKSPACE_HEADER_H;
     let input_h = input_h.min(
         work.height
             .saturating_sub(

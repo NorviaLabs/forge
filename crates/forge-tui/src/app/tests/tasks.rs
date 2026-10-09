@@ -110,6 +110,21 @@ async fn task_selection_remains_on_the_named_job_when_a_sibling_finishes() {
 }
 
 #[tokio::test]
+async fn background_work_reports_in_the_footer_without_a_docked_panel() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .spawn_background_shell("sleep 5".into(), "long-job".into())
+        .await
+        .unwrap();
+    app.poll_background_tasks().await.unwrap();
+
+    let text = render_app_text(&mut app, 120, 40);
+    // The docked Background strip is gone; the footer chip carries the count.
+    assert!(!text.contains("Background"), "{text}");
+    assert!(text.contains("jobs 1"), "{text}");
+}
+
+#[tokio::test]
 async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     let dir = TempDir::new().unwrap();
     init_repo(dir.path()).await;

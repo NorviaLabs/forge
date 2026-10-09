@@ -10,8 +10,6 @@
 
 use super::*;
 
-use crate::tasks_strip;
-
 /// Most rows the slash palette will draw, however much room is above the
 /// composer. Past this a palette stops being a menu and becomes a page.
 const SLASH_PALETTE_MAX_ROWS: u16 = 16;
@@ -100,7 +98,7 @@ impl TuiApp {
         &mut self,
         frame: &mut ratatui::Frame,
         area: ratatui::layout::Rect,
-        modal_open: bool,
+        _modal_open: bool,
     ) {
         if area.is_empty() {
             return;
@@ -126,12 +124,17 @@ impl TuiApp {
         if self.navigator_git_available() {
             tabs.push((WorkspaceTab::Git, "Git".to_string(), false));
         }
-        // A compact filled tab carries selection; the > marker carries keyboard focus.
-        // Keep the workspace ground neutral so navigation doesn't outshine chat.
+        // A tab bar: bare labels on a baseline rule. Only the selected tab is
+        // filled with the accent ground; the rest of the row keeps the pane
+        // colour. The rule opens under the selected tab, so it reads as the tab
+        // pulled forward into the content below.
+        let label_y = area.y;
+        let rule_y = area.y + 1;
+        let selected_ground = theme::panel().bg(theme::accent_soft_bg());
         let tab_max_width = tabs_width.saturating_sub(tabs.len() as u16 - 1) / tabs.len() as u16;
         let tabs_right = area.x.saturating_add(tabs_width);
-        let center_y = area.y;
         let mut x = area.x;
+        let mut active: Option<(u16, u16)> = None;
         for (tab, label, dirty) in tabs {
             let width = (Line::raw(&label).width() as u16 + 4 + u16::from(dirty) * 2)
                 .min(tab_max_width)
@@ -139,8 +142,7 @@ impl TuiApp {
             if width < 4 {
                 continue;
             }
-            let tile = ratatui::layout::Rect::new(x, center_y, width, 1);
-            let focused = !modal_open && self.workspace_tab_focused(tab);
+            let tile = ratatui::layout::Rect::new(x, label_y, width, 1);
             let is_selected = tab == selected;
             let label = crate::path_display::elide_middle(
                 &label
@@ -149,67 +151,69 @@ impl TuiApp {
                     .collect::<String>(),
                 width.saturating_sub(4 + u16::from(dirty) * 2) as usize,
             );
-            let label_style = if focused || is_selected {
-                theme::text().add_modifier(ratatui::style::Modifier::BOLD)
+            let (cell, weight) = if is_selected {
+                (
+                    selected_ground,
+                    theme::text().add_modifier(ratatui::style::Modifier::BOLD),
+                )
             } else {
-                theme::muted()
+                (theme::panel(), theme::muted())
             };
-            let ground = if is_selected {
-                theme::panel().bg(theme::accent_soft_bg())
-            } else {
-                theme::panel()
-            };
-            let label_style = ground.patch(label_style);
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        if focused { ">[" } else { " [" },
-                        if focused {
-                            ground.patch(theme::accent_style())
-                        } else {
-                            ground.patch(theme::muted())
-                        },
-                    ),
-                    Span::styled(label, label_style),
-                    Span::styled(if dirty { " *" } else { "" }, ground.patch(theme::warn())),
-                    Span::styled("] ", ground.patch(theme::muted())),
-                ]))
-                .style(ground),
-                tile,
-            );
+            crate::theme::fill(tile, frame.buffer_mut(), cell);
+            let label_style = cell.patch(weight);
+            // A fixed two-cell gutter keeps the label's column stable; the
+            // selected tab is named by its ground and weight, not a cursor.
+            let mut spans = vec![Span::raw("  "), Span::styled(label, label_style)];
+            if dirty {
+                spans.push(Span::styled(" *", cell.patch(theme::warn())));
+            }
+            frame.render_widget(Paragraph::new(Line::from(spans)).style(cell), tile);
             self.workspace_tab_areas.push((tab, tile));
+            if is_selected {
+                active = Some((x, x + width));
+            }
             x = x.saturating_add(width + 1);
         }
+        // Separators between adjacent tabs, so they read as neighbouring
+        // panels rather than one run of words.
+        for pair in self.workspace_tab_areas.windows(2) {
+            let gap = pair[0].1.right();
+            if gap < pair[1].1.x {
+                frame
+                    .buffer_mut()
+                    .set_string(gap, label_y, "│", theme::border_muted());
+            }
+        }
+        // Baseline rule under the strip, broken where the active tab opens
+        // through it into the pane below. The opening's shoulders round the
+        // active tab into the rule.
+        if area.height > 1 {
+            let style = theme::border_muted();
+            let buf = frame.buffer_mut();
+            let (open_x, open_right) = active.unwrap_or((area.right(), area.right()));
+            for cx in area.x..area.x + tabs_width {
+                if cx < open_x || cx >= open_right {
+                    buf.set_string(cx, rule_y, "─", style);
+                }
+            }
+            if active.is_some() {
+                if open_x < area.x + tabs_width {
+                    buf.set_string(open_x, rule_y, "╯", style);
+                }
+                if open_right > area.x && open_right <= area.x + tabs_width {
+                    buf.set_string(open_right - 1, rule_y, "╰", style);
+                }
+            }
+        }
         frame.render_widget(
-            Paragraph::new(Line::styled(hint, theme::muted())),
+            Paragraph::new(Line::styled(hint, theme::panel().patch(theme::muted()))),
             ratatui::layout::Rect::new(
                 area.right().saturating_sub(hint_width),
-                center_y,
+                label_y,
                 hint_width,
                 1,
             ),
         );
-    }
-
-    /// Which workspace tab owns the keyboard, for the tab-row focus marker.
-    fn workspace_tab_focused(&self, tab: WorkspaceTab) -> bool {
-        match tab {
-            WorkspaceTab::Agent => self.focus.block() == FocusBlock::Sidebar,
-            WorkspaceTab::Files => {
-                self.workspace_navigation.selected_tab() == WorkspaceTab::Files
-                    && matches!(
-                        self.focus.block(),
-                        FocusBlock::Search | FocusBlock::Files | FocusBlock::Workspace
-                    )
-            }
-            WorkspaceTab::Git => {
-                self.workspace_navigation.selected_tab() == WorkspaceTab::Git
-                    && matches!(
-                        self.focus.block(),
-                        FocusBlock::Files | FocusBlock::Workspace
-                    )
-            }
-        }
     }
 
     /// The GitHub issues subview's list, drawn in the Git tab's list pane.
@@ -372,11 +376,10 @@ impl TuiApp {
             && !self.pending_turn.continue_requested()
             && self.selected_queue_messages().is_empty()
             && self.selected_background_tasks().is_empty();
-        // Start with the task, not an empty navigation column. Explicitly
-        // focusing Sessions reveals it without changing the saved preference.
-        let has_other_sessions = self.session_chrome.len() > 1;
-        let show_files = (self.workspace_files.visible || task_mode)
-            && (!show_start || navigator_active || has_other_sessions);
+        // The navigation column is core chrome: it stays on screen on the
+        // start screen exactly as it does for a live session. Only the Agent
+        // surface content differs.
+        let show_files = self.workspace_files.visible || task_mode;
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else if expand_conversation {
@@ -451,11 +454,8 @@ impl TuiApp {
         // One full-width warning row directly under the status row while
         // approve-all is on. Session state, so it is never scrollable away.
         let approve_all_warning_h: u16 = u16::from(self.approve_all);
-        // An open resource occupies the inspector; otherwise conversation
-        // expands across the work surface and there is no inspector to focus.
-        // The strip's height is requested before the split because `layout.rs`
-        // has to clamp it against the transcript's floor, and it is built after
-        // the split because only then is the height that actually fit known.
+        // Background work is summarized by the footer's activity chips and
+        // inspected in the task view; there is no docked strip for it.
         let strip_now = chrono::Utc::now();
         let ordered = self.ordered_dock_tasks(&background_tasks, strip_now);
         let selected = self.task_selection.task(self.selected_session_id);
@@ -469,23 +469,6 @@ impl TuiApp {
                 self.task_selection.clear_tasks();
             }
         }
-        let strip_live = tasks_strip::BackgroundStrip::window(
-            &background_tasks,
-            strip_now,
-            if compact_dock {
-                1
-            } else {
-                tasks_strip::STRIP_ROW_CAP
-            },
-            if compact_dock { 2 } else { 5 },
-            self.task_selection.task(self.selected_session_id),
-            self.dismissed_background.get(&self.selected_session_id),
-        );
-        let background_h = if strip_live.is_empty() {
-            0
-        } else {
-            strip_live.height()
-        };
         let mut regions = split_areas_with_preferences(
             area,
             fb_h,
@@ -495,7 +478,7 @@ impl TuiApp {
             panel_h,
             hint_h,
             true,
-            background_h,
+            0,
             approve_all_warning_h,
             expand_conversation,
             false, // Sessions live in the sidebar or the narrow-screen switcher.
@@ -554,7 +537,6 @@ impl TuiApp {
         self.task_strip_chips.clear();
         self.sessions_chip_area = None;
         self.footer_area = None;
-        self.background_area = None;
         self.dock_paint = DockPaintState {
             owner: self.selected_session_id,
             ..Default::default()
@@ -726,11 +708,16 @@ impl TuiApp {
                 // session list or the file explorer (FORGE-DESIGN §7.7).
                 // One shared content origin; only the right seam separates panes.
                 let shell = Block::default()
-                    .borders(if regions.chat.width > 0 || regions.sidebar.is_some() {
-                        Borders::RIGHT
-                    } else {
-                        Borders::NONE
-                    })
+                    .borders(
+                        if regions.chat.width > 0
+                            || regions.sidebar.is_some()
+                            || start_group.is_some()
+                        {
+                            Borders::RIGHT
+                        } else {
+                            Borders::NONE
+                        },
+                    )
                     .border_style(theme::panel_border())
                     .padding(ratatui::widgets::Padding::left(1))
                     .style(theme::panel());
@@ -746,18 +733,23 @@ impl TuiApp {
                         ratatui::layout::Constraint::Min(0),
                     ])
                     .split(content);
+                // One blank row separates the heading from the list at
+                // comfortable heights, so the list does not crowd the header.
                 let tabs_area = ratatui::layout::Rect {
                     height: rows[0].height.min(crate::design::NAVIGATOR_TAB_H),
                     ..rows[0]
                 };
                 self.navigator_tabs_area = Some(tabs_area);
-                self.navigator_new_session_area =
-                    crate::widgets::navigator::new_session_cell(tabs_area);
+                self.navigator_new_session_area = None;
                 self.navigator_list_area = Some(rows[1]);
                 self.sessions_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
                 {
-                    let list_area = rows[1];
+                    let list_area = ratatui::layout::Rect {
+                        height: rows[1].height.saturating_sub(2),
+                        ..rows[1]
+                    };
+                    self.sessions_list_area = Some(list_area);
                     self.navigator_list_area = Some(list_area);
                     let mut unnamed = 0usize;
                     let session_rows: Vec<crate::widgets::SessionRow> = self
@@ -845,31 +837,66 @@ impl TuiApp {
                         reply: &self.navigator_reply,
                         placeholder: "reply to this session…",
                     });
+                    let end = crate::widgets::SessionList {
+                        rows: &session_rows,
+                        focused: navigator_focused,
+                        peek: peek_panel.as_ref(),
+                        hover: self.hover_session,
+                        step: self.session_row_step,
+                        reduced_motion: self.runtime.reduced_motion,
+                    }
+                    .render_with_end(list_area, frame.buffer_mut());
+                    let action = ratatui::layout::Rect::new(
+                        list_area.x,
+                        (end + 1).min(rows[1].bottom().saturating_sub(1)),
+                        list_area.width,
+                        u16::from(rows[1].height > 0),
+                    );
+                    self.navigator_new_session_area = Some(action);
+                    let action_focused = self.navigator_tab_row_focused
+                        && self.focus.block() == FocusBlock::TaskStrip
+                        && !modal_open;
+                    let style = if action_focused {
+                        theme::selected_row()
+                    } else if self.hover_navigator_new_session {
+                        theme::surface_hover()
+                    } else {
+                        theme::panel()
+                    };
                     frame.render_widget(
-                        crate::widgets::SessionList {
-                            rows: &session_rows,
-                            focused: navigator_focused,
-                            peek: peek_panel.as_ref(),
-                            hover: self.hover_session,
-                            step: self.session_row_step,
-                            reduced_motion: self.runtime.reduced_motion,
-                        },
-                        list_area,
+                        Paragraph::new(if action_focused {
+                            "> + New session"
+                        } else {
+                            "  + New session"
+                        })
+                        .style(style.patch(theme::text_secondary())),
+                        action,
                     );
                 }
-                // Paint tabs last so the list cannot erase the active ground
-                // on their shared divider.
+                let label = crate::widgets::NavigatorTab::Sessions.label();
+                let heading = if needs_you > 0 {
+                    format!("{label} · {needs_you} waiting")
+                } else {
+                    label.to_string()
+                };
+                // The heading row carries a background across the whole
+                // Sessions column, not just behind the label.
+                theme::fill(
+                    ratatui::layout::Rect::new(
+                        files.x,
+                        tabs_area.y,
+                        content.right().saturating_sub(files.x),
+                        1,
+                    ),
+                    frame.buffer_mut(),
+                    theme::panel().bg(theme::accent_soft_bg()),
+                );
                 frame.render_widget(
-                    crate::widgets::NavigatorTabs {
-                        tab: crate::widgets::NavigatorTab::Sessions,
-                        needs_you,
-                        git: self.navigator_git_available(),
-                        sessions_only: true,
-                        focused: self.navigator_tab_row_focused && !modal_open,
-                        hover: self.hover_navigator_tab,
-                        row_stop: self.navigator_row_stop,
-                        hover_new_session: self.hover_navigator_new_session,
-                    },
+                    Paragraph::new(heading)
+                        .alignment(ratatui::layout::Alignment::Center)
+                        .style(
+                            theme::text_secondary().add_modifier(ratatui::style::Modifier::BOLD),
+                        ),
                     tabs_area,
                 );
             }
@@ -1302,34 +1329,6 @@ impl TuiApp {
             self.queue_area = None;
         }
 
-        // The background strip. Only drawn when the layout gave it room: a
-        // zero-height region means the transcript needed it more.
-        if regions.background.height > 1 {
-            self.dock_paint.background = tasks_strip::BackgroundStrip::window(
-                &background_tasks,
-                strip_now,
-                if compact_dock {
-                    1
-                } else {
-                    tasks_strip::STRIP_ROW_CAP
-                },
-                regions.background.height,
-                self.task_selection.task(self.selected_session_id),
-                self.dismissed_background.get(&self.selected_session_id),
-            );
-            self.background_area = Some(regions.background);
-            frame.render_widget(
-                BackgroundStripWidget {
-                    strip: &self.dock_paint.background,
-                    selected: self.task_selection.task(self.selected_session_id),
-                    hover: self.hover_background,
-                    focused: self.focus.block() == FocusBlock::Sidebar,
-                },
-                regions.background,
-            );
-        } else {
-            self.background_area = None;
-        }
         let width = conversation_text_width(sidebar_width);
         // Tail-only changes use `StreamMarkdownCache` and must become visible
         // on the frame that received them. Only width changes re-render the

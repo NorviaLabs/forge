@@ -177,14 +177,12 @@ impl TuiApp {
             self.create_session_now();
             return Ok(true);
         }
-        // `↑` at the top of the list reaches the navigator's tab row instead of
-        // being a no-op (`FORGE-DESIGN §8.3`). An open peek owns `↑` first, so
-        // this fires on the press after the peek closes.
+        // The creation action is the last stop in the Sessions list.
         if self.navigator_peek.is_none()
-            && self.task_strip_selection == 0
+            && (key.code == KeyCode::End || self.task_strip_selection + 1 >= count)
             && self.navigator_tab_row_available()
             && key.modifiers.is_empty()
-            && key.code == KeyCode::Up
+            && matches!(key.code, KeyCode::Down | KeyCode::End)
         {
             self.focus_navigator_tab_row();
             return Ok(true);
@@ -1877,6 +1875,25 @@ impl TuiApp {
             // Chords (Ctrl+1/Ctrl+2, Ctrl+E, F1 …) keep their meaning; only the
             // bare keys below belong to the row.
             return Ok(false);
+        }
+        if self.focus.block() == FocusBlock::TaskStrip {
+            match key.code {
+                KeyCode::Enter => {
+                    if self.create_session_now() {
+                        self.leave_navigator_tab_row();
+                    }
+                }
+                KeyCode::Up | KeyCode::Esc => {
+                    self.task_strip_selection = self.session_chrome.len().saturating_sub(1);
+                    self.leave_navigator_tab_row();
+                }
+                KeyCode::Home => {
+                    self.task_strip_selection = 0;
+                    self.leave_navigator_tab_row();
+                }
+                _ => {}
+            }
+            return Ok(true);
         }
         match key.code {
             KeyCode::Left => {

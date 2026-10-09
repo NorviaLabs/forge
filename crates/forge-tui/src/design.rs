@@ -68,8 +68,9 @@ pub const PLAN_META_INDENT: u16 = 4;
 pub const COMPOSER_PAD_X: u16 = 2;
 /// The composer is a plain input surface with no reserved chrome row.
 pub const COMPOSER_BORDER_H: u16 = 0;
-/// Workspace view switcher, with no session identity or spacer rows.
-pub const WORKSPACE_HEADER_H: u16 = 1;
+/// Workspace view switcher: a tab-label row sitting on a baseline rule, so the
+/// Agent/Files/Git tabs read as tabs and the active one opens into the pane.
+pub const WORKSPACE_HEADER_H: u16 = 2;
 /// Thickness of the horizontal session strip (session-name chips). Three rows
 /// so chip labels sit on the centre row, centred both axes.
 pub const SESSION_STRIP_H: u16 = 3;

@@ -17,10 +17,6 @@ use forge_types::{BackgroundTaskId, HitlPayload};
 /// becoming a log of everything the session ever ran.
 pub const DONE_ROW_TTL_SECS: i64 = 60;
 
-/// The most task rows the strip will show; the layout clamps lower when the
-/// sidebar is short, and the surplus becomes the header's `+N more`.
-pub const STRIP_ROW_CAP: usize = 3;
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TaskFilter {
     #[default]
@@ -138,129 +134,6 @@ impl StripRow {
             "◆"
         } else {
             "⟳"
-        }
-    }
-}
-
-/// What the strip should draw this frame.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BackgroundStrip {
-    pub rows: Vec<StripRow>,
-    /// Tasks that did not fit, drawn as `+N more` on the header.
-    pub hidden: usize,
-    /// Tasks that survived expiry, before the row cap.
-    pub total: usize,
-    /// Global ordered-row index of the first painted task.
-    pub start: usize,
-}
-
-impl BackgroundStrip {
-    /// Nothing survived expiry, so the strip should not be drawn at all and
-    /// the sidebar's vertical budget goes to the transcript.
-    pub fn is_empty(&self) -> bool {
-        self.total == 0
-    }
-
-    /// Lines the strip needs: the header, plus one for each row, plus one more
-    /// for every row that carries a second line.
-    ///
-    /// Rows are not all one line tall, and the caller cannot work that out from
-    /// a count. Getting this wrong does not clip gracefully — a row's second
-    /// line is drawn where the next row's first line goes, so the budget has to
-    /// agree with the widget's own row advance.
-    pub fn height(&self) -> u16 {
-        if self.is_empty() {
-            return 0;
-        }
-        let rows: u16 = self
-            .rows
-            .iter()
-            .map(|row| 1 + u16::from(row.detail.is_some()))
-            .sum();
-        1 + rows
-    }
-
-    /// Build the strip from the selected session's background tasks.
-    ///
-    /// `visible_rows` is what the layout says actually fits after the
-    /// transcript's floor — the model never decides that itself, so there is
-    /// one place that owns the budget.
-    #[cfg(test)]
-    pub fn build(
-        tasks: &[BackgroundTaskSnapshot],
-        now: DateTime<Utc>,
-        visible_rows: usize,
-    ) -> Self {
-        // Rows map after the shared filter-and-sort, so the drawn rows and
-        // the selection below address tasks in the same order.
-        let live = ordered_live(tasks, now);
-
-        let total = live.len();
-        let shown = visible_rows.min(total);
-        let rows: Vec<StripRow> = live
-            .into_iter()
-            .take(shown)
-            .map(|(state, _, task)| row_for(task, now, state))
-            .collect();
-
-        // Truncation takes from the tail, and the sort puts blocked and failed
-        // first, so the rows that get cut are always the ones that are still
-        // progressing or already finished. That guarantee lives in the ranking
-        // and is pinned by `truncation_never_hides_an_attention_state` rather
-        // than re-checked here — a second implementation of the same rule
-        // would be one more thing to keep in sync.
-        Self {
-            hidden: total - rows.len(),
-            total,
-            rows,
-            start: 0,
-        }
-    }
-
-    /// Fit the selected task and honest overflow into an actual line budget.
-    /// The request/activity detail gets a row only when one remains after
-    /// the task rows; the full request belongs to inspection.
-    pub fn window(
-        tasks: &[BackgroundTaskSnapshot],
-        now: DateTime<Utc>,
-        row_cap: usize,
-        line_budget: u16,
-        selected: Option<BackgroundTaskId>,
-        dismissed: Option<&std::collections::HashSet<BackgroundTaskId>>,
-    ) -> Self {
-        let mut live = ordered_live(tasks, now);
-        live.retain(|(_, id, task)| {
-            !(task.status.is_terminal() && dismissed.is_some_and(|ids| ids.contains(id)))
-        });
-        let total = live.len();
-        let visible = total
-            .min(row_cap)
-            .min(line_budget.saturating_sub(1) as usize);
-        let index = live
-            .iter()
-            .position(|(_, id, _)| Some(*id) == selected)
-            .unwrap_or(0);
-        let start = index
-            .saturating_sub(visible.saturating_sub(1))
-            .min(total.saturating_sub(visible));
-        let detail_room = line_budget as usize > 1 + visible;
-        let rows = live
-            .into_iter()
-            .skip(start)
-            .take(visible)
-            .map(|(state, id, task)| {
-                let mut row = row_for(task, now, state);
-                if !detail_room || Some(id) != selected {
-                    row.detail = None;
-                }
-                row
-            })
-            .collect();
-        Self {
-            rows,
-            hidden: total - visible,
-            total,
-            start,
         }
     }
 }
@@ -434,6 +307,15 @@ mod tests {
         }
     }
 
+    /// The rows the task view and turn line build: the shared filter-and-sort,
+    /// then map to the drawn row shape.
+    fn visible_rows(tasks: &[BackgroundTaskSnapshot], now: DateTime<Utc>) -> Vec<StripRow> {
+        ordered_live(tasks, now)
+            .into_iter()
+            .map(|(state, _, task)| row_for(task, now, state))
+            .collect()
+    }
+
     /// The whole reason the ranking is a `#[repr]`-style enum: a failure must
     /// be visible without the operator hunting for it.
     #[test]
@@ -463,8 +345,8 @@ mod tests {
             task(6, "queued", BackgroundTaskStatus::Queued, started, None),
         ];
 
-        let strip = BackgroundStrip::build(&tasks, now, usize::MAX);
-        let order: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
+        let rows = visible_rows(&tasks, now);
+        let order: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
 
         assert_eq!(
             order,
@@ -478,66 +360,6 @@ mod tests {
             ],
             "blocked then failed then active, stable by id inside each band"
         );
-    }
-
-    /// Truncation takes from the tail, so the states that need an operator
-    /// have to be at the front at every budget — not just at the cap.
-    #[test]
-    fn truncation_never_hides_an_attention_state() {
-        let now = Utc::now();
-        let started = now - Duration::seconds(10);
-        let mut tasks: Vec<BackgroundTaskSnapshot> = (0..5)
-            .map(|i| {
-                task(
-                    100 + i,
-                    "running",
-                    BackgroundTaskStatus::Running,
-                    started,
-                    None,
-                )
-            })
-            .collect();
-        tasks.push(task(
-            1,
-            "blocked",
-            blocked("bash", "rm -rf target/debug"),
-            started,
-            None,
-        ));
-        tasks.push(task(
-            2,
-            "failed",
-            BackgroundTaskStatus::Failed {
-                error: "boom".into(),
-            },
-            started,
-            Some(now),
-        ));
-        tasks.push(task(3, "done", succeeded(), started, Some(now)));
-
-        for budget in 0..=tasks.len() {
-            let strip = BackgroundStrip::build(&tasks, now, budget);
-            let labels: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
-            let hidden = strip.hidden;
-
-            if budget >= 1 {
-                assert!(
-                    labels.contains(&"blocked"),
-                    "budget {budget} hid the blocked row: {labels:?}"
-                );
-            }
-            if budget >= 2 {
-                assert!(
-                    labels.contains(&"failed"),
-                    "budget {budget} hid the failed row: {labels:?}"
-                );
-            }
-            assert_eq!(
-                strip.rows.len() + hidden,
-                tasks.len(),
-                "every task is either drawn or counted as hidden"
-            );
-        }
     }
 
     /// Only success ages out, and it ages from when it finished.
@@ -572,8 +394,8 @@ mod tests {
             task(5, "running", BackgroundTaskStatus::Running, started, None),
         ];
 
-        let strip = BackgroundStrip::build(&tasks, now, usize::MAX);
-        let labels: Vec<&str> = strip.rows.iter().map(|r| r.label.as_str()).collect();
+        let rows = visible_rows(&tasks, now);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
 
         assert!(
             !labels.contains(&"long-finished"),
@@ -605,11 +427,11 @@ mod tests {
         let finished = started + Duration::seconds(31);
         let tasks = vec![task(1, "job", succeeded(), started, Some(finished))];
 
-        let soon = BackgroundStrip::build(&tasks, finished, STRIP_ROW_CAP);
-        let later = BackgroundStrip::build(&tasks, finished + Duration::seconds(20), STRIP_ROW_CAP);
+        let soon = visible_rows(&tasks, finished);
+        let later = visible_rows(&tasks, finished + Duration::seconds(20));
 
-        assert_eq!(soon.rows[0].elapsed, later.rows[0].elapsed);
-        assert_eq!(soon.rows[0].elapsed, "31s");
+        assert_eq!(soon[0].elapsed, later[0].elapsed);
+        assert_eq!(soon[0].elapsed, "31s");
     }
 
     /// A subagent's activity is the one thing its label cannot tell you, so a
@@ -621,9 +443,9 @@ mod tests {
         let mut running = task(1, "explore", BackgroundTaskStatus::Running, started, None);
         running.latest_message = Some("reading\nthe   manifest".into());
 
-        let strip = BackgroundStrip::build(&[running], now, STRIP_ROW_CAP);
+        let rows = visible_rows(&[running], now);
         assert_eq!(
-            strip.rows[0].detail.as_deref(),
+            rows[0].detail.as_deref(),
             Some("reading the manifest"),
             "streamed prose collapses onto the one line the row has"
         );
@@ -638,17 +460,17 @@ mod tests {
         let mut waiting = task(1, "explore", blocked("bash", "echo risky"), started, None);
         waiting.latest_message = Some("I am about to run a command".into());
 
-        let strip = BackgroundStrip::build(&[waiting], now, STRIP_ROW_CAP);
-        assert_eq!(strip.rows[0].detail.as_deref(), Some("bash · echo risky"));
+        let rows = visible_rows(&[waiting], now);
+        assert_eq!(rows[0].detail.as_deref(), Some("bash · echo risky"));
     }
 
     /// Silence is the normal case for the first moments of a run, and a row
-    /// must not reserve a line it has nothing to put on.
+    /// must not carry a second line it has nothing to put on.
     #[test]
     fn an_active_row_with_nothing_to_report_has_no_second_line() {
         let now = Utc::now();
         let started = now - Duration::seconds(5);
-        let strip = BackgroundStrip::build(
+        let rows = visible_rows(
             &[task(
                 1,
                 "explore",
@@ -657,10 +479,8 @@ mod tests {
                 None,
             )],
             now,
-            STRIP_ROW_CAP,
         );
-        assert!(strip.rows[0].detail.is_none());
-        assert_eq!(strip.height(), 2, "header plus one row");
+        assert!(rows[0].detail.is_none());
     }
 
     /// The detail line is what tells the operator *what* a subagent wants, and
@@ -677,45 +497,11 @@ mod tests {
             None,
         )];
 
-        let strip = BackgroundStrip::build(&tasks, now, STRIP_ROW_CAP);
-        let row = &strip.rows[0];
+        let rows = visible_rows(&tasks, now);
+        let row = &rows[0];
 
         assert_eq!(row.marker(), "[|]");
         assert_eq!(row.glyph(), "◆");
         assert_eq!(row.detail.as_deref(), Some("bash · rm -rf target/debug"));
-    }
-
-    #[test]
-    fn dock_window_follows_identity_and_never_spends_an_unavailable_detail_row() {
-        let now = Utc::now();
-        let tasks: Vec<_> = (1..=8)
-            .map(|id| task(id, "waiting", blocked("bash", "printf '東京'"), now, None))
-            .collect();
-        let selected = BackgroundTaskId(8);
-        let compact = BackgroundStrip::window(&tasks, now, 3, 2, Some(selected), None);
-        assert_eq!(compact.rows.len(), 1);
-        assert_eq!(compact.rows[0].id, selected);
-        assert_eq!(compact.hidden, 7);
-        assert!(compact.rows[0].detail.is_none());
-        assert!(compact.height() <= 2);
-        let comfortable = BackgroundStrip::window(&tasks, now, 3, 5, Some(selected), None);
-        assert_eq!(comfortable.rows.last().unwrap().id, selected);
-        assert_eq!(
-            comfortable
-                .rows
-                .iter()
-                .filter(|row| row.detail.is_some())
-                .count(),
-            1
-        );
-        assert!(comfortable.height() <= 5);
-    }
-
-    #[test]
-    fn an_empty_registry_produces_an_empty_strip() {
-        let strip = BackgroundStrip::build(&[], Utc::now(), STRIP_ROW_CAP);
-        assert!(strip.is_empty());
-        assert_eq!(strip.total, 0);
-        assert_eq!(strip.hidden, 0);
     }
 }
