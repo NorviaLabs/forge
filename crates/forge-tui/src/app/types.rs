@@ -82,12 +82,9 @@ impl PaneResizeState {
 /// or live handles that are expensive or impossible to duplicate, and a task
 /// only ever has one live copy of its own view state anyway.
 ///
-/// Deliberately excluded, and why:
-/// - provider credentials and the connect model — authentication is global,
-///   only the *model choice* is per-task;
-/// - the explorer tree and its dialogs — those are rooted at a workspace path,
-///   and file paths still resolve against the primary workspace, so carrying
-///   them per task would show one task's tree against another's files.
+/// Provider credentials and the connect model stay global; model choice is
+/// per-task. Explorer, editor, Git and terminal state move with the session,
+/// and workspace synchronization roots them at the selected session's path.
 pub(crate) struct SessionViewState {
     pub(crate) input: InputModel,
     pub(crate) workspace_navigation: WorkspaceNavigation,
@@ -223,8 +220,7 @@ pub(crate) struct SupervisorUiState {
         std::collections::HashMap<uuid::Uuid, forge_session::SessionRuntimeSnapshot>,
 }
 
-/// Center-pane content. Conversation isn't a variant here — it's always
-/// shown in the persistent sidebar instead (see [[project_ide_layout_design_round2]]).
+/// Retained resource content, independent of the selected workspace tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum WorkspaceView {
     File(PathBuf),
@@ -243,7 +239,24 @@ pub(crate) enum WorkspaceViewKind {
     GithubIssues,
 }
 
+/// Session-local workspace selection. Keyboard focus may temporarily belong
+/// to navigation, a terminal, or a decision without changing this selection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum WorkspaceTab {
+    #[default]
+    Agent,
+    Files,
+    Git,
+}
+
 impl WorkspaceView {
+    pub(crate) fn tab(&self) -> WorkspaceTab {
+        match self {
+            Self::File(_) => WorkspaceTab::Files,
+            Self::Diff | Self::GithubIssues => WorkspaceTab::Git,
+        }
+    }
+
     pub(crate) fn kind(&self) -> WorkspaceViewKind {
         match self {
             Self::File(_) => WorkspaceViewKind::File,
@@ -259,9 +272,8 @@ impl WorkspaceView {
 pub(crate) struct WorkspaceNavigation {
     current: Option<WorkspaceView>,
     history: Vec<WorkspaceView>,
-    /// Which pane occupies the work surface when the terminal cannot fit both.
-    /// Keeping this with navigation preserves it across session switches.
-    resource_selected: bool,
+    /// Kept with navigation so selection moves with the existing session state.
+    selected_tab: WorkspaceTab,
 }
 
 impl WorkspaceNavigation {
@@ -269,16 +281,23 @@ impl WorkspaceNavigation {
         self.current.clone()
     }
 
+    pub(crate) fn selected_tab(&self) -> WorkspaceTab {
+        self.selected_tab
+    }
+
     pub(crate) fn resource_selected(&self) -> bool {
-        self.resource_selected && self.current.is_some()
+        self.selected_tab() != WorkspaceTab::Agent && self.current.is_some()
     }
 
     pub(crate) fn select_conversation(&mut self) {
-        self.resource_selected = false;
+        self.selected_tab = WorkspaceTab::Agent;
     }
 
     pub(crate) fn select_resource(&mut self) {
-        self.resource_selected = self.current.is_some();
+        self.selected_tab = self
+            .current
+            .as_ref()
+            .map_or(WorkspaceTab::Agent, WorkspaceView::tab);
     }
 
     #[cfg(test)]
@@ -287,7 +306,7 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn push_view(&mut self, view: WorkspaceView) {
-        self.resource_selected = true;
+        self.selected_tab = view.tab();
         if self.current.as_ref() == Some(&view) {
             return;
         }
@@ -302,7 +321,7 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn replace_view(&mut self, view: WorkspaceView) {
-        self.resource_selected = true;
+        self.selected_tab = view.tab();
         self.current = Some(view);
     }
 
@@ -315,7 +334,7 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn home(&mut self) {
-        self.resource_selected = false;
+        self.selected_tab = WorkspaceTab::Agent;
         self.history.clear();
         self.current = None;
     }
@@ -326,13 +345,13 @@ impl WorkspaceNavigation {
     ) -> Option<WorkspaceView> {
         while let Some(candidate) = self.history.pop() {
             if is_valid(&candidate) {
-                self.resource_selected = true;
+                self.selected_tab = candidate.tab();
                 self.current = Some(candidate.clone());
                 return Some(candidate);
             }
         }
         self.current = None;
-        self.resource_selected = false;
+        self.selected_tab = WorkspaceTab::Agent;
         None
     }
 }

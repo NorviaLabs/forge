@@ -4,6 +4,64 @@
 
 use super::prelude::*;
 
+#[test]
+fn workspace_selection_tracks_resource_navigation_without_dropping_it() {
+    let file = WorkspaceView::File(PathBuf::from("retained.rs"));
+    let mut navigation = WorkspaceNavigation::default();
+    assert_eq!(navigation.selected_tab(), WorkspaceTab::Agent);
+    assert!(!navigation.resource_selected());
+    navigation.navigate_to(file.clone());
+    assert_eq!(navigation.selected_tab(), WorkspaceTab::Files);
+    assert_eq!(navigation.current().unwrap().tab(), WorkspaceTab::Files);
+    assert!(navigation.resource_selected());
+    navigation.select_conversation();
+    assert_eq!(navigation.selected_tab(), WorkspaceTab::Agent);
+    assert_eq!(navigation.current(), Some(file.clone()));
+    assert!(!navigation.resource_selected());
+    navigation.select_resource();
+    assert!(navigation.resource_selected());
+    navigation.navigate_to(WorkspaceView::GithubIssues);
+    assert_eq!(navigation.selected_tab(), WorkspaceTab::Git);
+    assert_eq!(navigation.current().unwrap().tab(), WorkspaceTab::Git);
+    assert_eq!(navigation.pop_previous_valid(|_| true), Some(file));
+    assert_eq!(navigation.selected_tab(), WorkspaceTab::Files);
+    assert!(navigation.resource_selected());
+    navigation.home();
+    navigation.select_resource();
+    assert_eq!(navigation.current(), None);
+    assert!(!navigation.resource_selected());
+}
+
+#[tokio::test]
+async fn workspace_selection_and_draft_restore_with_session_state() {
+    let (_dir, mut app) = focus_test_app().await;
+    let first = app.session_runtime.session_id;
+    let second = uuid::Uuid::new_v4();
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+    app.focus_block(FocusBlock::Workspace);
+    app.input.set_text("first draft");
+    app.save_session_view_state(first);
+
+    app.restore_session_view_state(second);
+    assert!(!app.workspace_navigation.resource_selected());
+    assert_eq!(app.workspace_navigation.current(), None);
+    app.input.set_text("second draft");
+    app.save_session_view_state(second);
+
+    app.restore_session_view_state(first);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Git);
+    assert!(app.workspace_navigation.resource_selected());
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::Diff)
+    );
+    assert_eq!(app.input.text, "first draft");
+    app.save_session_view_state(first);
+    app.restore_session_view_state(second);
+    assert!(!app.workspace_navigation.resource_selected());
+    assert_eq!(app.input.text, "second draft");
+}
+
 #[tokio::test]
 async fn file_browser_keeps_navigation_tabs_without_supervisor() {
     let (_dir, mut app) = focus_test_app().await;
