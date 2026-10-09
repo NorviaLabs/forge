@@ -1793,3 +1793,18 @@ async fn github_issues_narrow_view_remains_keyboard_accessible() {
     }
     assert_eq!(app.github_view.scroll, 3);
 }
+
+/// A non-Git workspace keeps the Git tab but says so, rather than rendering an
+/// empty changed-file list that reads as "no changes".
+#[tokio::test]
+async fn non_git_workspace_git_tab_shows_a_clear_empty_state() {
+    let (_dir, mut app) = focus_test_app().await;
+    assert!(!app.workspace_is_git_repository());
+    app.select_workspace_tab(WorkspaceTab::Git);
+    let rendered = render_app_text(&mut app, 160, 50);
+    assert!(rendered.contains("Not a git repository"), "{rendered}");
+    assert!(
+        !rendered.contains("No staged or unstaged changes"),
+        "{rendered}"
+    );
+}

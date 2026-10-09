@@ -1691,11 +1691,13 @@ impl TuiApp {
                         list_area,
                     );
                     if self.diff_view.entries.is_empty() && list_area.height > 3 {
+                        let message = if self.workspace_is_git_repository() {
+                            "No staged or unstaged changes"
+                        } else {
+                            "Not a git repository"
+                        };
                         frame.render_widget(
-                            Paragraph::new(Line::styled(
-                                "No staged or unstaged changes",
-                                crate::theme::muted(),
-                            )),
+                            Paragraph::new(Line::styled(message, crate::theme::muted())),
                             ratatui::layout::Rect {
                                 x: list_area.x + 1,
                                 y: list_area.y,
