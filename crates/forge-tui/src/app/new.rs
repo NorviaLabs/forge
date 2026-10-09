@@ -22,7 +22,7 @@ impl TuiApp {
         let theme_id = registry.resolve_startup_id(&runtime.theme_id);
         crate::theme::install(registry, theme_id);
         let mut input = InputModel::default();
-        input.hint = "Describe a task…".into();
+        input.hint = crate::app::types::COMPOSER_OPENER.into();
         let history_store = history_store_for_workspace(&workspace_root);
         let mut history = InputHistory::default();
         history.load_resumed(history_store.load(crate::history::MAX_INPUT_HISTORY));
@@ -268,7 +268,7 @@ impl TuiApp {
         crate::theme::install(registry, theme_id);
 
         let mut input = InputModel::default();
-        input.hint = "Describe a task…".into();
+        input.hint = crate::app::types::COMPOSER_OPENER.into();
         let history_store = history_store_for_workspace(&workspace_root);
         let mut history = InputHistory::default();
         history.load_resumed(history_store.load(crate::history::MAX_INPUT_HISTORY));

@@ -1006,12 +1006,12 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
-                    // §5: one renderer-owned Answer label per final-response
+                    // §5: one renderer-owned Forge label per final-response
                     // region — never one per streamed fragment. Streaming
                     // previews stay unlabeled; the label lands once settled.
                     if !p.streaming && !p.text.trim().is_empty() {
                         lines.push(Line::from(Span::styled(
-                            format!("{}Answer", " ".repeat(MESSAGE_PADDING)),
+                            format!("{}Forge", " ".repeat(MESSAGE_PADDING)),
                             theme::text().add_modifier(Modifier::BOLD),
                         )));
                     }

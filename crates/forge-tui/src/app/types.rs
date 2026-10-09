@@ -1810,7 +1810,7 @@ impl StreamState {
 }
 
 /// Composer placeholder on an empty workspace.
-pub(crate) const COMPOSER_OPENER: &str = "Describe a task…";
+pub(crate) const COMPOSER_OPENER: &str = "Ask Forge…";
 
 /// Composer placeholder once a turn has run.
 pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";

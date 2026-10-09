@@ -579,3 +579,24 @@ async fn throbber_pulse_reuses_cached_transcript_lines() {
         "a throbber tick must not rebuild historical transcript lines"
     );
 }
+
+#[tokio::test]
+async fn transcript_labels_authors_as_you_and_forge() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session_runtime.messages.push(forge_types::Message::new(
+        forge_types::MessageRole::User,
+        "Fix the evaluator so it cannot panic.",
+    ));
+    app.session_runtime.messages.push(forge_types::Message::new(
+        forge_types::MessageRole::Assistant,
+        "I'll inspect the evaluator first.",
+    ));
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("You"), "{rendered}");
+    assert!(rendered.contains("Forge"), "{rendered}");
+    assert!(
+        !rendered.contains("Answer"),
+        "the assistant label is Forge, not Answer:\n{rendered}"
+    );
+}
