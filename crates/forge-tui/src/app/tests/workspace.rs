@@ -268,7 +268,9 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             assert_eq!(buffer[(x, 0)].bg, status_bg, "header column {x}");
         }
         let (_, tab) = app.workspace_tab_areas[0];
-        let label_y = tab.y + tab.height.saturating_sub(1) / 2;
+        // The tab tile is a thin label row, not a filled block.
+        assert_eq!(tab.height, 1);
+        let label_y = tab.y;
         let row: String = (tab.x..tab.right())
             .map(|x| buffer[(x, label_y)].symbol())
             .collect();
@@ -280,9 +282,13 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             }),
             "{row:?}"
         );
+        // Selected-session identity sits on the row above the tabs.
+        let header: String = (tab.x..tab.right())
+            .map(|x| buffer[(x, tab.y.saturating_sub(1))].symbol())
+            .collect();
+        assert!(!header.trim().is_empty(), "header identity: {header:?}");
         for x in tab.x..tab.right() {
             assert_eq!(buffer[(x, tab.y)].bg, theme::panel().bg.unwrap());
-            assert!(!buffer[(x, tab.y)].modifier.contains(Modifier::UNDERLINED));
         }
         for x in tab.x + 2..tab.x + 7 {
             assert!(buffer[(x, label_y)].modifier.contains(Modifier::UNDERLINED));

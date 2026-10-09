@@ -105,6 +105,39 @@ impl TuiApp {
         if area.is_empty() {
             return;
         }
+        crate::theme::fill(area, frame.buffer_mut(), theme::panel());
+        // Selected-session identity: title left, workspace branch right, on the
+        // row above the workspace tabs.
+        let (title, branch) = self.selected_session_identity();
+        if area.height >= 2 {
+            let branch_cols = branch.chars().count().min(area.width as usize / 2) as u16;
+            let title_cols = area
+                .width
+                .saturating_sub(branch_cols + u16::from(branch_cols > 0))
+                .max(1);
+            frame.render_widget(
+                Paragraph::new(Line::styled(
+                    crate::path_display::elide_middle(&title, title_cols as usize),
+                    theme::text().add_modifier(ratatui::style::Modifier::BOLD),
+                )),
+                ratatui::layout::Rect::new(area.x, area.y, title_cols, 1),
+            );
+            if branch_cols > 0 {
+                frame.render_widget(
+                    Paragraph::new(Line::styled(
+                        crate::path_display::elide_middle(&branch, branch_cols as usize),
+                        theme::muted(),
+                    ))
+                    .alignment(ratatui::layout::Alignment::Right),
+                    ratatui::layout::Rect::new(
+                        area.right().saturating_sub(branch_cols),
+                        area.y,
+                        branch_cols,
+                        1,
+                    ),
+                );
+            }
+        }
         let resource = self.workspace_navigation.current().map(|view| match view {
             WorkspaceView::File(path) => {
                 let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -148,14 +181,13 @@ impl TuiApp {
         // Selection belongs to the label; the separate > marker owns focus.
         // Keep the workspace ground neutral so navigation doesn't outshine chat.
         let center_y = area.y + area.height.saturating_sub(1) / 2;
-        crate::theme::fill(area, frame.buffer_mut(), theme::panel());
         let mut x = area.x;
         for (block, label, dirty, width) in tabs {
             if width < 4 {
                 continue;
             }
-            let tile = ratatui::layout::Rect::new(x, area.y, width, area.height);
-            let rect = ratatui::layout::Rect::new(x, center_y, width, 1);
+            let tile = ratatui::layout::Rect::new(x, center_y, width, 1);
+            let rect = tile;
             let focused = !modal_open && self.focus.block() == block;
             let selected =
                 (block == FocusBlock::Workspace) == self.workspace_navigation.resource_selected();
@@ -206,6 +238,23 @@ impl TuiApp {
                 1,
             ),
         );
+    }
+
+    /// Selected session title and workspace branch for the workspace header.
+    fn selected_session_identity(&self) -> (String, String) {
+        if let Some(item) = self
+            .session_chrome
+            .iter()
+            .find(|item| item.session_id == self.selected_session_id)
+        {
+            let title = if item.label.is_empty() {
+                "Session".to_string()
+            } else {
+                item.label.clone()
+            };
+            return (title, item.branch.clone());
+        }
+        ("Session".to_string(), String::new())
     }
 
     /// Drive the live streaming preview from a test.
