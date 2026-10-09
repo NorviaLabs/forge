@@ -16,9 +16,10 @@ fn workspace_selection_tracks_resource_navigation_without_dropping_it() {
     assert!(navigation.resource_selected());
     navigation.select_conversation();
     assert_eq!(navigation.selected_tab(), WorkspaceTab::Agent);
-    assert_eq!(navigation.current(), Some(file.clone()));
+    assert_eq!(navigation.current(), None);
     assert!(!navigation.resource_selected());
     navigation.select_resource();
+    assert_eq!(navigation.current(), Some(file.clone()));
     assert!(navigation.resource_selected());
     navigation.navigate_to(WorkspaceView::GithubIssues);
     assert_eq!(navigation.selected_tab(), WorkspaceTab::Git);
@@ -118,10 +119,11 @@ async fn git_tab_round_trip_preserves_dirty_editor_and_diff_state() {
     // Pointer navigation shares the same non-destructive transition.
     app.select_navigator_tab_from_row(NavigatorTab::Git);
     draw_app(&mut app, 160, 50);
-    let area = app.navigator_tabs_area.unwrap();
-    let (_, rect) = crate::widgets::navigator::navigator_tab_rects(area, true)
-        .into_iter()
-        .find(|(tab, _)| *tab == NavigatorTab::Files)
+    let (_, rect) = app
+        .workspace_tab_areas
+        .iter()
+        .find(|(tab, _)| *tab == WorkspaceTab::Files)
+        .copied()
         .unwrap();
     app.handle_mouse(crossterm::event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
@@ -233,15 +235,14 @@ async fn workspace_selection_and_draft_restore_with_session_state() {
 async fn file_browser_keeps_navigation_tabs_without_supervisor() {
     let (_dir, mut app) = focus_test_app().await;
     assert!(app.supervisor.is_none());
-    app.focus_block(FocusBlock::Files);
-    for (width, height) in [(120, 40), (80, 18)] {
-        let rendered = render_app_text(&mut app, width, height);
-        assert!(rendered.contains("Sessions"), "{rendered}");
-        assert!(rendered.contains("Files"), "{rendered}");
-        assert!(app.navigator_tabs_area.is_some());
-        assert!(app.navigator_new_session_area.is_some());
-        assert!(app.navigator_tab_row_available());
-    }
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "Inspect this project."));
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(rendered.contains("Sessions"), "{rendered}");
+    assert!(rendered.contains("Files"), "{rendered}");
+    assert!(app.navigator_tabs_area.is_some());
+    assert!(app.navigator_new_session_area.is_some());
 }
 
 #[tokio::test]
@@ -253,12 +254,13 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
     app.session_runtime
         .messages
         .push(Message::new(MessageRole::User, "Inspect this project."));
-    for focus in [
-        FocusBlock::Composer,
-        FocusBlock::Sidebar,
-        FocusBlock::Files,
-        FocusBlock::Search,
+    for (tab, focus) in [
+        (WorkspaceTab::Agent, FocusBlock::Composer),
+        (WorkspaceTab::Agent, FocusBlock::Sidebar),
+        (WorkspaceTab::Files, FocusBlock::Files),
+        (WorkspaceTab::Files, FocusBlock::Search),
     ] {
+        app.select_workspace_tab(tab);
         app.focus_block(focus);
         let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -267,12 +269,16 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
         for x in crate::design::FRAME_INSET_X..120 - crate::design::FRAME_INSET_X {
             assert_eq!(buffer[(x, 0)].bg, status_bg, "header column {x}");
         }
-        let (_, tab) = app.workspace_tab_areas[0];
+        let (_, agent_tab) = app
+            .workspace_tab_areas
+            .iter()
+            .find(|(candidate, _)| *candidate == WorkspaceTab::Agent)
+            .copied()
+            .unwrap();
         // The tab tile is a thin label row, not a filled block.
-        assert_eq!(tab.height, 1);
-        let label_y = tab.y;
-        let row: String = (tab.x..tab.right())
-            .map(|x| buffer[(x, label_y)].symbol())
+        assert_eq!(agent_tab.height, 1);
+        let row: String = (agent_tab.x..agent_tab.right())
+            .map(|x| buffer[(x, agent_tab.y)].symbol())
             .collect();
         assert!(
             row.starts_with(if focus == FocusBlock::Sidebar {
@@ -283,17 +289,31 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             "{row:?}"
         );
         // Selected-session identity sits on the row above the tabs.
-        let header: String = (tab.x..tab.right())
-            .map(|x| buffer[(x, tab.y.saturating_sub(1))].symbol())
+        let header: String = (agent_tab.x..agent_tab.right())
+            .map(|x| buffer[(x, agent_tab.y.saturating_sub(1))].symbol())
             .collect();
         assert!(!header.trim().is_empty(), "header identity: {header:?}");
-        for x in tab.x..tab.right() {
-            assert_eq!(buffer[(x, tab.y)].bg, theme::panel().bg.unwrap());
+        for x in agent_tab.x..agent_tab.right() {
+            assert_eq!(buffer[(x, agent_tab.y)].bg, theme::panel().bg.unwrap());
         }
-        for x in tab.x + 2..tab.x + 7 {
-            assert!(buffer[(x, label_y)].modifier.contains(Modifier::UNDERLINED));
-        }
-        if matches!(focus, FocusBlock::Files | FocusBlock::Search) {
+        // Selection underlines the selected tab's label and only that one.
+        let underlined = |tab: ratatui::layout::Rect| {
+            (tab.x + 2..tab.x + 7)
+                .all(|x| buffer[(x, tab.y)].modifier.contains(Modifier::UNDERLINED))
+        };
+        assert_eq!(
+            underlined(agent_tab),
+            tab == WorkspaceTab::Agent,
+            "Agent underline for {tab:?}"
+        );
+        if tab == WorkspaceTab::Files {
+            let (_, files_tab) = app
+                .workspace_tab_areas
+                .iter()
+                .find(|(candidate, _)| *candidate == WorkspaceTab::Files)
+                .copied()
+                .unwrap();
+            assert!(underlined(files_tab), "Files tab is selected");
             let area = app.navigator_list_area.unwrap();
             let title: String = (area.x..area.right())
                 .map(|x| buffer[(x, area.y + 2)].symbol())
@@ -314,17 +334,16 @@ async fn workspace_tab_selection_remains_visible_without_keyboard_focus() {
     app.focus_block(FocusBlock::BottomPanel);
     for (width, height) in [(80, 18), (120, 40), (160, 50)] {
         let buffer = render_app_buffer(&mut app, width, height);
-        assert_eq!(app.workspace_tab_areas.len(), 2);
-        for (block, tab) in &app.workspace_tab_areas {
-            let y = tab.y + tab.height.saturating_sub(1) / 2;
-            assert_eq!(buffer[(tab.x, y)].symbol(), " ");
+        assert_eq!(app.workspace_tab_areas.len(), 3);
+        for (tab, area) in &app.workspace_tab_areas {
+            let y = area.y;
             // Selection survives even if NO_COLOR strips every RGB value.
             assert_eq!(
-                buffer[(tab.x + 2, y)]
+                buffer[(area.x + 2, y)]
                     .modifier
                     .contains(Modifier::UNDERLINED),
-                *block == FocusBlock::Workspace,
-                "{width}x{height}: {block:?}"
+                *tab == WorkspaceTab::Git,
+                "{width}x{height}: {tab:?}"
             );
         }
         assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Git);
@@ -338,61 +357,38 @@ async fn selected_navigator_tab_background_stays_inside_shared_frame() {
     use ratatui::backend::TestBackend;
 
     let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
-    app.focus_block(FocusBlock::Files);
-    for tab in [NavigatorTab::Sessions, NavigatorTab::Files] {
-        app.navigator_tab = tab;
-        app.navigator_tab_explicit = true;
-        app.focus_block(if tab == NavigatorTab::Sessions {
-            FocusBlock::TaskStrip
-        } else {
-            FocusBlock::Files
-        });
-        for (width, height) in [(120, 40), (80, 18)] {
-            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal.draw(|frame| app.draw(frame)).unwrap();
-            let area = app.navigator_tabs_area.expect("visible navigator tabs");
-            assert_eq!(area.height, crate::design::NAVIGATOR_TAB_H);
-            let rect =
-                crate::widgets::navigator::navigator_tab_rects(area, app.navigator_git_available())
-                    .into_iter()
-                    .find_map(|(candidate, rect)| (candidate == tab).then_some(rect))
-                    .unwrap();
-            let buffer = terminal.backend().buffer();
-            for x in area.x..area.right() {
-                assert_eq!(buffer[(x, area.y - 1)].symbol(), " ");
-            }
-            for x in area.x..area.right() {
-                assert_ne!(buffer[(x, area.bottom())].bg, theme::accent_soft_bg());
-            }
-            // Flush tiles: the selected ground fills its whole tile edge to
-            // edge, with no blank gutter stopping it short.
-            for y in rect.y..rect.bottom() {
-                for x in rect.x..rect.right() {
-                    assert_eq!(
-                        buffer[(x, y)].bg,
-                        theme::accent_soft_bg(),
-                        "{tab:?} {width}x{height} x={x} rect={rect:?}"
-                    );
-                }
-            }
-            // The active ground never spills past the tab's own frame: every
-            // column outside it keeps the panel ground. A narrow tab may place
-            // its label on a shared edge, but the ground still stops at the
-            // frame, and the label stays intact.
-            for x in area.x..area.right() {
-                if x < rect.x || x >= rect.right() {
-                    assert_ne!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
-                }
-            }
-            let label_y = area.y + area.height.saturating_sub(1) / 2;
-            let label_row: String = (area.x..area.right())
-                .map(|x| buffer[(x, label_y)].symbol())
-                .collect();
-            assert!(label_row.contains(tab.label()), "{tab:?}: {label_row}");
-            if tab == NavigatorTab::Files {
-                assert_eq!(app.navigator_list_area.unwrap().y, area.bottom());
+    app.focus_block(FocusBlock::TaskStrip);
+    for (width, height) in [(120, 40), (160, 50)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let area = app.navigator_tabs_area.expect("visible navigator tabs");
+        assert_eq!(area.height, crate::design::NAVIGATOR_TAB_H);
+        let rect =
+            crate::widgets::navigator::navigator_tab_rects(area, app.navigator_git_available())
+                .into_iter()
+                .find_map(|(candidate, rect)| (candidate == NavigatorTab::Sessions).then_some(rect))
+                .unwrap();
+        let buffer = terminal.backend().buffer();
+        // Flush tile: the active ground fills its whole tile edge to edge.
+        for y in rect.y..rect.bottom() {
+            for x in rect.x..rect.right() {
+                assert_eq!(
+                    buffer[(x, y)].bg,
+                    theme::accent_soft_bg(),
+                    "{width}x{height} x={x} rect={rect:?}"
+                );
             }
         }
+        // The active ground never spills past the tile's own frame.
+        for x in area.x..area.right() {
+            if x < rect.x || x >= rect.right() {
+                assert_ne!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
+            }
+        }
+        let label_row: String = (area.x..area.right())
+            .map(|x| buffer[(x, area.y)].symbol())
+            .collect();
+        assert!(label_row.contains("Sessions"), "{label_row}");
     }
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
@@ -479,6 +475,7 @@ async fn start_keeps_enabled_file_navigation_visible_without_a_turn() {
     app.workspace_files.visible = true;
     draw_app(&mut app, 80, 18);
     assert!(app.navigator_list_area.is_none());
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Files);
     draw_app(&mut app, 80, 18);
     assert!(app.navigator_list_area.is_some());
@@ -488,13 +485,22 @@ async fn start_keeps_enabled_file_navigation_visible_without_a_turn() {
 async fn first_task_remains_reachable_beside_requested_navigation() {
     let (_dir, mut app) = focus_test_app().await;
     app.input.set_text("Retain the first requirement.");
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Files);
     draw_app(&mut app, 120, 40);
     assert!(app.navigator_list_area.is_some());
-    assert!(!app.start_prompt_rows.is_empty());
+    assert!(
+        app.start_prompt_rows.is_empty(),
+        "the start prompt belongs to Agent"
+    );
     draw_app(&mut app, 80, 18);
     assert!(app.navigator_list_area.is_some());
     assert_eq!(app.focus.block(), FocusBlock::Files);
+    assert_eq!(app.input.text, "Retain the first requirement.");
+    // Returning to Agent restores the home prompt with the draft intact.
+    app.select_workspace_tab(WorkspaceTab::Agent);
+    draw_app(&mut app, 120, 40);
+    assert!(!app.start_prompt_rows.is_empty());
     assert_eq!(app.input.text, "Retain the first requirement.");
 }
 
@@ -745,7 +751,7 @@ async fn files_panel_is_open_by_default() {
 #[tokio::test]
 async fn narrow_files_navigation_reveals_the_pane_without_mutating_preference() {
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Files);
 
     let _narrow = render_app_text(&mut app, 80, 24);
@@ -819,11 +825,14 @@ async fn switching_workspace_panes_preserves_unsaved_work_and_reading_position()
             Some(WorkspaceView::File(path.clone()))
         );
         // Pointer tabs use the same retained state as the keyboard switch.
-        for block in [FocusBlock::Sidebar, FocusBlock::Workspace] {
+        for (tab, expect_focus) in [
+            (WorkspaceTab::Agent, FocusBlock::Composer),
+            (WorkspaceTab::Files, FocusBlock::Search),
+        ] {
             let (_, rect) = app
                 .workspace_tab_areas
                 .iter()
-                .find(|(candidate, _)| *candidate == block)
+                .find(|(candidate, _)| *candidate == tab)
                 .copied()
                 .unwrap();
             app.handle_mouse(crossterm::event::MouseEvent {
@@ -835,7 +844,8 @@ async fn switching_workspace_panes_preserves_unsaved_work_and_reading_position()
             .await
             .unwrap();
             render_app_text(&mut app, width, height);
-            assert_eq!(app.focus.block(), block);
+            assert_eq!(app.workspace_navigation.selected_tab(), tab);
+            assert_eq!(app.focus.block(), expect_focus);
         }
         assert!(app.workspace_navigation.history().is_empty());
         assert_eq!(app.conversation_view.scroll, reading_position);
@@ -877,9 +887,10 @@ async fn a_pending_approval_remains_reachable_over_narrow_inspection_and_navigat
         );
         assert!(app.session_view.pending_hitl.is_some());
         assert_eq!(app.input.text, "Keep this unsent draft");
+        assert!(app.workspace_navigation.has_retained_resource());
         assert_eq!(
-            app.workspace_navigation.current(),
-            Some(WorkspaceView::File(path.clone()))
+            app.source_viewer.path.as_ref(),
+            Some(&path.canonicalize().unwrap())
         );
     }
 }
@@ -992,7 +1003,7 @@ async fn workspace_switch_does_not_interrupt_a_modal_or_an_editor_command() {
 async fn resizing_conversation_moves_its_boundary_and_cancel_restores_the_layout() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_navigation.navigate_to(WorkspaceView::Diff);
-    app.focus_block(FocusBlock::Sidebar);
+    app.focus_block(FocusBlock::Files);
     render_app_text(&mut app, 160, 50);
     let initial = app.pane_resize.preferences;
     let original_boundary = app.pane_resize.conversation_separator.unwrap();
@@ -1025,33 +1036,25 @@ async fn resizing_conversation_moves_its_boundary_and_cancel_restores_the_layout
 #[tokio::test]
 async fn files_explicit_close_remains_closed_after_resizing() {
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
-    // Closing is now only reachable from the explorer itself: from anywhere
-    // else Ctrl+E means "take me to Files". That is what stops an accidental
-    // close from handing keystrokes to the modal editor, and it costs one
-    // extra press to close from elsewhere.
+    // Ctrl+E from the explorer returns to Agent; resizing must not reopen Files.
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Search);
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
 
-    assert!(!app.workspace_files.visible);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Agent);
     let _narrow = render_app_text(&mut app, 80, 24);
     let _wide = render_app_text(&mut app, 160, 50);
-    assert!(!app.workspace_files.visible);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Agent);
 }
 
 #[tokio::test]
 async fn files_visibility_persists_per_repository() {
     let (_fake_home, _home_guard) = fake_home_guard();
     let (dir, mut app) = focus_test_app().await;
-    // Ctrl+E closes only from the explorer; from anywhere else it means "take
-    // me to Files". Focus there first so this exercises an explicit close.
-    app.focus_block(FocusBlock::Search);
-    app.execute_semantic_command(SemanticCommand::ToggleFiles)
-        .await
-        .unwrap();
-    assert!(!app.workspace_files.visible);
+    app.workspace_files.visible = false;
+    app.save_ui_state();
 
     let session = session_for_workspace(dir.path()).await;
     let restored = TuiApp::new(
@@ -1125,19 +1128,23 @@ async fn ctrl_e_reaches_files_instead_of_closing_when_focus_is_elsewhere() {
     );
 }
 
-/// Pressing it again, from the explorer, still closes — the toggle is intact,
-/// it is just no longer reachable by accident.
+/// Pressing it again, from the explorer, returns to Agent — the toggle is
+/// intact, it is just no longer reachable by accident.
 #[tokio::test]
 async fn ctrl_e_from_the_explorer_still_closes_the_pane() {
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Search);
 
     app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
         .await
         .unwrap();
 
-    assert!(!app.workspace_files.visible, "the toggle must still work");
+    assert_eq!(
+        app.workspace_navigation.selected_tab(),
+        WorkspaceTab::Agent,
+        "the toggle must still work"
+    );
     assert_ne!(
         app.focus.block(),
         FocusBlock::Workspace,

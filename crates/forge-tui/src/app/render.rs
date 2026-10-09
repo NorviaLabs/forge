@@ -138,59 +138,45 @@ impl TuiApp {
                 );
             }
         }
-        let resource = self.workspace_navigation.current().map(|view| match view {
-            WorkspaceView::File(path) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy();
-                let dirty = self
-                    .editor_session
-                    .as_ref()
-                    .is_some_and(|editor| editor.is_dirty());
-                (name.into_owned(), dirty)
-            }
-            WorkspaceView::Diff => ("Git review".into(), false),
-            WorkspaceView::GithubIssues => ("GitHub issues".into(), false),
-        });
-        let hint = if resource.is_some() {
+        let hint = if self.workspace_navigation.has_retained_resource() {
             "F6 switch"
         } else {
             "Ctrl+P files · / commands"
         };
         let hint_width = hint.chars().count() as u16;
         let tabs_width = area.width.saturating_sub(hint_width + 2);
-        let conversation = self
+        let agent_label = self
             .child_view
             .as_ref()
             .map(|view| format!("Agent ‹ {}", view.label))
             .unwrap_or_else(|| "Agent".into());
-        let conversation_width = if resource.is_some() && self.child_view.is_some() {
-            40.min(tabs_width / 2)
-        } else if resource.is_some() {
-            18.min(tabs_width)
-        } else {
-            if self.child_view.is_some() { 40 } else { 18 }.min(tabs_width)
-        };
-        let mut tabs = vec![(FocusBlock::Sidebar, conversation, false, conversation_width)];
-        if let Some((label, dirty)) = resource {
-            tabs.push((
-                FocusBlock::Workspace,
-                label,
-                dirty,
-                tabs_width.saturating_sub(conversation_width),
-            ));
-        }
+        let file_dirty = self
+            .editor_session
+            .as_ref()
+            .is_some_and(|editor| editor.is_dirty());
+        let selected = self.workspace_navigation.selected_tab();
+        let tabs = [
+            (WorkspaceTab::Agent, agent_label, false),
+            (WorkspaceTab::Files, "Files".to_string(), file_dirty),
+            (WorkspaceTab::Git, "Git".to_string(), false),
+        ];
         // Selection belongs to the label; the separate > marker owns focus.
         // Keep the workspace ground neutral so navigation doesn't outshine chat.
+        let slot = (tabs_width / 3).max(4);
         let center_y = area.y + area.height.saturating_sub(1) / 2;
         let mut x = area.x;
-        for (block, label, dirty, width) in tabs {
+        for (tab, label, dirty) in tabs {
+            let width = if tab == WorkspaceTab::Git {
+                area.x.saturating_add(tabs_width).saturating_sub(x)
+            } else {
+                slot
+            };
             if width < 4 {
                 continue;
             }
             let tile = ratatui::layout::Rect::new(x, center_y, width, 1);
-            let rect = tile;
-            let focused = !modal_open && self.focus.block() == block;
-            let selected =
-                (block == FocusBlock::Workspace) == self.workspace_navigation.resource_selected();
+            let focused = !modal_open && self.workspace_tab_focused(tab);
+            let is_selected = tab == selected;
             let label = crate::path_display::elide_middle(
                 &label
                     .chars()
@@ -198,12 +184,12 @@ impl TuiApp {
                     .collect::<String>(),
                 width.saturating_sub(3 + u16::from(dirty) * 2) as usize,
             );
-            let label_style = if focused || selected {
+            let label_style = if focused || is_selected {
                 theme::text().add_modifier(ratatui::style::Modifier::BOLD)
             } else {
                 theme::muted()
             };
-            let label_style = if selected {
+            let label_style = if is_selected {
                 label_style
                     .patch(theme::accent_style())
                     .add_modifier(ratatui::style::Modifier::UNDERLINED)
@@ -224,9 +210,9 @@ impl TuiApp {
                     Span::styled(if dirty { " *" } else { "" }, theme::warn()),
                 ]))
                 .style(theme::panel()),
-                rect,
+                tile,
             );
-            self.workspace_tab_areas.push((block, tile));
+            self.workspace_tab_areas.push((tab, tile));
             x = x.saturating_add(width);
         }
         frame.render_widget(
@@ -238,6 +224,27 @@ impl TuiApp {
                 1,
             ),
         );
+    }
+
+    /// Which workspace tab owns the keyboard, for the tab-row focus marker.
+    fn workspace_tab_focused(&self, tab: WorkspaceTab) -> bool {
+        match tab {
+            WorkspaceTab::Agent => self.focus.block() == FocusBlock::Sidebar,
+            WorkspaceTab::Files => {
+                self.workspace_navigation.selected_tab() == WorkspaceTab::Files
+                    && matches!(
+                        self.focus.block(),
+                        FocusBlock::Search | FocusBlock::Files | FocusBlock::Workspace
+                    )
+            }
+            WorkspaceTab::Git => {
+                self.workspace_navigation.selected_tab() == WorkspaceTab::Git
+                    && matches!(
+                        self.focus.block(),
+                        FocusBlock::Files | FocusBlock::Workspace
+                    )
+            }
+        }
     }
 
     /// Selected session title and workspace branch for the workspace header.
@@ -331,16 +338,17 @@ impl TuiApp {
         let modal_open = self.overlay.is_some();
         let slash_mode = !modal_open && self.input.text.starts_with('/');
         let theme_picking = matches!(self.overlay, Some(Overlay::Theme { .. }));
-        // Resolve this before measuring the composer so wrapping uses the
-        // same horizontal geometry that the layout will paint.
-        let expand_conversation = !matches!(
-            self.workspace_navigation.current(),
-            Some(WorkspaceView::File(_) | WorkspaceView::Diff | WorkspaceView::GithubIssues)
-        );
         let task_mode = self.supervisor.is_some();
+        // A pending decision renders over the Agent surface so it stays
+        // reachable from any workspace tab, without discarding the tab state.
         let decision_pending = self.child_view.is_none()
             && (self.session_view.is_awaiting_approval()
                 || self.session_view.is_awaiting_question());
+        // Agent owns the conversation; Files and Git own the work surface even
+        // before a resource is open.
+        let agent_surface =
+            self.workspace_navigation.selected_tab() == WorkspaceTab::Agent || decision_pending;
+        let expand_conversation = agent_surface;
         let navigator_active = !decision_pending
             && matches!(
                 self.focus.block(),
@@ -551,21 +559,24 @@ impl TuiApp {
         // Questions reuse `FocusBlock::Approval` (same inline transcript
         // prompt as HITL); omitting them here kicks focus off the menu on the
         // first frame, so ↑↓ never move the selection.
-        let navigator_tab = if regions.files.is_some() {
-            self.effective_navigator_tab()
+        // The navigator column is dedicated to sessions at every tab; Files and
+        // Git render in the main work surface.
+        let active_tab = if agent_surface {
+            WorkspaceTab::Agent
         } else {
-            crate::widgets::NavigatorTab::Files
+            self.workspace_navigation.selected_tab()
         };
-        let navigator_sessions = navigator_tab == crate::widgets::NavigatorTab::Sessions;
+        let navigator_tab = crate::widgets::NavigatorTab::Sessions;
+        let navigator_sessions = true;
         let available = FocusAvailability {
-            task_strip: regions.task_strip.height > 0
-                || (navigator_sessions && regions.files.is_some()),
-            search: regions.files.is_some()
-                && !navigator_sessions
-                && navigator_tab != crate::widgets::NavigatorTab::Git,
-            files: regions.files.is_some() && !navigator_sessions,
-            workspace: regions.chat.width > 0,
-            sidebar: regions.sidebar.is_some() || start_group.is_some(),
+            task_strip: regions.files.is_some(),
+            search: active_tab == WorkspaceTab::Files
+                && (regions.sidebar.is_some() || regions.chat.width > 0),
+            files: matches!(active_tab, WorkspaceTab::Files | WorkspaceTab::Git)
+                && (regions.sidebar.is_some() || regions.chat.width > 0),
+            workspace: active_tab != WorkspaceTab::Agent && regions.chat.width > 0,
+            sidebar: active_tab == WorkspaceTab::Agent
+                && (regions.sidebar.is_some() || start_group.is_some()),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
             approval: decision_pending && regions.sidebar.is_some(),
             composer: self.child_view.is_none(),
@@ -941,6 +952,7 @@ impl TuiApp {
                         tab: navigator_tab,
                         needs_you,
                         git: self.navigator_git_available(),
+                        sessions_only: navigator_sessions,
                         focused: self.navigator_tab_row_focused && !modal_open,
                         hover: self.hover_navigator_tab,
                         row_stop: self.navigator_row_stop,
@@ -1121,15 +1133,29 @@ impl TuiApp {
             .then(|| self.activity_summary_cache_key())
             .flatten();
         // Hiding a retained pane must not rebuild its history at zero width or
-        // clamp its reading position against an invisible viewport.
-        let sidebar_width = regions.sidebar.map(|r| r.width).unwrap_or_else(|| {
-            self.render_cache
-                .conversation
-                .as_ref()
-                .map(|cache| cache.key.width)
-                .unwrap_or(60)
-        });
-        let sidebar_inner_h = regions.sidebar.map(|r| r.height as usize).unwrap_or(0);
+        // clamp its reading position against an invisible viewport. When a
+        // resource tab owns `regions.sidebar`, keep the conversation's cached
+        // width so switching tabs does not churn the transcript cache.
+        let conversation_visible = active_tab == WorkspaceTab::Agent;
+        let cached_conversation_width = self
+            .render_cache
+            .conversation
+            .as_ref()
+            .map(|cache| cache.key.width)
+            .unwrap_or(60);
+        let sidebar_width = if conversation_visible {
+            regions
+                .sidebar
+                .map(|r| r.width)
+                .unwrap_or(cached_conversation_width)
+        } else {
+            cached_conversation_width
+        };
+        let sidebar_inner_h = if conversation_visible {
+            regions.sidebar.map(|r| r.height as usize).unwrap_or(0)
+        } else {
+            0
+        };
         // Follow-mode only paints the viewport plus overscan. Scrolling up
         // raises the window so earlier blocks are materialized on demand. The
         // bucket keeps each small scroll from rebuilding the transcript.
@@ -1516,7 +1542,7 @@ impl TuiApp {
         let cached_complete = cached.complete;
         let plan_dock = cached.plan_dock.clone();
         // The retained conversation is independent of the resource history.
-        if let Some(sidebar) = regions.sidebar {
+        if let (true, Some(sidebar)) = (conversation_visible, regions.sidebar) {
             let sidebar_focused = crate::widgets::background_focused(
                 self.focus.block() == FocusBlock::Sidebar,
                 modal_open,
@@ -1751,10 +1777,78 @@ impl TuiApp {
             }
             self.conversation_all_rows = all_rows;
         }
+        // Files and Git render their list beside the selected resource in the
+        // main work surface. A narrow layout shows the list in place of the
+        // resource while the list holds focus.
+        let narrow_resource_list = active_tab != WorkspaceTab::Agent
+            && regions.sidebar.is_none()
+            && matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search);
+        let resource_list_area = if active_tab == WorkspaceTab::Agent {
+            None
+        } else {
+            regions
+                .sidebar
+                .or_else(|| narrow_resource_list.then_some(regions.chat))
+        }
+        .filter(|area| !area.is_empty());
+        if let Some(list_area) = resource_list_area {
+            self.navigator_list_area = Some(list_area);
+            match active_tab {
+                WorkspaceTab::Git => {
+                    let git_list_focused = self.focus.block() == FocusBlock::Files && !modal_open;
+                    frame.render_widget(
+                        crate::widgets::git_changes::GitChangesList {
+                            entries: &self.diff_view.entries,
+                            selected: self.diff_view.selected,
+                            focused: git_list_focused,
+                            hover: git_list_focused.then_some(self.hover_file).flatten(),
+                        },
+                        list_area,
+                    );
+                    if self.diff_view.entries.is_empty() && list_area.height > 3 {
+                        frame.render_widget(
+                            Paragraph::new(Line::styled(
+                                "No staged or unstaged changes",
+                                crate::theme::muted(),
+                            )),
+                            ratatui::layout::Rect {
+                                x: list_area.x + 1,
+                                y: list_area.y,
+                                width: list_area.width.saturating_sub(2),
+                                height: 1,
+                            },
+                        );
+                    }
+                }
+                _ => {
+                    let active_file = match self.workspace_navigation.current() {
+                        Some(WorkspaceView::File(path)) => Some(path),
+                        _ => None,
+                    };
+                    frame.render_widget(
+                        FileExplorerWidget {
+                            explorer: &mut self.workspace_files.explorer,
+                            active_file: active_file.as_deref(),
+                            show_search: true,
+                            focused: crate::widgets::background_focused(
+                                matches!(
+                                    self.focus.block(),
+                                    FocusBlock::Files | FocusBlock::Search
+                                ),
+                                modal_open,
+                            ),
+                            search_active: self.focus.block() == FocusBlock::Search && !modal_open,
+                            hover: self.hover_file,
+                        },
+                        list_area,
+                    );
+                }
+            }
+        }
         // The approval decision now lives in the conversation itself (inline
         // transcript item) and the composer, so the center pane gets its full
         // height — no docked card carving out a strip at its bottom.
-        if regions.chat.width > 0 && regions.chat.height > 0 {
+        if regions.chat.width > 0 && regions.chat.height > 0 && !narrow_resource_list {
             let chat_area = regions.chat;
             match self.workspace_navigation.current().clone() {
                 None => {

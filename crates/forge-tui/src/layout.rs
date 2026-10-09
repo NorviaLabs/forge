@@ -81,7 +81,7 @@ fn workspace_columns(
     frame_width: u16,
     show_files: bool,
     resource_open: bool,
-    navigator_active: bool,
+    _navigator_active: bool,
     preferences: PaneLayoutPreferences,
 ) -> (Option<Rect>, Rect, bool) {
     let work_min = if resource_open {
@@ -108,9 +108,9 @@ fn workspace_columns(
         ])
         .split(area);
         (Some(columns[0]), columns[2], false)
-    } else if show_files && navigator_active {
-        (Some(area), area, true)
     } else {
+        // No persistent column: the work surface keeps the whole frame. The
+        // sessions list is reached through the switcher when it cannot fit.
         (None, area, false)
     }
 }
@@ -256,7 +256,7 @@ pub fn split_areas_with_preferences(
     warning_h: u16,
     expand_conversation: bool,
     show_task_strip: bool,
-    resource_selected: bool,
+    _resource_selected: bool,
     navigator_active: bool,
     preferences: PaneLayoutPreferences,
 ) -> LayoutRegions {
@@ -327,7 +327,7 @@ pub fn split_areas_with_preferences(
     let feedback = rows[6];
     let footer = rows[7];
 
-    let (mut files, work, navigator_overlay) = workspace_columns(
+    let (files, work, _navigator_overlay) = workspace_columns(
         main,
         area.width,
         show_files,
@@ -335,11 +335,7 @@ pub fn split_areas_with_preferences(
         navigator_active,
         preferences,
     );
-    let tabs_h = if navigator_overlay {
-        0
-    } else {
-        crate::design::CHROME_BAND_H
-    };
+    let tabs_h = crate::design::CHROME_BAND_H;
     let input_h = input_h.min(
         work.height
             .saturating_sub(
@@ -369,10 +365,7 @@ pub fn split_areas_with_preferences(
     let background = work_rows[5];
     let input = work_rows[7];
     let zero = Rect::new(body.x, body.y, 0, 0);
-    let (sidebar, chat) = if navigator_overlay {
-        files = Some(body);
-        (None, zero)
-    } else if resource_open
+    let (sidebar, chat) = if resource_open
         && files_fit(area.width)
         && body.width >= CONVERSATION_MIN_WIDTH + PANE_GAP_X + RESOURCE_MIN_WIDTH
         && show_sidebar
@@ -392,7 +385,9 @@ pub fn split_areas_with_preferences(
         ])
         .split(body);
         (Some(columns[0]), columns[2])
-    } else if resource_open && resource_selected {
+    } else if resource_open {
+        // Narrow resource tab: one surface, list or selected resource chosen
+        // by the renderer from focus. The conversation is not shown.
         (None, body)
     } else {
         (show_sidebar.then_some(body), zero)

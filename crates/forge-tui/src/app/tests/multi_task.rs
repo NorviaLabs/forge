@@ -91,18 +91,17 @@ async fn ctrl_e_cycles_all_available_navigator_tabs() {
         app.navigator_git_available(),
         "Git tab should be available in repository mode"
     );
-    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
 
-    for expected in [
-        NavigatorTab::Files,
-        NavigatorTab::Git,
-        NavigatorTab::Sessions,
-    ] {
-        app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
-            .await
-            .unwrap();
-        assert_eq!(app.effective_navigator_tab(), expected);
-    }
+    // Ctrl+E takes you to Files, and again returns to Agent.
+    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
+    app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
 
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
@@ -317,18 +316,10 @@ async fn removed_roster_retires_saved_view_state_without_disturbing_selected_edi
         .iter()
         .position(|item| item.session_id == sibling_id)
         .expect("sibling in task strip");
+    app.select_workspace_tab(WorkspaceTab::Agent);
     app.focus_block(FocusBlock::TaskStrip);
     // `x` confirms before it does anything; the archive and the checkout
     // removal are then dispatched together from that confirmation.
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
-    app.focus_block(FocusBlock::TaskStrip);
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert!(app.overlay.is_none());
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
         .unwrap();
@@ -1927,18 +1918,15 @@ async fn navigator_defaults_to_sessions_once_a_second_session_exists() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
     assert_eq!(
         app.effective_navigator_tab(),
-        NavigatorTab::Files,
-        "one session keeps the file tree"
+        NavigatorTab::Sessions,
+        "the navigator is dedicated to sessions"
     );
 
     let _ = create_promptless_session(&mut app).await;
-    assert_eq!(
-        app.effective_navigator_tab(),
-        NavigatorTab::Sessions,
-        "two sessions default to the list"
-    );
+    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
 
-    let rendered = render_app_text(&mut app, 120, 40);
+    app.select_workspace_tab(WorkspaceTab::Files);
+    let rendered = render_app_text(&mut app, 160, 50);
     assert!(rendered.contains("Sessions"), "{rendered}");
     assert!(rendered.contains("Files"), "{rendered}");
     handle
@@ -2085,63 +2073,37 @@ async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
 /// leaving it, and `↓` drops back into the pane the tab shows.
 #[tokio::test]
 async fn the_tab_row_switches_tabs_without_leaving_the_row() {
-    use crate::widgets::{NavigatorRowStop, NavigatorTab};
+    use crate::widgets::NavigatorRowStop;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
-    app.focus_block(FocusBlock::Search);
+    app.focus_block(FocusBlock::TaskStrip);
 
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
         .await
         .unwrap();
     assert!(
         app.navigator_tab_row_focused,
-        "an empty tree is already at the top, so one `↑` reaches the row"
+        "an empty list is already at the top, so one `↑` reaches the row"
     );
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
 
-    // The row's stops run `Sessions · + · Files`, so `←` reaches the `+` cell
-    // before the `Sessions` tab — and resting there leaves the pane alone.
+    // The sessions-only row runs `Sessions · +`; the cursor stops at each end.
     app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
+
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
-
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
-    assert_eq!(
-        app.focus.block(),
-        FocusBlock::TaskStrip,
-        "the pane under the row follows the tab, so no invisible block owns keys"
-    );
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
     assert!(
         app.navigator_tab_row_focused,
-        "`←`/`→` keep the keyboard on the row"
+        "arrows keep the keyboard on the row"
     );
-
-    // Stepping back the other way walks the `+` cell on the way through.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    assert_eq!(
-        app.effective_navigator_tab(),
-        NavigatorTab::Sessions,
-        "the cell never carries the active tab with it"
-    );
-
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Files);
-    assert_eq!(app.focus.block(), FocusBlock::Search);
-    assert!(
-        !app.workspace_files.explorer.search_focused,
-        "the pane under the row paints unfocused while the row holds the keys"
-    );
-    assert!(app.navigator_tab_row_focused);
 
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
         .await
@@ -2149,11 +2111,6 @@ async fn the_tab_row_switches_tabs_without_leaving_the_row() {
     assert!(
         !app.navigator_tab_row_focused,
         "`↓` steps back into the pane"
-    );
-    assert_eq!(app.focus.block(), FocusBlock::Search);
-    assert!(
-        app.workspace_files.explorer.search_focused,
-        "…which takes the keyboard and its caret back"
     );
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
@@ -2166,31 +2123,23 @@ async fn the_tab_row_switches_tabs_without_leaving_the_row() {
 /// on; the `+` stop is tab-independent and stays put.
 #[tokio::test]
 async fn a_tab_chord_moves_the_rows_cursor_with_the_tab() {
-    use crate::widgets::{NavigatorRowStop, NavigatorTab};
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
 
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
         .await
         .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
+    assert!(app.navigator_tab_row_focused);
 
+    // A chord switches the workspace tab while the row holds the keyboard.
     app.handle_key(press(KeyCode::Char('2'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
-
-    // Resting on `+` and then switching tabs keeps the cursor on `+`.
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Files);
     app.handle_key(press(KeyCode::Char('1'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Agent);
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -2233,7 +2182,6 @@ async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() 
         .await
         .unwrap();
     assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
-    assert!(app.workspace_files.visible);
     render_app_text(&mut app, 80, 18);
     assert!(app.navigator_list_area.is_some());
     assert_eq!(app.focus.block(), FocusBlock::Files);
@@ -2249,56 +2197,25 @@ async fn the_git_tab_reviews_the_working_tree_and_only_exists_in_a_repository() 
 /// prompt-less create the Sessions list's `n` runs (`FORGE-DESIGN §7.7`).
 #[tokio::test]
 async fn the_tab_rows_plus_cell_creates_a_session() {
-    use crate::widgets::{NavigatorRowStop, NavigatorTab};
+    use crate::widgets::NavigatorRowStop;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
-    app.focus_block(FocusBlock::Search);
+    app.focus_block(FocusBlock::TaskStrip);
 
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
         .await
         .unwrap();
     // `↑` lands on the tab on screen, never on the `+` cell.
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Sessions);
 
-    // The right end of the row is the last stop it draws. In a repository that
-    // is the `Git` tab; the row still does not wrap back to the `+` cell.
+    // `→` reaches the `+` cell; the cursor stops at the row's end.
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
-    assert_eq!(app.effective_navigator_tab(), NavigatorTab::Git);
-
-    // And it halts there rather than wrapping to `Sessions`.
-    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Git);
-
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.navigator_row_stop, NavigatorRowStop::Files);
-    assert_eq!(
-        app.effective_navigator_tab(),
-        NavigatorTab::Files,
-        "stepping back off `Git` closes the review pane with it"
-    );
-
-    app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
-    assert_eq!(
-        app.effective_navigator_tab(),
-        NavigatorTab::Files,
-        "the cell leaves the active tab where it was"
-    );
-    assert_eq!(
-        app.focus.block(),
-        FocusBlock::Search,
-        "so the pane under the row keeps the keys it had"
-    );
+    app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.navigator_row_stop, NavigatorRowStop::NewSession);
     assert!(app.navigator_tab_row_focused, "the row keeps the keyboard");
 
     let known: Vec<uuid::Uuid> = app
@@ -2336,12 +2253,7 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
 /// mis-route would read as a tab switch.
 #[tokio::test]
 async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    // `Files` is the stricter case: the cell sits beside the `Sessions` tab,
-    // so a mis-route there would switch tabs instead of creating.
-    app.navigator_tab = NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
     draw_app(&mut app, 120, 40);
     let cell = app
         .navigator_new_session_area
@@ -2357,8 +2269,8 @@ async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
         .unwrap();
 
     assert_eq!(
-        app.effective_navigator_tab(),
-        NavigatorTab::Files,
+        app.workspace_navigation.selected_tab(),
+        WorkspaceTab::Agent,
         "the click must not switch to the tab the cell sits beside"
     );
     let created = wait_for_chrome_session(&mut app, |task| !known.contains(&task.session_id)).await;

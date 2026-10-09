@@ -273,11 +273,14 @@ struct ResourceNavigation {
 }
 
 /// Files and Git retain separate resource histories. Agent hides neither
-/// buffer; legacy split layouts can still display the last selected resource.
+/// buffer; switching to Agent keeps the resource retained and restores it on
+/// the next Files/Git selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceNavigation {
     files: ResourceNavigation,
     git: ResourceNavigation,
+    /// Last resource tab selected, so Agent can restore it and focus-driven
+    /// selection does not have to guess.
     resource_tab: WorkspaceTab,
     /// Kept with navigation so selection moves with the existing session state.
     selected_tab: WorkspaceTab,
@@ -295,30 +298,50 @@ impl Default for WorkspaceNavigation {
 }
 
 impl WorkspaceNavigation {
-    fn resource(&self) -> &ResourceNavigation {
-        match self.resource_tab {
+    fn resource_for(&self, tab: WorkspaceTab) -> &ResourceNavigation {
+        match tab {
             WorkspaceTab::Git => &self.git,
             WorkspaceTab::Agent | WorkspaceTab::Files => &self.files,
         }
     }
 
-    fn resource_mut(&mut self) -> &mut ResourceNavigation {
-        match self.resource_tab {
+    fn resource_mut_for(&mut self, tab: WorkspaceTab) -> &mut ResourceNavigation {
+        match tab {
             WorkspaceTab::Git => &mut self.git,
             WorkspaceTab::Agent | WorkspaceTab::Files => &mut self.files,
         }
     }
 
+    fn resource(&self) -> &ResourceNavigation {
+        self.resource_for(self.resource_tab)
+    }
+
+    fn resource_mut(&mut self) -> &mut ResourceNavigation {
+        self.resource_mut_for(self.resource_tab)
+    }
+
+    /// The center pane content for the selected tab. Agent owns the
+    /// conversation, so it reports no resource even while Files/Git retain one.
     pub(crate) fn current(&self) -> Option<WorkspaceView> {
-        self.resource().current.clone()
+        match self.selected_tab {
+            WorkspaceTab::Agent => None,
+            tab => self.resource_for(tab).current.clone(),
+        }
     }
 
     pub(crate) fn selected_tab(&self) -> WorkspaceTab {
         self.selected_tab
     }
 
+    /// Whether the last resource tab still holds content, even while Agent is
+    /// selected. Pane switching uses this so F6 can return to a retained
+    /// resource without reopening it.
+    pub(crate) fn has_retained_resource(&self) -> bool {
+        self.resource().current.is_some()
+    }
+
     pub(crate) fn resource_selected(&self) -> bool {
-        self.selected_tab() != WorkspaceTab::Agent && self.resource().current.is_some()
+        self.current().is_some()
     }
 
     pub(crate) fn select_tab(&mut self, tab: WorkspaceTab) {
@@ -333,17 +356,12 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn select_resource(&mut self) {
-        let tab = self
-            .resource()
-            .current
-            .as_ref()
-            .map_or(WorkspaceTab::Agent, WorkspaceView::tab);
-        self.select_tab(tab);
+        self.select_tab(self.resource_tab);
     }
 
     #[cfg(test)]
     pub(crate) fn history(&self) -> &[WorkspaceView] {
-        &self.resource().history
+        self.resource_for(self.selected_tab).history.as_slice()
     }
 
     pub(crate) fn push_view(&mut self, view: WorkspaceView) {
@@ -2102,7 +2120,7 @@ pub struct TuiApp {
     /// Open right-click context menu, if any.
     pub(crate) context_menu: Option<crate::selection::ContextMenu>,
     pub(crate) conversation_area: Option<ratatui::layout::Rect>,
-    pub(crate) workspace_tab_areas: Vec<(FocusBlock, ratatui::layout::Rect)>,
+    pub(crate) workspace_tab_areas: Vec<(WorkspaceTab, ratatui::layout::Rect)>,
     pub(crate) conversation_rows: Vec<String>,
     pub(crate) conversation_all_rows: Vec<String>,
     pub(crate) conversation_copy_top: usize,

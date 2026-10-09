@@ -1757,7 +1757,9 @@ impl TuiApp {
         &mut self,
         key: event::KeyEvent,
     ) -> Result<Option<bool>, TuiError> {
-        if !(self.git_grouped_list && self.navigator_tab == crate::widgets::NavigatorTab::Git) {
+        if !(self.git_grouped_list
+            && self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git)
+        {
             return Ok(None);
         }
         if self.focus.block() == FocusBlock::Workspace && !self.diff_view_is_open() {
@@ -2247,24 +2249,6 @@ impl TuiApp {
     }
 
     pub async fn handle_key(&mut self, key: event::KeyEvent) -> Result<(), TuiError> {
-        if self.supervisor.is_some()
-            && self.focus.block() != FocusBlock::BottomPanel
-            && key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('e')
-        {
-            if !self.navigator_tab_explicit {
-                self.select_navigator_tab_from_row(crate::widgets::NavigatorTab::Files);
-                return Ok(());
-            }
-            use crate::widgets::NavigatorTab::{Files, Git, Sessions};
-            let next = match self.effective_navigator_tab() {
-                Sessions => Files,
-                Files if self.navigator_git_available() => Git,
-                Files | Git => Sessions,
-            };
-            self.select_navigator_tab_from_row(next);
-            return Ok(());
-        }
         // Allow arrow-key auto-repeat for overlays (and other selection UIs).
         if key.kind != KeyEventKind::Press {
             let allow_repeat = (key.kind == KeyEventKind::Repeat
@@ -3602,18 +3586,19 @@ mod tests {
     #[tokio::test]
     async fn task_strip_guards_handle_empty_and_non_session_navigation() {
         let (_dir, mut app) = app().await;
+        // Session verbs are inert on a resource tab; the navigator is a
+        // sessions sidebar, so they run on Agent.
+        app.select_workspace_tab(WorkspaceTab::Files);
         assert!(!app
             .handle_task_strip_key(press(KeyCode::Down))
             .await
             .unwrap());
-
-        app.navigator_tab = crate::widgets::NavigatorTab::Files;
         assert!(!app
             .handle_task_strip_key(press(KeyCode::Enter))
             .await
             .unwrap());
 
-        app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
+        app.select_workspace_tab(WorkspaceTab::Agent);
         assert!(app
             .handle_task_strip_key(press(KeyCode::Char('n')))
             .await

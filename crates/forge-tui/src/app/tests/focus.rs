@@ -32,60 +32,27 @@ async fn tab_stays_in_terminal_and_shift_tab_leaves() {
 async fn tab_cycles_visible_blocks_and_skips_hidden_ones() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_navigation.push_view(WorkspaceView::Diff);
-    app.focus_block(FocusBlock::Workspace);
     app.workspace_files.visible = true;
     app.bottom_panel.open = true;
-    app.normalize_focus();
 
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
+    // A resource tab hides the conversation, so Tab never reaches Sidebar.
+    app.focus_block(FocusBlock::Workspace);
+    for _ in 0..6 {
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_ne!(app.focus.block(), FocusBlock::Sidebar);
+    }
+
+    // Agent hides the resource editor, so Tab never reaches Workspace.
     app.focus_block(FocusBlock::Sidebar);
     assert_eq!(app.focus.block(), FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
-    app.focus_block(FocusBlock::Composer);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Footer);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Search);
-    assert!(app.workspace_files.explorer.search_focused);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Files);
-    assert!(!app.workspace_files.explorer.search_focused);
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Sidebar);
-
-    app.normalize_focus();
-    app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Files);
-    assert!(!app.workspace_files.explorer.search_focused);
-    app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Search);
-    assert!(app.workspace_files.explorer.search_focused);
+    for _ in 0..6 {
+        app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_ne!(app.focus.block(), FocusBlock::Workspace);
+    }
 }
 
 #[tokio::test]
@@ -256,21 +223,12 @@ async fn tab_and_shift_tab_traverse_sidebar_and_composer() {
     app.workspace_navigation.push_view(WorkspaceView::Diff);
     app.focus_block(FocusBlock::Sidebar);
 
-    // The conversation precedes its inspector; the shared composer follows.
-    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
-
+    // Sidebar focus selects Agent; the shared composer follows.
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Agent);
     app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Composer);
-
-    app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
-        .await
-        .unwrap();
-    assert_eq!(app.focus.block(), FocusBlock::Workspace);
 
     app.handle_key(press(KeyCode::BackTab, KeyModifiers::NONE))
         .await
@@ -359,12 +317,7 @@ async fn chat_input_keeps_literal_brackets_and_shift_arrows_do_not_switch_tabs()
 #[tokio::test]
 async fn esc_from_composer_returns_to_previous_block_and_keeps_draft() {
     let (_dir, mut app) = focus_test_app().await;
-    for block in [
-        FocusBlock::Files,
-        FocusBlock::Workspace,
-        FocusBlock::BottomPanel,
-    ] {
-        app.workspace_files.visible = true;
+    for block in [FocusBlock::Sidebar, FocusBlock::BottomPanel] {
         app.bottom_panel.open = true;
         app.focus_block(block);
         app.enter_chat_composer();
@@ -429,13 +382,12 @@ async fn ctrl_e_then_enter_opens_file_from_explorer() {
     let path = dir.path().join("open_me.rs");
     fs::write(&path, "fn main() {}\n").unwrap();
     let path = path.canonicalize().unwrap();
-    app.workspace_files.visible = false;
     app.workspace_files.explorer.refresh_workspace();
 
     app.handle_key(press(KeyCode::Char('e'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(app.workspace_files.visible);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Files);
     assert_eq!(app.focus.block(), FocusBlock::Search);
 
     app.workspace_files.explorer.selected_path = Some(path.clone());
@@ -458,7 +410,7 @@ async fn semantic_commands_dispatch_without_rendering_a_frame() {
     app.execute_semantic_command(SemanticCommand::ToggleFiles)
         .await
         .unwrap();
-    assert!(app.workspace_files.visible);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Files);
     assert_eq!(app.focus.block(), FocusBlock::Search);
 
     app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
@@ -595,7 +547,7 @@ async fn narrow_files_focus_has_a_visible_navigation_surface() {
     use ratatui::backend::TestBackend;
 
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.focus_block(FocusBlock::Files);
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -653,7 +605,7 @@ async fn tab_nav_command_recognizes_plain_arrows_only() {
 #[tokio::test]
 async fn focus_availability_and_restore_skip_hidden_blocks() {
     let (_dir, mut app) = focus_test_app().await;
-    app.workspace_files.visible = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     app.bottom_panel.open = false;
     let availability = app.focus_availability();
     assert!(availability.contains(FocusBlock::Search));

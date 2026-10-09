@@ -371,7 +371,7 @@ impl TuiApp {
             KeyCode::F(3) if key.modifiers.is_empty() => Some(SemanticCommand::OpenSessionSwitcher),
             KeyCode::F(6)
                 if key.modifiers.is_empty()
-                    && self.workspace_navigation.current().is_some()
+                    && self.workspace_navigation.has_retained_resource()
                     && self.editor_command.is_none() =>
             {
                 Some(SemanticCommand::SwitchWorkspacePane)

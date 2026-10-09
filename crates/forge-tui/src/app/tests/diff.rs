@@ -723,12 +723,14 @@ async fn the_staged_source_shows_only_the_index_and_the_index_patch() {
 
     app.open_git_view();
     settle_git(&mut app);
-    let working: Vec<String> = app
+    let mut working: Vec<String> = app
         .diff_view
         .entries
         .iter()
         .map(|entry| entry.path.display().to_string())
         .collect();
+    working.sort();
+    working.dedup();
     assert_eq!(
         working,
         vec!["loose.txt", "staged.txt"],

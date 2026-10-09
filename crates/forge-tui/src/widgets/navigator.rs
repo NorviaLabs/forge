@@ -278,6 +278,9 @@ pub struct NavigatorTabs {
     /// Whether the workspace is a repository, which is the only case the `Git`
     /// tab exists in.
     pub git: bool,
+    /// Dedicated-sessions sidebar: render only the `Sessions` heading and the
+    /// `+` cell. Files and Git are main-workspace tabs, not navigator tabs.
+    pub sessions_only: bool,
     /// The row itself holds the keyboard (`↑` at the top of either tab's list,
     /// `FORGE-DESIGN §8.3`). Only the cursor tile takes the neutral selection
     /// ground and `>` marker; the selected tab remains independently marked.
@@ -306,7 +309,19 @@ impl Widget for NavigatorTabs {
         // Keep the creation action beside Sessions, flush with it.
         // One source of truth for painting, keyboard stops and pointer routing.
         let new_session = new_session_cell(area);
-        let rects = navigator_tab_rects(area, self.git);
+        let rects = if self.sessions_only {
+            vec![(
+                NavigatorTab::Sessions,
+                Rect::new(
+                    area.x,
+                    area.y,
+                    SESSIONS_TAB_WIDTH.min(area.width),
+                    area.height,
+                ),
+            )]
+        } else {
+            navigator_tab_rects(area, self.git)
+        };
         // Grounds first, edge to edge across each tab; the labels and the `+`
         // glyph repaint their own cells on top of them.
         for (tab, rect) in &rects {
@@ -788,6 +803,7 @@ mod tests {
                     tab: NavigatorTab::Files,
                     needs_you: 0,
                     git: true,
+                    sessions_only: false,
                     focused,
                     hover: None,
                     row_stop: stop,
