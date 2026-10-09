@@ -691,8 +691,15 @@ impl TuiApp {
                 self.session_row_step,
                 self.runtime.reduced_motion,
             );
+            // The chip is the explicit Sessions entry while the column is
+            // collapsed, so it always shows — naming live work when there is
+            // any, and the session count otherwise.
+            let total = self.session_chrome.len();
             match (need, working) {
-                (0, 0) => None,
+                (0, 0) => Some(format!(
+                    "⌄ {total} {}",
+                    if total == 1 { "session" } else { "sessions" }
+                )),
                 (n, 0) => Some(format!("⌄ {n} need")),
                 (0, w) => Some(format!("⌄ {frame} {w} working")),
                 (n, w) => Some(format!("⌄ {n} need · {frame} {w} working")),

@@ -2956,3 +2956,17 @@ fn user_message_count(app: &TuiApp, session_id: uuid::Uuid) -> usize {
         })
         .unwrap_or(0)
 }
+
+/// With the navigator collapsed, the sessions chip is the explicit Sessions
+/// entry, so it shows even when every session is idle.
+#[tokio::test]
+async fn collapsed_navigator_shows_a_sessions_chip_when_idle() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let rendered = render_app_text(&mut app, 80, 18);
+    assert!(rendered.contains("session"), "{rendered}");
+    assert!(app.sessions_chip_area.is_some(), "{rendered}");
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
