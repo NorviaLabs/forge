@@ -127,8 +127,8 @@ impl TuiApp {
         let conversation = self
             .child_view
             .as_ref()
-            .map(|view| format!("Conversation ‹ {}", view.label))
-            .unwrap_or_else(|| "Conversation".into());
+            .map(|view| format!("Agent ‹ {}", view.label))
+            .unwrap_or_else(|| "Agent".into());
         let conversation_width = if resource.is_some() && self.child_view.is_some() {
             40.min(tabs_width / 2)
         } else if resource.is_some() {
@@ -145,8 +145,8 @@ impl TuiApp {
                 tabs_width.saturating_sub(conversation_width),
             ));
         }
-        // The navbar is a band at least as thick as the composer; its labels sit
-        // on the band's centre row and the selected ground fills the whole tile.
+        // Selection belongs to the label; the separate > marker owns focus.
+        // Keep the workspace ground neutral so navigation doesn't outshine chat.
         let center_y = area.y + area.height.saturating_sub(1) / 2;
         crate::theme::fill(area, frame.buffer_mut(), theme::panel());
         let mut x = area.x;
@@ -174,19 +174,10 @@ impl TuiApp {
             let label_style = if selected {
                 label_style
                     .patch(theme::accent_style())
-                    .bg(theme::accent_soft_bg())
+                    .add_modifier(ratatui::style::Modifier::UNDERLINED)
             } else {
                 label_style
             };
-            crate::theme::fill(
-                tile,
-                frame.buffer_mut(),
-                if selected {
-                    theme::panel().bg(theme::accent_soft_bg())
-                } else {
-                    theme::panel()
-                },
-            );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
@@ -200,11 +191,7 @@ impl TuiApp {
                     Span::styled(label, label_style),
                     Span::styled(if dirty { " *" } else { "" }, theme::warn()),
                 ]))
-                .style(if selected {
-                    theme::panel().bg(theme::accent_soft_bg())
-                } else {
-                    theme::panel()
-                }),
+                .style(theme::panel()),
                 rect,
             );
             self.workspace_tab_areas.push((block, tile));

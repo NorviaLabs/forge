@@ -107,15 +107,18 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             .collect();
         assert!(
             row.starts_with(if focus == FocusBlock::Sidebar {
-                "> Conversation"
+                "> Agent"
             } else {
-                "  Conversation"
+                "  Agent"
             }),
             "{row:?}"
         );
         for x in tab.x..tab.right() {
-            assert_eq!(buffer[(x, tab.y)].bg, theme::accent_soft_bg());
+            assert_eq!(buffer[(x, tab.y)].bg, theme::panel().bg.unwrap());
             assert!(!buffer[(x, tab.y)].modifier.contains(Modifier::UNDERLINED));
+        }
+        for x in tab.x + 2..tab.x + 7 {
+            assert!(buffer[(x, label_y)].modifier.contains(Modifier::UNDERLINED));
         }
         if matches!(focus, FocusBlock::Files | FocusBlock::Search) {
             let area = app.navigator_list_area.unwrap();
@@ -125,6 +128,34 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             assert!(title.contains("Search files..."), "{title:?}");
             assert!(!title.contains("> Files") && !title.contains("> Search"));
         }
+    }
+}
+
+#[tokio::test]
+async fn workspace_tab_selection_remains_visible_without_keyboard_focus() {
+    use ratatui::style::Modifier;
+
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+    app.bottom_panel.open = true;
+    app.focus_block(FocusBlock::BottomPanel);
+    for (width, height) in [(80, 18), (120, 40), (160, 50)] {
+        let buffer = render_app_buffer(&mut app, width, height);
+        assert_eq!(app.workspace_tab_areas.len(), 2);
+        for (block, tab) in &app.workspace_tab_areas {
+            let y = tab.y + tab.height.saturating_sub(1) / 2;
+            assert_eq!(buffer[(tab.x, y)].symbol(), " ");
+            // Selection survives even if NO_COLOR strips every RGB value.
+            assert_eq!(
+                buffer[(tab.x + 2, y)]
+                    .modifier
+                    .contains(Modifier::UNDERLINED),
+                *block == FocusBlock::Workspace,
+                "{width}x{height}: {block:?}"
+            );
+        }
+        assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Git);
+        assert_eq!(app.focus.block(), FocusBlock::BottomPanel);
     }
 }
 
