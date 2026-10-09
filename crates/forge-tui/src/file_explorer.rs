@@ -1778,7 +1778,7 @@ impl Widget for FileExplorerWidget<'_> {
         if self.show_search && inner.height >= TREE_TOP_OFFSET {
             // Full-bleed across the navigator column: consume the one-cell
             // shell inset on the left so the field's surface runs edge-to-edge
-            // like the composer's. The query keeps the composer's text inset.
+            // like the composer's. Align the query with the tree disclosure column.
             let bleed = inner.x.min(crate::design::PANE_PAD_X);
             let search_area = Rect::new(
                 inner.x.saturating_sub(bleed),
@@ -1794,7 +1794,7 @@ impl Widget for FileExplorerWidget<'_> {
                 buf,
                 theme::canvas(),
             );
-            let inset = crate::widgets::input::TEXT_INSET;
+            let inset = crate::widgets::input::TEXT_INSET + TREE_LEAD_INSET;
             let search_inner = Rect::new(
                 search_area.x + inset,
                 search_area.y + SEARCH_TEXT_ROW,
@@ -2799,7 +2799,7 @@ mod tests {
                     row_text(&idle, area, SEARCH_TEXT_ROW),
                     row_text(&focused, area, SEARCH_TEXT_ROW)
                 );
-                let text_x = crate::widgets::input::TEXT_INSET;
+                let text_x = crate::widgets::input::TEXT_INSET + TREE_LEAD_INSET;
                 assert_eq!(
                     focused[(text_x, SEARCH_TEXT_ROW)].symbol(),
                     &placeholder[..1]
@@ -2818,7 +2818,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 18);
         explorer.search_query = "main.rs".into();
         let buf = render_widget(&mut explorer, area, true);
-        let text_x = crate::widgets::input::TEXT_INSET;
+        let text_x = crate::widgets::input::TEXT_INSET + TREE_LEAD_INSET;
         assert_eq!(buf[(text_x, SEARCH_TEXT_ROW)].symbol(), "m");
         assert_eq!(
             buf[(text_x + 7, SEARCH_TEXT_ROW)].bg,

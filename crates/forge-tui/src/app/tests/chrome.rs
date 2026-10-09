@@ -805,3 +805,70 @@ async fn a_page_falls_back_to_a_sane_step_before_the_first_draw() {
         "no pane measured yet, so no page to move"
     );
 }
+
+#[tokio::test]
+async fn shell_spacing_preserves_draft_and_cursor_at_all_sizes() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.conversation_view.splash_dismissed = true;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "Check the retry behavior."));
+    app.session_runtime.messages.push(Message::new(
+        MessageRole::Assistant,
+        "Updated the retry handler. The focused tests passed.",
+    ));
+    app.input.set_text("Retained draft λ");
+    app.input.cursor = 5;
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Working;
+    for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        assert_eq!(app.input.text, "Retained draft λ");
+        assert_eq!(app.input.cursor, 5);
+        let composer = app.composer_area.unwrap();
+        assert!(composer.bottom() <= height);
+        assert!(app.task_strip_area.is_none());
+        let tabs_y = app.workspace_tab_areas[0].1.y;
+        assert_eq!(
+            tabs_y,
+            if height < crate::design::COMPACT_FRAME_H {
+                1
+            } else {
+                2
+            }
+        );
+        if let Some(sessions) = app.sessions_list_area {
+            assert_eq!(
+                sessions.y,
+                app.navigator_tabs_area.unwrap().bottom()
+                    + u16::from(height >= crate::design::COMPACT_FRAME_H)
+            );
+        }
+        assert_eq!(composer.bottom() + 1, app.footer_area.unwrap().y);
+        let buffer = terminal.backend().buffer();
+        for x in composer.x..composer.right() {
+            assert_eq!(buffer[(x, composer.y - 1)].symbol(), " ");
+        }
+        if let Some(dir) = std::env::var_os("FORGE_RENDER_DUMP_DIR") {
+            let buffer = terminal.backend().buffer();
+            let text = (0..height)
+                .map(|y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("shell-{width}x{height}.txt")),
+                text,
+            )
+            .unwrap();
+        }
+    }
+    app.session_runtime.active_task.lifecycle = forge_types::TaskLifecycle::Completed;
+    draw_app(&mut app, 80, 24);
+    assert_eq!(app.input.text, "Retained draft λ");
+}

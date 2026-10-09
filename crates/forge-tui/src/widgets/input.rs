@@ -506,15 +506,15 @@ struct ComposerGeometry {
     text_area: Rect,
 }
 
-/// The only composer chrome is its top rule.
-pub(crate) const COMPOSER_RULE_H: u16 = 1;
+/// The composer has no separate chrome row.
+pub(crate) const COMPOSER_RULE_H: u16 = 0;
 
 fn composer_geometry(
     model: &InputModel,
     area: Rect,
     attachment: Option<&str>,
 ) -> Option<ComposerGeometry> {
-    // Share the transcript's text origin and reserve the top rule.
+    // Share the transcript's text origin; every row belongs to the draft.
     let text_w = area.width.saturating_sub(TEXT_INSET * 2);
     let text_h = area.height.saturating_sub(crate::design::COMPOSER_BORDER_H);
     if text_w == 0 || text_h == 0 {
@@ -631,54 +631,6 @@ impl Widget for InputBar<'_> {
             theme::composer_surface()
         };
         Block::default().style(surface).render(area, buf);
-        // Use the row already reserved by geometry to make the editable
-        // surface and its keyboard owner visible, including without colour.
-        let rule_style = if self.model.waiting || self.model.not_connected {
-            theme::warn()
-        } else if self.focused {
-            theme::active_panel_border()
-        } else {
-            theme::panel_border()
-        };
-        let rule_style = theme::canvas().patch(rule_style);
-        let rule = if crossterm::style::Colored::ansi_color_disabled_memoized() {
-            "-"
-        } else {
-            "─"
-        };
-        for x in area.left()..area.right() {
-            buf[(x, area.y)].set_symbol(rule).set_style(rule_style);
-        }
-        let label = if self.model.waiting {
-            " Decision pending "
-        } else if self.focused {
-            " > Prompt "
-        } else {
-            " Prompt "
-        };
-        buf.set_stringn(
-            area.x + TEXT_INSET,
-            area.y,
-            label,
-            area.width.saturating_sub(TEXT_INSET * 2) as usize,
-            rule_style,
-        );
-        let hint = if self.model.waiting {
-            "Answer above"
-        } else if self.model.not_connected {
-            "/connect to send"
-        } else {
-            "Enter send · Shift+Enter newline"
-        };
-        let hint_width = Line::raw(hint).width() as u16;
-        if area.width >= hint_width + label.len() as u16 + TEXT_INSET * 2 + 4 {
-            buf.set_string(
-                area.right() - TEXT_INSET - hint_width,
-                area.y,
-                hint,
-                theme::canvas().patch(theme::muted()),
-            );
-        }
         let text_zone = Rect::new(
             area.x,
             area.y.saturating_add(COMPOSER_RULE_H),
@@ -751,23 +703,23 @@ mod tests {
             let buf = draw_input_bar(&model, 40, 4, true, None);
             assert_eq!(
                 composer_cursor_position(&model, *buf.area(), None),
-                Some((TEXT_INSET, 2))
+                Some((TEXT_INSET, 1))
             );
-            for y in [1, 3] {
+            for y in [0, 3] {
                 for x in 0..40 {
                     assert_eq!(buf[(x, y)].symbol(), " ");
                     assert_eq!(Some(buf[(x, y)].bg), theme::composer_surface().bg);
                 }
             }
             assert_eq!(
-                buf[(TEXT_INSET, 2)].symbol(),
+                buf[(TEXT_INSET, 1)].symbol(),
                 if text.is_empty() { "D" } else { "A" }
             );
         }
     }
 
     #[test]
-    fn composer_rule_identifies_focus_and_waiting_without_changing_text_geometry() {
+    fn composer_has_no_prompt_label_or_separator_rule() {
         for (focused, waiting, not_connected, dimmed) in [
             (false, false, false, false),
             (true, false, false, false),
@@ -786,15 +738,9 @@ mod tests {
             } else {
                 theme::composer_surface()
             };
-            assert!(matches!(buf[(0, 0)].symbol(), "-" | "─"));
-            let rule: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();
-            assert!(rule.contains(if waiting {
-                "Decision pending"
-            } else if focused {
-                "> Prompt"
-            } else {
-                " Prompt "
-            }));
+            let row: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();
+            assert!(!row.contains("Prompt") && !row.contains("Follow-up"));
+            assert!(!row.contains('─') && !row.contains("---"));
             for x in 0..40 {
                 assert_eq!(Some(buf[(x, 2)].bg), surface.bg);
             }
@@ -802,22 +748,30 @@ mod tests {
     }
 
     #[test]
-    fn composer_send_hint_yields_to_connection_and_decisions() {
-        for (waiting, not_connected, hint) in [
-            (false, false, "Enter send"),
-            (false, true, "/connect to send"),
-            (true, false, "Answer above"),
-        ] {
-            let model = InputModel {
-                waiting,
-                not_connected,
-                ..Default::default()
-            };
-            let buf = draw_input_bar(&model, 80, 3, true, None);
-            let rule: String = (0..80).map(|x| buf[(x, 0)].symbol()).collect();
-            assert!(rule.contains(hint), "{rule}");
-            if waiting || not_connected {
-                assert!(!rule.contains("Enter send"));
+    fn composer_shows_only_the_draft_without_shortcut_hints() {
+        for width in [40, 80, 120] {
+            for (waiting, not_connected) in [(false, false), (true, false), (false, true)] {
+                let model = InputModel {
+                    text: "Keep my draft".into(),
+                    cursor: 5,
+                    waiting,
+                    not_connected,
+                    ..Default::default()
+                };
+                let buf = draw_input_bar(&model, width, 3, true, None);
+                let visible: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+                assert!(visible.contains("Keep my draft"));
+                for hint in [
+                    "Enter send",
+                    "Enter queue",
+                    "Shift+Enter",
+                    "Answer above",
+                    "/connect to send",
+                ] {
+                    assert!(!visible.contains(hint), "{visible}");
+                }
+                assert_eq!(model.text, "Keep my draft");
+                assert_eq!(model.cursor, 5);
             }
         }
     }

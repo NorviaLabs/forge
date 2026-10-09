@@ -2125,7 +2125,9 @@ pub struct TuiApp {
     pub(crate) terminal_text: crate::selection::RenderedText,
     /// Navigator tab-bar rect (Sessions | Files) from the last draw.
     pub(crate) navigator_tabs_area: Option<ratatui::layout::Rect>,
-    /// Navigator list rect (session rows or file tree) from the last draw.
+    /// Dedicated Sessions sidebar list from the last draw.
+    pub(crate) sessions_list_area: Option<ratatui::layout::Rect>,
+    /// Resource list rect (or session list on Agent) from the last draw.
     pub(crate) navigator_list_area: Option<ratatui::layout::Rect>,
     /// Session task-strip rect from the last draw.
     pub(crate) task_strip_area: Option<ratatui::layout::Rect>,

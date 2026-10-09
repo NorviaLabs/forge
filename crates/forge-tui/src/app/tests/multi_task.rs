@@ -1971,10 +1971,10 @@ async fn the_navigator_tabs_do_not_repeat_the_selected_pane_title() {
         .unwrap();
 }
 
-/// The top session strip names every session in every navigator tab, including
-/// the start screen — it is not tied to the Git review being open.
+/// Sessions stay reachable from every workspace tab through the sidebar or
+/// switcher, without duplicating them in a top strip.
 #[tokio::test]
-async fn the_top_session_strip_names_sessions_in_every_navigator_tab() {
+async fn every_workspace_tab_keeps_sessions_reachable_without_a_top_strip() {
     use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let created = create_promptless_session(&mut app).await;
@@ -1991,16 +1991,24 @@ async fn the_top_session_strip_names_sessions_in_every_navigator_tab() {
         assert_eq!(app.effective_navigator_tab(), tab);
         for (width, height) in [(140, 40), (80, 18)] {
             let rendered = render_app_text(&mut app, width, height);
-            assert!(
-                rendered.contains("main"),
-                "{tab:?} at {width}x{height} keeps the session strip: {rendered}"
-            );
-            assert!(
-                rendered.contains("session 1"),
-                "{tab:?} at {width}x{height} names the new session: {rendered}"
-            );
+            assert!(app.task_strip_area.is_none());
+            if app.sessions_list_area.is_some() {
+                assert!(rendered.contains("main"), "{rendered}");
+                assert!(rendered.contains("session 1"), "{rendered}");
+            } else {
+                assert!(app.sessions_chip_area.is_some());
+            }
         }
     }
+    app.open_session_switcher();
+    let Some(Overlay::SessionSwitcher { items, .. }) = &app.overlay else {
+        panic!("session switcher did not open");
+    };
+    assert!(items
+        .iter()
+        .any(|item| item.session_id == created.session_id.to_string()));
+    assert!(items.len() >= 2);
+
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

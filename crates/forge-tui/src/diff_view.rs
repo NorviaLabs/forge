@@ -858,6 +858,7 @@ impl Widget for DiffViewWidget<'_> {
             .header_for_width(area.width.saturating_sub(7) as usize);
         let mut title = theme::pane_title(self.focused, &header);
         title.spans.insert(0, Span::raw(" "));
+        title.spans.push(Span::raw(" "));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)

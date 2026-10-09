@@ -14,24 +14,81 @@ fn wheel_up() -> event::MouseEvent {
 }
 
 #[tokio::test]
-async fn horizontal_session_chip_click_keeps_the_files_navbar_selected() {
+async fn sessions_sidebar_routes_clicks_hover_and_keys_on_every_workspace_tab() {
     let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
-    app.select_workspace_tab(WorkspaceTab::Files);
-    render_app_text(&mut app, 140, 45);
-    let (_, chip) = app.task_strip_chips[0];
-    app.handle_mouse(left_click(chip.x + 3, chip.y))
+    app.input.set_text("Retained session draft");
+    for tab in [WorkspaceTab::Agent, WorkspaceTab::Files, WorkspaceTab::Git] {
+        app.select_workspace_tab(tab);
+        app.focus_block(FocusBlock::TaskStrip);
+        let rendered = render_app_text(&mut app, 160, 50);
+        if let Some(dir) = std::env::var_os("FORGE_RENDER_DUMP_DIR") {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                std::path::Path::new(&dir).join(format!("panes-{tab:?}-160x50.txt")),
+                rendered,
+            )
+            .unwrap();
+        }
+        let sessions = app.sessions_list_area.expect("Sessions sidebar drawn");
+        if tab != WorkspaceTab::Agent {
+            assert_ne!(Some(sessions), app.navigator_list_area);
+        }
+        app.handle_mouse(moved(sessions.x + 2, sessions.y))
+            .await
+            .unwrap();
+        assert_eq!(app.hover_session, Some(0));
+        assert_eq!(app.hover_file, None);
+        app.task_strip_selection = 99;
+        app.handle_mouse(left_click(sessions.x + 2, sessions.y))
+            .await
+            .unwrap();
+        assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+        assert_eq!(app.task_strip_selection, 0);
+        assert_eq!(app.workspace_navigation.selected_tab(), tab);
+        assert!(app
+            .handle_task_strip_key(press(KeyCode::Home, KeyModifiers::NONE))
+            .await
+            .unwrap());
+        assert!(app
+            .handle_task_strip_key(press(KeyCode::Char(' '), KeyModifiers::NONE))
+            .await
+            .unwrap());
+        assert!(app.navigator_peek.is_some());
+        app.navigator_peek = None;
+        app.focus_navigator_tab_row();
+        assert_eq!(
+            app.navigator_row_stop,
+            crate::widgets::NavigatorRowStop::Sessions
+        );
+        app.move_navigator_row_stop(true);
+        app.move_navigator_row_stop(false);
+        assert_eq!(app.workspace_navigation.selected_tab(), tab);
+        assert_eq!(app.input.text, "Retained session draft");
+        app.leave_navigator_tab_row();
+    }
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
         .await
         .unwrap();
-    assert!(app.horizontal_session_strip_focused);
-    assert_eq!(
-        app.effective_navigator_tab(),
-        crate::widgets::NavigatorTab::Files
-    );
-    render_app_text(&mut app, 140, 45);
-    assert!(app.horizontal_session_strip_focused);
-    let strip = app.task_strip_area.unwrap();
-    let tabs = app.navigator_tabs_area.unwrap();
-    assert_eq!(tabs.y, strip.bottom() + 1);
+}
+
+#[tokio::test]
+async fn session_workspace_uses_sidebar_or_switcher_without_top_session_tabs() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    for tab in [WorkspaceTab::Agent, WorkspaceTab::Files, WorkspaceTab::Git] {
+        app.select_workspace_tab(tab);
+        for (width, height) in [(80, 18), (80, 24), (120, 40), (160, 50)] {
+            render_app_text(&mut app, width, height);
+            assert!(app.task_strip_area.is_none());
+            assert!(app.task_strip_chips.is_empty());
+            assert!(app.navigator_list_area.is_some() || app.sessions_chip_area.is_some());
+            if let Some(chip) = app.sessions_chip_area {
+                app.handle_mouse(left_click(chip.x, chip.y)).await.unwrap();
+                assert!(matches!(app.overlay, Some(Overlay::SessionSwitcher { .. })));
+                app.overlay = None;
+            }
+        }
+    }
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
@@ -554,13 +611,10 @@ async fn hovering_the_new_session_cell_does_not_read_as_a_tab() {
         "the cell must not read as a hovered tab"
     );
 
-    // Cells clear of the cell still belong to the tabs.
+    // The space after the creation cell is not a workspace tab.
     app.handle_mouse(moved(cell.right() + 1, 1)).await.unwrap();
     assert!(!app.hover_navigator_new_session);
-    assert_eq!(
-        app.hover_navigator_tab,
-        Some(crate::widgets::NavigatorTab::Files)
-    );
+    assert_eq!(app.hover_navigator_tab, None);
 }
 
 #[tokio::test]

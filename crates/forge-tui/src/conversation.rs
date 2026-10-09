@@ -455,7 +455,23 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::VerificationBlock(p) => p.evidence.len().saturating_add(1),
         ConversationBlock::Callout(p) => estimate_wrapped_lines(&p.text, width).saturating_add(1),
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
-        ConversationBlock::ActivityGroup(p) => 2usize.saturating_add(p.items.len().min(6)),
+        ConversationBlock::ActivityGroup(p) => {
+            if p.expanded {
+                let commands = p
+                    .subcommands
+                    .iter()
+                    .map(|command| estimate_wrapped_lines(command, width.saturating_sub(5)))
+                    .sum::<usize>();
+                let output = p
+                    .items
+                    .iter()
+                    .map(|item| estimate_wrapped_lines(item, width.saturating_sub(MESSAGE_PADDING)))
+                    .sum::<usize>();
+                1 + commands + output.min(7) + usize::from(output > 7)
+            } else {
+                1
+            }
+        }
         ConversationBlock::ActiveProgress(_)
         | ConversationBlock::Metadata(_)
         | ConversationBlock::TurnSummary(_) => 1,
@@ -909,12 +925,9 @@ impl ConversationRenderInternals for ConversationModel {
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
         // that turn has a plan checklist. The rule is cushioned by one blank
-        // row on each side so turns visibly separate; distinct tool/activity
-        // groups get a blank separator of their own in airy density, while
-        // rows inside one group stay tight. Major blocks get a blank
-        // separator.
+        // row on each side so turns visibly separate. Adjacent activity
+        // groups stay tight; prose and attention cards get a blank separator.
         let mut seen_any_block = start_block > 0;
-        let mut prev_railed = false;
         for block in blocks.into_iter().skip(start_block) {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
             if is_turn_start {
@@ -928,12 +941,6 @@ impl ConversationRenderInternals for ConversationModel {
                 // have their own separator treatment below.
                 ensure_blank_line(&mut lines);
             }
-            if railed && prev_railed && gap && !lines.is_empty() {
-                // Two adjacent activity groups are distinct outlines; one
-                // blank row keeps their headers from reading as one list.
-                ensure_blank_line(&mut lines);
-            }
-            prev_railed = railed;
             if is_turn_start && seen_any_block {
                 // A turn boundary is one rule with one row of breathing room
                 // on each side. `ensure_blank_line` keeps a preceding block's
@@ -1085,6 +1092,16 @@ impl ConversationRenderInternals for ConversationModel {
                     } else {
                         spans.push(Span::styled("  ", theme::metadata_style()));
                     }
+                    let marker = match p.outcome {
+                        ActivityOutcome::Success => "✓ ",
+                        ActivityOutcome::Failure | ActivityOutcome::TimedOut => "✗ ",
+                        ActivityOutcome::Blocked
+                        | ActivityOutcome::Denied
+                        | ActivityOutcome::Warning => "! ",
+                        ActivityOutcome::Cancelled => "− ",
+                        ActivityOutcome::Neutral => "",
+                    };
+                    spans.push(Span::styled(marker, label_style));
                     spans.push(Span::styled(p.label, label_style));
                     spans.push(Span::styled("  ", theme::metadata_style()));
                     if p.subcommands.is_empty() {
@@ -1099,6 +1116,30 @@ impl ConversationRenderInternals for ConversationModel {
                             None => {
                                 spans.push(Span::styled(p.count_label, theme::metadata_style()))
                             }
+                        }
+                    } else if !p.expanded {
+                        let suffix_width = if width >= 80 {
+                            activity_detail_label(false).chars().count()
+                        } else {
+                            0
+                        } + if p.subcommands.len() > 1 {
+                            format!(" · +{} more", p.subcommands.len() - 1)
+                                .chars()
+                                .count()
+                        } else {
+                            0
+                        };
+                        let used_width = spans.iter().map(Span::width).sum::<usize>();
+                        let preview = crate::path_display::elide_middle(
+                            &p.subcommands[0],
+                            width.saturating_sub(used_width + suffix_width),
+                        );
+                        spans.push(Span::styled(preview, theme::metadata_style()));
+                        if p.subcommands.len() > 1 {
+                            spans.push(Span::styled(
+                                format!(" · +{} more", p.subcommands.len() - 1),
+                                theme::dim(),
+                            ));
                         }
                     }
                     // Only once recovered: a still-failing group shouldn't
@@ -1125,12 +1166,16 @@ impl ConversationRenderInternals for ConversationModel {
                         spans.push(Span::styled(format!(" · {label}"), theme::dim()));
                     }
                     spans.push(Span::styled(
-                        activity_detail_label(p.expanded),
+                        if width >= 80 {
+                            activity_detail_label(p.expanded)
+                        } else {
+                            ""
+                        },
                         theme::dim(),
                     ));
                     let line = Line::from(spans);
                     lines.push(line);
-                    for subcommand in p.subcommands.iter() {
+                    for subcommand in p.subcommands.iter().filter(|_| p.expanded) {
                         let sub_width = width.saturating_sub(5);
                         for wrapped in wrap(subcommand, sub_width) {
                             let sub_line = Line::from(Span::styled(
@@ -2458,8 +2503,12 @@ pub(super) fn number_diff_lines(lines: &[String]) -> Vec<NumberedDiffLine> {
 /// Spelled `Ctrl+O` — a chord is written without spaces around the plus — and
 /// unbracketed. It is rendered dim, beside a tool name at full text weight, so
 /// it stops competing with the label it sits next to.
-fn activity_detail_label(_expanded: bool) -> &'static str {
-    ""
+fn activity_detail_label(expanded: bool) -> &'static str {
+    if expanded {
+        ""
+    } else {
+        " · Ctrl+O details"
+    }
 }
 
 /// Collapsed-line rendering for command-execution activity groups (see
@@ -2571,6 +2620,67 @@ mod tests {
     use super::*;
 
     use ratatui::text::Line;
+
+    #[test]
+    fn activity_rows_disclose_commands_and_failures() {
+        let tool = |name: &str, command: &str, state, outcome| ChatItem::ToolCard {
+            name: name.into(),
+            summary: command.into(),
+            detail: "diagnostic output".into(),
+            state,
+            duration: None,
+            subcommand: Some(command.into()),
+            outcome,
+        };
+        let mut model = ConversationModel {
+            items: vec![
+                tool(
+                    "shell",
+                    "echo first",
+                    ToolCardState::Done,
+                    forge_types::ExecutionOutcome::Success,
+                ),
+                tool(
+                    "shell",
+                    "echo second",
+                    ToolCardState::Done,
+                    forge_types::ExecutionOutcome::Success,
+                ),
+            ],
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        };
+        for width in [40, 80, 120] {
+            let rows = model.lines_for_width(width);
+            let text = lines_text(&rows);
+            eprintln!("collapsed ({width} columns):\n{text}");
+            assert!(rows.iter().all(|row| row.line.width() <= width), "{text}");
+            assert!(text.contains("echo first"), "{text}");
+            assert!(text.contains("+1 more"), "{text}");
+            assert!(!text.contains("echo second"), "{text}");
+            assert!(!text.contains("diagnostic output"), "{text}");
+        }
+        model.opts.tool_expanded = true;
+        let text = lines_text(&model.lines_for_width(80));
+        assert!(text.contains("echo second"), "{text}");
+        assert!(text.contains("diagnostic output"), "{text}");
+        model.opts.tool_expanded = false;
+        for name in ["custom_tool", "read_file", "shell"] {
+            model.items = vec![tool(
+                name,
+                "failed operation",
+                ToolCardState::Error,
+                forge_types::ExecutionOutcome::Failed { exit_code: Some(1) },
+            )];
+            let text = lines_text(&model.lines_for_width(80));
+            assert!(text.contains("diagnostic output"), "{text}");
+            assert!(text.contains("✗"), "{text}");
+            eprintln!("failure ({name}):\n{text}");
+        }
+    }
 
     #[test]
     fn file_language_detection_uses_shared_registry() {

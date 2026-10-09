@@ -368,8 +368,7 @@ pub struct ActivityGroupPresentation {
     /// badge shows this when `outcome` is `Success` and it's non-zero.
     pub retries: usize,
     pub expanded: bool,
-    /// Always-visible invocation lines under the label (0-1 per tool call
-    /// today; a grouped routine call may later fan out to several).
+    /// Invocation lines available for a collapsed preview or expanded details.
     pub subcommands: Vec<String>,
     pub items: Vec<String>,
 }
@@ -1575,7 +1574,14 @@ fn semantic_blocks_from_items(
     let flush_activity = |blocks: &mut Vec<ConversationBlock>,
                           group: &mut Option<ActivityGroupPresentation>| {
         if let Some(mut item) = group.take() {
-            item.expanded = tool_expanded;
+            item.expanded = tool_expanded
+                || matches!(
+                    item.outcome,
+                    ActivityOutcome::Failure
+                        | ActivityOutcome::Blocked
+                        | ActivityOutcome::Denied
+                        | ActivityOutcome::TimedOut
+                );
             blocks.push(ConversationBlock::ActivityGroup(item));
         }
     };

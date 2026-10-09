@@ -24,9 +24,9 @@
 //!   Carries the layout's structure and never changes hue with focus.
 //! - **L2 — inset field.** `theme::composer_surface()` for the borderless composer
 //!   and explorer search field, so a nested field never reads as a louder box.
-//! - **L3 — local accent.** `theme::active_panel_border()`. The active tab's
-//!   underline, a focused search field's border, the composer's top edge, a
-//!   pane's `>` title marker, a keyboard-bearing modal's title.
+//! - **L3 — local accent.** `theme::active_panel_border()`. A focused search
+//!   field's border, a pane's `>` title marker, a keyboard-bearing modal's title.
+//!   Workspace tabs carry selection with a filled surface; inputs use a caret.
 //!
 //! A pane never takes L3: a bright rectangle around a whole panel is louder
 //! than the content inside it, and it makes focus the layout's only readable
@@ -36,13 +36,13 @@
 pub const FRAME_INSET_X: u16 = 1;
 /// Internal pane padding, each side, in addition to the border column.
 pub const PANE_PAD_X: u16 = 1;
-/// Blank column between navigator, conversation and inspector.
-pub const PANE_GAP_X: u16 = 1;
+/// Two-column gutter keeps resize grips clear of adjacent pane borders.
+pub const PANE_GAP_X: u16 = 2;
 /// Blank row between vertically stacked panes (left column ↔ bottom panel).
 pub const PANE_GAP_Y: u16 = 1;
 pub const CHROME_GAP_Y: u16 = 0;
 /// Blank rows between the transcript and the composer.
-pub const COMPOSER_GAP_Y: u16 = 0;
+pub const COMPOSER_GAP_Y: u16 = 1;
 /// Leading inset for nested list rows (the explorer's tree).
 ///
 /// One extra indent step past [`PANE_PAD_X`], so the disclosure column clears
@@ -66,8 +66,8 @@ pub const PLAN_ITEM_GAP_H: u16 = 0;
 pub const PLAN_META_INDENT: u16 = 4;
 /// Composer horizontal padding; same text origin as chat.
 pub const COMPOSER_PAD_X: u16 = 2;
-/// A single top rule separates the composer from the working surface.
-pub const COMPOSER_BORDER_H: u16 = 1;
+/// The composer is a plain input surface with no reserved chrome row.
+pub const COMPOSER_BORDER_H: u16 = 0;
 /// Workspace view switcher, with no session identity or spacer rows.
 pub const WORKSPACE_HEADER_H: u16 = 1;
 /// Thickness of the horizontal session strip (session-name chips). Three rows

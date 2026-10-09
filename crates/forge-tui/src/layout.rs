@@ -272,20 +272,25 @@ pub fn split_areas_with_preferences(
     let input_h = if input_h == 0 {
         0
     } else {
-        input_h.clamp(2, THEME_DOCK_H)
+        input_h.clamp(1, THEME_DOCK_H)
     };
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
-    let footer_h = footer_h.min(2);
+    let compact = area.height < crate::design::COMPACT_FRAME_H;
+    let footer_h = footer_h.min(if compact { 1 } else { 2 });
     let resource_open = !expand_conversation;
-    let gap_bottom = if footer_h > 0 { CHROME_GAP_Y } else { 0 };
+    let gap_bottom = if footer_h > 0 && input_h > 0 {
+        1
+    } else {
+        CHROME_GAP_Y
+    };
     let status_h = 1;
     let task_strip_h = if show_task_strip {
         crate::design::SESSION_STRIP_H
     } else {
         0
     };
-    let chrome_gap = u16::from(show_task_strip);
+    let chrome_gap = u16::from(show_task_strip || !compact);
     let fixed_h = status_h + footer_h + fb + chrome_gap + task_strip_h + gap_bottom;
     let requested_panel_h = if bottom_panel_h > 0 {
         preferences
@@ -340,13 +345,13 @@ pub fn split_areas_with_preferences(
         navigator_active,
         preferences,
     );
-    let tabs_h = crate::design::WORKSPACE_HEADER_H;
+    let tabs_h = crate::design::WORKSPACE_HEADER_H + u16::from(!compact);
     let input_h = input_h.min(
         work.height
             .saturating_sub(
                 tabs_h + qh + panel_h + u16::from(panel_h > 0) * PANE_GAP_Y + TRANSCRIPT_MIN_ROWS,
             )
-            .max(2),
+            .max(1),
     );
     let bg_h = bg_h.min(
         work.height

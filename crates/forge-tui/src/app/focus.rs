@@ -148,8 +148,11 @@ impl TuiApp {
         self.navigator_tab_row_block = self.focus.block();
         // `↑` always lands on the tab on screen, never on the `+` cell a
         // previous visit left the cursor on.
-        self.navigator_row_stop =
-            crate::widgets::NavigatorRowStop::for_tab(self.effective_navigator_tab());
+        self.navigator_row_stop = if self.focus.block() == FocusBlock::TaskStrip {
+            crate::widgets::NavigatorRowStop::Sessions
+        } else {
+            crate::widgets::NavigatorRowStop::for_tab(self.effective_navigator_tab())
+        };
         self.navigator_tab_row_focused = true;
         self.normalize_focus();
     }
@@ -216,7 +219,7 @@ impl TuiApp {
     /// `Sessions · +`; the cursor stops at each end rather than wrapping. The
     /// `+` is skipped when the row does not render it.
     pub(super) fn move_navigator_row_stop(&mut self, forward: bool) {
-        use crate::widgets::{NavigatorRowStop, NavigatorTab};
+        use crate::widgets::NavigatorRowStop;
         let stops: &[NavigatorRowStop] = if self.navigator_row_has_new_session() {
             &[NavigatorRowStop::Sessions, NavigatorRowStop::NewSession]
         } else {
@@ -233,7 +236,8 @@ impl TuiApp {
         };
         match stops[next] {
             NavigatorRowStop::Sessions => {
-                self.select_navigator_tab_from_row(NavigatorTab::Sessions)
+                self.focus_block(FocusBlock::TaskStrip);
+                self.focus_navigator_tab_row();
             }
             NavigatorRowStop::NewSession => self.select_navigator_row_new_session(),
             NavigatorRowStop::Files | NavigatorRowStop::Git => {}

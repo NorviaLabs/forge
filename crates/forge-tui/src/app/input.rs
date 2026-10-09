@@ -177,15 +177,6 @@ impl TuiApp {
             self.create_session_now();
             return Ok(true);
         }
-        if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
-            && !self.horizontal_session_strip_focused
-            && !self.workspace_files.explorer.search_focused
-            && key.modifiers.is_empty()
-            && key.code == KeyCode::Enter
-        {
-            self.focus_block(FocusBlock::Workspace);
-            return Ok(true);
-        }
         // `↑` at the top of the list reaches the navigator's tab row instead of
         // being a no-op (`FORGE-DESIGN §8.3`). An open peek owns `↑` first, so
         // this fires on the press after the peek closes.
@@ -199,16 +190,6 @@ impl TuiApp {
             return Ok(true);
         }
         if count == 0 {
-            return Ok(false);
-        }
-        // The session verbs only apply on the Sessions tab; the Files tab hands
-        // navigation to the explorer.
-        if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions
-            && !self.horizontal_session_strip_focused
-        {
-            if matches!(key.code, KeyCode::Char('x') if key.modifiers.is_empty()) {
-                return Ok(true);
-            }
             return Ok(false);
         }
         let focused_id = self.session_chrome[self.task_strip_selection].session_id;

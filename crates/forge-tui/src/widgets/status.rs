@@ -451,6 +451,7 @@ pub struct StatusBar<'a> {
     /// Right-aligned navigator summary, shown only when the navigator column is
     /// collapsed (`<116` columns): `⌄ 2 need · 1 working`.
     pub sessions_chip: Option<&'a str>,
+    pub sessions_need_attention: bool,
 }
 
 impl StatusBar<'_> {
@@ -472,9 +473,11 @@ impl StatusBar<'_> {
         };
         let inset = crate::design::COMPOSER_PAD_X.min(area.width / 2);
         let area = Rect::new(area.x + inset, area.y, area.width - inset * 2, area.height);
-        let width = area.width as usize;
-        let chip_width = chip.chars().count() as u16;
-        let x = area.x + width.saturating_sub(chip.chars().count() + 1) as u16;
+        let chip_width = (Line::raw(chip).width() as u16).min(area.width.saturating_sub(1));
+        if chip_width == 0 {
+            return None;
+        }
+        let x = area.right() - chip_width - 1;
         let y = area.y + area.height.saturating_sub(1) / 2;
         Some(Rect::new(x, y, chip_width, 1))
     }
@@ -485,6 +488,7 @@ impl Widget for StatusBar<'_> {
         if area.height == 0 || area.width == 0 {
             return;
         }
+        let chip_rect = Self::sessions_chip_rect(area, self.sessions_chip);
         let area = if area.height >= 3 {
             let block = Block::default()
                 .borders(Borders::ALL)
@@ -502,11 +506,7 @@ impl Widget for StatusBar<'_> {
         let area = Rect::new(area.x + inset, area.y, area.width - inset * 2, area.height);
         let width = area.width as usize;
         let chip = self.sessions_chip.unwrap_or("");
-        let reserved = if chip.is_empty() {
-            0
-        } else {
-            chip.chars().count() + 4
-        };
+        let reserved = chip_rect.map_or(0, |rect| usize::from(rect.width) + 4);
         // Elide the workspace path rather than letting the line run off the
         // right edge: clipping keeps the leading directories and drops the
         // folder name, which is the only part that identifies the workspace.
@@ -524,15 +524,16 @@ impl Widget for StatusBar<'_> {
             Span::styled(content, theme::text_secondary()),
         ]);
         let text_y = area.y + area.height.saturating_sub(1) / 2;
-        // The brand and workspace identity are centered on the bar. A collapsed
-        // navigator's session chip keeps its own right-aligned column, so its
-        // width comes off the centering budget rather than being overlapped.
-        let usable = width.saturating_sub(reserved);
-        let x = area.x + (usable.saturating_sub(line.width()) / 2) as u16;
-        buf.set_line(x, text_y, &line, area.width - (x - area.x));
-        if !chip.is_empty() {
-            let x = area.x + (width - chip.chars().count() - 1) as u16;
-            buf.set_string(x, text_y, chip, theme::warn());
+        let usable = area.width.saturating_sub(reserved as u16);
+        let x = area.x + usable.saturating_sub(line.width() as u16) / 2;
+        buf.set_line(x, text_y, &line, usable.saturating_sub(x - area.x));
+        if let Some(rect) = chip_rect {
+            let style = if self.sessions_need_attention {
+                theme::warn()
+            } else {
+                theme::text_secondary()
+            };
+            buf.set_stringn(rect.x, rect.y, chip, usize::from(rect.width), style);
         }
     }
 }
@@ -820,6 +821,38 @@ mod tests {
     }
 
     #[test]
+    fn centered_header_keeps_chip_hit_area_aligned() {
+        for area in [Rect::new(3, 2, 80, 1), Rect::new(3, 2, 120, 3)] {
+            let model = status_model(TaskLifecycle::Ready, false, BusyPhase::Idle);
+            for attention in [false, true] {
+                let chip = "⌄ 2 sessions";
+                let mut buf = Buffer::empty(area);
+                StatusBar {
+                    model: &model,
+                    sessions_chip: Some(chip),
+                    sessions_need_attention: attention,
+                }
+                .render(area, &mut buf);
+                let rect = StatusBar::sessions_chip_rect(area, Some(chip)).unwrap();
+                let painted: String = (rect.x..rect.right())
+                    .map(|x| buf[(x, rect.y)].symbol())
+                    .collect();
+                assert_eq!(painted, chip);
+                assert_eq!(
+                    rect.right(),
+                    area.right() - crate::design::COMPOSER_PAD_X - 1 - u16::from(area.height >= 3)
+                );
+                let expected = if attention {
+                    theme::warn()
+                } else {
+                    theme::text_secondary()
+                };
+                assert_eq!(Some(buf[(rect.x, rect.y)].fg), expected.fg);
+            }
+        }
+    }
+
+    #[test]
     fn sessions_chip_rect_matches_the_rendered_chip() {
         let area = Rect::new(0, 0, 80, 1);
         assert!(StatusBar::sessions_chip_rect(area, None).is_none());
@@ -833,6 +866,7 @@ mod tests {
         StatusBar {
             model: &status_model(TaskLifecycle::Ready, false, BusyPhase::Idle),
             sessions_chip: Some("⌄ 2 need"),
+            sessions_need_attention: true,
         }
         .render(area, &mut buf);
         let painted: String = (rect.x..rect.right())

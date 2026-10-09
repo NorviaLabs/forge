@@ -27,7 +27,7 @@ impl StartGroup {
         // height. Compact terminals still show all choices when they fit.
         let condensed = body.height < input_height + 8;
         let heading_h = if condensed { 1 } else { 3 };
-        let fixed_h = heading_h + input_height + if condensed { 1 } else { 4 };
+        let fixed_h = heading_h + input_height + if condensed { 1 } else { 2 };
         let starters = body
             .height
             .saturating_sub(fixed_h)
@@ -65,7 +65,7 @@ impl StartGroup {
             Paragraph::new(if connected {
                 "Describe a task, or choose a starting point."
             } else {
-                "Connect a provider with /connect to start working."
+                "Connect a provider to start working."
             })
             .style(if connected {
                 theme::text_secondary()
@@ -116,15 +116,6 @@ impl StartGroup {
                 .render(area, buf);
             rows.push((index, area));
             y += 1;
-        }
-        if y + 1 < self.area.bottom() {
-            Paragraph::new(if focused {
-                "↑↓ choose · Enter use · Tab prompt"
-            } else {
-                "F3 sessions · /resume recent · Ctrl+P files"
-            })
-            .style(theme::muted())
-            .render(Rect::new(x, y + 1, width, 1), buf);
         }
         rows
     }

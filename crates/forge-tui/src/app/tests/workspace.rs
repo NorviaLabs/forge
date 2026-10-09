@@ -282,35 +282,27 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             .collect();
         assert!(
             row.starts_with(if focus == FocusBlock::Sidebar {
-                "> Agent"
+                ">[Agent]"
             } else {
-                "  Agent"
+                " [Agent]"
             }),
             "{row:?}"
         );
         // Tabs occupy the first workspace row; no session header is reserved.
-        assert_eq!(agent_tab.y, 1);
-        for x in agent_tab.x..agent_tab.right() {
-            assert_eq!(buffer[(x, agent_tab.y)].bg, theme::panel().bg.unwrap());
+        assert_eq!(agent_tab.y, 2);
+        for (candidate, tile) in &app.workspace_tab_areas {
+            let selected = *candidate == tab;
+            let expected_bg = if selected {
+                theme::accent_soft_bg()
+            } else {
+                theme::panel().bg.unwrap()
+            };
+            for x in tile.x..tile.right() {
+                assert_eq!(buffer[(x, tile.y)].bg, expected_bg);
+                assert!(!buffer[(x, tile.y)].modifier.contains(Modifier::UNDERLINED));
+            }
         }
-        // Selection underlines the selected tab's label and only that one.
-        let underlined = |tab: ratatui::layout::Rect| {
-            (tab.x + 2..tab.x + 7)
-                .all(|x| buffer[(x, tab.y)].modifier.contains(Modifier::UNDERLINED))
-        };
-        assert_eq!(
-            underlined(agent_tab),
-            tab == WorkspaceTab::Agent,
-            "Agent underline for {tab:?}"
-        );
         if tab == WorkspaceTab::Files {
-            let (_, files_tab) = app
-                .workspace_tab_areas
-                .iter()
-                .find(|(candidate, _)| *candidate == WorkspaceTab::Files)
-                .copied()
-                .unwrap();
-            assert!(underlined(files_tab), "Files tab is selected");
             let area = app.navigator_list_area.unwrap();
             let title: String = (area.x..area.right())
                 .map(|x| buffer[(x, area.y + 2)].symbol())
@@ -335,7 +327,7 @@ async fn workspace_git_tab_only_appears_for_repository_directories_and_gitdir_fi
         assert_eq!(tabs, [WorkspaceTab::Agent, WorkspaceTab::Files]);
         let agent = app.workspace_tab_areas[0].1;
         let files = app.workspace_tab_areas[1].1;
-        assert_eq!(agent.right(), files.x);
+        assert_eq!(agent.right() + 1, files.x);
         assert!(agent.width.abs_diff(files.width) <= 1);
     }
     app.handle_key(press(KeyCode::Char('3'), KeyModifiers::CONTROL))
@@ -386,9 +378,7 @@ async fn workspace_tab_selection_remains_visible_without_keyboard_focus() {
             let y = area.y;
             // Selection survives even if NO_COLOR strips every RGB value.
             assert_eq!(
-                buffer[(area.x + 2, y)]
-                    .modifier
-                    .contains(Modifier::UNDERLINED),
+                buffer[(area.x + 2, y)].modifier.contains(Modifier::BOLD),
                 *tab == WorkspaceTab::Git,
                 "{width}x{height}: {tab:?}"
             );
@@ -469,12 +459,7 @@ async fn top_bar_centers_brand_and_workspace_identity() {
         assert!(row.contains("FORGE"), "{width}x{height}: {row:?}");
         let leading = row.chars().take_while(|c| *c == ' ').count();
         let trailing = row.chars().rev().take_while(|c| *c == ' ').count();
-        // Centered: the identity leaves an even gutter on both sides. The
-        // one-column tolerance comes from an odd leftover split.
-        assert!(
-            leading.abs_diff(trailing) <= 1,
-            "{width}x{height}: leading {leading} vs trailing {trailing} in {row:?}"
-        );
+        assert!(leading.abs_diff(trailing) <= 1, "{width}x{height}: {row:?}");
     }
 }
 
@@ -497,8 +482,8 @@ async fn composer_centers_placeholder_and_short_draft_at_comfortable_heights() {
                     crate::widgets::input::composer_cursor_position(&app.input, area, None)
                         .expect("visible caret");
                 let compact = height < crate::design::COMPACT_FRAME_H;
-                assert_eq!(area.height, if compact { 2 } else { 4 });
-                assert_eq!(cursor.1, area.y + if compact { 1 } else { 2 });
+                assert_eq!(area.height, if compact { 1 } else { 3 });
+                assert_eq!(cursor.1, area.y + if compact { 0 } else { 1 });
             }
         }
     }
@@ -553,8 +538,11 @@ async fn task_first_start_keeps_views_choices_and_draft_reachable_at_all_sizes()
             assert!(row.y >= composer.bottom());
             assert!(row.bottom() <= app.footer_area.unwrap().y);
         }
-        assert!(rendered.contains("Enter send"));
-        assert!(rendered.contains("F3 sessions"));
+        assert!(!rendered.contains("Enter send"));
+        assert_eq!(rendered.matches("F1 help · / commands").count(), 1);
+        assert!(!rendered.contains("F3 sessions"));
+        assert!(!rendered.contains("Ctrl+P files"));
+        assert!(!rendered.contains("↑↓ choose"));
         assert_eq!(app.input.text, "Keep λ/東京.rs unchanged.");
         assert!(!app.pending_turn.has_prompt());
     }
@@ -967,7 +955,6 @@ async fn a_pending_approval_remains_reachable_over_narrow_inspection_and_navigat
     for block in [FocusBlock::Workspace, FocusBlock::Search] {
         app.focus_block(block);
         let rendered = render_app_text(&mut app, 80, 18);
-        assert!(rendered.contains("Decision pending"));
         assert!(!rendered.contains("Enter send"));
         assert_eq!(app.focus.block(), FocusBlock::Approval);
         assert!(app.conversation_area.is_some());
@@ -1296,7 +1283,7 @@ fn grip_offsets(
     glyph: &str,
 ) -> Vec<u16> {
     let seam = app.resize_seam(boundary).expect("pane is resizable");
-    let vertical = seam.width == 1;
+    let vertical = seam.height > seam.width;
     let cell = |offset: u16| {
         if vertical {
             (seam.x, seam.y + offset)
@@ -1426,7 +1413,7 @@ async fn workspace_tabs_do_not_repeat_session_identity() {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let area = app.workspace_tab_areas[0].1;
         assert_eq!(area.height, 1);
-        assert_eq!(area.y, 1);
+        assert_eq!(area.y, 2);
         let row: String = (area.x..area.right())
             .map(|x| terminal.backend().buffer()[(x, area.y)].symbol())
             .collect();

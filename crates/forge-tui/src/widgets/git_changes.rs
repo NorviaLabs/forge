@@ -84,7 +84,7 @@ impl Widget for GitChangesList<'_> {
                         DiffSide::Unstaged => "UNSTAGED",
                     };
                     Line::styled(
-                        format!(" {label}"),
+                        format!("  {label}"),
                         theme::metadata_style().add_modifier(Modifier::BOLD),
                     )
                 }

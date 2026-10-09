@@ -106,11 +106,7 @@ impl TuiApp {
             return;
         }
         crate::theme::fill(area, frame.buffer_mut(), theme::panel());
-        let hint = if self.workspace_navigation.has_retained_resource() {
-            "F6 switch"
-        } else {
-            "Ctrl+P files · / commands"
-        };
+        let hint = "F1 help · / commands";
         let hint_width = hint.chars().count() as u16;
         let tabs_width = area.width.saturating_sub(hint_width + 2);
         let agent_label = self
@@ -130,18 +126,16 @@ impl TuiApp {
         if self.navigator_git_available() {
             tabs.push((WorkspaceTab::Git, "Git".to_string(), false));
         }
-        // Selection belongs to the label; the separate > marker owns focus.
+        // A compact filled tab carries selection; the > marker carries keyboard focus.
         // Keep the workspace ground neutral so navigation doesn't outshine chat.
-        let tab_count = tabs.len();
-        let slot = (tabs_width / tab_count as u16).max(4);
-        let center_y = area.bottom().saturating_sub(1);
+        let tab_max_width = tabs_width.saturating_sub(tabs.len() as u16 - 1) / tabs.len() as u16;
+        let tabs_right = area.x.saturating_add(tabs_width);
+        let center_y = area.y;
         let mut x = area.x;
-        for (index, (tab, label, dirty)) in tabs.into_iter().enumerate() {
-            let width = if index + 1 == tab_count {
-                area.x.saturating_add(tabs_width).saturating_sub(x)
-            } else {
-                slot
-            };
+        for (tab, label, dirty) in tabs {
+            let width = (Line::raw(&label).width() as u16 + 4 + u16::from(dirty) * 2)
+                .min(tab_max_width)
+                .min(tabs_right.saturating_sub(x));
             if width < 4 {
                 continue;
             }
@@ -153,38 +147,38 @@ impl TuiApp {
                     .chars()
                     .filter(|c| !c.is_control())
                     .collect::<String>(),
-                width.saturating_sub(3 + u16::from(dirty) * 2) as usize,
+                width.saturating_sub(4 + u16::from(dirty) * 2) as usize,
             );
             let label_style = if focused || is_selected {
                 theme::text().add_modifier(ratatui::style::Modifier::BOLD)
             } else {
                 theme::muted()
             };
-            let label_style = if is_selected {
-                label_style
-                    .patch(theme::accent_style())
-                    .add_modifier(ratatui::style::Modifier::UNDERLINED)
+            let ground = if is_selected {
+                theme::panel().bg(theme::accent_soft_bg())
             } else {
-                label_style
+                theme::panel()
             };
+            let label_style = ground.patch(label_style);
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        if focused { "> " } else { "  " },
+                        if focused { ">[" } else { " [" },
                         if focused {
-                            theme::accent_style()
+                            ground.patch(theme::accent_style())
                         } else {
-                            theme::muted()
+                            ground.patch(theme::muted())
                         },
                     ),
                     Span::styled(label, label_style),
-                    Span::styled(if dirty { " *" } else { "" }, theme::warn()),
+                    Span::styled(if dirty { " *" } else { "" }, ground.patch(theme::warn())),
+                    Span::styled("] ", ground.patch(theme::muted())),
                 ]))
-                .style(theme::panel()),
+                .style(ground),
                 tile,
             );
             self.workspace_tab_areas.push((tab, tile));
-            x = x.saturating_add(width);
+            x = x.saturating_add(width + 1);
         }
         frame.render_widget(
             Paragraph::new(Line::styled(hint, theme::muted())),
@@ -504,7 +498,7 @@ impl TuiApp {
             background_h,
             approve_all_warning_h,
             expand_conversation,
-            task_mode && (!show_start || has_other_sessions),
+            false, // Sessions live in the sidebar or the narrow-screen switcher.
             self.workspace_navigation.resource_selected() && !decision_pending,
             navigator_active,
             self.pane_resize.preferences,
@@ -555,6 +549,7 @@ impl TuiApp {
         self.navigator_tabs_area = None;
         self.navigator_new_session_area = None;
         self.navigator_list_area = None;
+        self.sessions_list_area = None;
         self.task_strip_area = None;
         self.task_strip_chips.clear();
         self.sessions_chip_area = None;
@@ -663,6 +658,7 @@ impl TuiApp {
             StatusBar {
                 model: &status,
                 sessions_chip: sessions_chip.as_deref(),
+                sessions_need_attention: self.session_chrome.iter().any(|task| task.attention),
             },
             regions.status,
         );
@@ -743,15 +739,22 @@ impl TuiApp {
                 let rows = ratatui::layout::Layout::default()
                     .direction(ratatui::layout::Direction::Vertical)
                     .constraints([
-                        ratatui::layout::Constraint::Length(crate::design::NAVIGATOR_TAB_H),
+                        ratatui::layout::Constraint::Length(
+                            crate::design::NAVIGATOR_TAB_H
+                                + u16::from(area.height >= crate::design::COMPACT_FRAME_H),
+                        ),
                         ratatui::layout::Constraint::Min(0),
                     ])
                     .split(content);
-                let tabs_area = rows[0];
+                let tabs_area = ratatui::layout::Rect {
+                    height: rows[0].height.min(crate::design::NAVIGATOR_TAB_H),
+                    ..rows[0]
+                };
                 self.navigator_tabs_area = Some(tabs_area);
                 self.navigator_new_session_area =
                     crate::widgets::navigator::new_session_cell(tabs_area);
                 self.navigator_list_area = Some(rows[1]);
+                self.sessions_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
                 {
                     let list_area = rows[1];
@@ -2221,15 +2224,18 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         let narrow_resource = active_tab != WorkspaceTab::Agent
             && regions.sidebar.is_none()
             && regions.chat.width > 0;
-        let footer_hint = contextual_hint.clone().or_else(|| {
-            narrow_resource.then(|| {
-                if self.focus.block() == FocusBlock::Workspace {
-                    "⇧Tab list · Ctrl+E agent".to_string()
-                } else {
-                    "Tab content · Ctrl+E agent".to_string()
-                }
-            })
-        });
+        let footer_hint = contextual_hint
+            .clone()
+            .filter(|_| !show_start || self.focus.mode() != FocusMode::Navigation)
+            .or_else(|| {
+                narrow_resource.then(|| {
+                    if self.focus.block() == FocusBlock::Workspace {
+                        "⇧Tab list · Ctrl+E agent".to_string()
+                    } else {
+                        "Tab content · Ctrl+E agent".to_string()
+                    }
+                })
+            });
 
         let footer = FooterModel {
             hints: footer_hint.unwrap_or_default(),
@@ -2345,7 +2351,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
         }
     }
 
-    /// The blank 1-cell gap that separates a resizable pane from its
+    /// The gutter that separates a resizable pane from its
     /// neighbour, from the last layout pass.
     pub(super) fn resize_seam(&self, boundary: ResizeBoundary) -> Option<ratatui::layout::Rect> {
         match boundary {

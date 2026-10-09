@@ -217,6 +217,13 @@ impl TuiApp {
                 return Ok(());
             }
         }
+        if let Some(area) = self.sessions_list_area {
+            if cell_inside(area, col, row) {
+                self.navigator_tab_row_focused = false;
+                self.click_session_row(row, area, double).await?;
+                return Ok(());
+            }
+        }
         if let Some(area) = self.navigator_list_area {
             if cell_inside(area, col, row) {
                 self.horizontal_session_strip_focused = false;
@@ -588,9 +595,17 @@ impl TuiApp {
         if !self.hover_navigator_new_session {
             if let Some(area) = self.navigator_tabs_area {
                 if cell_inside(area, col, row) {
-                    self.hover_navigator_tab =
-                        navigator_tab_at(col, area, self.navigator_git_available());
+                    self.hover_navigator_tab = navigator_tab_at(col, area);
                 }
+            }
+        }
+        if let Some(area) = self.sessions_list_area {
+            if cell_inside(area, col, row) {
+                let index = row.saturating_sub(area.y) as usize / 2;
+                if index < self.session_chrome.len() {
+                    self.hover_session = Some(index);
+                }
+                return;
             }
         }
         let Some(area) = self.navigator_list_area else {
@@ -1226,12 +1241,10 @@ impl TuiApp {
     }
 }
 
-/// Tab boundary shared with painting, used by both click and hover routing.
-/// The `+` cell straddles these columns and is claimed before this runs, so
-/// anything that reaches here is either left of the `Sessions` tab's edge or
-/// right of the `Files` tab's, never the cell itself.
-fn navigator_tab_at(col: u16, area: Rect, git: bool) -> Option<crate::widgets::NavigatorTab> {
-    crate::widgets::navigator::navigator_tab_at(col, area, git)
+/// The sidebar renders only Sessions; workspace tabs have their own hit areas.
+fn navigator_tab_at(col: u16, area: Rect) -> Option<crate::widgets::NavigatorTab> {
+    crate::widgets::navigator::navigator_tab_at(col, area, false)
+        .filter(|tab| *tab == crate::widgets::NavigatorTab::Sessions)
 }
 
 /// Resolve the selected menu item by index (indirection to sidestep borrow
