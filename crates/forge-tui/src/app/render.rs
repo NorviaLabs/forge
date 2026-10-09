@@ -106,38 +106,6 @@ impl TuiApp {
             return;
         }
         crate::theme::fill(area, frame.buffer_mut(), theme::panel());
-        // Selected-session identity: title left, workspace branch right, on the
-        // row above the workspace tabs.
-        let (title, branch) = self.selected_session_identity();
-        if area.height >= 2 {
-            let branch_cols = branch.chars().count().min(area.width as usize / 2) as u16;
-            let title_cols = area
-                .width
-                .saturating_sub(branch_cols + u16::from(branch_cols > 0))
-                .max(1);
-            frame.render_widget(
-                Paragraph::new(Line::styled(
-                    crate::path_display::elide_middle(&title, title_cols as usize),
-                    theme::text().add_modifier(ratatui::style::Modifier::BOLD),
-                )),
-                ratatui::layout::Rect::new(area.x, area.y, title_cols, 1),
-            );
-            if branch_cols > 0 {
-                frame.render_widget(
-                    Paragraph::new(Line::styled(
-                        crate::path_display::elide_middle(&branch, branch_cols as usize),
-                        theme::muted(),
-                    ))
-                    .alignment(ratatui::layout::Alignment::Right),
-                    ratatui::layout::Rect::new(
-                        area.right().saturating_sub(branch_cols),
-                        area.y,
-                        branch_cols,
-                        1,
-                    ),
-                );
-            }
-        }
         let hint = if self.workspace_navigation.has_retained_resource() {
             "F6 switch"
         } else {
@@ -248,30 +216,6 @@ impl TuiApp {
                     )
             }
         }
-    }
-
-    /// Selected session title and workspace branch for the workspace header.
-    fn selected_session_identity(&self) -> (String, String) {
-        if let Some(item) = self
-            .session_chrome
-            .iter()
-            .find(|item| item.session_id == self.selected_session_id)
-        {
-            let title = if item.label.is_empty() {
-                "Session".to_string()
-            } else {
-                item.label.clone()
-            };
-            // `HEAD` is Git's detached marker, not a branch name; an empty
-            // branch means the worktree has no branch metadata yet.
-            let branch = match item.branch.as_str() {
-                "" => String::new(),
-                "HEAD" => "detached".to_string(),
-                branch => branch.to_string(),
-            };
-            return (title, branch);
-        }
-        ("Session".to_string(), String::new())
     }
 
     /// The GitHub issues subview's list, drawn in the Git tab's list pane.

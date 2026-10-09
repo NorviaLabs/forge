@@ -288,11 +288,8 @@ async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
             }),
             "{row:?}"
         );
-        // Selected-session identity sits on the row above the tabs.
-        let header: String = (agent_tab.x..agent_tab.right())
-            .map(|x| buffer[(x, agent_tab.y.saturating_sub(1))].symbol())
-            .collect();
-        assert!(!header.trim().is_empty(), "header identity: {header:?}");
+        // Tabs occupy the first workspace row; no session header is reserved.
+        assert_eq!(agent_tab.y, 1);
         for x in agent_tab.x..agent_tab.right() {
             assert_eq!(buffer[(x, agent_tab.y)].bg, theme::panel().bg.unwrap());
         }
@@ -1418,28 +1415,24 @@ async fn hovering_a_seam_emphasises_its_grip() {
     );
 }
 
-/// The workspace header labels a detached HEAD and elides long identity values
-/// without overflowing at narrow widths.
+/// Session identity belongs to the sessions sidebar, not the workspace tab row.
 #[tokio::test]
-async fn workspace_header_handles_detached_head_and_long_values() {
+async fn workspace_tabs_do_not_repeat_session_identity() {
     let (_dir, mut app) = focus_test_app().await;
-    app.session_runtime
-        .messages
-        .push(Message::new(MessageRole::User, "Inspect this project."));
-    app.session_chrome[0].branch = "HEAD".into();
-    app.session_chrome[0].label = "a-very-long-session-title-that-must-elide".into();
+    app.session_chrome[0].label = "unique-session-title".into();
+    app.session_chrome[0].branch = "unique-session-branch".into();
     for width in [80, 100, 120] {
-        let rendered = render_app_text(&mut app, width, 40);
-        assert!(rendered.contains("detached"), "{width}: {rendered}");
-        assert!(
-            !rendered.contains("HEAD"),
-            "detached HEAD is not a branch name: {width}: {rendered}"
-        );
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(width, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let area = app.workspace_tab_areas[0].1;
+        assert_eq!(area.height, 1);
+        assert_eq!(area.y, 1);
+        let row: String = (area.x..area.right())
+            .map(|x| terminal.backend().buffer()[(x, area.y)].symbol())
+            .collect();
+        assert!(row.contains("Agent"), "{width}: {row}");
+        assert!(!row.contains("unique-session"), "{width}: {row}");
     }
-    // No branch metadata renders no branch text.
-    app.session_chrome[0].branch.clear();
-    let rendered = render_app_text(&mut app, 120, 40);
-    assert!(!rendered.contains("detached"), "{rendered}");
 }
 
 /// A narrow resource tab names the key that swaps its list and resource, so the

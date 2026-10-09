@@ -68,8 +68,8 @@ pub const PLAN_META_INDENT: u16 = 4;
 pub const COMPOSER_PAD_X: u16 = 2;
 /// A single top rule separates the composer from the working surface.
 pub const COMPOSER_BORDER_H: u16 = 1;
-/// Workspace identity and view switcher: one row each, with no spacer rows.
-pub const WORKSPACE_HEADER_H: u16 = 2;
+/// Workspace view switcher, with no session identity or spacer rows.
+pub const WORKSPACE_HEADER_H: u16 = 1;
 /// Thickness of the horizontal session strip (session-name chips). Three rows
 /// so chip labels sit on the centre row, centred both axes.
 pub const SESSION_STRIP_H: u16 = 3;
