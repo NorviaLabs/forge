@@ -163,7 +163,7 @@ impl TuiApp {
         // Selection belongs to the label; the separate > marker owns focus.
         // Keep the workspace ground neutral so navigation doesn't outshine chat.
         let slot = (tabs_width / 3).max(4);
-        let center_y = area.y + area.height.saturating_sub(1) / 2;
+        let center_y = area.bottom().saturating_sub(1);
         let mut x = area.x;
         for (tab, label, dirty) in tabs {
             let width = if tab == WorkspaceTab::Git {
@@ -416,6 +416,8 @@ impl TuiApp {
                 FocusBlock::TaskStrip | FocusBlock::Search | FocusBlock::Files
             );
         let show_start = expand_conversation
+            && !slash_mode
+            && self.inline_search.is_none()
             && !decision_pending
             && !self.bottom_panel.open
             && self.child_view.is_none()
@@ -429,7 +431,11 @@ impl TuiApp {
             && !self.pending_turn.continue_requested()
             && self.selected_queue_messages().is_empty()
             && self.selected_background_tasks().is_empty();
-        let show_files = self.workspace_files.visible || task_mode;
+        // Start with the task, not an empty navigation column. Explicitly
+        // focusing Sessions reveals it without changing the saved preference.
+        let has_other_sessions = self.session_chrome.len() > 1;
+        let show_files = (self.workspace_files.visible || task_mode)
+            && (!show_start || navigator_active || has_other_sessions);
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
         } else if expand_conversation {
@@ -551,7 +557,7 @@ impl TuiApp {
             background_h,
             approve_all_warning_h,
             expand_conversation,
-            task_mode,
+            task_mode && (!show_start || has_other_sessions),
             self.workspace_navigation.resource_selected() && !decision_pending,
             navigator_active,
             self.pane_resize.preferences,
@@ -559,17 +565,16 @@ impl TuiApp {
         let start_group = (show_start && !theme_picking && regions.sidebar.is_some()).then(|| {
             let body = ratatui::layout::Rect::new(
                 regions.input.x,
-                regions.workspace_tabs.y,
+                regions.workspace_tabs.bottom(),
                 regions.input.width,
                 regions
                     .input
                     .bottom()
-                    .saturating_sub(regions.workspace_tabs.y),
+                    .saturating_sub(regions.workspace_tabs.bottom()),
             );
             let group = crate::widgets::start::StartGroup::new(body, input_h, area.height);
             regions.input = group.input;
             regions.sidebar = None;
-            regions.workspace_tabs.height = 0;
             group
         });
         self.pane_resize.files_separator = regions
@@ -2220,6 +2225,9 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             }
         } else if regions.input.height > 0 {
             self.composer_area = Some(regions.input);
+            // Questions can accept an "Other" answer in this composer;
+            // only tool approvals disable the empty prompt/send hint.
+            self.input.waiting = decision_pending && self.session_view.is_awaiting_approval();
             let composer_focused = crate::widgets::background_focused(
                 self.child_view.is_none()
                     && self.focus.mode() == FocusMode::Navigation

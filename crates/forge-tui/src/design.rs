@@ -68,10 +68,8 @@ pub const PLAN_META_INDENT: u16 = 4;
 pub const COMPOSER_PAD_X: u16 = 2;
 /// A single top rule separates the composer from the working surface.
 pub const COMPOSER_BORDER_H: u16 = 1;
-/// Thickness of the session strip and workspace navbar. Held at least as thick
-/// as the empty comfortable-height composer: one rule plus its three-row
-/// surface ([`COMPOSER_BORDER_H`] + the comfortable minimum visual lines).
-pub const CHROME_BAND_H: u16 = 4;
+/// Workspace identity and view switcher: one row each, with no spacer rows.
+pub const WORKSPACE_HEADER_H: u16 = 2;
 /// Thickness of the horizontal session strip (session-name chips). Three rows
 /// so chip labels sit on the centre row, centred both axes.
 pub const SESSION_STRIP_H: u16 = 3;

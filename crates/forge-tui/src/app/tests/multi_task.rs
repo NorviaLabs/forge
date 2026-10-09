@@ -2248,6 +2248,7 @@ async fn the_tab_rows_plus_cell_creates_a_session() {
 #[tokio::test]
 async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
     let (_dir, mut app, handle) = app_with_supervisor().await;
+    app.focus_block(FocusBlock::TaskStrip);
     draw_app(&mut app, 120, 40);
     let cell = app
         .navigator_new_session_area
