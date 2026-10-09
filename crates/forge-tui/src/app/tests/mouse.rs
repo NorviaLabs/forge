@@ -14,6 +14,34 @@ fn wheel_up() -> event::MouseEvent {
 }
 
 #[tokio::test]
+async fn horizontal_session_chip_click_keeps_the_files_navbar_selected() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    app.workspace_files.visible = true;
+    render_app_text(&mut app, 140, 45);
+    let (_, chip) = app.task_strip_chips[0];
+    app.handle_mouse(left_click(chip.x + 3, chip.y))
+        .await
+        .unwrap();
+    assert!(app.horizontal_session_strip_focused);
+    assert_eq!(
+        app.effective_navigator_tab(),
+        crate::widgets::NavigatorTab::Files
+    );
+    render_app_text(&mut app, 140, 45);
+    assert!(app.horizontal_session_strip_focused);
+    let strip = app.task_strip_area.unwrap();
+    let tabs = app.navigator_tabs_area.unwrap();
+    assert_eq!(tabs.y, strip.bottom() + 1);
+    assert_eq!(app.navigator_list_area.unwrap().y, tabs.bottom());
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn clicking_content_match_opens_its_line_and_file_group_toggles() {
     let (dir, mut app) = focus_test_app().await;
     std::fs::write(
@@ -639,7 +667,10 @@ async fn clicking_search_focuses_input_without_opening_a_tree_row() {
     render_app_text(&mut app, 120, 40);
     let list = app.navigator_list_area.expect("file list drawn");
     let selected = app.workspace_files.explorer.selected_path.clone();
-    app.handle_mouse(left_click(list.x + 4, list.y + 2))
+    // The surface is full-bleed, so even its leftmost column (one cell into
+    // the shell inset) must hand the keyboard to Search.
+    app.focus_block(FocusBlock::Workspace);
+    app.handle_mouse(left_click(list.x, list.y + 2))
         .await
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Search);
@@ -927,11 +958,11 @@ async fn double_click_on_a_git_row_hands_the_keyboard_to_the_patch() {
         .collect();
     app.diff_view.selected = 1;
     // The list's first inner row is the `Unstaged` group heading, which is not
-    // selectable, so file 0 sits one row below the pane's top border.
+    // selectable, so file 0 sits one row below the list's origin.
     app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
     app.focus_block(FocusBlock::Files);
 
-    app.handle_mouse(left_click(2, 7)).await.unwrap();
+    app.handle_mouse(left_click(2, 6)).await.unwrap();
     assert_eq!(app.diff_view.selected, 0, "one click selects the row");
     assert_eq!(
         app.focus.block(),
@@ -939,7 +970,7 @@ async fn double_click_on_a_git_row_hands_the_keyboard_to_the_patch() {
         "one click does not jump to the patch"
     );
 
-    app.handle_mouse(left_click(2, 7)).await.unwrap();
+    app.handle_mouse(left_click(2, 6)).await.unwrap();
     assert_eq!(
         app.focus.block(),
         FocusBlock::Workspace,
@@ -1438,4 +1469,33 @@ async fn a_click_behind_the_source_search_prompt_is_ignored() {
         .command(forge_session::SupervisorCommand::Shutdown)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn navigator_flush_tiles_and_file_footer_do_not_activate_rows() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.workspace_files.visible = true;
+    app.navigator_tab = crate::widgets::NavigatorTab::Files;
+    app.navigator_tab_explicit = true;
+    app.focus_block(FocusBlock::Files);
+    render_app_text(&mut app, 120, 40);
+    let tabs = app.navigator_tabs_area.unwrap();
+    let plus = app.navigator_new_session_area.unwrap();
+    let list = app.navigator_list_area.unwrap();
+    let selected = app.workspace_files.explorer.selected_path.clone();
+    // The footer row is not a tree row; clicking it changes nothing.
+    app.handle_mouse(left_click(list.x + 1, list.bottom() - 1))
+        .await
+        .unwrap();
+    assert_eq!(app.workspace_files.explorer.selected_path, selected);
+    assert!(!app.current_workspace_is_file());
+    // Tiles are flush: the column left of `+` belongs to the Sessions tile, so
+    // clicking it selects Sessions rather than falling into a dead gutter.
+    app.handle_mouse(left_click(plus.x - 1, tabs.y))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.effective_navigator_tab(),
+        crate::widgets::NavigatorTab::Sessions
+    );
 }

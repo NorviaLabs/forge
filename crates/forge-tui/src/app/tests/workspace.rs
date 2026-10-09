@@ -20,6 +20,57 @@ async fn file_browser_keeps_navigation_tabs_without_supervisor() {
 }
 
 #[tokio::test]
+async fn header_and_tabs_keep_selection_distinct_from_keyboard_focus() {
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "Inspect this project."));
+    for focus in [
+        FocusBlock::Composer,
+        FocusBlock::Sidebar,
+        FocusBlock::Files,
+        FocusBlock::Search,
+    ] {
+        app.focus_block(focus);
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let status_bg = theme::status_bar().bg.unwrap();
+        for x in crate::design::FRAME_INSET_X..120 - crate::design::FRAME_INSET_X {
+            assert_eq!(buffer[(x, 0)].bg, status_bg, "header column {x}");
+        }
+        let (_, tab) = app.workspace_tab_areas[0];
+        let label_y = tab.y + tab.height.saturating_sub(1) / 2;
+        let row: String = (tab.x..tab.right())
+            .map(|x| buffer[(x, label_y)].symbol())
+            .collect();
+        assert!(
+            row.starts_with(if focus == FocusBlock::Sidebar {
+                "> Conversation"
+            } else {
+                "  Conversation"
+            }),
+            "{row:?}"
+        );
+        for x in tab.x..tab.right() {
+            assert_eq!(buffer[(x, tab.y)].bg, theme::accent_soft_bg());
+            assert!(!buffer[(x, tab.y)].modifier.contains(Modifier::UNDERLINED));
+        }
+        if matches!(focus, FocusBlock::Files | FocusBlock::Search) {
+            let area = app.navigator_list_area.unwrap();
+            let title: String = (area.x..area.right())
+                .map(|x| buffer[(x, area.y + 2)].symbol())
+                .collect();
+            assert!(title.contains("Search files..."), "{title:?}");
+            assert!(!title.contains("> Files") && !title.contains("> Search"));
+        }
+    }
+}
+
+#[tokio::test]
 async fn selected_navigator_tab_background_stays_inside_shared_frame() {
     use crate::widgets::NavigatorTab;
     use ratatui::backend::TestBackend;
@@ -38,7 +89,7 @@ async fn selected_navigator_tab_background_stays_inside_shared_frame() {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| app.draw(frame)).unwrap();
             let area = app.navigator_tabs_area.expect("visible navigator tabs");
-            assert_eq!(area.height, 1);
+            assert_eq!(area.height, crate::design::NAVIGATOR_TAB_H);
             let rect =
                 crate::widgets::navigator::navigator_tab_rects(area, app.navigator_git_available())
                     .into_iter()
@@ -51,11 +102,15 @@ async fn selected_navigator_tab_background_stays_inside_shared_frame() {
             for x in area.x..area.right() {
                 assert_ne!(buffer[(x, area.bottom())].bg, theme::accent_soft_bg());
             }
+            // Flush tiles: the selected ground fills its whole tile edge to
+            // edge, with no blank gutter stopping it short.
             for y in rect.y..rect.bottom() {
                 for x in rect.x..rect.right() {
-                    if x + 1 < rect.right() && (x > rect.x || tab == NavigatorTab::Sessions) {
-                        assert_eq!(buffer[(x, y)].bg, theme::accent_soft_bg());
-                    }
+                    assert_eq!(
+                        buffer[(x, y)].bg,
+                        theme::accent_soft_bg(),
+                        "{tab:?} {width}x{height} x={x} rect={rect:?}"
+                    );
                 }
             }
             // The active ground never spills past the tab's own frame: every
@@ -67,8 +122,9 @@ async fn selected_navigator_tab_background_stays_inside_shared_frame() {
                     assert_ne!(buffer[(x, area.y)].bg, theme::accent_soft_bg());
                 }
             }
+            let label_y = area.y + area.height.saturating_sub(1) / 2;
             let label_row: String = (area.x..area.right())
-                .map(|x| buffer[(x, area.y)].symbol())
+                .map(|x| buffer[(x, label_y)].symbol())
                 .collect();
             assert!(label_row.contains(tab.label()), "{tab:?}: {label_row}");
             if tab == NavigatorTab::Files {

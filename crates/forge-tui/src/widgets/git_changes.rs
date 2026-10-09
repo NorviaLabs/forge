@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use ratatui::widgets::{Paragraph, Widget};
 
 use crate::diff_view::{DiffEntry, DiffSide};
 use crate::theme;
@@ -63,13 +63,7 @@ impl GitChangesList<'_> {
 
 impl Widget for GitChangesList<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(theme::panel_border())
-            .style(theme::panel());
-        let inner = block.inner(area);
-        block.render(area, buf);
+        let inner = area;
         theme::fill(inner, buf, theme::panel());
         let rows = Self::rows(self.entries);
         let file_row = rows

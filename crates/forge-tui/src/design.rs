@@ -68,12 +68,24 @@ pub const PLAN_META_INDENT: u16 = 4;
 pub const COMPOSER_PAD_X: u16 = 2;
 /// A single top rule separates the composer from the working surface.
 pub const COMPOSER_BORDER_H: u16 = 1;
+/// Thickness of the session strip and workspace navbar. Held at least as thick
+/// as the empty comfortable-height composer: one rule plus its three-row
+/// surface ([`COMPOSER_BORDER_H`] + the comfortable minimum visual lines).
+pub const CHROME_BAND_H: u16 = 4;
+/// Thickness of the horizontal session strip (session-name chips). Three rows
+/// so chip labels sit on the centre row, centred both axes.
+pub const SESSION_STRIP_H: u16 = 3;
+/// Thickness of the navigator tab row (`Sessions` / `+` / `Files` / `Git`).
+/// A terminal cell's height is fixed by the font, so a single text row cannot
+/// be made taller without spilling into extra rows (which then can't centre the
+/// label). Held at one row; labels sit centred across it.
+pub const NAVIGATOR_TAB_H: u16 = 1;
 /// Maximum visible draft rows; longer drafts retain their text and scroll.
 pub const MAX_COMPOSER_INPUT_H: u16 = 4;
 pub const COMPACT_COMPOSER_INPUT_H: u16 = 3;
 pub const COMPACT_FRAME_H: u16 = 28;
 pub const HOME_MAX_WIDTH: u16 = 84;
-pub const NAVIGATOR_MIN_WIDTH: u16 = 24;
+pub const NAVIGATOR_MIN_WIDTH: u16 = 32;
 /// Footer height; no separate separator row.
 pub const FOOTER_H: u16 = 2;
 /// Modal inner horizontal padding (inside 1-col border).

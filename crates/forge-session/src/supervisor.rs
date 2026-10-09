@@ -1,7 +1,7 @@
 //! Concurrent repository session ownership behind a command/event API.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -716,6 +716,18 @@ pub struct RepositoryBootstrap {
     git_mutation: Arc<Mutex<()>>,
 }
 
+/// Name for the primary session, which represents the launched workspace
+/// rather than a task. Branch context belongs in the session peek, not the
+/// session row (`FORGE-DESIGN.md` §7.7), so it never names the session.
+fn primary_session_label(workspace: &Path) -> String {
+    workspace
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("primary")
+        .to_string()
+}
+
 impl RepositoryBootstrap {
     pub async fn session(
         &self,
@@ -840,12 +852,7 @@ impl RepositorySupervisor {
                 .register_session(
                     NewRepositorySession {
                         session_id: primary_session_id,
-                        label: branch
-                            .rsplit('/')
-                            .next()
-                            .filter(|label| !label.is_empty())
-                            .unwrap_or("primary")
-                            .to_string(),
+                        label: primary_session_label(&workspace),
                         workspace,
                         branch,
                         ownership: WorktreeOwnership::Primary,
@@ -959,12 +966,7 @@ impl RepositorySupervisor {
                 .find(|worktree| same_path(&worktree.path, &workspace))
                 .and_then(|worktree| worktree.branch.clone())
                 .ok_or(forge_storage::WorktreeError::DetachedHead)?;
-            let label = branch
-                .rsplit('/')
-                .next()
-                .filter(|label| !label.is_empty())
-                .unwrap_or("primary")
-                .to_string();
+            let label = primary_session_label(&workspace);
             control
                 .register_session(
                     NewRepositorySession {
@@ -3686,6 +3688,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use tokio::sync::Notify;
+
+    #[test]
+    fn primary_session_label_uses_the_workspace_directory_not_the_branch() {
+        assert_eq!(
+            primary_session_label(std::path::Path::new("/home/me/forge")),
+            "forge"
+        );
+        assert_eq!(primary_session_label(std::path::Path::new("/")), "primary");
+    }
 
     #[test]
     fn goal_verdict_parser_accepts_only_a_single_well_formed_line() {

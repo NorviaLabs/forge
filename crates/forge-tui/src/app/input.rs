@@ -180,6 +180,7 @@ impl TuiApp {
             return Ok(true);
         }
         if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git
+            && !self.horizontal_session_strip_focused
             && !self.workspace_files.explorer.search_focused
             && key.modifiers.is_empty()
             && key.code == KeyCode::Enter
@@ -204,7 +205,9 @@ impl TuiApp {
         }
         // The session verbs only apply on the Sessions tab; the Files tab hands
         // navigation to the explorer.
-        if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions {
+        if self.effective_navigator_tab() != crate::widgets::NavigatorTab::Sessions
+            && !self.horizontal_session_strip_focused
+        {
             if matches!(key.code, KeyCode::Char('x') if key.modifiers.is_empty()) {
                 return Ok(true);
             }

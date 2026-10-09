@@ -58,6 +58,9 @@ impl TuiApp {
             && self.focus.mode() == FocusMode::Navigation
             && self.focus.block() == self.navigator_tab_row_block;
         let pane_owns_keys = !self.navigator_tab_row_focused;
+        self.horizontal_session_strip_focused = self.horizontal_session_strip_focused
+            && self.focus.block() == FocusBlock::TaskStrip
+            && !self.navigator_tab_row_focused;
         self.workspace_files.explorer.focused = pane_owns_keys
             && matches!(self.focus.block(), FocusBlock::Files | FocusBlock::Search)
             && self.focus.mode() == FocusMode::Navigation
@@ -111,6 +114,7 @@ impl TuiApp {
     /// available tab's list). The pane keeps `focus.block()`, so `Tab` still
     /// cycles from it, but it paints as unfocused while the row is up.
     pub(super) fn focus_navigator_tab_row(&mut self) {
+        self.horizontal_session_strip_focused = false;
         if !self.navigator_tab_row_available() {
             return;
         }

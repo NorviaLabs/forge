@@ -134,7 +134,7 @@ impl TuiApp {
         } else if resource.is_some() {
             18.min(tabs_width)
         } else {
-            tabs_width
+            if self.child_view.is_some() { 40 } else { 18 }.min(tabs_width)
         };
         let mut tabs = vec![(FocusBlock::Sidebar, conversation, false, conversation_width)];
         if let Some((label, dirty)) = resource {
@@ -145,12 +145,17 @@ impl TuiApp {
                 tabs_width.saturating_sub(conversation_width),
             ));
         }
+        // The navbar is a band at least as thick as the composer; its labels sit
+        // on the band's centre row and the selected ground fills the whole tile.
+        let center_y = area.y + area.height.saturating_sub(1) / 2;
+        crate::theme::fill(area, frame.buffer_mut(), theme::panel());
         let mut x = area.x;
         for (block, label, dirty, width) in tabs {
             if width < 4 {
                 continue;
             }
-            let rect = ratatui::layout::Rect::new(x, area.y, width, 1);
+            let tile = ratatui::layout::Rect::new(x, area.y, width, area.height);
+            let rect = ratatui::layout::Rect::new(x, center_y, width, 1);
             let focused = !modal_open && self.focus.block() == block;
             let selected =
                 (block == FocusBlock::Workspace) == self.workspace_navigation.resource_selected();
@@ -159,7 +164,7 @@ impl TuiApp {
                     .chars()
                     .filter(|c| !c.is_control())
                     .collect::<String>(),
-                width.saturating_sub(4 + u16::from(dirty) * 2) as usize,
+                width.saturating_sub(3 + u16::from(dirty) * 2) as usize,
             );
             let label_style = if focused || selected {
                 theme::text().add_modifier(ratatui::style::Modifier::BOLD)
@@ -167,14 +172,25 @@ impl TuiApp {
                 theme::muted()
             };
             let label_style = if selected {
-                label_style.add_modifier(ratatui::style::Modifier::UNDERLINED)
+                label_style
+                    .patch(theme::accent_style())
+                    .bg(theme::accent_soft_bg())
             } else {
                 label_style
             };
+            crate::theme::fill(
+                tile,
+                frame.buffer_mut(),
+                if selected {
+                    theme::panel().bg(theme::accent_soft_bg())
+                } else {
+                    theme::panel()
+                },
+            );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(
-                        if focused { " > " } else { "   " },
+                        if focused { "> " } else { "  " },
                         if focused {
                             theme::accent_style()
                         } else {
@@ -183,17 +199,22 @@ impl TuiApp {
                     ),
                     Span::styled(label, label_style),
                     Span::styled(if dirty { " *" } else { "" }, theme::warn()),
-                ])),
+                ]))
+                .style(if selected {
+                    theme::panel().bg(theme::accent_soft_bg())
+                } else {
+                    theme::panel()
+                }),
                 rect,
             );
-            self.workspace_tab_areas.push((block, rect));
+            self.workspace_tab_areas.push((block, tile));
             x = x.saturating_add(width);
         }
         frame.render_widget(
             Paragraph::new(Line::styled(hint, theme::muted())),
             ratatui::layout::Rect::new(
                 area.right().saturating_sub(hint_width),
-                area.y,
+                center_y,
                 hint_width,
                 1,
             ),
@@ -475,6 +496,7 @@ impl TuiApp {
         self.navigator_new_session_area = None;
         self.navigator_list_area = None;
         self.task_strip_area = None;
+        self.task_strip_chips.clear();
         self.footer_area = None;
         self.background_area = None;
         self.dock_paint = DockPaintState {
@@ -614,14 +636,16 @@ impl TuiApp {
                     attention: task.attention,
                 })
                 .collect();
-            frame.render_widget(
-                TaskStrip {
-                    items: &strip_items,
-                    overflow: 0,
-                    focused: self.focus.block() == FocusBlock::TaskStrip,
-                },
-                regions.task_strip,
-            );
+            let strip = TaskStrip {
+                items: &strip_items,
+                overflow: 0,
+                focused: self.focus.block() == FocusBlock::TaskStrip
+                    && !self.navigator_tab_row_focused
+                    && !modal_open
+                    && (self.horizontal_session_strip_focused || regions.files.is_none()),
+            };
+            self.task_strip_chips = strip.chip_rects(regions.task_strip);
+            frame.render_widget(strip, regions.task_strip);
         }
         if let Some(files) = regions.files {
             let active_file = match self.workspace_navigation.current() {
@@ -630,39 +654,38 @@ impl TuiApp {
             };
             let navigator_focused = self.focus.block() == FocusBlock::TaskStrip
                 && !modal_open
-                && !self.navigator_tab_row_focused;
+                && !self.navigator_tab_row_focused
+                && !self.horizontal_session_strip_focused;
             {
                 // The left column is the navigator: a tab bar over either the
                 // session list or the file explorer (FORGE-DESIGN §7.7).
+                // One shared content origin; only the right seam separates panes.
+                let shell = Block::default()
+                    .borders(if regions.chat.width > 0 || regions.sidebar.is_some() {
+                        Borders::RIGHT
+                    } else {
+                        Borders::NONE
+                    })
+                    .border_style(theme::panel_border())
+                    .padding(ratatui::widgets::Padding::left(1))
+                    .style(theme::panel());
+                let content = shell.inner(files);
+                frame.render_widget(shell, files);
                 let rows = ratatui::layout::Layout::default()
                     .direction(ratatui::layout::Direction::Vertical)
                     .constraints([
-                        ratatui::layout::Constraint::Length(2),
+                        ratatui::layout::Constraint::Length(crate::design::NAVIGATOR_TAB_H),
                         ratatui::layout::Constraint::Min(0),
                     ])
-                    .split(files);
-                let tabs_area = ratatui::layout::Rect::new(
-                    rows[0].x,
-                    rows[0].y + rows[0].height.saturating_sub(1),
-                    rows[0].width,
-                    rows[0].height.min(1),
-                );
+                    .split(content);
+                let tabs_area = rows[0];
                 self.navigator_tabs_area = Some(tabs_area);
                 self.navigator_new_session_area =
                     crate::widgets::navigator::new_session_cell(tabs_area);
                 self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
                 if navigator_sessions {
-                    let block = Block::default()
-                        .borders(ratatui::widgets::Borders::ALL)
-                        .border_type(ratatui::widgets::BorderType::Rounded)
-                        .border_style(theme::panel_border())
-                        .padding(ratatui::widgets::Padding::horizontal(
-                            crate::design::PANE_PAD_X,
-                        ))
-                        .style(theme::panel());
-                    let list_area = block.inner(rows[1]);
-                    frame.render_widget(block, rows[1]);
+                    let list_area = rows[1];
                     self.navigator_list_area = Some(list_area);
                     let mut unnamed = 0usize;
                     let session_rows: Vec<crate::widgets::SessionRow> = self
@@ -838,7 +861,7 @@ impl TuiApp {
                             )),
                             ratatui::layout::Rect {
                                 x: rows[1].x + 1,
-                                y: rows[1].y + 2,
+                                y: rows[1].y,
                                 width: rows[1].width.saturating_sub(2),
                                 height: 1,
                             },
@@ -864,6 +887,16 @@ impl TuiApp {
                         },
                         rows[1],
                     );
+                    // The search field bleeds one cell into the shell inset
+                    // (`file_explorer.rs`); widen the pointer area to match so
+                    // that gutter stays clickable.
+                    let bleed = rows[1].x.min(crate::design::PANE_PAD_X);
+                    self.navigator_list_area = Some(ratatui::layout::Rect::new(
+                        rows[1].x.saturating_sub(bleed),
+                        rows[1].y,
+                        rows[1].width.saturating_add(bleed),
+                        rows[1].height,
+                    ));
                 }
                 // Paint tabs last so the list cannot erase the active ground
                 // on their shared divider.
@@ -872,7 +905,7 @@ impl TuiApp {
                         tab: navigator_tab,
                         needs_you,
                         git: self.navigator_git_available(),
-                        focused: self.navigator_tab_row_focused,
+                        focused: self.navigator_tab_row_focused && !modal_open,
                         hover: self.hover_navigator_tab,
                         row_stop: self.navigator_row_stop,
                         hover_new_session: self.hover_navigator_new_session,
