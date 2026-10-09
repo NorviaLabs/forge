@@ -401,22 +401,13 @@ impl TuiApp {
         let Some(tab) = navigator_tab_at(col, area, self.navigator_git_available()) else {
             return;
         };
-        self.navigator_tab = tab;
-        self.navigator_tab_explicit = true;
         // A click hands the keyboard to the tab's pane, so the row stops holding
         // it. The keyboard path deliberately does the opposite and keeps the row
         // up while switching (`FORGE-DESIGN §8.3`).
         self.navigator_tab_row_focused = false;
-        self.focus_block(match tab {
-            NavigatorTab::Sessions => FocusBlock::TaskStrip,
-            NavigatorTab::Files => FocusBlock::Files,
-            NavigatorTab::Git => FocusBlock::Files,
-        });
-        self.apply_navigator_git_tab(tab == NavigatorTab::Git);
-        self.git_grouped_list = tab == NavigatorTab::Git;
-        if self.git_grouped_list {
-            self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
-            self.refresh_diff_entries();
+        self.select_navigator_tab_from_row(tab);
+        if tab == NavigatorTab::Files {
+            self.focus_block(FocusBlock::Files);
         }
     }
 

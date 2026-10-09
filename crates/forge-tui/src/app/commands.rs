@@ -35,10 +35,14 @@ impl TuiApp {
     pub(super) fn close_github_issues(&mut self) {
         self.github_view.preview = false;
         self.github_view = Default::default();
-        self.workspace_navigation.pop_previous_valid(|view| {
+        let previous = self.workspace_navigation.pop_previous_valid(|view| {
             !matches!(view, WorkspaceView::GithubIssues) && Self::workspace_view_is_valid(view)
         });
-        self.focus_block(FocusBlock::Workspace);
+        if previous.is_some() {
+            self.focus_block(FocusBlock::Workspace);
+        } else {
+            self.select_workspace_tab(WorkspaceTab::Files);
+        }
     }
 
     pub(super) fn open_session_switcher(&mut self) {

@@ -23,13 +23,180 @@ fn workspace_selection_tracks_resource_navigation_without_dropping_it() {
     navigation.navigate_to(WorkspaceView::GithubIssues);
     assert_eq!(navigation.selected_tab(), WorkspaceTab::Git);
     assert_eq!(navigation.current().unwrap().tab(), WorkspaceTab::Git);
-    assert_eq!(navigation.pop_previous_valid(|_| true), Some(file));
+    assert_eq!(navigation.pop_previous_valid(|_| true), None);
+    navigation.select_tab(WorkspaceTab::Files);
+    assert_eq!(navigation.current(), Some(file));
     assert_eq!(navigation.selected_tab(), WorkspaceTab::Files);
     assert!(navigation.resource_selected());
     navigation.home();
     navigation.select_resource();
     assert_eq!(navigation.current(), None);
     assert!(!navigation.resource_selected());
+}
+
+#[test]
+fn workspace_tabs_keep_independent_bounded_histories() {
+    let mut navigation = WorkspaceNavigation::default();
+    for i in 0..WORKSPACE_HISTORY_LIMIT + 4 {
+        navigation.push_view(WorkspaceView::File(PathBuf::from(format!("{i}.rs"))));
+    }
+    let files = navigation.clone();
+    navigation.navigate_to(WorkspaceView::Diff);
+    navigation.navigate_to(WorkspaceView::GithubIssues);
+    assert_eq!(navigation.history(), &[WorkspaceView::Diff]);
+    navigation.select_tab(WorkspaceTab::Files);
+    assert_eq!(navigation.current(), files.current());
+    assert_eq!(navigation.history(), files.history());
+    assert_eq!(navigation.history().len(), WORKSPACE_HISTORY_LIMIT);
+    navigation.select_tab(WorkspaceTab::Git);
+    assert_eq!(
+        navigation.pop_previous_valid(|view| *view == WorkspaceView::Diff),
+        Some(WorkspaceView::Diff)
+    );
+    navigation.select_tab(WorkspaceTab::Files);
+    assert_eq!(navigation.history(), files.history());
+    navigation.home();
+    for tab in [WorkspaceTab::Files, WorkspaceTab::Git] {
+        navigation.select_tab(tab);
+        assert!(navigation.current().is_none());
+        assert!(navigation.history().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn git_tab_round_trip_preserves_dirty_editor_and_diff_state() {
+    use crate::widgets::NavigatorTab;
+
+    let (dir, mut app) = focus_test_app().await;
+    init_repo(dir.path());
+    let path = dir.path().join("retained.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.open_file_in_editor(&path);
+    let editor = app.editor_session.as_mut().unwrap();
+    editor.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    editor.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE));
+    let contents = editor.serialized_text();
+    let cursor = editor.cursor_col();
+    app.input.set_text("unsent draft");
+    app.input.move_left();
+    let draft_cursor = app.input.cursor;
+    app.select_navigator_tab_from_row(NavigatorTab::Git);
+    super::diff::settle_git(&mut app);
+    app.diff_view.scroll = 7;
+    let selected = app.diff_view.selected_path().map(Path::to_path_buf);
+
+    for _ in 0..3 {
+        app.select_navigator_tab_from_row(NavigatorTab::Files);
+        assert_eq!(
+            app.workspace_navigation.current(),
+            Some(WorkspaceView::File(path.clone()))
+        );
+        let editor = app.editor_session.as_ref().unwrap();
+        assert!(editor.is_dirty());
+        assert_eq!(editor.serialized_text(), contents);
+        assert_eq!(editor.cursor_col(), cursor);
+        assert!(!app.explorer_dialog.is_open());
+        app.enter_chat_composer();
+        assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Agent);
+        assert_eq!(app.input.text, "unsent draft");
+        assert_eq!(app.input.cursor, draft_cursor);
+        app.select_navigator_tab_from_row(NavigatorTab::Git);
+        assert_eq!(
+            app.workspace_navigation.current(),
+            Some(WorkspaceView::Diff)
+        );
+        assert_eq!(app.diff_view.scroll, 7);
+        assert_eq!(app.diff_view.selected_path(), selected.as_deref());
+    }
+    // Opening the same dirty file from Git must reveal it without reloading.
+    app.open_file_in_editor(&path);
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Files);
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().serialized_text(),
+        contents
+    );
+    // Pointer navigation shares the same non-destructive transition.
+    app.select_navigator_tab_from_row(NavigatorTab::Git);
+    draw_app(&mut app, 160, 50);
+    let area = app.navigator_tabs_area.unwrap();
+    let (_, rect) = crate::widgets::navigator::navigator_tab_rects(area, true)
+        .into_iter()
+        .find(|(tab, _)| *tab == NavigatorTab::Files)
+        .unwrap();
+    app.handle_mouse(crossterm::event::MouseEvent {
+        kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+        column: rect.x + 1,
+        row: rect.y,
+        modifiers: KeyModifiers::NONE,
+    })
+    .await
+    .unwrap();
+    assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Files);
+    assert_eq!(
+        app.editor_session.as_ref().unwrap().serialized_text(),
+        contents
+    );
+    assert!(app.editor_session.as_ref().unwrap().is_dirty());
+    assert_eq!(fs::read_to_string(path).unwrap(), "fn main() {}\n");
+}
+
+#[tokio::test]
+async fn workspace_tab_switch_keeps_github_subview_and_git_back_history() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("retained.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.open_file_in_editor(&path);
+    app.select_workspace_tab(WorkspaceTab::Git);
+    app.workspace_navigation
+        .navigate_to(WorkspaceView::GithubIssues);
+    app.github_view.scroll = 5;
+    app.select_workspace_tab(WorkspaceTab::Files);
+    app.select_workspace_tab(WorkspaceTab::Git);
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::GithubIssues)
+    );
+    assert_eq!(app.github_view.scroll, 5);
+    app.close_github_issues();
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::Diff)
+    );
+    app.select_workspace_tab(WorkspaceTab::Files);
+    assert_eq!(
+        app.workspace_navigation.current(),
+        Some(WorkspaceView::File(path))
+    );
+}
+
+#[tokio::test]
+async fn retained_workspace_resources_move_with_each_session() {
+    let (dir, mut app) = focus_test_app().await;
+    let first = app.session_runtime.session_id;
+    let second = uuid::Uuid::new_v4();
+    for (id, name, scroll) in [(first, "first.rs", 7), (second, "second.rs", 11)] {
+        let path = dir.path().join(name);
+        fs::write(&path, "fn main() {}\n").unwrap();
+        app.open_file_in_editor(&path);
+        app.select_workspace_tab(WorkspaceTab::Git);
+        app.diff_view.scroll = scroll;
+        app.save_session_view_state(id);
+    }
+    for (id, name, scroll) in [(first, "first.rs", 7), (second, "second.rs", 11)] {
+        app.restore_session_view_state(id);
+        assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Git);
+        assert_eq!(app.diff_view.scroll, scroll);
+        app.select_workspace_tab(WorkspaceTab::Files);
+        assert_eq!(
+            app.workspace_navigation.current(),
+            Some(WorkspaceView::File(dir.path().join(name)))
+        );
+        assert_eq!(
+            app.source_viewer.path.as_ref().unwrap(),
+            &dir.path().join(name).canonicalize().unwrap()
+        );
+        app.save_session_view_state(id);
+    }
 }
 
 #[tokio::test]

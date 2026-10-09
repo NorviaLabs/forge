@@ -1,12 +1,44 @@
 //! Workspace view navigation for [`TuiApp`].
 //!
-//! Split out of `app.rs` per #19. Conversation and file views share one
-//! navigation stack; these methods push, replace and validate views.
-//! Methods are moved verbatim.
+//! Session-local tab selection and retained resource navigation.
 
 use super::*;
 
 impl TuiApp {
+    /// Reveal a retained workspace without reopening its buffers or closing
+    /// its resources. First entry into Git initializes the existing review.
+    pub(super) fn select_workspace_tab(&mut self, tab: WorkspaceTab) {
+        self.workspace_navigation.select_tab(tab);
+        match tab {
+            WorkspaceTab::Agent => self.focus_block(FocusBlock::Composer),
+            WorkspaceTab::Files => {
+                self.navigator_tab = crate::widgets::NavigatorTab::Files;
+                self.navigator_tab_explicit = true;
+                self.workspace_files.visible = true;
+                self.git_grouped_list = false;
+                self.workspace_files.explorer.set_diff_filter(None);
+                self.focus_block(FocusBlock::Search);
+            }
+            WorkspaceTab::Git => {
+                self.navigator_tab = crate::widgets::NavigatorTab::Git;
+                self.navigator_tab_explicit = true;
+                self.workspace_files.visible = true;
+                if self.workspace_navigation.current().is_none() {
+                    self.open_git_view();
+                } else if self.diff_view_is_open() {
+                    self.git_grouped_list =
+                        self.diff_view.source == crate::diff_view::DiffSource::WorkingTree;
+                    if self.workspace_is_git_repository() {
+                        self.workspace_files.explorer.refresh_git_status();
+                        self.refresh_diff_entries();
+                    }
+                }
+                self.focus_block(FocusBlock::Files);
+            }
+        }
+        self.normalize_focus();
+    }
+
     /// Reveal the other retained pane. This changes presentation and focus,
     /// never the navigation stack or the open editor buffer.
     pub(super) fn switch_workspace_pane(&mut self) {

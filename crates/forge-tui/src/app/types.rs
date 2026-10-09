@@ -266,19 +266,51 @@ impl WorkspaceView {
     }
 }
 
-/// `current == None` means the center pane is empty (nothing open) — the
-/// widget renders a placeholder in that case; see `render.rs`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct WorkspaceNavigation {
+struct ResourceNavigation {
     current: Option<WorkspaceView>,
     history: Vec<WorkspaceView>,
+}
+
+/// Files and Git retain separate resource histories. Agent hides neither
+/// buffer; legacy split layouts can still display the last selected resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceNavigation {
+    files: ResourceNavigation,
+    git: ResourceNavigation,
+    resource_tab: WorkspaceTab,
     /// Kept with navigation so selection moves with the existing session state.
     selected_tab: WorkspaceTab,
 }
 
+impl Default for WorkspaceNavigation {
+    fn default() -> Self {
+        Self {
+            files: ResourceNavigation::default(),
+            git: ResourceNavigation::default(),
+            resource_tab: WorkspaceTab::Files,
+            selected_tab: WorkspaceTab::Agent,
+        }
+    }
+}
+
 impl WorkspaceNavigation {
+    fn resource(&self) -> &ResourceNavigation {
+        match self.resource_tab {
+            WorkspaceTab::Git => &self.git,
+            WorkspaceTab::Agent | WorkspaceTab::Files => &self.files,
+        }
+    }
+
+    fn resource_mut(&mut self) -> &mut ResourceNavigation {
+        match self.resource_tab {
+            WorkspaceTab::Git => &mut self.git,
+            WorkspaceTab::Agent | WorkspaceTab::Files => &mut self.files,
+        }
+    }
+
     pub(crate) fn current(&self) -> Option<WorkspaceView> {
-        self.current.clone()
+        self.resource().current.clone()
     }
 
     pub(crate) fn selected_tab(&self) -> WorkspaceTab {
@@ -286,47 +318,58 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn resource_selected(&self) -> bool {
-        self.selected_tab() != WorkspaceTab::Agent && self.current.is_some()
+        self.selected_tab() != WorkspaceTab::Agent && self.resource().current.is_some()
+    }
+
+    pub(crate) fn select_tab(&mut self, tab: WorkspaceTab) {
+        self.selected_tab = tab;
+        if tab != WorkspaceTab::Agent {
+            self.resource_tab = tab;
+        }
     }
 
     pub(crate) fn select_conversation(&mut self) {
-        self.selected_tab = WorkspaceTab::Agent;
+        self.select_tab(WorkspaceTab::Agent);
     }
 
     pub(crate) fn select_resource(&mut self) {
-        self.selected_tab = self
+        let tab = self
+            .resource()
             .current
             .as_ref()
             .map_or(WorkspaceTab::Agent, WorkspaceView::tab);
+        self.select_tab(tab);
     }
 
     #[cfg(test)]
     pub(crate) fn history(&self) -> &[WorkspaceView] {
-        &self.history
+        &self.resource().history
     }
 
     pub(crate) fn push_view(&mut self, view: WorkspaceView) {
-        self.selected_tab = view.tab();
-        if self.current.as_ref() == Some(&view) {
+        self.select_tab(view.tab());
+        let resource = self.resource_mut();
+        if resource.current.as_ref() == Some(&view) {
             return;
         }
-        if let Some(current) = self.current.take() {
-            self.history.push(current);
-            if self.history.len() > WORKSPACE_HISTORY_LIMIT {
-                let overflow = self.history.len() - WORKSPACE_HISTORY_LIMIT;
-                self.history.drain(0..overflow);
+        if let Some(current) = resource.current.take() {
+            resource.history.push(current);
+            if resource.history.len() > WORKSPACE_HISTORY_LIMIT {
+                let overflow = resource.history.len() - WORKSPACE_HISTORY_LIMIT;
+                resource.history.drain(0..overflow);
             }
         }
-        self.current = Some(view);
+        resource.current = Some(view);
     }
 
     pub(crate) fn replace_view(&mut self, view: WorkspaceView) {
-        self.selected_tab = view.tab();
-        self.current = Some(view);
+        self.select_tab(view.tab());
+        self.resource_mut().current = Some(view);
     }
 
     pub(crate) fn navigate_to(&mut self, view: WorkspaceView) {
-        if self.current.as_ref().map(WorkspaceView::kind) == Some(view.kind()) {
+        self.select_tab(view.tab());
+        if self.resource().current.as_ref().map(WorkspaceView::kind) == Some(view.kind()) {
             self.replace_view(view);
         } else {
             self.push_view(view);
@@ -334,23 +377,21 @@ impl WorkspaceNavigation {
     }
 
     pub(crate) fn home(&mut self) {
-        self.selected_tab = WorkspaceTab::Agent;
-        self.history.clear();
-        self.current = None;
+        *self = Self::default();
     }
 
     pub(crate) fn pop_previous_valid(
         &mut self,
         is_valid: impl Fn(&WorkspaceView) -> bool,
     ) -> Option<WorkspaceView> {
-        while let Some(candidate) = self.history.pop() {
+        while let Some(candidate) = self.resource_mut().history.pop() {
             if is_valid(&candidate) {
                 self.selected_tab = candidate.tab();
-                self.current = Some(candidate.clone());
+                self.resource_mut().current = Some(candidate.clone());
                 return Some(candidate);
             }
         }
-        self.current = None;
+        self.resource_mut().current = None;
         self.selected_tab = WorkspaceTab::Agent;
         None
     }

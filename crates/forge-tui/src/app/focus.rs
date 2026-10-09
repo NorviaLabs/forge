@@ -154,16 +154,11 @@ impl TuiApp {
             crate::widgets::NavigatorTab::Files => FocusBlock::Search,
             crate::widgets::NavigatorTab::Git => FocusBlock::Files,
         };
-        self.apply_navigator_git_tab(tab == crate::widgets::NavigatorTab::Git);
-        self.git_grouped_list = tab == crate::widgets::NavigatorTab::Git;
-        if tab == crate::widgets::NavigatorTab::Git {
-            self.workspace_files.visible = true;
-            self.diff_view.source = crate::diff_view::DiffSource::WorkingTree;
-            self.git_grouped_list = true;
-            self.refresh_diff_entries();
-        } else {
-            self.git_grouped_list = false;
-        }
+        self.select_workspace_tab(match tab {
+            crate::widgets::NavigatorTab::Sessions => WorkspaceTab::Agent,
+            crate::widgets::NavigatorTab::Files => WorkspaceTab::Files,
+            crate::widgets::NavigatorTab::Git => WorkspaceTab::Git,
+        });
         // Moving the keyboard to the new tab's pane is deliberate, so the row
         // travels with it instead of being dropped as a block change.
         self.navigator_tab_row_block = pane;
@@ -241,8 +236,7 @@ impl TuiApp {
     }
 
     pub(super) fn enter_chat_composer(&mut self) {
-        self.focus_block(FocusBlock::Composer);
-        self.normalize_focus();
+        self.select_workspace_tab(WorkspaceTab::Agent);
     }
 
     pub(super) fn enter_transient(&mut self, owner: TransientOwner) {
