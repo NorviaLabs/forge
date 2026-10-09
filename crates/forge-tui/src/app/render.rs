@@ -155,18 +155,21 @@ impl TuiApp {
             .as_ref()
             .is_some_and(|editor| editor.is_dirty());
         let selected = self.workspace_navigation.selected_tab();
-        let tabs = [
+        let mut tabs = vec![
             (WorkspaceTab::Agent, agent_label, false),
             (WorkspaceTab::Files, "Files".to_string(), file_dirty),
-            (WorkspaceTab::Git, "Git".to_string(), false),
         ];
+        if self.navigator_git_available() {
+            tabs.push((WorkspaceTab::Git, "Git".to_string(), false));
+        }
         // Selection belongs to the label; the separate > marker owns focus.
         // Keep the workspace ground neutral so navigation doesn't outshine chat.
-        let slot = (tabs_width / 3).max(4);
+        let tab_count = tabs.len();
+        let slot = (tabs_width / tab_count as u16).max(4);
         let center_y = area.bottom().saturating_sub(1);
         let mut x = area.x;
-        for (tab, label, dirty) in tabs {
-            let width = if tab == WorkspaceTab::Git {
+        for (index, (tab, label, dirty)) in tabs.into_iter().enumerate() {
+            let width = if index + 1 == tab_count {
                 area.x.saturating_add(tabs_width).saturating_sub(x)
             } else {
                 slot
