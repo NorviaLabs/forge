@@ -346,8 +346,9 @@ impl TuiApp {
                 || self.session_view.is_awaiting_question());
         // Agent owns the conversation; Files and Git own the work surface even
         // before a resource is open.
-        let agent_surface =
-            self.workspace_navigation.selected_tab() == WorkspaceTab::Agent || decision_pending;
+        let agent_surface = self.workspace_navigation.selected_tab() == WorkspaceTab::Agent
+            || decision_pending
+            || self.child_view.is_some();
         let expand_conversation = agent_surface;
         let navigator_active = !decision_pending
             && matches!(
@@ -371,7 +372,7 @@ impl TuiApp {
         let show_files = self.workspace_files.visible || task_mode;
         let input_h = if theme_picking {
             crate::layout::THEME_DOCK_H
-        } else {
+        } else if expand_conversation {
             composer_input_height(
                 &self.input,
                 area,
@@ -381,6 +382,9 @@ impl TuiApp {
                 self.pane_resize.preferences,
                 show_start,
             )
+        } else {
+            // The composer belongs to Agent; Files and Git reclaim its rows.
+            0
         };
         // At compact heights the active body needs the terminal's rows for
         // navigation, inspection or a decision. Keep the shell open; focusing
@@ -566,8 +570,6 @@ impl TuiApp {
         } else {
             self.workspace_navigation.selected_tab()
         };
-        let navigator_tab = crate::widgets::NavigatorTab::Sessions;
-        let navigator_sessions = true;
         let available = FocusAvailability {
             task_strip: regions.files.is_some(),
             search: active_tab == WorkspaceTab::Files
@@ -579,7 +581,7 @@ impl TuiApp {
                 && (regions.sidebar.is_some() || start_group.is_some()),
             bottom_panel: self.bottom_panel.open && regions.bottom_panel.height > 0,
             approval: decision_pending && regions.sidebar.is_some(),
-            composer: self.child_view.is_none(),
+            composer: self.child_view.is_none() && agent_surface,
         };
         if self.bottom_panel.open && regions.bottom_panel.height > 1 {
             self.resize_interactive_terminal(
@@ -695,10 +697,6 @@ impl TuiApp {
             frame.render_widget(strip, regions.task_strip);
         }
         if let Some(files) = regions.files {
-            let active_file = match self.workspace_navigation.current() {
-                Some(WorkspaceView::File(path)) => Some(path),
-                _ => None,
-            };
             let navigator_focused = self.focus.block() == FocusBlock::TaskStrip
                 && !modal_open
                 && !self.navigator_tab_row_focused
@@ -731,7 +729,7 @@ impl TuiApp {
                     crate::widgets::navigator::new_session_cell(tabs_area);
                 self.navigator_list_area = Some(rows[1]);
                 let needs_you = self.session_chrome.iter().filter(|t| t.attention).count();
-                if navigator_sessions {
+                {
                     let list_area = rows[1];
                     self.navigator_list_area = Some(list_area);
                     let mut unnamed = 0usize;
@@ -831,128 +829,15 @@ impl TuiApp {
                         },
                         list_area,
                     );
-                } else if matches!(
-                    self.workspace_navigation.current(),
-                    Some(WorkspaceView::GithubIssues)
-                ) {
-                    let visible = self.github_view.visible();
-                    let lines: Vec<Line> = std::iter::once(Line::from(format!(
-                        "Issues · / {}",
-                        self.github_view.filter
-                    )))
-                    .chain(
-                        visible
-                            .iter()
-                            .skip(
-                                self.github_view
-                                    .list_start(rows[1].height.saturating_sub(3) as usize),
-                            )
-                            .map(|index| {
-                                let issue = &self.github_view.items[*index];
-                                Line::styled(
-                                    format!(
-                                        "{} #{} {}",
-                                        if *index == self.github_view.selected {
-                                            ">"
-                                        } else {
-                                            " "
-                                        },
-                                        issue.number,
-                                        issue
-                                            .title
-                                            .chars()
-                                            .filter(|c| !c.is_control())
-                                            .collect::<String>()
-                                    ),
-                                    if *index == self.github_view.selected
-                                        && self.focus.block() == FocusBlock::Files
-                                    {
-                                        crate::theme::selected_row()
-                                    } else {
-                                        crate::theme::text()
-                                    },
-                                )
-                            }),
-                    )
-                    .collect();
-                    frame.render_widget(
-                        Paragraph::new(lines).block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(ratatui::widgets::BorderType::Rounded)
-                                .border_style(crate::theme::panel_border()),
-                        ),
-                        rows[1],
-                    );
-                } else if navigator_tab == crate::widgets::NavigatorTab::Git {
-                    let git_list_focused = self.focus.block() == FocusBlock::Files
-                        && !modal_open
-                        && !self.navigator_tab_row_focused;
-                    let git_hover = git_list_focused.then_some(self.hover_file).flatten();
-                    frame.render_widget(
-                        crate::widgets::git_changes::GitChangesList {
-                            entries: &self.diff_view.entries,
-                            selected: self.diff_view.selected,
-                            focused: self.focus.block() == FocusBlock::Files
-                                && !modal_open
-                                && !self.navigator_tab_row_focused,
-                            hover: git_hover,
-                        },
-                        rows[1],
-                    );
-                    if self.diff_view.entries.is_empty() && rows[1].height > 3 {
-                        frame.render_widget(
-                            Paragraph::new(Line::styled(
-                                "No staged or unstaged changes",
-                                crate::theme::muted(),
-                            )),
-                            ratatui::layout::Rect {
-                                x: rows[1].x + 1,
-                                y: rows[1].y,
-                                width: rows[1].width.saturating_sub(2),
-                                height: 1,
-                            },
-                        );
-                    }
-                } else {
-                    frame.render_widget(
-                        FileExplorerWidget {
-                            explorer: &mut self.workspace_files.explorer,
-                            active_file: active_file.as_deref(),
-                            show_search: true,
-                            focused: crate::widgets::background_focused(
-                                matches!(
-                                    self.focus.block(),
-                                    FocusBlock::Files | FocusBlock::Search
-                                ),
-                                modal_open,
-                            ) && !self.navigator_tab_row_focused,
-                            search_active: self.focus.block() == FocusBlock::Search
-                                && !modal_open
-                                && !self.navigator_tab_row_focused,
-                            hover: self.hover_file,
-                        },
-                        rows[1],
-                    );
-                    // The search field bleeds one cell into the shell inset
-                    // (`file_explorer.rs`); widen the pointer area to match so
-                    // that gutter stays clickable.
-                    let bleed = rows[1].x.min(crate::design::PANE_PAD_X);
-                    self.navigator_list_area = Some(ratatui::layout::Rect::new(
-                        rows[1].x.saturating_sub(bleed),
-                        rows[1].y,
-                        rows[1].width.saturating_add(bleed),
-                        rows[1].height,
-                    ));
                 }
                 // Paint tabs last so the list cannot erase the active ground
                 // on their shared divider.
                 frame.render_widget(
                     crate::widgets::NavigatorTabs {
-                        tab: navigator_tab,
+                        tab: crate::widgets::NavigatorTab::Sessions,
                         needs_you,
                         git: self.navigator_git_available(),
-                        sessions_only: navigator_sessions,
+                        sessions_only: true,
                         focused: self.navigator_tab_row_focused && !modal_open,
                         hover: self.hover_navigator_tab,
                         row_stop: self.navigator_row_stop,
@@ -2249,7 +2134,7 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     );
                 }
             }
-        } else {
+        } else if regions.input.height > 0 {
             self.composer_area = Some(regions.input);
             let composer_focused = crate::widgets::background_focused(
                 self.child_view.is_none()
@@ -2276,6 +2161,8 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                     frame.set_cursor_position((x, y));
                 }
             }
+        } else {
+            self.composer_area = None;
         }
         // Floating search owns its cells after the task group and composer
         // have painted; otherwise the start screen covers the selected row.

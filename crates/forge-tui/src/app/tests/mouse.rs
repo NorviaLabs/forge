@@ -566,8 +566,6 @@ async fn hovering_the_new_session_cell_does_not_read_as_a_tab() {
 #[tokio::test]
 async fn click_selects_a_navigator_session_row() {
     let (_dir, mut app) = focus_test_app().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
 
     app.task_strip_selection = 99;
@@ -652,8 +650,6 @@ async fn motion_sets_file_hover_without_moving_focus() {
 async fn clicking_search_focuses_input_without_opening_a_tree_row() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
-    app.navigator_tab = crate::widgets::NavigatorTab::Files;
-    app.navigator_tab_explicit = true;
     render_app_text(&mut app, 120, 40);
     let list = app.navigator_list_area.expect("file list drawn");
     let selected = app.workspace_files.explorer.selected_path.clone();
@@ -671,8 +667,6 @@ async fn clicking_search_focuses_input_without_opening_a_tree_row() {
 #[tokio::test]
 async fn motion_hovers_a_session_row() {
     let (_dir, mut app) = focus_test_app().await;
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.navigator_list_area = Some(ratatui::layout::Rect::new(0, 5, 40, 10));
     let before = app.focus.block();
 
@@ -906,8 +900,6 @@ async fn click_on_a_navigator_row_drops_the_tab_row_focus() {
         attention: false,
         updated_at: chrono::Utc::now(),
     });
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
     app.focus_navigator_tab_row();
     assert!(app.navigator_tab_row_focused, "the row holds the keyboard");

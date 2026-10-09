@@ -1909,11 +1909,6 @@ pub struct TuiApp {
     /// this is `Some`, the transcript pane shows that session, not this one's.
     pub(crate) child_view: Option<ChildSessionView>,
     pub(crate) task_strip_selection: usize,
-    /// Which tab the left navigator shows (`FORGE-DESIGN §7.7`).
-    pub(crate) navigator_tab: crate::widgets::NavigatorTab,
-    /// Set once the operator picks a tab explicitly; until then the default
-    /// derives from the number of sessions (`Sessions` when >1, else `Files`).
-    pub(crate) navigator_tab_explicit: bool,
     /// True while the navigator's **tab row** owns the keyboard: `↑` at the top
     /// of either tab's list moves up into the row, where `←`/`→` switch tabs and
     /// `Enter`/`↓` step back into the pane (`FORGE-DESIGN §8.3`).

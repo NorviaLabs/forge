@@ -10,7 +10,9 @@ impl TuiApp {
     pub(super) fn focus_availability(&self) -> FocusAvailability {
         let decision =
             self.selected_pending_hitl().is_some() || self.selected_pending_question().is_some();
-        let agent = self.workspace_navigation.selected_tab() == WorkspaceTab::Agent || decision;
+        let agent = self.workspace_navigation.selected_tab() == WorkspaceTab::Agent
+            || decision
+            || self.child_view.is_some();
         FocusAvailability {
             task_strip: true,
             search: !agent,
@@ -22,7 +24,7 @@ impl TuiApp {
             sidebar: agent,
             bottom_panel: self.bottom_panel.open,
             approval: decision,
-            composer: self.child_view.is_none(),
+            composer: self.child_view.is_none() && agent,
         }
     }
 
@@ -51,12 +53,14 @@ impl TuiApp {
         if !available.contains(self.focus.block()) {
             let decision = self.selected_pending_hitl().is_some()
                 || self.selected_pending_question().is_some();
+            // Land on a block the frame actually owns: a decision, the Agent
+            // conversation, or the resource list. Never the hidden composer.
             self.focus.set_navigation(if decision {
                 FocusBlock::Approval
-            } else if self.child_view.is_some() {
+            } else if available.sidebar {
                 FocusBlock::Sidebar
             } else {
-                FocusBlock::Composer
+                FocusBlock::Files
             });
             if self.child_view.is_some() {
                 self.workspace_navigation.select_conversation();
@@ -161,8 +165,6 @@ impl TuiApp {
     /// the row never hides an invisible key owner.
     pub(super) fn select_navigator_tab_from_row(&mut self, tab: crate::widgets::NavigatorTab) {
         let row_was_focused = self.navigator_tab_row_focused;
-        self.navigator_tab = tab;
-        self.navigator_tab_explicit = true;
         self.navigator_row_stop = crate::widgets::NavigatorRowStop::for_tab(tab);
         self.navigator_peek = None;
         self.navigator_reply.clear();

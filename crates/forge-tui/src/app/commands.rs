@@ -25,8 +25,6 @@ impl TuiApp {
     pub(super) fn open_github_issues(&mut self) {
         self.workspace_navigation
             .navigate_to(WorkspaceView::GithubIssues);
-        self.navigator_tab = crate::widgets::NavigatorTab::Git;
-        self.navigator_tab_explicit = true;
         self.github_view
             .load(self.session_view.workspace_root().to_path_buf());
         self.focus_block(FocusBlock::Workspace);

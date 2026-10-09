@@ -268,7 +268,12 @@ pub fn split_areas_with_preferences(
         height: area.height,
     };
     let fb = 0;
-    let input_h = input_h.clamp(2, THEME_DOCK_H);
+    // Zero means the composer is hidden (a resource tab owns the surface).
+    let input_h = if input_h == 0 {
+        0
+    } else {
+        input_h.clamp(2, THEME_DOCK_H)
+    };
     let qh = queue_h.min(8);
     let bg_h = background_h.min(8);
     let footer_h = footer_h.min(2);
@@ -354,7 +359,7 @@ pub fn split_areas_with_preferences(
         Constraint::Length(panel_h),
         Constraint::Length(qh),
         Constraint::Length(bg_h),
-        Constraint::Length(COMPOSER_GAP_Y),
+        Constraint::Length(if input_h > 0 { COMPOSER_GAP_Y } else { 0 }),
         Constraint::Length(input_h),
     ])
     .split(work);

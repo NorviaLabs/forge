@@ -1192,9 +1192,8 @@ async fn resizable_pane_fixture() -> (TempDir, TuiApp) {
         .messages
         .push(Message::new(MessageRole::User, "layout fixture"));
     app.workspace_files.visible = true;
-    app.workspace_navigation.navigate_to(WorkspaceView::Diff);
+    app.navigate_to_workspace_view(WorkspaceView::Diff);
     app.bottom_panel.open = true;
-    app.focus_block(FocusBlock::Composer);
     (dir, app)
 }
 
@@ -1271,11 +1270,11 @@ async fn resizing_a_boundary_emphasises_its_grip() {
         .unwrap();
     assert_eq!(
         app.pane_resize.interaction.unwrap().boundary,
-        Some(ResizeBoundary::Files)
+        Some(ResizeBoundary::Conversation)
     );
 
     let buffer = render_app_buffer(&mut app, 160, 40);
-    let seam = app.resize_seam(ResizeBoundary::Files).unwrap();
+    let seam = app.resize_seam(ResizeBoundary::Conversation).unwrap();
     let cell = &buffer[(seam.x, seam.y + seam.height / 2)];
     assert_eq!(cell.style().fg, Some(crate::theme::accent_color()));
     assert!(cell
@@ -1291,6 +1290,7 @@ async fn hovering_a_seam_emphasises_its_grip() {
     let (_dir, mut app) = resizable_pane_fixture().await;
     render_app_text(&mut app, 160, 40);
     let seam = app.resize_seam(ResizeBoundary::Conversation).unwrap();
+    let focus_before = app.focus.block();
 
     app.handle_mouse(event::MouseEvent {
         kind: crossterm::event::MouseEventKind::Moved,
@@ -1302,11 +1302,7 @@ async fn hovering_a_seam_emphasises_its_grip() {
     .unwrap();
     assert_eq!(app.hover_resize, Some(ResizeBoundary::Conversation));
     assert!(app.pane_resize.interaction.is_none(), "hover never drags");
-    assert_eq!(
-        app.focus.block(),
-        FocusBlock::Composer,
-        "hover never moves focus"
-    );
+    assert_eq!(app.focus.block(), focus_before, "hover never moves focus");
 
     let buffer = render_app_buffer(&mut app, 160, 40);
     let cell = &buffer[(seam.x, seam.y + seam.height / 2)];

@@ -1947,8 +1947,6 @@ async fn the_navigator_tabs_do_not_repeat_the_selected_pane_title() {
         NavigatorTab::Files,
         NavigatorTab::Git,
     ] {
-        app.navigator_tab = tab;
-        app.navigator_tab_explicit = true;
         for focused in [true, false] {
             app.focus_block(if !focused {
                 FocusBlock::Composer
@@ -2017,7 +2015,6 @@ async fn ctrl_tab_switches_the_navigator() {
     app.handle_key(press(KeyCode::Char('1'), KeyModifiers::CONTROL))
         .await
         .unwrap();
-    assert!(app.navigator_tab_explicit);
     assert_eq!(app.effective_navigator_tab(), NavigatorTab::Sessions);
 
     app.handle_key(press(KeyCode::Char('2'), KeyModifiers::CONTROL))
@@ -2034,11 +2031,8 @@ async fn ctrl_tab_switches_the_navigator() {
 /// first row it keeps its cursor meaning (`FORGE-DESIGN §8.3`).
 #[tokio::test]
 async fn up_at_the_top_of_the_session_list_reaches_the_tab_row() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let _ = create_promptless_session(&mut app).await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
 
     app.task_strip_selection = 1;
@@ -2285,10 +2279,7 @@ async fn clicking_the_plus_cell_creates_a_session_instead_of_switching_tabs() {
 /// (`FORGE-DESIGN §8.3`).
 #[tokio::test]
 async fn tab_still_cycles_blocks_from_the_tab_row() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
 
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
@@ -2314,10 +2305,7 @@ async fn tab_still_cycles_blocks_from_the_tab_row() {
 /// Session verbs are inert on the row: they would act on the list it covers.
 #[tokio::test]
 async fn session_verbs_do_not_fire_from_the_tab_row() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
 
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
@@ -2353,10 +2341,7 @@ async fn session_verbs_do_not_fire_from_the_tab_row() {
 /// navigator column, not a block that can linger off-screen.
 #[tokio::test]
 async fn leaving_the_navigator_clears_the_tab_row() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
 
     app.handle_key(press(KeyCode::Up, KeyModifiers::NONE))
@@ -2400,10 +2385,7 @@ async fn a_single_session_still_reaches_the_tab_row() {
 /// `Space` opens the inline peek; typing fills the reply; `Esc` collapses.
 #[tokio::test]
 async fn space_peeks_and_esc_collapses_in_the_navigator() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
     let id = app.session_chrome[0].session_id;
 
@@ -2434,11 +2416,8 @@ async fn space_peeks_and_esc_collapses_in_the_navigator() {
 /// `x` on an idle managed session archives and cleans it; the primary is refused.
 #[tokio::test]
 async fn x_archives_and_cleans_an_idle_managed_session() {
-    use crate::widgets::NavigatorTab;
     let (_dir, mut app, handle) = app_with_supervisor().await;
     let sibling = create_promptless_session(&mut app).await;
-    app.navigator_tab = NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.task_strip_selection = app
         .session_chrome
         .iter()
@@ -2459,8 +2438,6 @@ async fn x_archives_and_cleans_an_idle_managed_session() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
@@ -2562,8 +2539,6 @@ async fn a_clean_archive_reports_the_checkout_removed_not_uncommitted_work() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await
@@ -2641,8 +2616,6 @@ async fn confirmed_dirty_archive_removes_the_worktree() {
         .iter()
         .position(|item| item.session_id == sibling.session_id)
         .expect("sibling still in list");
-    app.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-    app.navigator_tab_explicit = true;
     app.focus_block(FocusBlock::TaskStrip);
     app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
         .await

@@ -72,8 +72,6 @@ impl TuiApp {
     /// `Esc` from either pane of the tab — the list and the patch are one
     /// surface spread across two blocks.
     pub(super) fn leave_git_tab(&mut self) {
-        self.navigator_tab = crate::widgets::NavigatorTab::Files;
-        self.navigator_tab_explicit = true;
         self.git_grouped_list = false;
         self.close_diff_view();
         self.focus_block(FocusBlock::Search);

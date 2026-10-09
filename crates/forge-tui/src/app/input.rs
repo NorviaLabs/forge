@@ -171,8 +171,6 @@ impl TuiApp {
         // trust modal, and the session is named later from the first prompt
         // submitted in its composer.
         if matches!(key.code, KeyCode::Char('n') if key.modifiers.is_empty()) {
-            self.navigator_tab = crate::widgets::NavigatorTab::Sessions;
-            self.navigator_tab_explicit = true;
             self.focus.set_navigation(FocusBlock::TaskStrip);
             self.navigator_peek = None;
             self.navigator_reply.clear();
@@ -2739,7 +2737,8 @@ mod tests {
     /// Focus the composer in navigation mode, which is what `handle_key` needs
     /// before it will route a press to the chat composer.
     fn focus_composer(app: &mut TuiApp) {
-        app.focus.set_navigation(app.focus.block());
+        // The composer belongs to Agent; entering it selects that tab.
+        app.select_workspace_tab(WorkspaceTab::Agent);
         app.focus.set_navigation(FocusBlock::Composer);
     }
 
