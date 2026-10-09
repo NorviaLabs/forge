@@ -2191,8 +2191,23 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             .scratchpad_status()
             .map(|(lines, dirty)| crate::widgets::footer::ScratchpadChip { lines, dirty });
 
+        // A narrow resource tab shows either its list or the selected resource;
+        // name the key that swaps them so the back action is discoverable.
+        let narrow_resource = active_tab != WorkspaceTab::Agent
+            && regions.sidebar.is_none()
+            && regions.chat.width > 0;
+        let footer_hint = contextual_hint.clone().or_else(|| {
+            narrow_resource.then(|| {
+                if self.focus.block() == FocusBlock::Workspace {
+                    "⇧Tab list · Ctrl+E agent".to_string()
+                } else {
+                    "Tab content · Ctrl+E agent".to_string()
+                }
+            })
+        });
+
         let footer = FooterModel {
-            hints: contextual_hint.unwrap_or_default(),
+            hints: footer_hint.unwrap_or_default(),
             // The footer's own per-chip hint and the task strip's session
             // hint share the row with the chips; every other hint source
             // (HITL/dialog/transient) is blocking and takes the whole row.

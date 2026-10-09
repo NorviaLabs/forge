@@ -1348,3 +1348,16 @@ async fn workspace_header_handles_detached_head_and_long_values() {
     let rendered = render_app_text(&mut app, 120, 40);
     assert!(!rendered.contains("detached"), "{rendered}");
 }
+
+/// A narrow resource tab names the key that swaps its list and resource, so the
+/// back action is discoverable.
+#[tokio::test]
+async fn narrow_resource_shows_a_back_to_list_hint() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "fn main() {}\n").unwrap();
+    app.open_file_in_editor(&path);
+    app.focus_block(FocusBlock::Workspace);
+    let rendered = render_app_text(&mut app, 80, 18);
+    assert!(rendered.contains("Tab list"), "{rendered}");
+}
