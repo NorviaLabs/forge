@@ -162,6 +162,14 @@ impl TuiApp {
             self.select_workspace_tab(*tab);
             return Ok(());
         }
+        // With the navigator column collapsed, the status-bar sessions chip is
+        // the explicit entry into the session chooser.
+        if let Some(area) = self.sessions_chip_area {
+            if cell_inside(area, col, row) {
+                self.open_session_switcher();
+                return Ok(());
+            }
+        }
         // The `+` cell is checked before the tab row: it shares the `Sessions`
         // tab's right edge and the `Files` tab's left edge, so the tab branch
         // would otherwise claim the click as a tab switch.

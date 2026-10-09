@@ -1474,3 +1474,25 @@ async fn navigator_flush_tiles_and_file_footer_do_not_activate_rows() {
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
 }
+
+/// With the navigator column collapsed, the status-bar sessions chip is the
+/// explicit entry into the session chooser.
+#[tokio::test]
+async fn clicking_the_collapsed_sessions_chip_opens_the_switcher() {
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.sessions_chip_area = Some(ratatui::layout::Rect::new(0, 0, 12, 1));
+
+    app.handle_mouse(left_click(2, 0)).await.unwrap();
+
+    assert!(
+        matches!(
+            app.overlay,
+            Some(crate::overlays::Overlay::SessionSwitcher { .. })
+        ),
+        "a chip click opens the session chooser"
+    );
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}

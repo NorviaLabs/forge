@@ -545,6 +545,7 @@ impl TuiApp {
         self.navigator_list_area = None;
         self.task_strip_area = None;
         self.task_strip_chips.clear();
+        self.sessions_chip_area = None;
         self.footer_area = None;
         self.background_area = None;
         self.dock_paint = DockPaintState {
@@ -645,6 +646,10 @@ impl TuiApp {
                 sessions_chip: sessions_chip.as_deref(),
             },
             regions.status,
+        );
+        self.sessions_chip_area = crate::widgets::status::StatusBar::sessions_chip_rect(
+            regions.status,
+            sessions_chip.as_deref(),
         );
         if regions.approve_all_warning.height > 0 {
             frame.render_widget(

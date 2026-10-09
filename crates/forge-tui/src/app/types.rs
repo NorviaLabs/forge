@@ -2129,6 +2129,9 @@ pub struct TuiApp {
     pub(crate) navigator_list_area: Option<ratatui::layout::Rect>,
     /// Session task-strip rect from the last draw.
     pub(crate) task_strip_area: Option<ratatui::layout::Rect>,
+    /// Collapsed-navigator sessions chip rect from the last draw. A click opens
+    /// the session switcher.
+    pub(crate) sessions_chip_area: Option<ratatui::layout::Rect>,
     pub(crate) task_strip_chips: Vec<(usize, ratatui::layout::Rect)>,
     pub(crate) horizontal_session_strip_focused: bool,
     /// Footer rect from the last draw.
