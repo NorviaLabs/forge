@@ -1324,3 +1324,27 @@ async fn hovering_a_seam_emphasises_its_grip() {
         crate::theme::border().fg
     );
 }
+
+/// The workspace header labels a detached HEAD and elides long identity values
+/// without overflowing at narrow widths.
+#[tokio::test]
+async fn workspace_header_handles_detached_head_and_long_values() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "Inspect this project."));
+    app.session_chrome[0].branch = "HEAD".into();
+    app.session_chrome[0].label = "a-very-long-session-title-that-must-elide".into();
+    for width in [80, 100, 120] {
+        let rendered = render_app_text(&mut app, width, 40);
+        assert!(rendered.contains("detached"), "{width}: {rendered}");
+        assert!(
+            !rendered.contains("HEAD"),
+            "detached HEAD is not a branch name: {width}: {rendered}"
+        );
+    }
+    // No branch metadata renders no branch text.
+    app.session_chrome[0].branch.clear();
+    let rendered = render_app_text(&mut app, 120, 40);
+    assert!(!rendered.contains("detached"), "{rendered}");
+}

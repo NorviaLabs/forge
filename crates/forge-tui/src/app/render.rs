@@ -259,7 +259,14 @@ impl TuiApp {
             } else {
                 item.label.clone()
             };
-            return (title, item.branch.clone());
+            // `HEAD` is Git's detached marker, not a branch name; an empty
+            // branch means the worktree has no branch metadata yet.
+            let branch = match item.branch.as_str() {
+                "" => String::new(),
+                "HEAD" => "detached".to_string(),
+                branch => branch.to_string(),
+            };
+            return (title, branch);
         }
         ("Session".to_string(), String::new())
     }
