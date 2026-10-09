@@ -650,6 +650,7 @@ async fn motion_sets_file_hover_without_moving_focus() {
 async fn clicking_search_focuses_input_without_opening_a_tree_row() {
     let (_dir, mut app) = focus_test_app().await;
     app.workspace_files.visible = true;
+    app.select_workspace_tab(WorkspaceTab::Files);
     render_app_text(&mut app, 120, 40);
     let list = app.navigator_list_area.expect("file list drawn");
     let selected = app.workspace_files.explorer.selected_path.clone();

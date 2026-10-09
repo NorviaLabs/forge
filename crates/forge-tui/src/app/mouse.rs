@@ -146,6 +146,38 @@ impl TuiApp {
         if self.pointer_blocked() {
             return Ok(());
         }
+        // The composer popups float above the input, over the sidebar column,
+        // so their rows have to be claimed before the surface they cover.
+        if let Some(index) = self
+            .slash_popup_rows
+            .iter()
+            .find(|(_, rect)| cell_inside(*rect, col, row))
+            .map(|(index, _)| *index)
+        {
+            self.slash_suggestions.selected = index;
+            self.enter_chat_composer();
+            // The second click accepts, the way `Tab` does.
+            if double {
+                self.complete_slash_suggestion();
+            }
+            return Ok(());
+        }
+        if let Some(index) = self
+            .inline_search_rows
+            .iter()
+            .find(|(_, rect)| cell_inside(*rect, col, row))
+            .map(|(index, _)| *index)
+        {
+            if let Some(state) = self.inline_search.as_mut() {
+                state.selected = index;
+            }
+            self.enter_chat_composer();
+            // The second click accepts, the way `Enter` does.
+            if double {
+                self.insert_inline_search_selection();
+            }
+            return Ok(());
+        }
         if let Some((index, _)) = self
             .start_prompt_rows
             .iter()
@@ -231,38 +263,6 @@ impl TuiApp {
                 self.enter_chat_composer();
                 return Ok(());
             }
-        }
-        // The composer popups float above the input, over the sidebar column,
-        // so their rows have to be claimed before the surface they cover.
-        if let Some(index) = self
-            .slash_popup_rows
-            .iter()
-            .find(|(_, rect)| cell_inside(*rect, col, row))
-            .map(|(index, _)| *index)
-        {
-            self.slash_suggestions.selected = index;
-            self.enter_chat_composer();
-            // The second click accepts, the way `Tab` does.
-            if double {
-                self.complete_slash_suggestion();
-            }
-            return Ok(());
-        }
-        if let Some(index) = self
-            .inline_search_rows
-            .iter()
-            .find(|(_, rect)| cell_inside(*rect, col, row))
-            .map(|(index, _)| *index)
-        {
-            if let Some(state) = self.inline_search.as_mut() {
-                state.selected = index;
-            }
-            self.enter_chat_composer();
-            // The second click accepts, the way `Enter` does.
-            if double {
-                self.insert_inline_search_selection();
-            }
-            return Ok(());
         }
         if let Some(area) = self.queue_area {
             if cell_inside(area, col, row) {
@@ -539,6 +539,15 @@ impl TuiApp {
         self.hover_overlay = self.overlay_row_at(col, row);
         self.hover_resize = None;
         if self.pointer_blocked() {
+            return;
+        }
+        // Floating composer menus cover navigation and starter rows too.
+        if self
+            .slash_popup_rows
+            .iter()
+            .chain(self.inline_search_rows.iter())
+            .any(|(_, area)| cell_inside(*area, col, row))
+        {
             return;
         }
         // The seam itself is the target, so the grip lights up for the whole

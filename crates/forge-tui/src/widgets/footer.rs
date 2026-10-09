@@ -150,11 +150,12 @@ fn ctx_label(pct: f64) -> &'static str {
 
 fn lifecycle_label(life: TurnLifecycle) -> (&'static str, Style) {
     match life {
-        TurnLifecycle::Working => ("running", theme::info()),
-        TurnLifecycle::Waiting => ("waiting", theme::warn()),
-        TurnLifecycle::Failed => ("err", theme::danger()),
+        TurnLifecycle::Working => ("working", theme::info()),
+        TurnLifecycle::Waiting => ("needs you", theme::warn()),
+        TurnLifecycle::Failed => ("failed", theme::danger()),
         TurnLifecycle::Cancelled | TurnLifecycle::Interrupted => ("stopped", theme::dim()),
-        TurnLifecycle::Ready | TurnLifecycle::Completed => ("ready", theme::ok()),
+        TurnLifecycle::Ready => ("ready", theme::text_secondary()),
+        TurnLifecycle::Completed => ("finished", theme::ok()),
     }
 }
 
@@ -664,6 +665,7 @@ impl FooterBar<'_> {
             right.push(Span::raw(" "));
         }
         right.extend([Span::styled(label, label_style), Span::raw(" ")]);
+        let lifecycle_spans = right.len();
         if let Some(detail) = m
             .lifecycle_detail
             .as_deref()
@@ -700,7 +702,9 @@ impl FooterBar<'_> {
             ));
         }
         if dim {
-            for span in right.iter_mut() {
+            // A pending decision dims configuration and telemetry, while the
+            // state naming the required action remains prominent.
+            for span in right.iter_mut().skip(lifecycle_spans) {
                 span.style = theme::dim();
             }
         }
@@ -803,6 +807,38 @@ fn truncate_middle(text: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lifecycle_words_distinguish_delivery_from_readiness_and_required_input() {
+        for (state, label) in [
+            (TurnLifecycle::Ready, "ready"),
+            (TurnLifecycle::Working, "working"),
+            (TurnLifecycle::Waiting, "needs you"),
+            (TurnLifecycle::Completed, "finished"),
+            (TurnLifecycle::Failed, "failed"),
+            (TurnLifecycle::Cancelled, "stopped"),
+        ] {
+            let model = FooterModel {
+                lifecycle: state,
+                dimmed: state == TurnLifecycle::Waiting,
+                ..Default::default()
+            };
+            let line = FooterBar {
+                model: &model,
+                chip_sink: None,
+            }
+            .activity_line(true);
+            assert!(line.to_string().contains(label));
+            let state_span = line
+                .spans
+                .iter()
+                .find(|span| span.content == label)
+                .unwrap();
+            assert!(state_span.style.add_modifier.contains(Modifier::BOLD));
+            if state == TurnLifecycle::Waiting {
+                assert!(!state_span.style.add_modifier.contains(Modifier::DIM));
+            }
+        }
+    }
     use super::*;
 
     #[test]

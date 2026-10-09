@@ -340,7 +340,7 @@ pub fn split_areas_with_preferences(
         navigator_active,
         preferences,
     );
-    let tabs_h = crate::design::CHROME_BAND_H;
+    let tabs_h = crate::design::WORKSPACE_HEADER_H;
     let input_h = input_h.min(
         work.height
             .saturating_sub(

@@ -631,12 +631,54 @@ impl Widget for InputBar<'_> {
             theme::composer_surface()
         };
         Block::default().style(surface).render(area, buf);
-        // Keep a blank canvas row above the surface without changing input geometry.
-        theme::fill(
-            Rect::new(area.x, area.y, area.width, COMPOSER_RULE_H),
-            buf,
-            theme::canvas(),
+        // Use the row already reserved by geometry to make the editable
+        // surface and its keyboard owner visible, including without colour.
+        let rule_style = if self.model.waiting || self.model.not_connected {
+            theme::warn()
+        } else if self.focused {
+            theme::active_panel_border()
+        } else {
+            theme::panel_border()
+        };
+        let rule_style = theme::canvas().patch(rule_style);
+        let rule = if crossterm::style::Colored::ansi_color_disabled_memoized() {
+            "-"
+        } else {
+            "─"
+        };
+        for x in area.left()..area.right() {
+            buf[(x, area.y)].set_symbol(rule).set_style(rule_style);
+        }
+        let label = if self.model.waiting {
+            " Decision pending "
+        } else if self.focused {
+            " > Prompt "
+        } else {
+            " Prompt "
+        };
+        buf.set_stringn(
+            area.x + TEXT_INSET,
+            area.y,
+            label,
+            area.width.saturating_sub(TEXT_INSET * 2) as usize,
+            rule_style,
         );
+        let hint = if self.model.waiting {
+            "Answer above"
+        } else if self.model.not_connected {
+            "/connect to send"
+        } else {
+            "Enter send · Shift+Enter newline"
+        };
+        let hint_width = Line::raw(hint).width() as u16;
+        if area.width >= hint_width + label.len() as u16 + TEXT_INSET * 2 + 4 {
+            buf.set_string(
+                area.right() - TEXT_INSET - hint_width,
+                area.y,
+                hint,
+                theme::canvas().patch(theme::muted()),
+            );
+        }
         let text_zone = Rect::new(
             area.x,
             area.y.saturating_add(COMPOSER_RULE_H),
@@ -725,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_has_no_top_border_in_any_state() {
+    fn composer_rule_identifies_focus_and_waiting_without_changing_text_geometry() {
         for (focused, waiting, not_connected, dimmed) in [
             (false, false, false, false),
             (true, false, false, false),
@@ -744,10 +786,38 @@ mod tests {
             } else {
                 theme::composer_surface()
             };
+            assert!(matches!(buf[(0, 0)].symbol(), "-" | "─"));
+            let rule: String = (0..40).map(|x| buf[(x, 0)].symbol()).collect();
+            assert!(rule.contains(if waiting {
+                "Decision pending"
+            } else if focused {
+                "> Prompt"
+            } else {
+                " Prompt "
+            }));
             for x in 0..40 {
-                assert_eq!(buf[(x, 0)].symbol(), " ");
-                assert_eq!(Some(buf[(x, 0)].bg), theme::canvas().bg);
                 assert_eq!(Some(buf[(x, 2)].bg), surface.bg);
+            }
+        }
+    }
+
+    #[test]
+    fn composer_send_hint_yields_to_connection_and_decisions() {
+        for (waiting, not_connected, hint) in [
+            (false, false, "Enter send"),
+            (false, true, "/connect to send"),
+            (true, false, "Answer above"),
+        ] {
+            let model = InputModel {
+                waiting,
+                not_connected,
+                ..Default::default()
+            };
+            let buf = draw_input_bar(&model, 80, 3, true, None);
+            let rule: String = (0..80).map(|x| buf[(x, 0)].symbol()).collect();
+            assert!(rule.contains(hint), "{rule}");
+            if waiting || not_connected {
+                assert!(!rule.contains("Enter send"));
             }
         }
     }
@@ -779,6 +849,7 @@ mod tests {
                 buffer
                     .content
                     .iter()
+                    .skip(area.width as usize)
                     .map(|cell| cell.symbol())
                     .collect::<String>()
             };

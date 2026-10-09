@@ -458,14 +458,21 @@ async fn composer_centers_placeholder_and_short_draft_at_comfortable_heights() {
 }
 
 #[tokio::test]
-async fn start_keeps_enabled_file_navigation_visible_without_a_turn() {
+async fn start_prioritizes_prompt_and_reveals_navigation_only_when_requested() {
     let (_dir, mut app) = focus_test_app().await;
     app.focus_block(FocusBlock::Composer);
     draw_app(&mut app, 120, 40);
-    assert!(app.navigator_list_area.is_some());
+    assert!(app.navigator_list_area.is_none());
     assert!(!app.start_prompt_rows.is_empty());
+    assert_eq!(app.workspace_tab_areas.len(), 3);
     assert_eq!(app.focus.block(), FocusBlock::Composer);
     assert!(!app.pending_turn.has_prompt());
+
+    app.focus_block(FocusBlock::TaskStrip);
+    draw_app(&mut app, 120, 40);
+    assert!(app.navigator_list_area.is_some());
+    assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
+    app.focus_block(FocusBlock::Composer);
 
     app.workspace_files.visible = false;
     draw_app(&mut app, 120, 40);
@@ -479,6 +486,40 @@ async fn start_keeps_enabled_file_navigation_visible_without_a_turn() {
     app.focus_block(FocusBlock::Files);
     draw_app(&mut app, 80, 18);
     assert!(app.navigator_list_area.is_some());
+}
+
+#[tokio::test]
+async fn task_first_start_keeps_views_choices_and_draft_reachable_at_all_sizes() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.focus_block(FocusBlock::Composer);
+    app.input.set_text("Keep λ/東京.rs unchanged.");
+    for (width, height) in [(80, 18), (115, 40), (116, 40), (120, 40), (160, 50)] {
+        let rendered = render_app_text(&mut app, width, height);
+        assert!(app.navigator_list_area.is_none());
+        assert_eq!(app.workspace_tab_areas.len(), 3);
+        assert_eq!(app.start_prompt_rows.len(), 3);
+        let composer = app.composer_area.unwrap();
+        for (_, tab) in &app.workspace_tab_areas {
+            assert!(tab.bottom() <= composer.y);
+        }
+        for (_, row) in &app.start_prompt_rows {
+            assert!(row.y >= composer.bottom());
+            assert!(row.bottom() <= app.footer_area.unwrap().y);
+        }
+        assert!(rendered.contains("Enter send"));
+        assert!(rendered.contains("F3 sessions"));
+        assert_eq!(app.input.text, "Keep λ/東京.rs unchanged.");
+        assert!(!app.pending_turn.has_prompt());
+    }
+    app.session_runtime
+        .messages
+        .push(Message::new(MessageRole::User, "Begin."));
+    draw_app(&mut app, 120, 40);
+    assert!(app.start_prompt_rows.is_empty());
+    assert!(
+        app.navigator_list_area.is_some(),
+        "saved navigation preference returns after starting"
+    );
 }
 
 #[tokio::test]
@@ -878,7 +919,9 @@ async fn a_pending_approval_remains_reachable_over_narrow_inspection_and_navigat
 
     for block in [FocusBlock::Workspace, FocusBlock::Search] {
         app.focus_block(block);
-        render_app_text(&mut app, 80, 18);
+        let rendered = render_app_text(&mut app, 80, 18);
+        assert!(rendered.contains("Decision pending"));
+        assert!(!rendered.contains("Enter send"));
         assert_eq!(app.focus.block(), FocusBlock::Approval);
         assert!(app.conversation_area.is_some());
         assert!(
