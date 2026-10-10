@@ -284,7 +284,12 @@ async fn dispatch_terminal_event<B: ratatui::backend::Backend>(
             }
         }
         Event::FocusGained => crate::notify::set_focused(true),
-        Event::FocusLost => crate::notify::set_focused(false),
+        Event::FocusLost => {
+            crate::notify::set_focused(false);
+            if let Err(error) = app.autosave_scratchpad() {
+                app.set_feedback(FeedbackSeverity::Warn, error);
+            }
+        }
     }
     Ok(())
 }
@@ -796,6 +801,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scratchpad_focus_loss_autosaves_without_closing_notes() {
+        use ratatui::backend::TestBackend;
+
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.open_scratchpad();
+        app.handle_scratchpad_key(event::KeyEvent::from(KeyCode::Char('i')));
+        app.handle_scratchpad_paste("retained on focus loss\n");
+        let path = app.scratchpad_path();
+        assert!(!path.exists());
+
+        dispatch_terminal_event(
+            &mut app,
+            Event::FocusLost,
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "retained on focus loss\n"
+        );
+        assert!(!app.scratchpad.as_ref().unwrap().is_dirty());
+        assert_eq!(
+            app.scratchpad.as_ref().unwrap().editor().mode(),
+            edtui::EditorMode::Insert
+        );
+
+        app.handle_scratchpad_paste("still editable");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        dispatch_terminal_event(
+            &mut app,
+            Event::FocusLost,
+            None::<&mut Terminal<TestBackend>>,
+        )
+        .await
+        .unwrap();
+        assert!(app.scratchpad.as_ref().unwrap().is_dirty());
+        assert!(app
+            .status_state
+            .message
+            .contains("could not save scratchpad"));
+    }
+
+    #[tokio::test]
     async fn terminal_dispatch_handles_resize_focus_and_paste_events() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
@@ -1228,6 +1279,8 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
         run_loop(&mut terminal, &mut app).await
     };
 
+    // Also flush on returned loop errors and exit paths that bypass quit-all.
+    let scratchpad_save = app.autosave_scratchpad().map_err(TuiError::Other);
     app.persist_selection();
 
     if let Some(session_id) = app.startup_resume.session_id {
@@ -1254,7 +1307,7 @@ async fn run_tui_app_inner(mut app: TuiApp, launch: TuiLaunch) -> Result<ExitSum
 
     drop(guard);
 
-    result.map(|_| summary)
+    result.and(scratchpad_save).map(|_| summary)
 }
 
 /// Opt-in native review uses the production loop with isolated fixture state.

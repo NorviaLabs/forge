@@ -314,6 +314,11 @@ visible text, including Unicode glyphs. Scrolling, editing or resizing clears a
 finished selection when its displayed content changes. Right-click offers Copy
 and Clear selection in a menu that stays on screen.
 
+`Ctrl+N` opens the session scratchpad outside the terminal panel. Notes autosave
+when you close the scratchpad, leave terminal focus, or quit Forge, and return
+when you resume the same session. `:w` saves explicitly; `:q!` discards unsaved
+edits. A new session starts with empty notes.
+
 When a text file is open, the workspace uses Vim-style editing. Markdown,
 structured text, HTML/XML/SVG, stylesheets, diffs, configuration files, Mermaid
 diagrams, and logs start in read-only preview; press `i` to edit. Other text

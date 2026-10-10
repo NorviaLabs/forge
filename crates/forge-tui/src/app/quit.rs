@@ -88,6 +88,10 @@ impl TuiApp {
     /// reported through the exit summary, never allowed to hold an app the
     /// operator asked to close open.
     pub(super) fn start_quit_all(&mut self) {
+        if let Err(error) = self.autosave_scratchpad() {
+            self.set_feedback(FeedbackSeverity::Warn, error);
+            return;
+        }
         self.quitting = true;
         let summary = self.quit_all_summary();
         if summary.sessions == 0 {

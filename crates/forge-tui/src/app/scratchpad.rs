@@ -27,7 +27,8 @@
 //! Saves reuse the same atomic write the source viewer uses
 //! (`app/files.rs::save_active_editor_with_force`): temp file in the same
 //! directory, `write_all`, `sync_all`, then `persist`. Autosave fires on close
-//! and on focus loss, so the dirty window is only "since the last `:w`" — and
+//! and on focus loss, and shutdown flushes any remaining edits. The dirty
+//! window is only "since the last save" — and
 //! the footer chip says so in words, because colour never travels alone
 //! (`FORGE-DESIGN.md` §5.4).
 
@@ -190,6 +191,14 @@ impl super::TuiApp {
             Ok(()) => self.set_feedback(super::FeedbackSeverity::Ok, "saved scratchpad"),
             Err(error) => self.set_feedback(super::FeedbackSeverity::Warn, error),
         }
+    }
+
+    /// Flush open notes without closing the surface or writing a clean buffer.
+    pub(super) fn autosave_scratchpad(&mut self) -> Result<(), String> {
+        if let Some(scratchpad) = self.scratchpad.as_mut() {
+            scratchpad.save_if_dirty()?;
+        }
+        Ok(())
     }
 
     /// Close the scratchpad, autosaving first. Autosave on close is what makes

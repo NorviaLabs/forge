@@ -1,5 +1,5 @@
 //! Session-scoped scratchpad behaviour: entry points, the Vim command line,
-//! autosave-on-close, and the footer chip.
+//! autosave-on-close and quit, and the footer chip.
 //!
 //! These are the operator-visible guarantees from the design: the notes are the
 //! user's, they survive a reopen, and the dirty state is always spelled out.
@@ -300,6 +300,53 @@ async fn closing_a_clean_document_creates_no_file() {
     assert!(
         !path.exists(),
         "no notes file for notes that were never typed"
+    );
+}
+
+#[tokio::test]
+async fn quitting_with_open_scratchpad_persists_notes_for_restart() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_scratchpad();
+    app.handle_scratchpad_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.handle_scratchpad_paste("keep across restart\n");
+    let path = app.scratchpad_path();
+    assert!(!path.exists(), "notes have not been saved or closed");
+
+    app.request_quit();
+    assert!(app.exit.is_requested());
+    drop(app);
+
+    let reopened = super::super::scratchpad::Scratchpad::open(path).unwrap();
+    assert_eq!(reopened.editor().text(), "keep across restart\n");
+    assert!(!reopened.is_dirty());
+}
+
+#[tokio::test]
+async fn failed_scratchpad_autosave_prevents_quit_and_keeps_notes() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_scratchpad();
+    app.handle_scratchpad_key(press(KeyCode::Char('i'), KeyModifiers::NONE));
+    app.handle_scratchpad_paste("unsaved notes");
+    let path = app.scratchpad_path();
+    fs::create_dir(&path).unwrap();
+
+    app.request_quit();
+
+    assert!(!app.exit.is_requested());
+    assert!(!app.quitting);
+    let notes = app.scratchpad.as_ref().unwrap();
+    assert!(notes.is_dirty());
+    assert_eq!(notes.editor().text(), "unsaved notes");
+    assert!(app
+        .status_state
+        .message
+        .contains("could not save scratchpad"));
+
+    fs::remove_dir(path).unwrap();
+    app.request_quit();
+    assert!(
+        app.exit.is_requested(),
+        "quit can be retried after fixing storage"
     );
 }
 
