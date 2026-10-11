@@ -769,11 +769,12 @@ fn compact_scaled(n: u64, scale: u64, suffix: &str) -> String {
 /// neither. The vendor is the recoverable half (it is in `/status`, and rarely
 /// changes mid-session); the model name is what the footer is for.
 fn fit_model_label(label: &str, max: usize) -> String {
-    if label.chars().count() <= max {
+    use crate::path_display::width;
+    if width(label) <= max {
         return label.to_string();
     }
     if let Some((_, model)) = label.split_once('/') {
-        if model.chars().count() <= max {
+        if width(model) <= max {
             return model.to_string();
         }
         return truncate_middle(model, max);
@@ -781,28 +782,15 @@ fn fit_model_label(label: &str, max: usize) -> String {
     truncate_middle(label, max)
 }
 
-/// Middle-truncate `text` to at most `max` chars, keeping both ends (the
+/// Middle-truncate `text` to at most `max` cells, keeping both ends (the
 /// vendor prefix and the model id stay recognizable); drops the ellipsis
 /// entirely when `max` is too small to afford one.
 fn truncate_middle(text: &str, max: usize) -> String {
-    let n = text.chars().count();
-    if n <= max {
-        return text.to_string();
+    use crate::path_display::{elide_middle, head, width};
+    if width(text) > max && max < 5 {
+        return head(text, max);
     }
-    if max < 5 {
-        return text.chars().take(max).collect();
-    }
-    let keep = (max - 1) / 2;
-    let start: String = text.chars().take(keep).collect();
-    let end: String = text
-        .chars()
-        .rev()
-        .take(max - keep - 1)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{start}…{end}")
+    elide_middle(text, max)
 }
 
 #[cfg(test)]

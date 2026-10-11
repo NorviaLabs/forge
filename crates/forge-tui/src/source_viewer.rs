@@ -1068,11 +1068,26 @@ impl SourceViewer {
         self.search.active_index = index;
         self.current_line = m.line.min(self.lines.len().saturating_sub(1));
         self.ensure_current_visible(self.last_content_width.max(1));
+        // `h_scroll` and match bounds are char offsets; the viewport is cells.
         let width = self.last_content_width.max(1);
+        let line: Vec<char> = self
+            .lines
+            .get(m.line)
+            .map(|line| line.chars().collect())
+            .unwrap_or_default();
+        let cells = |from: usize, to: usize| -> usize {
+            line.get(from..to.min(line.len()))
+                .unwrap_or_default()
+                .iter()
+                .map(|ch| crate::path_display::char_width(*ch))
+                .sum()
+        };
         if m.start < self.h_scroll {
             self.h_scroll = m.start;
-        } else if m.end > self.h_scroll + width {
-            self.h_scroll = m.end.saturating_sub(width);
+        } else if cells(self.h_scroll, m.end) > width {
+            while self.h_scroll < m.start && cells(self.h_scroll, m.end) > width {
+                self.h_scroll += 1;
+            }
         }
     }
 
@@ -1191,34 +1206,44 @@ fn find_matches(lines: &[String], query: &str) -> Vec<Match> {
     matches
 }
 
+/// Clip a line horizontally: skip `skip` chars (the scroll offset), then keep
+/// as many chars as fit in `width` terminal cells.
 fn clip_line(line: &str, skip: usize, width: usize) -> String {
-    line.chars().skip(skip).take(width).collect::<String>()
+    let mut used = 0;
+    line.chars()
+        .skip(skip)
+        .take_while(|ch| {
+            used += crate::path_display::char_width(*ch);
+            used <= width
+        })
+        .collect()
 }
 
-/// Clip a list of styled spans horizontally. Characters are skipped/kept by
-/// char count, which is the same unit used by `clip_line` and by the viewer's
-/// horizontal scroll.
+/// Clip a list of styled spans horizontally, in the same units as
+/// [`clip_line`]: the scroll offset in chars, the visible budget in cells.
 fn clip_spans(spans: &[Span<'static>], skip: usize, width: usize) -> Vec<Span<'static>> {
     let mut skipped = 0;
+    let mut used = 0;
     let mut out = Vec::new();
-    let mut taken = 0;
-    for span in spans {
-        let chars: Vec<char> = span.content.chars().collect();
-        if skipped + chars.len() <= skip {
-            skipped += chars.len();
-            continue;
+    'spans: for span in spans {
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            if skipped < skip {
+                skipped += 1;
+                continue;
+            }
+            let cells = crate::path_display::char_width(ch);
+            if used + cells > width {
+                if !text.is_empty() {
+                    out.push(Span::styled(text, span.style));
+                }
+                break 'spans;
+            }
+            used += cells;
+            text.push(ch);
         }
-        let start_in_span = skip.saturating_sub(skipped);
-        let available = chars.len() - start_in_span;
-        let take = available.min(width - taken);
-        if take > 0 {
-            let text: String = chars[start_in_span..start_in_span + take].iter().collect();
+        if !text.is_empty() {
             out.push(Span::styled(text, span.style));
-            taken += take;
-        }
-        skipped += chars.len();
-        if taken >= width {
-            break;
         }
     }
     out
@@ -1233,20 +1258,22 @@ fn apply_search_styles(
     matches: &[Match],
     active_index: usize,
 ) -> Vec<Span<'static>> {
+    // Same units as `clip_spans`: skip `h_scroll` chars, keep what fits in
+    // `content_width` cells.
     let mut chars: Vec<(char, Style)> = Vec::new();
     let mut pos = 0;
-    for span in spans {
+    let mut used = 0;
+    'spans: for span in spans {
         for ch in span.content.chars() {
-            if pos >= h_scroll && chars.len() < content_width {
+            if pos >= h_scroll {
+                let cells = crate::path_display::char_width(ch);
+                if used + cells > content_width {
+                    break 'spans;
+                }
+                used += cells;
                 chars.push((ch, span.style));
             }
             pos += 1;
-            if chars.len() >= content_width {
-                break;
-            }
-        }
-        if chars.len() >= content_width {
-            break;
         }
     }
 
@@ -1255,7 +1282,7 @@ fn apply_search_styles(
             continue;
         }
         let start = m.start.saturating_sub(h_scroll);
-        let end = m.end.saturating_sub(h_scroll).min(content_width);
+        let end = m.end.saturating_sub(h_scroll).min(chars.len());
         for j in start..end {
             if let Some((_, style)) = chars.get_mut(j) {
                 let patch = if i == active_index {
@@ -1897,7 +1924,7 @@ impl SourceViewerWidget<'_> {
         Paragraph::new(Line::from(status_spans)).render(rows[2], buf);
         if self.focused && self.editor_command.is_some() {
             let command = self.editor_command.unwrap_or_default();
-            let cursor_x = rows[2].x + TEXT_INSET + 1 + command.chars().count() as u16;
+            let cursor_x = rows[2].x + TEXT_INSET + 1 + crate::path_display::width(command) as u16;
             if cursor_x < rows[2].x + rows[2].width {
                 theme::paint_caret(buf, cursor_x, rows[2].y);
             }
@@ -1998,7 +2025,7 @@ impl SourceViewerWidget<'_> {
         .render(rows[2], buf);
         if self.editor_command.is_some() {
             let command = self.editor_command.unwrap_or_default();
-            let cursor_x = rows[2].x + TEXT_INSET + 1 + command.chars().count() as u16;
+            let cursor_x = rows[2].x + TEXT_INSET + 1 + crate::path_display::width(command) as u16;
             if cursor_x < rows[2].x + rows[2].width {
                 theme::paint_caret(buf, cursor_x, rows[2].y);
             }
@@ -2023,7 +2050,8 @@ impl SourceViewerWidget<'_> {
                 theme::CURSOR_GLYPH
             );
             Paragraph::new(Line::styled(text, theme::text())).render(area, buf);
-            let cursor_x = area.x + 8 + self.viewer.search.query.chars().count() as u16;
+            let cursor_x =
+                area.x + 8 + crate::path_display::width(&self.viewer.search.query) as u16;
             if cursor_x < area.x + area.width {
                 theme::paint_caret(buf, cursor_x, area.y);
             }
@@ -2242,6 +2270,69 @@ mod tests {
         let line = "αβγδε";
         assert_eq!(clip_line(line, 0, 3), "αβγ");
         assert_eq!(clip_line(line, 2, 2), "γδ");
+    }
+
+    #[test]
+    fn clipping_budgets_terminal_cells() {
+        // Each CJK char is two cells: five cells hold two of them.
+        assert_eq!(clip_line("東京都庁舎", 0, 5), "東京");
+        assert_eq!(clip_line("東京都庁舎", 1, 4), "京都");
+        let spans = vec![Span::raw("ab".to_string()), Span::raw("東京都".to_string())];
+        let clipped: String = clip_spans(&spans, 1, 5)
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect();
+        assert_eq!(clipped, "b東京");
+    }
+
+    #[test]
+    fn search_caret_follows_wide_query_text() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("wide.txt");
+        fs::write(&path, "東京\n").unwrap();
+        let mut viewer = SourceViewer::new();
+        viewer.open(root.path(), &path);
+        viewer.start_search();
+        viewer.update_search_query("東京");
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        SourceViewerWidget {
+            viewer: &mut viewer,
+            focused: true,
+            editor: None,
+            editor_command: None,
+            editor_message: None,
+        }
+        .render(area, &mut buf);
+        let caret = theme::caret();
+        let (x, y) = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .find(|&(x, y)| {
+                let cell = &buf[(x, y)];
+                cell.symbol() == theme::CURSOR_CELL
+                    && cell.bg == caret.bg.unwrap_or_default()
+                    && cell.modifier == caret.add_modifier
+            })
+            .unwrap_or_else(|| {
+                let rows: Vec<String> = (0..area.height)
+                    .map(|y| (0..area.width).map(|x| buf[(x, y)].symbol()).collect())
+                    .collect();
+                panic!("caret not painted:\n{}", rows.join("\n"))
+            });
+        // "東京" spans two 2-cell glyphs; the caret sits right after them.
+        assert_eq!(buf[(x - 4, y)].symbol(), "東", "caret at {x}");
+        assert_eq!(buf[(x - 2, y)].symbol(), "京", "caret at {x}");
+    }
+
+    #[test]
+    fn search_reveals_a_match_past_the_edge_of_a_wide_line() {
+        let mut viewer = SourceViewer::new();
+        viewer.lines = vec![format!("{}needle", "東".repeat(30))];
+        viewer.last_content_width = 20;
+        viewer.update_search_query("needle");
+        // The match ends 66 cells in; the 20-cell viewport must end on it.
+        let visible = clip_line(&viewer.lines[0], viewer.h_scroll, 20);
+        assert!(visible.ends_with("needle"), "{visible:?}");
     }
 
     #[test]

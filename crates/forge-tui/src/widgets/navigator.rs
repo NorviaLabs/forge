@@ -593,13 +593,7 @@ fn fill_row_ground(buf: &mut Buffer, area: Rect, y: u16, height: u16, bg: ratatu
 }
 
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
-    }
-    format!("{}…", text.chars().take(width - 1).collect::<String>())
+    crate::path_display::truncate_end(text, width)
 }
 
 #[cfg(test)]

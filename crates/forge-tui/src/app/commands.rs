@@ -7,14 +7,11 @@
 
 use super::*;
 
-const MAX_SKILL_DESC_CHARS: usize = 100;
+/// Skill descriptions keep 100 cells of text plus the ellipsis.
+const MAX_SKILL_DESC_CELLS: usize = 100;
 
 fn truncate_skill_description(desc: &str) -> String {
-    if desc.chars().count() <= MAX_SKILL_DESC_CHARS {
-        desc.to_string()
-    } else {
-        desc.chars().take(MAX_SKILL_DESC_CHARS).collect::<String>() + "…"
-    }
+    crate::path_display::truncate_end(desc, MAX_SKILL_DESC_CELLS + 1)
 }
 
 impl TuiApp {

@@ -1327,16 +1327,20 @@ fn content_match_line(
         if selected && focused { ">" } else { " " },
         hit.line
     );
-    let budget = width.saturating_sub(prefix.len());
+    let budget = width.saturating_sub(crate::path_display::width(&prefix));
     let mut text = hit.text.replace('\t', " ");
     // Keep the match visible even when it occurs far along a source line.
+    // Budgets are terminal cells, so wide characters before the match count
+    // double.
     if let Some((start, _)) = content_match_range(&text, query.trim()) {
-        let chars_before = text[..start].chars().count();
-        if chars_before >= budget.saturating_sub(query.chars().count()) {
-            let context = 8.min(budget.saturating_sub(query.chars().count() + 1));
-            let skip = chars_before.saturating_sub(context);
-            if skip > 0 {
-                text = format!("…{}", text.chars().skip(skip).collect::<String>());
+        use crate::path_display::{tail, width as cells};
+        let query_w = cells(query.trim());
+        let before = &text[..start];
+        if cells(before) >= budget.saturating_sub(query_w) {
+            let context = 8.min(budget.saturating_sub(query_w + 1));
+            let kept = tail(before, context);
+            if kept.len() < before.len() {
+                text = format!("…{kept}{}", &text[start..]);
             }
         }
     }
@@ -1901,6 +1905,30 @@ impl Widget for FileExplorerWidget<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A match far along a wide-character line is windowed by cells, so the
+    /// match itself stays inside the row's budget.
+    #[test]
+    fn content_match_preview_keeps_a_wide_line_match_visible() {
+        let hit = GrepSearchHit {
+            path: "a.txt".into(),
+            line: 1,
+            column: 1,
+            text: format!("{}needle", "東".repeat(30)),
+            context: None,
+            relevance: None,
+            is_definition: false,
+        };
+        let line = content_match_line(&hit, "needle", false, false, 40);
+        let text: String = line
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect();
+        assert!(text.contains("…東"), "{text}");
+        assert!(crate::path_display::width(&text) <= 40, "{text}");
+        assert!(text.contains("needle"), "{text}");
+    }
     use std::time::{Duration, Instant};
 
     #[test]

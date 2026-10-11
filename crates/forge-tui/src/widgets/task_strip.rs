@@ -180,21 +180,7 @@ impl Widget for TaskStrip<'_> {
 }
 
 fn truncate(text: &str, width: usize) -> String {
-    if Span::raw(text).width() <= width {
-        return text.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let mut result = String::new();
-    for ch in text.chars() {
-        if Span::raw(&result).width() + Span::raw(ch.to_string()).width() > width - 1 {
-            break;
-        }
-        result.push(ch);
-    }
-    result.push('…');
-    result
+    crate::path_display::truncate_end(text, width)
 }
 
 #[cfg(test)]

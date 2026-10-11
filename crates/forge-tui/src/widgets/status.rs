@@ -305,10 +305,11 @@ impl StatusModel {
     /// nothing, which is what happens if the path simply absorbs the shortfall.
     pub fn identity_line_within(&self, width: usize) -> String {
         let full = self.identity_line();
-        if full.chars().count() <= width {
+        use crate::path_display::width as cells;
+        if cells(&full) <= width {
             return full;
         }
-        let overhead = full.chars().count() - self.cwd_display.chars().count();
+        let overhead = cells(&full) - cells(&self.cwd_display);
         let budget = width.saturating_sub(overhead);
         if budget >= CWD_FLOOR {
             let cwd = crate::path_display::elide_path(&self.cwd_display, budget);
@@ -388,61 +389,16 @@ impl StatusModel {
         let life = self.turn_lifecycle();
         let detail = self.status_detail();
         let with_detail = format_lifecycle_label(life, detail.as_deref(), true);
-        if with_detail.chars().count() <= max_chars {
+        if crate::path_display::width(&with_detail) <= max_chars {
             return (with_detail, life.style());
         }
         let base = format_lifecycle_label(life, None, true);
-        if base.chars().count() <= max_chars {
+        if crate::path_display::width(&base) <= max_chars {
             return (base, life.style());
         }
         // Last resort: drop glyph, keep bare state text.
         let bare = life.label().to_string();
         (bare, life.style())
-    }
-
-    #[allow(dead_code)]
-    fn truncate_model(model: &str, max: usize) -> String {
-        #[allow(dead_code)]
-        let n = model.chars().count();
-        if n <= max {
-            return model.to_string();
-        }
-        if max < 8 {
-            return model.chars().take(max).collect();
-        }
-        let keep = (max - 1) / 2;
-        let start: String = model.chars().take(keep).collect();
-        let end: String = model
-            .chars()
-            .rev()
-            .take(keep)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        format!("{start}…{end}")
-    }
-
-    #[allow(dead_code)]
-    fn truncate_middle(text: &str, max: usize) -> String {
-        let n = text.chars().count();
-        if n <= max {
-            return text.to_string();
-        }
-        if max < 5 {
-            return text.chars().take(max).collect();
-        }
-        let keep = (max - 1) / 2;
-        let start: String = text.chars().take(keep).collect();
-        let end: String = text
-            .chars()
-            .rev()
-            .take(max - keep - 1)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect();
-        format!("{start}…{end}")
     }
 }
 
