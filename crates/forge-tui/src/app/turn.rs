@@ -107,7 +107,7 @@ pub(super) fn child_reading_banner(
     width: usize,
 ) -> String {
     let (mode, workspace, branch) = child_execution_info(task);
-    format!("Read-only inspection · Mode: {mode}\nWorkspace: {}\nBranch: {}\n← parent · a/d decision · /tasks full details",
+    format!("Read-only inspection · Mode: {mode}\nWorkspace: {}\nBranch: {}\n← parent · a/d decision · /sessions full details",
         crate::path_display::elide_path(&crate::decision::visible_text(&workspace), width.saturating_sub(11)),
         crate::path_display::elide_middle(&crate::decision::visible_text(branch), width.saturating_sub(8)))
 }
@@ -1034,7 +1034,7 @@ impl TuiApp {
             }
             self.set_feedback(
                 FeedbackSeverity::Info,
-                "hidden from dock · /tasks retains the result",
+                "hidden from dock · /sessions retains the result",
             );
             return;
         }

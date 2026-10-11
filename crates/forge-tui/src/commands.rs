@@ -176,7 +176,7 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
                 Ok(SlashCommand::New)
             }
         }
-        "sessions" | "tasks" => {
+        "sessions" => {
             if parts.next().is_some() {
                 Err(CommandError::Usage("/sessions".into()))
             } else {
@@ -417,10 +417,6 @@ mod tests {
             parse_slash("/sessions").unwrap().unwrap(),
             SlashCommand::Sessions
         );
-        assert_eq!(
-            parse_slash("/tasks").unwrap().unwrap(),
-            SlashCommand::Sessions
-        );
         assert!(parse_slash("/sessions now").unwrap().is_err());
     }
 
@@ -489,6 +485,7 @@ mod tests {
             "/diff turn",
             "/d",
             "/refresh",
+            "/tasks",
         ] {
             assert!(matches!(
                 parse_slash(command).unwrap().unwrap_err(),

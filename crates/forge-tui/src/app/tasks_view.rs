@@ -107,7 +107,7 @@ impl TuiApp {
             self.dismiss_overlay();
             self.set_feedback(
                 FeedbackSeverity::Warn,
-                "task view owner changed; reopen /tasks",
+                "task view owner changed; reopen /sessions",
             );
             return Ok(true);
         }
