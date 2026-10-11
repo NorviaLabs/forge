@@ -2792,11 +2792,18 @@ fn redact_tool_output(content: &str) -> String {
     }
 }
 
+/// Word-wrap `s` to `width` terminal cells.
+///
+/// Words break at whitespace. A word wider than the whole line — a URL, a
+/// long path, or any run of CJK text, which has no spaces to break at — is
+/// split across rows instead of being kept whole, because every caller paints
+/// a row into a fixed-width rect and anything past the edge is lost.
 pub fn wrap(s: &str, width: usize) -> Vec<String> {
     use unicode_width::UnicodeWidthStr;
     if s.is_empty() {
         return vec![String::new()];
     }
+    let width = width.max(1);
     let mut out = Vec::new();
     for para in s.lines() {
         if para.is_empty() {
@@ -2805,14 +2812,20 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
         }
         let mut cur = String::new();
         for word in para.split_whitespace() {
-            if cur.is_empty() {
-                cur = word.to_string();
-            } else if cur.width() + 1 + word.width() <= width {
+            if !cur.is_empty() && cur.width() + 1 + word.width() <= width {
                 cur.push(' ');
                 cur.push_str(word);
-            } else {
-                out.push(cur);
+                continue;
+            }
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            if word.width() <= width {
                 cur = word.to_string();
+            } else {
+                let mut pieces = split_to_width(word, width);
+                cur = pieces.pop().unwrap_or_default();
+                out.extend(pieces);
             }
         }
         if !cur.is_empty() {
@@ -2825,9 +2838,49 @@ pub fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// Split one unbreakable word into rows of at most `width` cells. Zero-width
+/// chars (combining marks, joiners) stay with the char before them.
+fn split_to_width(word: &str, width: usize) -> Vec<String> {
+    use unicode_width::UnicodeWidthChar;
+    let mut rows = vec![String::new()];
+    let mut used = 0;
+    for ch in word.chars() {
+        let cells = ch.width().unwrap_or(0);
+        if cells > 0 && used + cells > width && used > 0 {
+            rows.push(String::new());
+            used = 0;
+        }
+        if let Some(row) = rows.last_mut() {
+            row.push(ch);
+        }
+        used += cells;
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use forge_types::{PlanItem, PlanStepStatus};
+
+    #[test]
+    fn wrapping_splits_words_wider_than_the_line() {
+        use unicode_width::UnicodeWidthStr;
+        // CJK has no spaces: fifty chars are one "word" of 100 cells.
+        let cjk = super::wrap(&"東京都庁舎".repeat(10), 20);
+        assert_eq!(cjk.len(), 5);
+        assert!(cjk.iter().all(|line| line.width() <= 20), "{cjk:?}");
+        assert_eq!(cjk.concat(), "東京都庁舎".repeat(10));
+
+        let url = format!("https://example.com/{}", "a".repeat(30));
+        let lines = super::wrap(&format!("see {url} now"), 20);
+        assert_eq!(lines[0], "see");
+        assert!(lines.iter().all(|line| line.width() <= 20), "{lines:?}");
+        assert_eq!(lines.concat(), format!("see{url} now"));
+
+        // A combining mark never lands at the start of a row.
+        let accented = super::wrap(&"e\u{301}".repeat(6), 4);
+        assert!(accented.iter().all(|line| !line.starts_with('\u{301}')));
+    }
 
     #[test]
     fn wrapping_counts_terminal_cells_in_unicode_labels_and_paths() {

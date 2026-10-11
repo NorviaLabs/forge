@@ -582,15 +582,16 @@ impl DiffView {
     /// which is the state you cannot get anywhere else.
     pub fn header_for_width(&self, width: usize) -> String {
         let full = self.header();
-        if full.chars().count() <= width || width < 20 {
+        use crate::path_display::width as cells;
+        if cells(&full) <= width || width < 20 {
             return full;
         }
         let Some(entry) = self.selected_entry() else {
             return full;
         };
         let path = entry.path.display().to_string();
-        let overflow = full.chars().count() - width;
-        let budget = path.chars().count().saturating_sub(overflow).max(12);
+        let overflow = cells(&full) - width;
+        let budget = cells(&path).saturating_sub(overflow).max(12);
         full.replacen(&path, &crate::path_display::elide_path(&path, budget), 1)
     }
 

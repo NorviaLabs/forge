@@ -1,8 +1,11 @@
 //! Shared `/status` report data and rendering.
 
 use crate::theme;
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Paragraph, Row, Table, Widget};
 
 /// One row of the `/status` report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,9 +41,59 @@ impl StatusRow {
     }
 }
 
-const STATUS_LABEL_WIDTH: usize = 16;
+/// Paint the report into `area`. Each run of fields is a label/value table,
+/// and every run shares one label column so values align down the report.
+pub fn render_status_report(rows: &[StatusRow], area: Rect, buf: &mut Buffer) {
+    let label_w = rows
+        .iter()
+        .filter_map(|row| match row {
+            StatusRow::Field { label, .. } => Some(crate::path_display::width(label)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
+        .min(usize::from(area.width) / 2) as u16;
+    let mut y = area.y;
+    let mut index = 0;
+    while index < rows.len() && y < area.bottom() {
+        let run = rows[index..]
+            .iter()
+            .take_while(|row| matches!(row, StatusRow::Field { .. }))
+            .count();
+        if run > 0 {
+            let fields = rows[index..index + run].iter().filter_map(|row| match row {
+                StatusRow::Field { label, value, note } => {
+                    let mut value = vec![Span::styled(value.clone(), theme::text())];
+                    if let Some(note) = note {
+                        value.push(Span::raw("   "));
+                        value.push(Span::styled(note.clone(), theme::metadata_style()));
+                    }
+                    Some(Row::new(vec![
+                        Line::styled(label.clone(), theme::muted()),
+                        Line::from(value),
+                    ]))
+                }
+                _ => None,
+            });
+            let height = (run as u16).min(area.bottom() - y);
+            Table::new(fields, [Constraint::Length(label_w), Constraint::Fill(1)])
+                .column_spacing(2)
+                .render(Rect { y, height, ..area }, buf);
+            y += height;
+            index += run;
+            continue;
+        }
+        let lines = status_report_lines(&rows[index..=index], usize::from(area.width));
+        let height = (lines.len() as u16).min(area.bottom() - y);
+        Paragraph::new(lines).render(Rect { y, height, ..area }, buf);
+        y += height;
+        index += 1;
+    }
+}
 
-pub fn status_report_lines(rows: &[StatusRow], width: usize) -> Vec<Line<'static>> {
+/// Lines for headings, gaps and wrapped sections; fields render as a table in
+/// [`render_status_report`].
+fn status_report_lines(rows: &[StatusRow], width: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for row in rows {
         match row {
@@ -49,21 +102,7 @@ pub fn status_report_lines(rows: &[StatusRow], width: usize) -> Vec<Line<'static
                 text.to_uppercase(),
                 theme::metadata_style().add_modifier(Modifier::BOLD),
             ))),
-            StatusRow::Field { label, value, note } => {
-                let pad = STATUS_LABEL_WIDTH
-                    .saturating_sub(label.chars().count())
-                    .max(1);
-                let mut spans = vec![
-                    Span::styled(label.clone(), theme::muted()),
-                    Span::raw(" ".repeat(pad)),
-                    Span::styled(value.clone(), theme::text()),
-                ];
-                if let Some(note) = note {
-                    spans.push(Span::raw("   "));
-                    spans.push(Span::styled(note.clone(), theme::metadata_style()));
-                }
-                out.push(Line::from(spans));
-            }
+            StatusRow::Field { .. } => {}
             StatusRow::Section { label, items } => {
                 out.push(Line::from(Span::styled(
                     label.to_uppercase(),
@@ -78,7 +117,10 @@ pub fn status_report_lines(rows: &[StatusRow], width: usize) -> Vec<Line<'static
                     } else {
                         format!("{item} · ")
                     };
-                    if line.chars().count() + piece.chars().count() > budget && !line.is_empty() {
+                    if crate::path_display::width(&line) + crate::path_display::width(&piece)
+                        > budget
+                        && !line.is_empty()
+                    {
                         out.push(Line::from(Span::styled(
                             format!("{indent}{line}"),
                             theme::text_secondary(),
@@ -109,4 +151,32 @@ pub fn thousands(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    /// Every field value starts in the same column, however long its label.
+    #[test]
+    fn status_fields_share_one_value_column() {
+        let rows = vec![
+            StatusRow::Heading("Session".into()),
+            StatusRow::field("Model", "gpt"),
+            StatusRow::field("Reasoning effort level", "high"),
+            StatusRow::Gap,
+            StatusRow::field_with_note("Context", "12%", "of 200k"),
+        ];
+        let area = Rect::new(0, 0, 60, 8);
+        let mut buf = Buffer::empty(area);
+        render_status_report(&rows, area, &mut buf);
+        let row = |y: u16| -> String { (0..60).map(|x| buf[(x, y)].symbol()).collect() };
+        assert!(row(0).starts_with("SESSION"));
+        let starts: Vec<usize> = [(1, "gpt"), (2, "high"), (4, "12%")]
+            .iter()
+            .map(|(y, value)| row(*y).find(value).unwrap())
+            .collect();
+        assert!(starts.windows(2).all(|w| w[0] == w[1]), "{starts:?}");
+        assert!(row(4).contains("of 200k"));
+    }
 }

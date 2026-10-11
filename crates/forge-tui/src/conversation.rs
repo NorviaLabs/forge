@@ -1969,13 +1969,20 @@ pub(super) fn render_question_card(
             // holds no border to put a title in, and the count belongs next to
             // the question, not buried with the options.
             let label = format!("{selected_count} selected");
-            let used = wrapped.chars().count() + label.chars().count();
+            let label_w = crate::path_display::width(&label);
+            let used = crate::path_display::width(&wrapped) + label_w;
             if used + 2 <= inner {
                 spans.push(Span::raw(" ".repeat(inner - used)));
+                spans.push(Span::styled(label, theme::ok()));
             } else {
-                spans.push(Span::raw("  "));
+                // No room beside a full first line: the count takes its own
+                // row, still right-aligned, rather than running off the card.
+                row(spans);
+                spans = vec![
+                    Span::raw(" ".repeat(inner.saturating_sub(label_w))),
+                    Span::styled(label, theme::ok()),
+                ];
             }
-            spans.push(Span::styled(label, theme::ok()));
         }
         row(spans);
     }
@@ -2574,9 +2581,9 @@ pub(super) fn render_verification_card(
     let mut out = Vec::new();
 
     // INDENT_UNIT (2) + ASCII marker (3) + space + command.
-    let left_w = 2 + 3 + 1 + p.command.chars().count();
+    let left_w = 2 + 3 + 1 + crate::path_display::width(&p.command);
     let gap = width
-        .saturating_sub(left_w + headline.chars().count() + 2)
+        .saturating_sub(left_w + crate::path_display::width(&headline) + 2)
         .max(1);
     out.push(Line::from(vec![
         Span::raw(INDENT_UNIT),
@@ -2593,8 +2600,8 @@ pub(super) fn render_verification_card(
     let last = p.evidence.len().saturating_sub(1);
     for (i, line) in p.evidence.iter().enumerate() {
         let branch = if i == last { "  └ " } else { "  │ " };
-        let room = width.saturating_sub(branch.chars().count() + 4);
-        let text: String = line.chars().take(room).collect();
+        let room = width.saturating_sub(crate::path_display::width(branch) + 4);
+        let text = crate::path_display::head(line, room);
         out.push(Line::from(vec![
             Span::raw(INDENT_UNIT),
             Span::styled(branch.to_string(), theme::border_muted()),
@@ -2620,6 +2627,51 @@ mod tests {
     use super::*;
 
     use ratatui::text::Line;
+
+    /// Cards built from model text stay inside their width with wide text:
+    /// unbroken CJK wraps instead of running off the edge, and right-aligned
+    /// labels are placed by cells.
+    #[test]
+    fn cards_keep_wide_text_inside_their_width() {
+        use forge_transcript::{
+            QuestionPendingPresentation, Verdict, VerificationBlockPresentation,
+        };
+        let width = 40;
+        let question = render_question_card(
+            &QuestionPendingPresentation {
+                header: "質問".into(),
+                question: "東京都庁舎".repeat(12),
+                options: vec![],
+                selected: 0,
+                multi_select: true,
+                question_index: 0,
+                question_count: 1,
+                focused: true,
+            },
+            width,
+        );
+        let verification = render_verification_card(
+            &VerificationBlockPresentation {
+                command: "テスト実行".into(),
+                verdict: Verdict::Passed {
+                    headline: "成功".into(),
+                },
+                evidence: vec!["結果".repeat(40)],
+                expanded: false,
+                detail: String::new(),
+            },
+            width,
+        );
+        for line in question.iter().chain(verification.iter()) {
+            assert!(line.width() <= width, "{} cells: {line:?}", line.width());
+        }
+        let text: String = question
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert_eq!(text.matches('東').count(), 12, "question text was clipped");
+        assert!(text.contains("selected"));
+    }
 
     #[test]
     fn wrapped_line_estimate_counts_terminal_cells_not_chars() {

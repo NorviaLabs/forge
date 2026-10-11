@@ -21,7 +21,7 @@ use ratatui::widgets::{
 };
 use std::path::{Path, PathBuf};
 
-use crate::status_report::status_report_lines;
+use crate::status_report::render_status_report;
 pub use crate::status_report::thousands;
 pub use crate::status_report::StatusRow;
 
@@ -3140,7 +3140,7 @@ impl Widget for OverlayWidget<'_> {
                     ));
                 let inner = block.inner(r);
                 block.render(r, buf);
-                Paragraph::new(status_report_lines(rows, inner.width as usize)).render(inner, buf);
+                render_status_report(rows, inner, buf);
             }
             // The app renders this from live owner-scoped snapshots.
             Overlay::Tasks { .. } | Overlay::TaskStop { .. } | Overlay::ChildApproval { .. } => {}
@@ -3448,7 +3448,7 @@ impl Widget for OverlayWidget<'_> {
                             if model_input.is_empty() {
                                 0
                             } else {
-                                model_input.chars().count() as u16
+                                crate::path_display::width(model_input) as u16
                             },
                         );
                         if cursor_x < info_area.right() {
