@@ -3350,7 +3350,7 @@ impl Widget for OverlayWidget<'_> {
                         let list_area =
                             picker_scrollbar(list_area, buf, flat.len(), start, visible);
                         let end = (start + visible).min(flat.len());
-                        let provider_items: Vec<ListItem> = flat[start..end]
+                        let provider_rows: Vec<(Row, usize)> = flat[start..end]
                             .iter()
                             .enumerate()
                             .map(|(i, row)| {
@@ -3399,23 +3399,30 @@ impl Widget for OverlayWidget<'_> {
                                     _ => "",
                                 };
                                 let marker = if selected { "> " } else { "  " };
-                                let mut text = format!("{marker}{indent}{glyph} {label}");
-                                if tag.is_empty() {
-                                    ListItem::new(Span::styled(text, style))
-                                } else {
-                                    let target = (list_area.width as usize)
-                                        .saturating_sub(tag.chars().count() + 1);
-                                    while text.chars().count() < target {
-                                        text.push(' ');
-                                    }
-                                    ListItem::new(Line::from(vec![
-                                        Span::styled(text, style),
-                                        Span::styled(tag, theme::tag_style(selected)),
-                                    ]))
-                                }
+                                let row = Row::new(vec![
+                                    Cell::from(format!("{marker}{indent}{glyph} {label}")),
+                                    Cell::from(Line::from(tag).right_aligned())
+                                        .style(theme::tag_style(selected)),
+                                ])
+                                .style(style);
+                                (row, Span::raw(tag).width())
                             })
                             .collect();
-                        List::new(provider_items).render(list_area, buf);
+                        // Status tags sit in their own right-hand column, one
+                        // cell clear of the edge, sized to the widest tag shown.
+                        let tag_w = provider_rows.iter().map(|(_, w)| *w).max().unwrap_or(0) as u16;
+                        Table::new(
+                            provider_rows.into_iter().map(|(row, _)| row),
+                            [Constraint::Fill(1), Constraint::Length(tag_w)],
+                        )
+                        .column_spacing(1)
+                        .render(
+                            Rect {
+                                width: list_area.width.saturating_sub(1),
+                                ..list_area
+                            },
+                            buf,
+                        );
                     }
                     ConnectModelColumn::Models => {
                         // Type-ahead filter line, then the (cross-route or
@@ -5579,6 +5586,55 @@ mod tests {
             providers[openai_idx].expanded,
             "Enter on a multi-route vendor header toggles expand"
         );
+    }
+
+    /// Provider status tags are a table column: every tag ends one cell
+    /// clear of the right edge, whatever the label beside it.
+    #[test]
+    fn provider_status_tags_share_one_right_aligned_column() {
+        let registry = forge_connect::builtin_registry();
+        let connected: std::collections::HashSet<String> =
+            ["anthropic".to_string(), "xai".to_string()].into();
+        let providers = build_provider_rows_with_reuse(&registry, &connected, Some("xai"), &[]);
+        let overlay = Overlay::connect_model_open(
+            providers,
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        let area = Rect::new(0, 0, 90, 30);
+        let mut buf = Buffer::empty(area);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, &mut buf);
+        let ends: std::collections::BTreeSet<usize> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .filter(|row| !row.contains("Active:"))
+            .filter_map(|row| {
+                ["connected", "current"]
+                    .iter()
+                    .find_map(|tag| row.find(&format!(" {tag} ")).map(|at| at + 1 + tag.len()))
+            })
+            .collect();
+        assert_eq!(ends.len(), 1, "tags misaligned: {ends:?}");
+        let tagged = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .filter(|row| row.contains(" connected ") || row.contains(" current "))
+            .count();
+        assert_eq!(tagged, 3, "both tags plus the Active line render");
     }
 
     #[test]

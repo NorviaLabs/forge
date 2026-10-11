@@ -2,9 +2,9 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-/// Minimum terminal size for a usable TUI.
-pub const MIN_WIDTH: u16 = 80;
-pub const MIN_HEIGHT: u16 = 18;
+/// Minimum terminal size for a usable TUI; owned by the design metrics.
+pub const MIN_WIDTH: u16 = crate::design::MIN_FRAME_W;
+pub const MIN_HEIGHT: u16 = crate::design::MIN_FRAME_H;
 /// 2026 geometry: 1-column frame gutters replace the legacy 95% inset.
 /// See `crate::design::FRAME_INSET_X` and `FILES_VISIBLE_FRAME_W`.
 use crate::design::{
@@ -455,4 +455,17 @@ pub fn estimate_composer_region_width(
 /// message that says what to do.
 pub fn is_too_small(area: Rect) -> bool {
     area.width < MIN_WIDTH || area.height < MIN_HEIGHT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::design::{MIN_FRAME_H, MIN_FRAME_W};
+
+    #[test]
+    fn too_small_follows_the_design_minimum_frame() {
+        assert!(!is_too_small(Rect::new(0, 0, MIN_FRAME_W, MIN_FRAME_H)));
+        assert!(is_too_small(Rect::new(0, 0, MIN_FRAME_W - 1, MIN_FRAME_H)));
+        assert!(is_too_small(Rect::new(0, 0, MIN_FRAME_W, MIN_FRAME_H - 1)));
+    }
 }

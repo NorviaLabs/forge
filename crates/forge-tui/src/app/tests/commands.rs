@@ -2851,3 +2851,24 @@ async fn slash_suggestion_descriptions_share_one_column() {
         "descriptions misaligned: {desc_columns:?}"
     );
 }
+
+/// A wide-character history entry is clipped to the palette by terminal
+/// cells, so it never paints over the palette's right border.
+#[tokio::test]
+async fn ctrl_r_clips_wide_history_rows_inside_the_palette() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let (_dir, mut app) = focus_test_app().await;
+    app.history.push(&"東京".repeat(40));
+    app.handle_key(press(KeyCode::Char('r'), KeyModifiers::CONTROL))
+        .await
+        .unwrap();
+    app.inline_search.as_mut().unwrap().selected = crate::overlays::default_palette_items().len();
+
+    let text = render_app_text(&mut app, 100, 30);
+    let row = text
+        .lines()
+        .find(|line| line.contains('東'))
+        .unwrap_or_else(|| panic!("history row missing:\n{text}"));
+    assert!(row.contains('…'), "{row}");
+    assert!(row.trim_end().ends_with('│'), "border overwritten: {row}");
+}

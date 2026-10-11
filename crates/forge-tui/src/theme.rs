@@ -601,7 +601,11 @@ pub fn assistant_message() -> Style {
 /// legible. Without colour the hit falls back to reverse video, since a
 /// stripped background would otherwise leave it indistinguishable.
 pub fn search_match() -> Style {
-    if crossterm::style::Colored::ansi_color_disabled_memoized() {
+    search_match_for(crossterm::style::Colored::ansi_color_disabled_memoized())
+}
+
+fn search_match_for(color_disabled: bool) -> Style {
+    if color_disabled {
         return Style::default().add_modifier(Modifier::REVERSED);
     }
     let p = active_palette();
@@ -785,7 +789,16 @@ pub fn paint_caret(buf: &mut ratatui::buffer::Buffer, x: u16, y: u16) {
 }
 
 /// History-recalled input (subtle highlight of the whole field text).
+/// Without colour the highlight would vanish, leaving a recalled draft
+/// indistinguishable from typed text, so it falls back to an underline.
 pub fn history_active() -> Style {
+    history_active_for(crossterm::style::Colored::ansi_color_disabled_memoized())
+}
+
+fn history_active_for(color_disabled: bool) -> Style {
+    if color_disabled {
+        return Style::default().add_modifier(Modifier::UNDERLINED);
+    }
     let p = active_palette();
     Style::default().fg(p.text).bg(p.selection)
 }
@@ -1133,10 +1146,24 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    /// Without colour, state that was carried by a background must survive as
+    /// a modifier, or it disappears once `strip_colors_if_disabled` runs.
+    #[test]
+    fn colour_free_states_keep_a_modifier() {
+        install_defaults();
+        assert!(search_match_for(true)
+            .add_modifier
+            .contains(Modifier::REVERSED));
+        assert!(history_active_for(true)
+            .add_modifier
+            .contains(Modifier::UNDERLINED));
+        assert!(history_active_for(false).bg.is_some());
+    }
+
     #[test]
     fn search_match_text_stays_legible_on_its_ground() {
         install_defaults();
-        let style = search_match();
+        let style = search_match_for(false);
         assert_ne!(style.fg, style.bg, "matched text vanished into its ground");
         assert_eq!(style.fg, Some(active_palette().canvas));
     }

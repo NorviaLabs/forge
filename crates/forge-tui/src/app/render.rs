@@ -2438,11 +2438,12 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
             .take(visible)
             .map(|row| match row {
                 Row::Header(title) => {
-                    let mut text = format!(" {title}");
-                    while text.chars().count() < budget {
-                        text.push(' ');
-                    }
-                    Line::from(Span::styled(text, theme::metadata_style()))
+                    let text = format!(" {title}");
+                    let pad = budget.saturating_sub(Span::raw(text.as_str()).width());
+                    Line::from(Span::styled(
+                        format!("{text}{}", " ".repeat(pad)),
+                        theme::metadata_style(),
+                    ))
                 }
                 Row::Item(index) => {
                     let is_selected = *index == selected;
@@ -2459,13 +2460,11 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                             spans.extend(crate::file_explorer::highlight_name_spans(
                                 &cmd, &query, base,
                             ));
-                            let used: usize =
-                                spans.iter().map(|span| span.content.chars().count()).sum();
-                            let desc: String = item
-                                .desc
-                                .chars()
-                                .take(budget.saturating_sub(used + 2))
-                                .collect();
+                            let used: usize = spans.iter().map(Span::width).sum();
+                            let desc = crate::decision::preview(
+                                &item.desc,
+                                budget.saturating_sub(used + 2),
+                            );
                             if !desc.is_empty() {
                                 spans.push(Span::styled(
                                     format!("  {desc}"),
@@ -2474,14 +2473,13 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                             }
                         }
                         InlineSearchItem::History(text) => {
-                            let text: String =
-                                text.chars().take(budget.saturating_sub(2)).collect();
+                            let text = crate::decision::preview(text, budget.saturating_sub(2));
                             spans.extend(crate::file_explorer::highlight_name_spans(
                                 &text, &query, base,
                             ));
                         }
                     }
-                    let used: usize = spans.iter().map(|span| span.content.chars().count()).sum();
+                    let used: usize = spans.iter().map(Span::width).sum();
                     if used < budget {
                         spans.push(Span::styled(" ".repeat(budget - used), base));
                     }

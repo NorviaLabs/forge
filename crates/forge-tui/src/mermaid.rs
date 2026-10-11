@@ -57,7 +57,7 @@ fn node_label(raw: &str) -> Option<(String, String)> {
 }
 
 fn box_line(label: &str) -> Line<'static> {
-    let width = label.chars().count() + 2;
+    let width = Span::raw(label).width() + 2;
     Line::from(vec![
         Span::styled(
             format!("╭{}╮", "─".repeat(width)),
@@ -142,7 +142,7 @@ pub(crate) fn render(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
             .map(|label| format!("─ {label} ─▶"))
             .unwrap_or_else(|| "──▶".to_string());
         let plain = format!("[ {from_label} ]  {arrow}  [ {to_label} ]");
-        if plain.chars().count() <= max_width {
+        if Span::raw(plain.as_str()).width() <= max_width {
             out.push(Line::styled(plain, theme::text()));
         } else {
             out.push(box_line(from_label));
@@ -161,6 +161,18 @@ pub(crate) fn render(text: &str, width: usize) -> Option<Vec<Line<'static>>> {
 #[cfg(test)]
 mod tests {
     use super::render;
+
+    #[test]
+    fn boxes_wide_labels_by_terminal_cells() {
+        // Six CJK characters are twelve cells: the rule spans label + 2 padding.
+        let lines = render("flowchart TD\n  A[東京東京東京] --> B[x]", 20).unwrap();
+        let rule = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.starts_with('╭'))
+            .unwrap();
+        assert_eq!(rule.content, format!("╭{}╮", "─".repeat(14)));
+    }
 
     #[test]
     fn leaves_unsupported_diagrams_for_source_fallback() {

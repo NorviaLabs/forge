@@ -242,22 +242,22 @@ fn detail_for(payload: &HitlPayload) -> String {
     format!("{} · {}", payload.tool, truncate(&args, DETAIL_CHARS))
 }
 
-/// Truncate on character boundaries with an ellipsis that costs one cell.
+/// Truncate to `width` terminal cells with an ellipsis that costs one cell.
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    if width <= 1 {
-        return "…".chars().take(width).collect();
-    }
-    let kept: String = text.chars().take(width - 1).collect();
-    format!("{kept}…")
+    crate::decision::preview(text, width)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::Duration;
+
+    #[test]
+    fn truncate_counts_terminal_cells() {
+        // Each CJK character is two cells; five cells leave room for two plus "…".
+        assert_eq!(truncate("東京都庁舎", 5), "東京…");
+        assert_eq!(truncate("abc", 5), "abc");
+    }
 
     fn blocked(tool: &str, command: &str) -> BackgroundTaskStatus {
         BackgroundTaskStatus::WaitingForApproval {
