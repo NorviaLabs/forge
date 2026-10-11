@@ -231,7 +231,7 @@ pub(super) fn render_numbered_diff(
     for line in numbered {
         if line.header {
             let text = line.content;
-            let padding = " ".repeat(width.saturating_sub(text.chars().count()));
+            let padding = " ".repeat(width.saturating_sub(Span::raw(&text).width()));
             rendered.push(Line::from(Span::styled(
                 format!("{text}{padding}"),
                 theme::diff_hunk(),
@@ -250,7 +250,7 @@ pub(super) fn render_numbered_diff(
             "{old:>number_width$} {new:>number_width$} │ {} ",
             line.marker
         );
-        let row_width = gutter.chars().count() + line.content.chars().count();
+        let row_width = Span::raw(&gutter).width() + Span::raw(line.content.as_str()).width();
         let mut spans = vec![
             Span::styled(
                 format!("{old:>number_width$} {new:>number_width$} │ "),
@@ -436,7 +436,7 @@ pub(super) fn render_plan_checklist_with_pulse(
 fn estimate_wrapped_lines(text: &str, width: usize) -> usize {
     let width = width.max(1);
     text.lines()
-        .map(|line| line.chars().count().div_ceil(width).max(1))
+        .map(|line| Span::raw(line).width().div_ceil(width).max(1))
         .sum::<usize>()
         .max(1)
 }
@@ -2620,6 +2620,13 @@ mod tests {
     use super::*;
 
     use ratatui::text::Line;
+
+    #[test]
+    fn wrapped_line_estimate_counts_terminal_cells_not_chars() {
+        // Six CJK characters occupy twelve cells: two rows at width 10.
+        assert_eq!(estimate_wrapped_lines("漢字漢字漢字", 10), 2);
+        assert_eq!(estimate_wrapped_lines("abcdef", 10), 1);
+    }
 
     #[test]
     fn activity_rows_disclose_commands_and_failures() {

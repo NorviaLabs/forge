@@ -2008,14 +2008,19 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                 // truncate its description, so it only costs a row when it
                 // has something to say.
                 let inner_w = input.width.saturating_sub(2) as usize;
-                let selected_row_width = format!(
-                    "  {:<14} {}",
-                    suggestions[idx].display_cmd(),
-                    suggestions[idx].desc
-                )
-                .chars()
-                .count();
-                let truncated = selected_row_width > inner_w.saturating_sub(1);
+                // Command column fits the widest visible command, capped so
+                // descriptions always keep at least half the row.
+                let cmd_w = suggestions
+                    .iter()
+                    .skip(start)
+                    .take(visible)
+                    .map(|it| ratatui::text::Span::raw(it.display_cmd()).width())
+                    .max()
+                    .unwrap_or(0)
+                    .min(inner_w / 2);
+                let desc_w = inner_w.saturating_sub(2 + cmd_w + 1);
+                let truncated =
+                    ratatui::text::Span::raw(suggestions[idx].desc.as_str()).width() > desc_w;
                 let h = (visible as u16).saturating_add(2 + u16::from(truncated));
                 if input.y >= h {
                     let sug_area = ratatui::layout::Rect {
@@ -2024,48 +2029,26 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                         width: input.width,
                         height: h,
                     };
-                    // Pad rows so background fill spans the panel width (visible selection).
-                    let mut lines: Vec<ratatui::text::Line> = suggestions
+                    let rows: Vec<ratatui::widgets::Row> = suggestions
                         .iter()
                         .enumerate()
                         .skip(start)
                         .take(visible)
                         .map(|(i, it)| {
-                            let marker = if i == idx { "> " } else { "  " };
-                            let raw = format!("{marker}{:<14} {}", it.display_cmd(), it.desc);
-                            let mut row = raw
-                                .chars()
-                                .take(inner_w.saturating_sub(1))
-                                .collect::<String>();
-                            while row.chars().count() < inner_w.saturating_sub(1) {
-                                row.push(' ');
-                            }
+                            let marker = if i == idx { ">" } else { "" };
                             let style = if i == idx {
                                 theme::selected_row()
                             } else {
                                 theme::text()
                             };
-                            ratatui::text::Line::from(ratatui::text::Span::styled(row, style))
+                            ratatui::widgets::Row::new(vec![
+                                marker.to_string(),
+                                it.display_cmd(),
+                                it.desc.clone(),
+                            ])
+                            .style(style)
                         })
                         .collect();
-                    // The detail row exists to show a description the selected
-                    // row had to truncate. When nothing was truncated it just
-                    // repeats the line above it — and because it was never
-                    // padded to the panel width, whatever it did not cover
-                    // showed through from the transcript underneath.
-                    if truncated {
-                        let mut detail = format!("  {}", suggestions[idx].desc)
-                            .chars()
-                            .take(inner_w.saturating_sub(1))
-                            .collect::<String>();
-                        while detail.chars().count() < inner_w.saturating_sub(1) {
-                            detail.push(' ');
-                        }
-                        lines.push(ratatui::text::Line::from(ratatui::text::Span::styled(
-                            detail,
-                            theme::dim(),
-                        )));
-                    }
                     let hint = crate::hints::hint_text(crate::hints::COMMANDS);
                     let title = if n > visible {
                         format!(
@@ -2096,16 +2079,43 @@ n preview task · p push + PR · l logs · a feedback · Esc back",
                             },
                         ));
                     }
+                    let block = ratatui::widgets::Block::default()
+                        .borders(ratatui::widgets::Borders::ALL)
+                        .border_style(theme::brand())
+                        .style(theme::panel())
+                        .title(ratatui::text::Span::styled(title, theme::brand()));
+                    let inner = block.inner(sug_area);
+                    frame.render_widget(block, sug_area);
                     frame.render_widget(
-                        Paragraph::new(lines).block(
-                            ratatui::widgets::Block::default()
-                                .borders(ratatui::widgets::Borders::ALL)
-                                .border_style(theme::brand())
-                                .style(theme::panel())
-                                .title(ratatui::text::Span::styled(title, theme::brand())),
-                        ),
-                        sug_area,
+                        ratatui::widgets::Table::new(
+                            rows,
+                            [
+                                ratatui::layout::Constraint::Length(2),
+                                ratatui::layout::Constraint::Length(cmd_w as u16),
+                                ratatui::layout::Constraint::Fill(1),
+                            ],
+                        )
+                        .column_spacing(1),
+                        ratatui::layout::Rect {
+                            height: visible as u16,
+                            ..inner
+                        },
                     );
+                    // The detail row shows the description the selected row
+                    // had to truncate, and only exists when it did.
+                    if truncated {
+                        frame.render_widget(
+                            Paragraph::new(ratatui::text::Line::styled(
+                                format!("  {}", suggestions[idx].desc),
+                                theme::dim(),
+                            )),
+                            ratatui::layout::Rect {
+                                y: inner.y + visible as u16,
+                                height: 1,
+                                ..inner
+                            },
+                        );
+                    }
                 }
             }
         }

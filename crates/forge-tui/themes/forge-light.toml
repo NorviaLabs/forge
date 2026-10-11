@@ -9,11 +9,11 @@ surface_raised = "#FFFFFF"
 # Ground hierarchy: surface > hover > selection on a light canvas, mirroring
 # dark; selection stays light enough for the muted grey at WCAG AA on it.
 surface_hover = "#DDE4EE"
-border = "#B5BFCE"
+border = "#7285A2"
 border_muted = "#D5DDE8"
 text_primary = "#202936"
 text_secondary = "#47576A"
-text_muted = "#657287"
+text_muted = "#525C6D"
 accent = "#255CAA"
 accent_soft = "#DFE8F6"
 activity = "#80511B"
@@ -33,8 +33,8 @@ structure = "#47576A"
 scan_band = "#F6F7F9"
 zebra_row = "#EBEFF4"
 # Editorial emphasis inside model prose (never chrome/status/code).
-md_strong = "#965300"
-md_emph = "#5F7300"
+md_strong = "#8A4C00"
+md_emph = "#516200"
 # Links are neutral information (the `info` family), a step deeper than the
 # state teal so a URL reads at prose weight on this ground without competing
 # with the focused chrome, which owns the blue accent.

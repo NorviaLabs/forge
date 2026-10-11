@@ -743,10 +743,6 @@ impl TuiApp {
             SemanticCommand::OpenHelp => {
                 self.help_scroll = 0;
                 self.overlay = Some(Overlay::welcome());
-                self.set_feedback(
-                    FeedbackSeverity::Info,
-                    "Help · PgUp/PgDn scroll · Esc close",
-                );
             }
             SemanticCommand::SelectEntry(path) => {
                 if self.workspace_files.explorer.is_visible(&path) {
@@ -1046,10 +1042,6 @@ impl TuiApp {
                 Ok(SlashCommand::Help) => {
                     self.help_scroll = 0;
                     self.overlay = Some(Overlay::welcome());
-                    self.set_feedback(
-                        FeedbackSeverity::Info,
-                        "Help · PgUp/PgDn scroll · Esc close",
-                    );
                 }
                 Ok(SlashCommand::Continue) => {
                     let session = recent_resume_sessions(

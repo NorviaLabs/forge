@@ -15,8 +15,9 @@ impl TuiApp {
     ) {
         let text = self.help_text();
         let width = area.width.saturating_sub(4).clamp(1, 76);
-        let paragraph = Paragraph::new(text).wrap(ratatui::widgets::Wrap { trim: true });
-        let lines = paragraph.line_count(width.saturating_sub(2 + 2 * MODAL_PAD_X));
+        let body_w = width.saturating_sub(2 + 2 * MODAL_PAD_X).max(1);
+        let content = help_content(&text, body_w);
+        let lines = content.area.height as usize;
         let r = crate::overlays::centered_content_rect(
             area,
             76,
@@ -40,9 +41,17 @@ impl TuiApp {
         self.help_scroll = self
             .help_scroll
             .min(lines.saturating_sub(body.height as usize));
-        paragraph
-            .scroll((self.help_scroll.min(u16::MAX as usize) as u16, 0))
-            .render(body, buf);
+        // The content is laid out once at full height, then the scrolled
+        // window is copied into the modal body.
+        for row in 0..body.height {
+            let src_y = self.help_scroll as u16 + row;
+            if src_y >= content.area.height {
+                break;
+            }
+            for col in 0..body.width.min(content.area.width) {
+                buf[(body.x + col, body.y + row)] = content[(col, src_y)].clone();
+            }
+        }
         Paragraph::new(Line::styled(
             "↑↓ / PgUp/PgDn scroll · Esc close",
             theme::metadata_style(),
@@ -87,7 +96,9 @@ impl TuiApp {
         text.push_str("• Ctrl+E  Toggle the Files explorer (Agent ↔ Files)\n");
         text.push_str("• Ctrl+1/2/3  Agent / Files / Git\n");
         if self.effective_navigator_tab() == crate::widgets::NavigatorTab::Git {
-            text.push_str("• ↑/↓  Select change  ·  Enter  Focus patch  ·  s/u  Stage/unstage\n");
+            text.push_str("• ↑/↓  Select change\n");
+            text.push_str("• Enter  Focus patch\n");
+            text.push_str("• s / u  Stage / unstage\n");
         }
         text.push_str("• Ctrl+`  Toggle terminal panel\n");
         text.push_str("• F4  Open model picker\n");
@@ -109,7 +120,8 @@ impl TuiApp {
                 text.push_str("• n  New session — instant, named from its first prompt\n");
                 text.push_str("• F3 or /sessions  Open session switcher\n");
                 text.push_str("• s / c  Stop / continue the selected session\n");
-                text.push_str("• p  Pin  ·  x  Archive\n");
+                text.push_str("• p  Pin\n");
+                text.push_str("• x  Archive\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Workspace => {
@@ -154,7 +166,8 @@ impl TuiApp {
                     text.push_str("• Enter  Open file or expand directory\n");
                 }
                 text.push_str("• n / N  New file / folder\n");
-                text.push_str("• R  Rename · d  Delete\n");
+                text.push_str("• R  Rename\n");
+                text.push_str("• d  Delete\n");
                 text.push_str("• Esc  Return to previous block\n");
             }
             FocusBlock::Sidebar => {
@@ -810,6 +823,136 @@ impl TuiApp {
 /// the overlay module stays free of a `uuid` dependency.
 fn parse_repository_session_id(value: &str) -> Option<uuid::Uuid> {
     value.parse::<uuid::Uuid>().ok()
+}
+
+/// One line of [`TuiApp::help_text`]: prose, or a `• key  description` binding.
+enum HelpLine<'a> {
+    Prose(&'a str),
+    Binding(&'a str, &'a str),
+}
+
+/// Lay out help text at `width`: prose wraps across the full width, and each
+/// run of bindings is a key/description table sharing one key column so every
+/// section aligns to the same description edge.
+pub(super) fn help_content(text: &str, width: u16) -> ratatui::buffer::Buffer {
+    use ratatui::layout::{Constraint, Rect};
+    use ratatui::widgets::{Row, Table};
+
+    let parsed: Vec<HelpLine> = text
+        .lines()
+        .map(|line| match line.strip_prefix("• ") {
+            Some(binding) => {
+                let (key, desc) = binding.split_once("  ").unwrap_or((binding, ""));
+                HelpLine::Binding(key, desc.trim_start())
+            }
+            None => HelpLine::Prose(line),
+        })
+        .collect();
+    let key_w = parsed
+        .iter()
+        .filter_map(|line| match line {
+            HelpLine::Binding(key, _) => Some(Span::raw(*key).width() as u16),
+            HelpLine::Prose(_) => None,
+        })
+        .max()
+        .unwrap_or(0)
+        .min(width * 2 / 5);
+    let desc_w = width.saturating_sub(key_w + 2).max(1);
+
+    // Each entry is a block of rows: a wrapped prose line or a table row.
+    let mut blocks: Vec<(u16, Vec<HelpLine>)> = Vec::new();
+    for (index, line) in parsed.into_iter().enumerate() {
+        let height = match &line {
+            HelpLine::Prose(prose) => Paragraph::new(*prose)
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .line_count(width) as u16,
+            HelpLine::Binding(key, desc) => wrap_cells(key, key_w)
+                .len()
+                .max(wrap_cells(desc, desc_w).len())
+                as u16,
+        };
+        let joins_table = matches!(line, HelpLine::Binding(..))
+            && index > 0
+            && matches!(blocks.last(), Some((_, run)) if matches!(run.last(), Some(HelpLine::Binding(..))));
+        match blocks.last_mut() {
+            Some((total, run)) if joins_table => {
+                *total += height;
+                run.push(line);
+            }
+            _ => blocks.push((height, vec![line])),
+        }
+    }
+
+    let total: u16 = blocks.iter().map(|(height, _)| *height).sum();
+    let mut out = ratatui::buffer::Buffer::empty(Rect::new(0, 0, width, total.max(1)));
+    crate::theme::fill(out.area, &mut out, crate::theme::panel());
+    let mut y = 0;
+    for (index, (height, run)) in blocks.iter().enumerate() {
+        let area = Rect::new(0, y, width, *height);
+        match run.as_slice() {
+            [HelpLine::Prose(prose)] => {
+                // A prose line directly above a binding table is its heading.
+                let heads_table = matches!(
+                    blocks.get(index + 1).map(|(_, next)| next.first()),
+                    Some(Some(HelpLine::Binding(..)))
+                );
+                let style = if heads_table && !prose.is_empty() {
+                    theme::heading()
+                } else {
+                    theme::text()
+                };
+                Paragraph::new(Line::styled(*prose, style))
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .render(area, &mut out);
+            }
+            bindings => {
+                let rows = bindings.iter().filter_map(|line| match line {
+                    HelpLine::Binding(key, desc) => {
+                        let key = wrap_cells(key, key_w);
+                        let desc = wrap_cells(desc, desc_w);
+                        let height = key.len().max(desc.len()) as u16;
+                        Some(
+                            Row::new(vec![
+                                ratatui::text::Text::styled(key.join("\n"), theme::text()),
+                                ratatui::text::Text::styled(
+                                    desc.join("\n"),
+                                    theme::text_secondary(),
+                                ),
+                            ])
+                            .height(height),
+                        )
+                    }
+                    HelpLine::Prose(_) => None,
+                });
+                Table::new(rows, [Constraint::Length(key_w), Constraint::Fill(1)])
+                    .column_spacing(2)
+                    .render(area, &mut out);
+            }
+        }
+        y += height;
+    }
+    out
+}
+
+/// Greedy word wrap by terminal cell width; always yields at least one line.
+fn wrap_cells(text: &str, width: u16) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split_whitespace() {
+        let needed = Span::raw(current.as_str()).width()
+            + usize::from(!current.is_empty())
+            + Span::raw(word).width();
+        if !current.is_empty() && needed > width {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    lines.push(current);
+    lines
 }
 
 #[cfg(test)]

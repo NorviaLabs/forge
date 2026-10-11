@@ -1272,7 +1272,7 @@ async fn f1_opens_help_overlay() {
         .unwrap();
     assert!(matches!(app.overlay, Some(Overlay::Help)));
     assert!(app.input.text.is_empty());
-    assert!(app.feedback.text.contains("Help"));
+    assert!(app.feedback.is_empty(), "the modal carries its own hint");
 }
 
 /// `?` is no longer a help shortcut — F1 is the only key that opens help. An
@@ -1339,9 +1339,47 @@ async fn slash_command_info_uses_toast() {
         },
     );
 
-    app.dispatch_line("/help").await.unwrap();
-    assert!(app.feedback.text.contains("Help"));
+    app.dispatch_line("/thinking on").await.unwrap();
+    assert!(app.feedback.text.contains("thinking: on"));
     assert!(app.toast.has_toast());
+}
+
+/// Help carries its own scroll/close hint inside the modal; a toast repeating
+/// it painted over the header while the modal was open.
+#[tokio::test]
+async fn opening_help_does_not_toast_its_own_hint() {
+    let (_dir, mut app) = focus_test_app().await;
+    app.dispatch_line("/help").await.unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::Help)));
+    assert!(app.feedback.is_empty(), "{}", app.feedback.text);
+    assert!(!app.toast.has_toast());
+}
+
+/// Help bindings are a table: every description in every section starts at
+/// the same column, and prose lines still span the full width.
+#[test]
+fn help_bindings_share_one_description_column() {
+    let text = "Intro prose that is longer than any key column here.\n\nGlobal\n\
+                • Tab  Move\n• Ctrl+Shift+X  Something longer\n\nActive\n• Esc  Close\n";
+    let buf = super::super::overlays::help_content(text, 60);
+    let row = |y: u16| -> String { (0..60).map(|x| buf[(x, y)].symbol()).collect() };
+    assert!(row(0).starts_with("Intro prose that is longer than any key column here."));
+    let desc_cols: Vec<usize> = (0..buf.area.height)
+        .map(row)
+        .filter(|line| {
+            ["Move", "Something longer", "Close"]
+                .iter()
+                .any(|d| line.contains(d))
+        })
+        .map(|line| {
+            ["Move", "Something longer", "Close"]
+                .iter()
+                .find_map(|d| line.find(d))
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(desc_cols.len(), 3);
+    assert!(desc_cols.windows(2).all(|w| w[0] == w[1]), "{desc_cols:?}");
 }
 
 #[tokio::test]
@@ -2777,5 +2815,39 @@ async fn goal_evaluator_pauses_the_goal_when_impossible() {
         app.feedback.text.contains("impossible"),
         "feedback={}",
         app.feedback.text
+    );
+}
+
+/// Slash suggestions are a table: every description starts in the same
+/// column, however long the command beside it.
+#[tokio::test]
+async fn slash_suggestion_descriptions_share_one_column() {
+    use ratatui::backend::TestBackend;
+
+    let (_dir, mut app) = focus_test_app().await;
+    app.input.set_text("/");
+    app.focus_block(FocusBlock::Composer);
+    let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+
+    let desc_columns: std::collections::BTreeSet<u16> = app
+        .slash_popup_rows
+        .iter()
+        .map(|(_, rect)| {
+            let cells: Vec<&str> = (rect.x..rect.x + rect.width)
+                .map(|x| buf[(x, rect.y)].symbol())
+                .collect();
+            let cmd = cells.iter().position(|s| *s == "/").unwrap();
+            let gap = cmd + cells[cmd..].iter().position(|s| *s == " ").unwrap();
+            let desc = gap + cells[gap..].iter().position(|s| *s != " ").unwrap();
+            rect.x + desc as u16
+        })
+        .collect();
+    assert!(app.slash_popup_rows.len() > 2);
+    assert_eq!(
+        desc_columns.len(),
+        1,
+        "descriptions misaligned: {desc_columns:?}"
     );
 }

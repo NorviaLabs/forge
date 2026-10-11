@@ -597,9 +597,15 @@ pub fn assistant_message() -> Style {
     Style::default().bg(active_palette().response_bg)
 }
 
+/// Search hit: canvas-toned text on the match ground, so the matched text stays
+/// legible. Without colour the hit falls back to reverse video, since a
+/// stripped background would otherwise leave it indistinguishable.
 pub fn search_match() -> Style {
+    if crossterm::style::Colored::ansi_color_disabled_memoized() {
+        return Style::default().add_modifier(Modifier::REVERSED);
+    }
     let p = active_palette();
-    Style::default().fg(p.warn).bg(p.search_match)
+    Style::default().fg(p.canvas).bg(p.search_match)
 }
 
 pub fn diff_add() -> Style {
@@ -677,7 +683,7 @@ pub fn metadata_style() -> Style {
 /// Active explorer selection: the neutral `selection` route (shared with the
 /// pickers) plus the tree's own `>` pointer, so selection never reads as a
 /// blue focus wash. Contrast of `selection_fg` on `selection` is pinned by
-/// the palette AA tests.
+/// `builtin_palettes_meet_wcag_aa`.
 pub fn selection_active() -> Style {
     selected_row()
 }
@@ -743,7 +749,7 @@ pub fn selected_row() -> Style {
 /// "current" / "connected" tag label. `selected` should match whatever
 /// determined the row's own base style, so the tag's background always
 /// agrees with the row it sits in (plain panel bg vs. [`selected_row`]'s
-/// highlighted bg) — both are pre-verified to clear 4.5:1 contrast.
+/// highlighted bg) — both clear 4.5:1, pinned by `builtin_palettes_meet_wcag_aa`.
 pub fn tag_style(selected: bool) -> Style {
     let p = active_palette();
     let style = Style::default().fg(p.tag);
@@ -1041,4 +1047,97 @@ mod tests {
     // `ThemePalette::accent_status_collision` — so that the built-ins are
     // held to exactly the check that drop-in themes are warned against at
     // load time, rather than a second copy of the arithmetic that can drift.
+
+    fn contrast(a: forge_config::Rgb, b: forge_config::Rgb) -> f64 {
+        fn luminance(c: forge_config::Rgb) -> f64 {
+            let channel = |v: u8| {
+                let v = f64::from(v) / 255.0;
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.0) + 0.7152 * channel(c.1) + 0.0722 * channel(c.2)
+        }
+        let (hi, lo) = {
+            let (la, lb) = (luminance(a), luminance(b));
+            if la > lb {
+                (la, lb)
+            } else {
+                (lb, la)
+            }
+        };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// WCAG AA for every foreground/ground pair the built-in themes render:
+    /// 4.5:1 for text, 3:1 for the pane border that carries layout structure.
+    #[test]
+    fn builtin_palettes_meet_wcag_aa() {
+        let registry = ThemeRegistry::builtin();
+        let mut failures = Vec::new();
+        for id in [THEME_FORGE_DARK, THEME_FORGE_LIGHT] {
+            let p = registry.palette(id).unwrap();
+            let mut check = |fg: &str, fg_rgb, ground: &str, bg_rgb, min: f64| {
+                let ratio = contrast(fg_rgb, bg_rgb);
+                if ratio < min {
+                    failures.push(format!("{id}: {fg} on {ground} = {ratio:.2} < {min}"));
+                }
+            };
+            let grounds = [
+                ("background", p.background),
+                ("background_deep", p.background_deep),
+                ("surface", p.surface),
+                ("surface_raised", p.surface_raised),
+                ("surface_hover", p.surface_hover),
+                ("selection", p.selection),
+            ];
+            let text = [
+                ("text_primary", p.text_primary),
+                ("text_secondary", p.text_secondary),
+                ("text_muted", p.text_muted),
+                ("accent", p.accent),
+                ("agent", p.agent),
+                ("success", p.success),
+                ("warning", p.warning),
+                ("error", p.error),
+                ("info", p.info),
+                ("activity", p.activity),
+                ("tag", p.tag),
+                ("structure", p.structure),
+                ("md_strong", p.md_strong),
+                ("md_emph", p.md_emph),
+                ("link", p.link),
+            ];
+            for (fg, fg_rgb) in text {
+                for (ground, bg_rgb) in grounds {
+                    check(fg, fg_rgb, ground, bg_rgb, 4.5);
+                }
+            }
+            for (ground, bg_rgb) in &grounds[..4] {
+                check("border", p.border, ground, *bg_rgb, 3.0);
+            }
+            check("success", p.success, "diff_add", p.diff_add, 4.5);
+            check("error", p.error, "diff_remove", p.diff_remove, 4.5);
+            check("info", p.info, "accent_soft", p.accent_soft, 4.5);
+            check(
+                "background",
+                p.background,
+                "search_match",
+                p.search_match,
+                4.5,
+            );
+            check("surface", p.surface, "cursor", p.cursor, 4.5);
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn search_match_text_stays_legible_on_its_ground() {
+        install_defaults();
+        let style = search_match();
+        assert_ne!(style.fg, style.bg, "matched text vanished into its ground");
+        assert_eq!(style.fg, Some(active_palette().canvas));
+    }
 }
