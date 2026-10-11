@@ -664,6 +664,7 @@ impl TuiApp {
                         if let Some(profile_id) = profile_id.as_deref() {
                             self.apply_connect_credentials(profile_id);
                         }
+                        self.refresh_connection_chrome();
                     }
                     // The actor can be mid-turn; the pending label is replaced
                     // by the toast only once the change actually applies.

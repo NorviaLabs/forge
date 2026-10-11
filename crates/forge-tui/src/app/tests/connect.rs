@@ -1678,3 +1678,52 @@ async fn model_capability_and_effort_fallback_paths_keep_session_state_in_sync()
     assert_eq!(app.session_runtime.active_model, "openai/gpt-4.1-mini");
     assert_eq!(app.connect.profile.as_deref(), Some("openai"));
 }
+
+/// Choosing a model on an already-connected route (the picker's "connected"
+/// rows) is a connect: the composer must stop telling the user to /connect.
+/// Only the fresh sign-in path refreshed the composer before, so this route
+/// left "Not connected · run /connect…" under a working provider.
+#[tokio::test]
+async fn selecting_a_model_on_a_connected_route_clears_the_not_connected_hint() {
+    let _home_guard = isolated_home_guard();
+    let (_dir, session) = test_session().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    let mut app = TuiApp::new(
+        session,
+        TuiRuntimeConfig {
+            reduced_motion: false,
+            model_label: String::new(),
+            provider: "native".into(),
+            cwd: PathBuf::from("."),
+            version: "0.6.1".into(),
+            startup_notices: Vec::new(),
+            file_icons: FileIconMode::Unicode,
+            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
+        },
+    );
+    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+    app.connect.profile = None;
+    app.refresh_connection_ui();
+    assert!(app.input.not_connected);
+    assert!(app.input.hint.contains("/connect"), "{}", app.input.hint);
+
+    app.connect
+        .store
+        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .unwrap();
+    app.apply_overlay_action(OverlayAction::SelectModel {
+        provider: "native".into(),
+        model: "anthropic/claude-sonnet-4-5".into(),
+        profile_id: Some("anthropic".into()),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
+    assert!(
+        !app.input.not_connected,
+        "composer still reads disconnected"
+    );
+    assert!(!app.input.hint.contains("/connect"), "{}", app.input.hint);
+}

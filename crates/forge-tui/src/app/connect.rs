@@ -176,6 +176,14 @@ impl TuiApp {
 
     pub(super) fn refresh_connection_ui(&mut self) {
         self.sync_provider_connection();
+        self.refresh_connection_chrome();
+    }
+
+    /// Bring the composer hint and the not-connected banner in line with the
+    /// current profile, without second-guessing which profile is active.
+    /// Used after a deliberate route/model pick, where dropping the profile
+    /// the user just chose would be wrong.
+    pub(super) fn refresh_connection_chrome(&mut self) {
         // This runs after sign-in, sign-out, and profile switches, so whatever
         // was cached describes the state before the change.
         self.invalidate_connected();
@@ -1316,6 +1324,9 @@ impl TuiApp {
         if let Some(profile_id) = self.connect.profile.clone() {
             self.apply_connect_credentials(&profile_id);
         }
+        // Picking a model on an already-connected route is a connect too: the
+        // composer hint and banner must follow, not only fresh sign-ins.
+        self.refresh_connection_chrome();
         self.record_deliberate_selection();
         self.feedback = FeedbackModel::default();
         self.status_state.message.clear();
