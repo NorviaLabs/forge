@@ -22,6 +22,11 @@ const STATUS_VALUE_WIDTH: usize = 52;
 use super::util::relative_display;
 use super::*;
 
+/// Shown when the repository supervisor's event stream closes. Nothing
+/// reconnects it in-process, so the message names the effect and the recovery.
+pub(super) const SUPERVISOR_DISCONNECTED: &str =
+    "Background sessions stopped updating · restart Forge to reconnect";
+
 impl TuiApp {
     /// The navigator's active tab, derived from the workspace selection: the
     /// navigator is a sessions sidebar, and Files/Git are workspace tabs.
@@ -216,10 +221,7 @@ impl TuiApp {
             }
         }
         if closed {
-            self.set_feedback(
-                FeedbackSeverity::Error,
-                "repository supervisor disconnected",
-            );
+            self.set_feedback(FeedbackSeverity::Error, SUPERVISOR_DISCONNECTED);
         }
         for event in events {
             match event {

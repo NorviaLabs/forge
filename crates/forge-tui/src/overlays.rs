@@ -1434,7 +1434,6 @@ pub enum OverlayAction {
         label: String,
         branch: String,
     },
-    BeginOnboarding,
     /// Execute slash command string e.g. "/status"
     RunCommand(String),
     /// Model selection
@@ -2314,8 +2313,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             }
         }
         Key::Enter => match overlay {
-            Overlay::Help => OverlayAction::BeginOnboarding,
-            Overlay::StatusReport { .. } => OverlayAction::Close,
+            // Help is a reference opened mid-task: Enter, a reflex key, must not
+            // launch a flow from inside it. It closes, like the status report.
+            Overlay::Help | Overlay::StatusReport { .. } => OverlayAction::Close,
             Overlay::Tasks { .. } | Overlay::TaskStop { .. } | Overlay::ChildApproval { .. } => {
                 OverlayAction::None
             }
@@ -4502,11 +4502,11 @@ mod tests {
     }
 
     #[test]
-    fn welcome_starts_onboarding() {
+    fn enter_in_help_closes_it_instead_of_starting_setup() {
         let mut overlay = Overlay::welcome();
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::BeginOnboarding
+            OverlayAction::Close
         );
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Esc),

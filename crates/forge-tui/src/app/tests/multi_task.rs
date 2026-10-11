@@ -2949,3 +2949,26 @@ async fn collapsed_navigator_shows_a_sessions_chip_when_idle() {
         .await
         .unwrap();
 }
+
+/// When the repository supervisor goes away, the user is told what stopped
+/// and how to recover, not the name of an internal component.
+#[tokio::test]
+async fn supervisor_disconnect_names_the_effect_and_the_recovery() {
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    // A receiver whose every sender is gone reads as closed on the next poll.
+    let (sender, closed) = tokio::sync::broadcast::channel(1);
+    drop(sender);
+    app.supervisor.as_mut().unwrap().events = closed;
+
+    app.poll_supervisor_events();
+
+    assert_eq!(
+        app.feedback.text,
+        crate::app::chrome::SUPERVISOR_DISCONNECTED
+    );
+    assert!(app.feedback.text.contains("restart Forge"));
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}

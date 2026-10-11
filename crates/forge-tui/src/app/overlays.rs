@@ -7,6 +7,10 @@
 use super::*;
 use crate::design::MODAL_PAD_X;
 
+/// A session row carried an id that does not parse. Says what failed for the
+/// user (opening that session) rather than naming the parser.
+const UNREADABLE_SESSION_ID: &str = "Could not open that session · its id is unreadable";
+
 impl TuiApp {
     pub(super) fn render_help_overlay(
         &mut self,
@@ -379,7 +383,7 @@ impl TuiApp {
             }
             OverlayAction::SelectSession(id) => {
                 let Ok(session_id) = id.parse::<uuid::Uuid>() else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
+                    self.set_feedback(FeedbackSeverity::Error, UNREADABLE_SESSION_ID);
                     return Ok(());
                 };
                 let Some(index) = self
@@ -446,7 +450,7 @@ impl TuiApp {
             OverlayAction::GitRenameBranch { from, to } => self.rename_git_branch(&from, &to),
             OverlayAction::RenameSession { session_id, label } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
+                    self.set_feedback(FeedbackSeverity::Error, UNREADABLE_SESSION_ID);
                     return Ok(());
                 };
                 self.submit_session_command_tracked(
@@ -463,7 +467,7 @@ impl TuiApp {
                 discard_dirty,
             } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
+                    self.set_feedback(FeedbackSeverity::Error, UNREADABLE_SESSION_ID);
                     return Ok(());
                 };
                 if discard_dirty
@@ -528,7 +532,7 @@ impl TuiApp {
                 discard_dirty,
             } => {
                 let Some(session_id) = parse_repository_session_id(&session_id) else {
-                    self.set_feedback(FeedbackSeverity::Error, "invalid session id");
+                    self.set_feedback(FeedbackSeverity::Error, UNREADABLE_SESSION_ID);
                     return Ok(());
                 };
                 if discard_dirty
@@ -613,10 +617,6 @@ impl TuiApp {
                 });
                 self.overlay = None;
                 self.set_feedback(FeedbackSeverity::Info, "session creation cancelled");
-            }
-            OverlayAction::BeginOnboarding => {
-                self.open_connect_picker();
-                self.set_feedback(FeedbackSeverity::Info, "Step 1 of 2 · choose a provider");
             }
             OverlayAction::RunCommand(cmd) => {
                 self.startup_resume.picker = false;
@@ -1097,16 +1097,12 @@ mod tests {
         app.apply_overlay_action(OverlayAction::SelectSession("not-a-uuid".into()))
             .await
             .unwrap();
+        assert_eq!(app.feedback.text, UNREADABLE_SESSION_ID);
         app.apply_overlay_action(OverlayAction::SelectSession(
             uuid::Uuid::new_v4().to_string(),
         ))
         .await
         .unwrap();
-
-        app.apply_overlay_action(OverlayAction::BeginOnboarding)
-            .await
-            .unwrap();
-        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
 
         app.apply_overlay_action(OverlayAction::SelectTheme(
             forge_config::DEFAULT_THEME_ID.into(),

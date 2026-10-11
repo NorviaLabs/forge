@@ -523,7 +523,10 @@ impl TuiApp {
                         error: Some(FileOperationError::TrashUnavailable(reason).actionable()),
                     });
                 } else {
-                    self.set_feedback(FeedbackSeverity::Error, "Trash is unavailable");
+                    self.set_feedback(
+                        FeedbackSeverity::Error,
+                        FileOperationError::TrashUnavailable(reason).actionable(),
+                    );
                 }
             }
             Err(error) => self.set_feedback(FeedbackSeverity::Error, error.actionable()),
