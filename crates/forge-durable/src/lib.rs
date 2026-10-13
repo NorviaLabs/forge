@@ -12,7 +12,9 @@ use forge_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow, SqliteSynchronous,
+};
 use sqlx::{Row, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
@@ -272,6 +274,13 @@ pub struct RestoredBackgroundTask {
 
 fn default_restored_task_status() -> String {
     "running".into()
+}
+
+fn row_timestamp(row: &SqliteRow) -> DateTime<Utc> {
+    let ts_s: String = row.get("ts");
+    chrono::DateTime::parse_from_rfc3339(&ts_s)
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(|_| Utc::now())
 }
 
 impl Journal {
@@ -918,26 +927,13 @@ impl Journal {
                 et_s.as_str()
             ))
             .unwrap_or(JournalEventType::StatePatch);
-            let ts_s: String = row.get("ts");
-            let ts = chrono::DateTime::parse_from_rfc3339(&ts_s)
-                .map(|d| d.with_timezone(&Utc))
-                .unwrap_or_else(|_| Utc::now());
-
-            // Checkpoint replay only needs the projected state. Avoid building
-            // and retaining raw JournalEvent values that the checkpoint drops.
-            let schema_version = row.get::<i64, _>("schema_version") as u32;
-            let trace_id = row.try_get("trace_id").ok();
-
             match &event_type {
                 JournalEventType::UserMessage => {
                     if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
                         state.user_messages.push(c.to_string());
                         let attachments = payload
                             .get("attachments")
-                            .and_then(|value| {
-                                serde_json::from_value::<Vec<forge_types::ImageRef>>(value.clone())
-                                    .ok()
-                            })
+                            .and_then(|value| Vec::<forge_types::ImageRef>::deserialize(value).ok())
                             .unwrap_or_default();
                         state
                             .messages
@@ -1124,7 +1120,7 @@ impl Journal {
                         state.queue_items.push(RestoredQueueItem {
                             id: QueueItemId(id),
                             text: text.to_string(),
-                            created_at: ts,
+                            created_at: row_timestamp(&row),
                             status: QueueItemStatus::Queued,
                         });
                     }
@@ -1216,11 +1212,11 @@ impl Journal {
                 state.events.push(JournalEvent {
                     seq,
                     session_id,
-                    ts,
+                    ts: row_timestamp(&row),
                     event_type,
-                    schema_version,
+                    schema_version: row.get::<i64, _>("schema_version") as u32,
                     payload,
-                    trace_id,
+                    trace_id: row.try_get("trace_id").ok(),
                 });
             }
         }
