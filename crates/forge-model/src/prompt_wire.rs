@@ -3,6 +3,8 @@
 //! Compared object is tools + system/instructions + messages, never
 //! `model` / effort / route, and never `cache_control`.
 
+use std::io::{self, Write};
+
 use serde::ser::{SerializeMap, SerializeSeq, Serializer};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -118,9 +120,9 @@ pub fn strip_cache_control(value: &Value) -> Value {
 }
 
 pub fn snapshot_prompt(wire: &Value) -> PromptSnapshot {
-    let bytes = encode_prompt_parts(wire);
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
-    PromptSnapshot { bytes, sha256 }
+    let mut writer = SnapshotWriter::with_capacity(encoded_prompt_len(wire));
+    encode_prompt_parts(wire, &mut writer);
+    writer.finish()
 }
 
 /// Serialises a `Value` exactly as `serde_json` would, minus any
@@ -156,17 +158,45 @@ impl Serialize for Stripped<'_> {
     }
 }
 
-/// Concatenate tools, system/instructions, then each message/input item.
-/// A single JSON object cannot be a byte prefix when an array grows (`]`
-/// becomes `,`), so diagnostics hash this append-only encoding instead.
-///
-/// Takes the raw provider wire object: `cache_control` is dropped during
-/// serialisation, not by pre-stripping into a copy.
-fn encode_prompt_parts(wire: &Value) -> Vec<u8> {
-    let mut out = Vec::new();
-    append_part(&mut out, wire.get("tools"));
-    append_part(
-        &mut out,
+struct SnapshotWriter {
+    bytes: Vec<u8>,
+    hasher: Sha256,
+}
+
+impl SnapshotWriter {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            bytes: Vec::with_capacity(capacity),
+            hasher: Sha256::new(),
+        }
+    }
+
+    fn finish(self) -> PromptSnapshot {
+        let sha256 = format!("{:x}", self.hasher.finalize());
+        PromptSnapshot {
+            bytes: self.bytes,
+            sha256,
+        }
+    }
+}
+
+impl Write for SnapshotWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.bytes.extend_from_slice(buf);
+        self.hasher.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn encoded_prompt_len(wire: &Value) -> usize {
+    let mut len = 0;
+    add_part_len(&mut len, wire.get("tools"));
+    add_part_len(
+        &mut len,
         wire.get("system").or_else(|| wire.get("instructions")),
     );
     match wire
@@ -176,26 +206,80 @@ fn encode_prompt_parts(wire: &Value) -> Vec<u8> {
     {
         Some(items) => {
             for item in items {
-                append_part(&mut out, Some(item));
+                add_part_len(&mut len, Some(item));
             }
         }
-        None => append_part(&mut out, wire.get("messages").or_else(|| wire.get("input"))),
+        None => add_part_len(&mut len, wire.get("messages").or_else(|| wire.get("input"))),
     }
-    out
+    len
 }
 
-fn append_part(out: &mut Vec<u8>, part: Option<&Value>) {
+fn add_part_len(len: &mut usize, part: Option<&Value>) {
+    let Some(part) = part else {
+        return;
+    };
+    let mut counter = LengthWriter::default();
+    if serde_json::to_writer(&mut counter, &Stripped(part)).is_ok() {
+        *len += counter.len + 1;
+    }
+}
+
+#[derive(Default)]
+struct LengthWriter {
+    len: usize,
+}
+
+impl Write for LengthWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.len += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Concatenate tools, system/instructions, then each message/input item.
+/// A single JSON object cannot be a byte prefix when an array grows (`]`
+/// becomes `,`), so diagnostics hash this append-only encoding instead.
+///
+/// Takes the raw provider wire object: `cache_control` is dropped during
+/// serialisation, not by pre-stripping into a copy.
+fn encode_prompt_parts(wire: &Value, writer: &mut SnapshotWriter) {
+    append_part(writer, wire.get("tools"));
+    append_part(
+        writer,
+        wire.get("system").or_else(|| wire.get("instructions")),
+    );
+    match wire
+        .get("messages")
+        .or_else(|| wire.get("input"))
+        .and_then(Value::as_array)
+    {
+        Some(items) => {
+            for item in items {
+                append_part(writer, Some(item));
+            }
+        }
+        None => append_part(writer, wire.get("messages").or_else(|| wire.get("input"))),
+    }
+}
+
+fn append_part(writer: &mut SnapshotWriter, part: Option<&Value>) {
     let Some(part) = part else {
         return;
     };
     // Serialise directly into the accumulator so a part costs one pass and no
     // intermediate buffer. On failure the partial write is rolled back, which
     // keeps the old `to_vec`-then-append semantics of emitting nothing.
-    let mark = out.len();
-    if serde_json::to_writer(&mut *out, &Stripped(part)).is_ok() {
-        out.push(b'\n');
+    let mark = writer.bytes.len();
+    if serde_json::to_writer(&mut *writer, &Stripped(part)).is_ok() {
+        writer.write_all(b"\n").ok();
     } else {
-        out.truncate(mark);
+        writer.bytes.truncate(mark);
+        writer.hasher = Sha256::new();
+        writer.hasher.update(&writer.bytes);
     }
 }
 
