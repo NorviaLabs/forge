@@ -132,6 +132,28 @@ mod tests {
     }
 
     #[test]
+    fn save_creates_missing_parent_directories_and_round_trips_preferences() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("nested").join("forge");
+        let path = parent.join("config.toml");
+        let store = PaneLayoutStore::new(path.clone());
+        let preferences = PaneLayoutPreferences {
+            files_width_ratio: Some(0.25),
+            conversation_width_ratio: Some(0.4),
+            bottom_panel_height_ratio: Some(0.3),
+        };
+
+        assert!(!parent.exists());
+        assert!(!path.exists());
+
+        store.save(preferences).unwrap();
+
+        assert!(parent.is_dir());
+        assert!(path.is_file());
+        assert_eq!(store.load(), preferences);
+    }
+
+    #[test]
     fn reset_does_not_create_a_missing_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
