@@ -2319,11 +2319,15 @@ async fn execute_command(
                     .rename(session_id, &forge_types::session_name_from_prompt(&text))
                     .await?;
             }
-            state.control.enqueue_prompt(session_id, &text).await?;
+            // Mark the turn queued before the prompt exists: once it is
+            // enqueued, a running driver can claim and finish it at once, and
+            // a Queued written after that would overwrite Completed with
+            // nothing left to run.
             state
                 .control
                 .set_turn_state(session_id, SupervisorTurnState::Queued)
                 .await?;
+            state.control.enqueue_prompt(session_id, &text).await?;
             publish_actor(&state, session_id).await?;
             start_prompt_driver(state, session_id).await?;
         }

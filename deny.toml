@@ -41,6 +41,14 @@ ignore = [
     # vulnerability, and Forge does not use bincode directly. Tracking upstream
     # rather than forking the chain.
     { id = "RUSTSEC-2025-0141", reason = "unmaintained only; transitive via fff-search -> heed, no direct usage" },
+
+    # RUSTSEC-2024-0449 — `unsafe-libyaml` is unmaintained.
+    #
+    # Arrives through `serde_yaml` 0.9 (itself deprecated), which Forge uses in
+    # one place: parsing skill frontmatter in `forge-context`. Not a
+    # vulnerability. Revisit by replacing `serde_yaml` with a maintained YAML
+    # parser.
+    { id = "RUSTSEC-2024-0449", reason = "unmaintained only; via serde_yaml for skill frontmatter parsing, no known vulnerability" },
 ]
 
 [bans]

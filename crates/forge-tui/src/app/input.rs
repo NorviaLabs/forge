@@ -3587,17 +3587,22 @@ mod tests {
     #[tokio::test]
     async fn task_strip_guards_handle_empty_and_non_session_navigation() {
         let (_dir, mut app) = app().await;
-        // Session verbs are inert on a resource tab; the navigator is a
-        // sessions sidebar, so they run on Agent.
+        // The Sessions sidebar is drawn on every workspace tab, so its keys
+        // work on a resource tab too: Enter acts on the focused session, and
+        // Down past the last session steps onto the New-session stop. Neither
+        // switches the workspace tab.
         app.select_workspace_tab(WorkspaceTab::Files);
-        assert!(!app
-            .handle_task_strip_key(press(KeyCode::Down))
-            .await
-            .unwrap());
-        assert!(!app
+        assert_eq!(app.session_chrome.len(), 1);
+        assert!(app
             .handle_task_strip_key(press(KeyCode::Enter))
             .await
             .unwrap());
+        assert!(app
+            .handle_task_strip_key(press(KeyCode::Down))
+            .await
+            .unwrap());
+        assert_eq!(app.navigator_tab_row_block, app.focus.block());
+        assert_eq!(app.workspace_navigation.selected_tab(), WorkspaceTab::Files);
 
         app.select_workspace_tab(WorkspaceTab::Agent);
         assert!(app
