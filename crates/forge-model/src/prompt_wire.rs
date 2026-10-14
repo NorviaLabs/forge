@@ -163,7 +163,7 @@ impl Serialize for Stripped<'_> {
 /// Takes the raw provider wire object: `cache_control` is dropped during
 /// serialisation, not by pre-stripping into a copy.
 fn encode_prompt_parts(wire: &Value) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(estimate_prompt_parts_len(wire));
     append_part(&mut out, wire.get("tools"));
     append_part(
         &mut out,
@@ -182,6 +182,71 @@ fn encode_prompt_parts(wire: &Value) -> Vec<u8> {
         None => append_part(&mut out, wire.get("messages").or_else(|| wire.get("input"))),
     }
     out
+}
+
+fn estimate_prompt_parts_len(wire: &Value) -> usize {
+    let mut len = 0;
+    len += estimate_part_len(wire.get("tools"));
+    len += estimate_part_len(wire.get("system").or_else(|| wire.get("instructions")));
+    match wire
+        .get("messages")
+        .or_else(|| wire.get("input"))
+        .and_then(Value::as_array)
+    {
+        Some(items) => {
+            for item in items {
+                len += estimate_part_len(Some(item));
+            }
+        }
+        None => len += estimate_part_len(wire.get("messages").or_else(|| wire.get("input"))),
+    }
+    len
+}
+
+fn estimate_part_len(part: Option<&Value>) -> usize {
+    part.map_or(0, |value| estimate_json_len(value) + 1)
+}
+
+fn estimate_json_len(value: &Value) -> usize {
+    match value {
+        Value::Null => 4,
+        Value::Bool(value) => {
+            if *value {
+                4
+            } else {
+                5
+            }
+        }
+        Value::Number(_) => 24,
+        Value::String(value) => estimate_string_len(value),
+        Value::Array(items) => {
+            let separators = items.len().saturating_sub(1);
+            2 + separators + items.iter().map(estimate_json_len).sum::<usize>()
+        }
+        Value::Object(map) => {
+            let mut len = 2;
+            let mut emitted = 0usize;
+            for (key, child) in map {
+                if key == "cache_control" {
+                    continue;
+                }
+                if emitted > 0 {
+                    len += 1;
+                }
+                len += estimate_string_len(key) + 1 + estimate_json_len(child);
+                emitted += 1;
+            }
+            len
+        }
+    }
+}
+
+fn estimate_string_len(value: &str) -> usize {
+    let escapes = value
+        .bytes()
+        .filter(|byte| matches!(byte, b'"' | b'\\' | 0x00..=0x1f))
+        .count();
+    value.len() + 2 + escapes
 }
 
 fn append_part(out: &mut Vec<u8>, part: Option<&Value>) {
