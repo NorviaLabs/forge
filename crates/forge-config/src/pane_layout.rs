@@ -206,6 +206,22 @@ mod tests {
     }
 
     #[test]
+    fn save_does_not_overwrite_a_non_table_tui_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = b"tui = 'not a table'\n";
+        std::fs::write(&path, original).unwrap();
+
+        let result = PaneLayoutStore::new(path.clone()).save(PaneLayoutPreferences {
+            files_width_ratio: Some(0.25),
+            ..PaneLayoutPreferences::default()
+        });
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(path).unwrap(), original);
+    }
+
+    #[test]
     fn save_does_not_overwrite_a_malformed_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
