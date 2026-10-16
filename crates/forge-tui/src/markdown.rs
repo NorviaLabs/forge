@@ -666,13 +666,28 @@ impl MdRenderer {
             }
             TagEnd::Heading(_) => {
                 self.pop_style();
+                // The underline belongs to the heading: only as wide as the
+                // text it sits under, in the structure hue. A rule spanning the
+                // whole pane is the turn-boundary mark (`conversation.rs`), and
+                // the two must not draw the same line — the short length keeps
+                // them apart even with colour stripped.
+                let heading_w = self
+                    .inline
+                    .iter()
+                    .map(Span::width)
+                    .sum::<usize>()
+                    .min(self.width)
+                    .max(1);
                 self.flush_para();
                 self.prefix.clear();
                 self.cont_prefix.clear();
                 if self.heading_level.take().is_some_and(|rank| rank <= 2) {
                     self.out.push(
-                        Line::from(Span::styled("─".repeat(self.width), theme::border_muted()))
-                            .into(),
+                        Line::from(Span::styled(
+                            "─".repeat(heading_w),
+                            theme::response_marker(),
+                        ))
+                        .into(),
                     );
                 }
                 if self.airy() {
@@ -927,6 +942,12 @@ impl MdRenderer {
     /// borrowing the author's syntax, and the tinted rows show where the block
     /// stops.
     fn render_code(&mut self, code: CodeBuffer) {
+        let body = code.body.trim_end_matches('\n');
+        // Return before the chip: an empty fenced block would otherwise put a
+        // lone language label over nothing, capping a block that isn't there.
+        if body.is_empty() {
+            return;
+        }
         if code.fenced && !code.language.is_empty() {
             // The chip used to go through `code_row`, which put it inside the
             // gutter and gave it the code tint — so it read as a line of code
@@ -934,16 +955,12 @@ impl MdRenderer {
             // right-aligned to the block's own width.
             self.out.push(self.language_chip(&code.language).into());
         }
-        let body = code.body.trim_end_matches('\n');
         if code.fenced && matches!(code.language.as_str(), "mermaid" | "mmd") {
             if let Some(lines) = crate::mermaid::render(body, self.width) {
                 self.out.extend(lines.into_iter().map(HyperlinkLine::from));
                 self.out.push(Line::from("").into());
                 return;
             }
-        }
-        if body.is_empty() {
-            return;
         }
         let theme = theme::syntax_theme();
         for line_segments in highlight_to_lines(&code.language, body, &theme).iter() {
@@ -1594,5 +1611,19 @@ mod tests {
             assert!(settled <= end, "boundary ran past the buffer at {end}");
             previous = settled;
         }
+    }
+
+    /// A heading underline belongs to the heading, so it is only as wide as the
+    /// heading text — never the full pane, which is the turn-boundary rule's
+    /// mark and would otherwise draw the same line.
+    #[test]
+    fn a_heading_rule_underlines_the_heading_not_the_pane() {
+        let rows = render_markdown("# Hi\n\nbody\n", 80);
+        let rule = rows
+            .iter()
+            .find(|line| line.spans.iter().any(|s| s.content.contains('─')))
+            .expect("heading rule");
+        let width: usize = rule.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert!((2..80).contains(&width), "heading rule width {width}");
     }
 }

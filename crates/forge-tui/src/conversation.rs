@@ -35,13 +35,13 @@ pub(super) fn is_railed_block(block: &ConversationBlock) -> bool {
 /// Shared "· N chars · R tok/s · N tools" suffix, used by both the live
 /// `TurnSummary` line.
 fn turn_stats_detail(chars: usize, tokens_per_second: Option<f64>, tools: usize) -> String {
-    let mut detail = format!("·  {} chars", compact_count(chars));
+    let mut detail = format!("· {} chars", compact_count(chars));
     if let Some(rate) = tokens_per_second {
-        detail.push_str(&format!("  ·  {rate:.0} tok/s"));
+        detail.push_str(&format!(" · {rate:.0} tok/s"));
     }
     if tools > 0 {
         let unit = if tools == 1 { "tool" } else { "tools" };
-        detail.push_str(&format!("  ·  {tools} {unit}"));
+        detail.push_str(&format!(" · {tools} {unit}"));
     }
     detail
 }
@@ -101,25 +101,6 @@ impl std::ops::Deref for TranscriptRows {
     fn deref(&self) -> &Self::Target {
         &self.0
     }
-}
-
-/// A bordered card's top edge: `┌─ {title} ───┐` when `title` is set
-/// (Approval/Question), or a plain `┌────┐` when it isn't. `total_width` is
-/// the full rendered line width (the card's content width plus its 2 side
-/// borders and 2 padding columns).
-pub(super) fn card_top_border(
-    total_width: usize,
-    title: Option<&str>,
-    border: Style,
-) -> Line<'static> {
-    let _ = (title, border);
-    Line::from(" ".repeat(total_width))
-}
-
-/// A bordered card's bottom edge: `└────┘`.
-pub(super) fn card_bottom_border(total_width: usize, border: Style) -> Line<'static> {
-    let _ = border;
-    Line::from(" ".repeat(total_width))
 }
 
 /// A bordered card's content row: `│ {content, padded to interior_width} │`.
@@ -447,7 +428,7 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
             estimate_wrapped_lines(&p.text, width.saturating_sub(MESSAGE_PADDING)).saturating_add(1)
         }
         ConversationBlock::AssistantAnswer(p) => estimate_wrapped_lines(&p.text, prose_width)
-            .saturating_add(usize::from(!p.streaming && !p.text.trim().is_empty())),
+            .saturating_add(usize::from(!p.text.trim().is_empty())),
         ConversationBlock::Thinking(p) if p.collapsed => 1,
         ConversationBlock::Thinking(p) => estimate_wrapped_lines(&p.text, prose_width),
         ConversationBlock::CodeBlock(p) => estimate_wrapped_lines(&p.text, width),
@@ -1015,10 +996,14 @@ impl ConversationRenderInternals for ConversationModel {
                 ConversationBlock::AssistantAnswer(p) => {
                     // §5: one renderer-owned Forge label per final-response
                     // region — never one per streamed fragment. Streaming
-                    // previews stay unlabeled; the label lands once settled.
-                    if !p.streaming && !p.text.trim().is_empty() {
+                    // previews stay unlabeled, but the label's row is reserved
+                    // empty so settling swaps the label into a row that already
+                    // exists instead of pushing the answer down and dropping
+                    // the streaming caret.
+                    if !p.text.trim().is_empty() {
+                        let label = if p.streaming { "" } else { "Forge" };
                         lines.push(Line::from(Span::styled(
-                            format!("{}Forge", " ".repeat(MESSAGE_PADDING)),
+                            format!("{}{label}", " ".repeat(MESSAGE_PADDING)),
                             theme::text().add_modifier(Modifier::BOLD),
                         )));
                     }
@@ -1223,13 +1208,16 @@ impl ConversationRenderInternals for ConversationModel {
                     }
                 }
                 ConversationBlock::Callout(p) => {
-                    let st = match p.kind {
-                        BannerKind::Info => theme::info(),
-                        BannerKind::Warn => theme::warn(),
-                        BannerKind::Error => theme::error_callout(),
-                        BannerKind::Ok => theme::ok(),
+                    // The kind leads as a bracketed tag, not only as colour:
+                    // the same `[✓]`/`[!]` shape grammar the lifecycle uses,
+                    // so a callout still says what it is with colour stripped.
+                    let (tag, st) = match p.kind {
+                        BannerKind::Info => ("[i]", theme::info()),
+                        BannerKind::Warn => ("[!]", theme::warn()),
+                        BannerKind::Error => ("[✗]", theme::error_callout()),
+                        BannerKind::Ok => ("[✓]", theme::ok()),
                     };
-                    for l in wrap(&p.text, width) {
+                    for l in wrap(&format!("{tag} {}", p.text), width) {
                         lines.push(Line::from(Span::styled(l, st)));
                     }
                     if gap {
@@ -1317,7 +1305,7 @@ impl ConversationRenderInternals for ConversationModel {
                     // characters moved with how verbose the model was being
                     // rather than how fast it was going.
                     let detail = format!(
-                        "   {}",
+                        " {}",
                         turn_stats_detail(p.chars, p.tokens_per_second(), p.tools)
                     );
                     spans.push(Span::styled(detail, theme::metadata_style()));
@@ -1651,8 +1639,12 @@ pub(super) fn render_visible_conversation_lines(
                         .is_some_and(|span| span.content == DIFF_BLOCK_END_MARKER)
                 })
                 .map_or(lines.len(), |offset| index + 1 + offset);
+            // `index` is the title row and `end` the zero-width end marker, so
+            // the content is `end - index - 1` rows. Plus two borders that is
+            // `end - index + 1`; the old `+ 2` left one blank panel row inside
+            // the box above the bottom edge.
             let block_height =
-                (end - index + 2).min(area.bottom().saturating_sub(y) as usize) as u16;
+                (end - index + 1).min(area.bottom().saturating_sub(y) as usize) as u16;
             let block_area = Rect::new(area.x, y, area.width, block_height);
             let title = Line::from(lines[index].spans[1..].to_vec());
             let block = Block::default()
@@ -1786,7 +1778,7 @@ fn short_consequence(help: &str) -> String {
     }
 }
 
-/// Title in the approval card's top border.
+/// Title led by the approval card's first row.
 const APPROVAL_TITLE: &str = "Approval needed";
 
 /// Starter prompts on the first screen. Concrete enough to be worth trying,
@@ -1900,7 +1892,10 @@ fn render_home_card(p: &HomePresentation, prose_width: usize, compact: bool) -> 
     for starter in starters {
         for (index, line) in wrap(starter, starter_width).into_iter().enumerate() {
             row(vec![
-                Span::styled(if index == 0 { "  - " } else { "    " }, theme::muted()),
+                Span::styled(
+                    if index == 0 { "• " } else { "  " },
+                    theme::response_marker(),
+                ),
                 Span::styled(line, theme::text_secondary()),
             ]);
         }
@@ -1908,13 +1903,12 @@ fn render_home_card(p: &HomePresentation, prose_width: usize, compact: bool) -> 
     out
 }
 
-/// Render the pending-approval prompt as a bordered card.
+/// The approval prompt's card.
 ///
 /// It used to be emitted as bare lines in the transcript flow, styled like any
 /// other prose, which left the single most consequential prompt in the product
-/// with less visual weight than the empty composer below it. The presentation
-/// already carried a `focused` flag documented as "accent border vs muted" —
-/// there simply was no border for it to colour.
+/// with less visual weight than the empty composer below it. The presentation's
+/// `focused` flag now leads the title row rather than a border.
 /// The questionnaire's card.
 ///
 /// Built like the approval card and for the same reason: these are the same
@@ -1930,8 +1924,10 @@ pub(super) fn render_question_card(
 ) -> Vec<Line<'static>> {
     let prose_width = prose_width.min(CARD_MAX_WIDTH);
     let pad = " ".repeat(MESSAGE_PADDING);
-    let total = prose_width.saturating_sub(MESSAGE_PADDING).max(12);
-    let inner = total.saturating_sub(4);
+    // Borderless: a row is `pad` + content, so the interior is the pane's
+    // width less the pad alone. The four columns a boxed border and its
+    // padding used to reserve left the card's right edge four columns short.
+    let inner = prose_width.saturating_sub(MESSAGE_PADDING).max(12);
     let compact = inner < APPROVAL_COMPACT_WIDTH;
     let border = if p.focused {
         theme::waiting_border()
@@ -1950,24 +1946,30 @@ pub(super) fn render_question_card(
         p.header.clone()
     };
 
-    let mut out: Vec<Line<'static>> = vec![{
-        let mut spans = vec![Span::raw(pad.clone())];
-        spans.extend(card_top_border(total, Some(&title), border).spans);
-        Line::from(spans)
-    }];
+    let mut out: Vec<Line<'static>> = Vec::new();
     let mut row = |spans: Vec<Span<'static>>| {
         let mut all = vec![Span::raw(pad.clone())];
         all.extend(card_content_spans(spans, inner, border, None).spans);
         out.push(Line::from(all));
     };
 
+    // No border carries the title, so the header — with its `(n/m)` progress
+    // when there is more than one question — leads as a focused row.
+    let title_style = if p.focused {
+        theme::waiting_border().add_modifier(Modifier::BOLD)
+    } else {
+        theme::metadata_style().add_modifier(Modifier::BOLD)
+    };
+    row(vec![Span::styled(title, title_style)]);
+    row(vec![]);
+
     let selected_count = p.options.iter().filter(|opt| opt.chosen).count();
     for (line_idx, wrapped) in wrap(&p.question, inner).into_iter().enumerate() {
         let mut spans = vec![Span::styled(wrapped.clone(), theme::text())];
         if line_idx == 0 && p.multi_select {
-            // The live count rides the header line, right-aligned: the card
-            // holds no border to put a title in, and the count belongs next to
-            // the question, not buried with the options.
+            // The live count rides the question's first line, right-aligned:
+            // it belongs next to the question it answers, not on the header
+            // with the progress or buried with the options.
             let label = format!("{selected_count} selected");
             let label_w = crate::path_display::width(&label);
             let used = crate::path_display::width(&wrapped) + label_w;
@@ -2088,10 +2090,6 @@ pub(super) fn render_question_card(
         crate::hints::QUESTION
     };
     row(crate::hints::hint_spans(hint, inner));
-
-    let mut bottom = vec![Span::raw(pad)];
-    bottom.extend(card_bottom_border(total, border).spans);
-    out.push(Line::from(bottom));
     out
 }
 
@@ -2158,8 +2156,9 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         .question
         .as_deref()
         .unwrap_or_else(|| approval_question(&p.tool));
+    // The title row already says this is an approval; a second "Approval
+    // summary" label under it only repeats the word.
     row(vec![]);
-    row(section("Approval summary"));
     for wrapped in wrap(question, inner) {
         row(vec![Span::styled(wrapped, theme::text())]);
     }
@@ -2868,5 +2867,86 @@ mod tests {
             tail_of_whole,
             "the window must be the tail of the full render, not a different render"
         );
+    }
+
+    fn single_item_model(item: ChatItem) -> ConversationModel {
+        ConversationModel {
+            items: vec![item],
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+        }
+    }
+
+    /// Settling a streamed answer must not move it: the label row is reserved
+    /// while the answer streams, so the first line of prose lands on the same
+    /// row before and after (the caret would otherwise jump).
+    #[test]
+    fn settling_an_answer_does_not_reflow_it() {
+        let text = "Here is the plan.\n\n- one\n- two";
+        let first_prose = |rows: &[HyperlinkLine]| {
+            rows.iter()
+                .position(|row| row.row_text().contains("Here is the plan"))
+                .expect("answer prose")
+        };
+        let streaming = single_item_model(ChatItem::StreamingAssistant { text: text.into() })
+            .lines_for_width(80);
+        let settled =
+            single_item_model(ChatItem::Assistant { text: text.into() }).lines_for_width(80);
+        assert_eq!(
+            first_prose(&streaming),
+            first_prose(&settled),
+            "answer shifted when it settled:\nstreaming\n{}\nsettled\n{}",
+            lines_text(&streaming),
+            lines_text(&settled)
+        );
+    }
+
+    /// A callout's kind must survive with colour stripped, so it leads with the
+    /// shared `[✓]`/`[!]` shape grammar rather than hue alone.
+    #[test]
+    fn callouts_name_their_kind_without_colour() {
+        for (kind, tag) in [
+            (BannerKind::Info, "[i]"),
+            (BannerKind::Warn, "[!]"),
+            (BannerKind::Error, "[✗]"),
+            (BannerKind::Ok, "[✓]"),
+        ] {
+            let text = lines_text(
+                &single_item_model(ChatItem::ActivitySummary {
+                    label: "did the thing".into(),
+                    action: None,
+                    kind,
+                })
+                .lines_for_width(80),
+            );
+            assert!(text.contains(tag), "{kind:?} lost its tag:\n{text}");
+        }
+    }
+
+    /// The borderless question card leads with its header, and its `(n/m)`
+    /// progress when there is more than one question.
+    #[test]
+    fn question_card_leads_with_its_header_and_progress() {
+        use forge_transcript::QuestionPendingPresentation;
+        let card = render_question_card(
+            &QuestionPendingPresentation {
+                header: "Choose a target".into(),
+                question: "Where should this deploy?".into(),
+                options: vec![],
+                selected: 0,
+                multi_select: false,
+                question_index: 0,
+                question_count: 3,
+                focused: false,
+            },
+            72,
+        );
+        let text = lines_text(&card);
+        assert!(text.contains("Choose a target"), "{text}");
+        assert!(text.contains("(1/3)"), "{text}");
+        assert!(card.iter().all(|line| line.width() <= 72), "{text}");
     }
 }
