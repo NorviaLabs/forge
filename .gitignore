@@ -28,3 +28,6 @@ package.json
 docs
 .agents
 .claude
+
+# Impeccable design-skill artifacts (critiques, briefs): local only
+.impeccable/
