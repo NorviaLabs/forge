@@ -84,7 +84,7 @@ impl Widget for QueuedMessages<'_> {
                 theme::metadata_style(),
             ),
             Span::styled(overflow, theme::dim()),
-            Span::styled(" · /sessions inspect", theme::dim()),
+            Span::styled(" · /tasks inspect", theme::dim()),
         ]);
         buf.set_line(inner.x, area.y, &title, inner.width);
 

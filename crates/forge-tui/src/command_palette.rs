@@ -48,6 +48,10 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
             "Switch, create, attach, and manage repository sessions",
         ),
         ("/fork", "Start a new session from this conversation"),
+        (
+            "/tasks",
+            "Jobs, agents, and queued prompts for this session",
+        ),
         ("/terminal", "Open the terminal panel (Ctrl+`)"),
         ("/resize", "Resize workspace panes"),
         ("/clear", "Clear the TUI screen"),

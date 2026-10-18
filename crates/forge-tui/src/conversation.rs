@@ -9,8 +9,8 @@ pub use forge_transcript::*;
 
 use crate::links::{self, HyperlinkLine};
 use crate::markdown::{
-    render_markdown, render_markdown_links, render_markdown_open_with,
-    render_markdown_with_density_links, Density, STREAM_CARET,
+    preserve_line_breaks, render_markdown, render_markdown_links, render_markdown_open_with,
+    render_markdown_with_density_links, Density,
 };
 use crate::status_glyph::{lifecycle_marker, Lifecycle};
 use crate::theme;
@@ -28,7 +28,12 @@ use ratatui::widgets::{Block, Borders, Padding, Widget};
 pub(super) fn is_railed_block(block: &ConversationBlock) -> bool {
     matches!(
         block,
-        ConversationBlock::ActivityGroup(_) | ConversationBlock::ActiveProgress(_)
+        ConversationBlock::ActivityGroup(_)
+            | ConversationBlock::ActiveProgress(_)
+            | ConversationBlock::AgentRoster(_)
+            // Receipts are a trail too: one blank before the first, none
+            // between one receipt and the next.
+            | ConversationBlock::AgentReceipt(_)
     )
 }
 
@@ -438,15 +443,16 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         ConversationBlock::PlanChecklist(p) => p.steps.len().saturating_add(3),
         ConversationBlock::ActivityGroup(p) => {
             if p.expanded {
+                let detail_width = width.saturating_sub(ACTIVITY_DETAIL_INDENT.len());
                 let commands = p
                     .subcommands
                     .iter()
-                    .map(|command| estimate_wrapped_lines(command, width.saturating_sub(5)))
+                    .map(|command| estimate_wrapped_lines(command, detail_width))
                     .sum::<usize>();
                 let output = p
                     .items
                     .iter()
-                    .map(|item| estimate_wrapped_lines(item, width.saturating_sub(MESSAGE_PADDING)))
+                    .map(|item| estimate_wrapped_lines(item, detail_width))
                     .sum::<usize>();
                 1 + commands + output.min(7) + usize::from(output > 7)
             } else {
@@ -455,7 +461,16 @@ fn estimate_block_lines(block: &ConversationBlock, width: usize, prose_width: us
         }
         ConversationBlock::ActiveProgress(_)
         | ConversationBlock::Metadata(_)
-        | ConversationBlock::TurnSummary(_) => 1,
+        | ConversationBlock::TurnSummary(_)
+        | ConversationBlock::AgentReceipt(_) => 1,
+        ConversationBlock::AgentRoster(p) => {
+            if p.expanded() {
+                1 + p.rows.len().min(AGENT_ROSTER_MAX_ROWS)
+                    + usize::from(p.rows.len() > AGENT_ROSTER_MAX_ROWS)
+            } else {
+                1
+            }
+        }
         // Measured, not guessed. The card's height depends on the width (how
         // far the question and each option's consequence wrap) and on how many
         // options there are, and under-budgeting it scrolls its own top border
@@ -623,6 +638,15 @@ impl StreamMarkdownCache {
     }
 }
 
+/// The renderer-owned author label above an answer, shared by the settled
+/// transcript and the live preview so the two paint the same row.
+fn assistant_label_line() -> Line<'static> {
+    Line::from(Span::styled(
+        format!("{}Forge", " ".repeat(MESSAGE_PADDING)),
+        theme::text().add_modifier(Modifier::BOLD),
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_assistant_answer(
     text: &str,
@@ -675,9 +699,11 @@ fn render_assistant_answer(
 
 fn render_thinking(text: &str, duration_secs: Option<f64>, width: usize) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(INDENT_UNIT.chars().count() * 2);
+    // Reasoning arrives one step per line; keep those lines.
+    let text = preserve_line_breaks(text);
     let full_text = match duration_secs {
         Some(secs) => format!("{text} · {}", format_elapsed_tenths(secs)),
-        None => text.to_string(),
+        None => text,
     };
     style_thinking_lines(render_markdown(&full_text, content_width))
 }
@@ -720,16 +746,23 @@ pub(crate) fn render_streaming_preview(
             .map(|secs| format!(" · {}", format_elapsed_tenths(secs)))
             .unwrap_or_default();
         let thinking_lines = cache.thinking.render_inner(
-            thinking,
+            &preserve_line_breaks(thinking),
             width.saturating_sub(INDENT_UNIT.chars().count() * 2),
             keep_from_end,
             &suffix,
             Density::Compact,
         );
         lines.extend(style_thinking_lines(thinking_lines));
-        lines.push(Line::from(""));
     }
     if !text.is_empty() {
+        // Same rhythm as the settled transcript: one blank between blocks,
+        // the author label on the first token, no trailing blank of its own.
+        // Settling then repaints the same rows instead of inserting a label
+        // above the answer and shifting everything over it.
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(assistant_label_line());
         if text.contains("\\confidence{") {
             let mut raw = String::with_capacity(text.len() + STREAM_CARET.len_utf8());
             raw.push_str(text);
@@ -759,7 +792,6 @@ pub(crate) fn render_streaming_preview(
                 density,
             ));
         }
-        lines.push(Line::from(""));
     }
     lines.into_inner()
 }
@@ -903,29 +935,37 @@ impl ConversationRenderInternals for ConversationModel {
             .iter()
             .filter(|b| matches!(b, ConversationBlock::UserMessage(_)))
             .count();
+        // The disclosure hint is written once, on the most recent collapsed
+        // group, rather than on every tool row of every turn.
+        let last_activity_group = blocks
+            .iter()
+            .rposition(|b| matches!(b, ConversationBlock::ActivityGroup(p) if !p.expanded));
         // A full-width rule opens every turn boundary (every UserMessage
         // after the first block in the transcript) — independent of whether
         // that turn has a plan checklist. The rule is cushioned by one blank
-        // row on each side so turns visibly separate. Adjacent activity
-        // groups stay tight; prose and attention cards get a blank separator.
+        // row on each side so turns visibly separate.
+        //
+        // Vertical rhythm is owned here and nowhere else: a block emits no
+        // trailing blank of its own. One blank row precedes every non-rail
+        // block, rail rows (tool activity) stay tight against each other, and
+        // one blank closes the transcript. Blocks that each added their own
+        // blank doubled up wherever two kinds of content met.
         let mut seen_any_block = start_block > 0;
-        for block in blocks.into_iter().skip(start_block) {
+        let mut prev_railed = false;
+        for (block_index, block) in blocks.into_iter().enumerate().skip(start_block) {
             let is_turn_start = matches!(block, ConversationBlock::UserMessage(_));
             if is_turn_start {
                 turn_index += 1;
             }
             let in_latest_turn = total_turns == 0 || turn_index == total_turns;
             let railed = is_railed_block(&block);
-            if !is_turn_start && !railed && gap && !lines.is_empty() {
-                // Major blocks read as boundaries: separate them from the
-                // preceding tool trail with a single blank line. Turn starts
-                // have their own separator treatment below.
+            if !is_turn_start && gap && !lines.is_empty() && !(railed && prev_railed) {
                 ensure_blank_line(&mut lines);
             }
+            prev_railed = railed;
             if is_turn_start && seen_any_block {
                 // A turn boundary is one rule with one row of breathing room
-                // on each side. `ensure_blank_line` keeps a preceding block's
-                // own trailing blank from doubling into a stack.
+                // on each side.
                 if gap {
                     ensure_blank_line(&mut lines);
                 }
@@ -989,23 +1029,15 @@ impl ConversationRenderInternals for ConversationModel {
                         row.line = Line::from(spans);
                         lines.push(row);
                     }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::AssistantAnswer(p) => {
                     // §5: one renderer-owned Forge label per final-response
-                    // region — never one per streamed fragment. Streaming
-                    // previews stay unlabeled, but the label's row is reserved
-                    // empty so settling swaps the label into a row that already
-                    // exists instead of pushing the answer down and dropping
-                    // the streaming caret.
+                    // region — never one per streamed fragment. The label
+                    // lands with the first answer token, so settling changes
+                    // nothing above the answer: an empty reserved row read as
+                    // a stray double blank while the answer streamed.
                     if !p.text.trim().is_empty() {
-                        let label = if p.streaming { "" } else { "Forge" };
-                        lines.push(Line::from(Span::styled(
-                            format!("{}{label}", " ".repeat(MESSAGE_PADDING)),
-                            theme::text().add_modifier(Modifier::BOLD),
-                        )));
+                        lines.push(assistant_label_line());
                     }
                     lines.extend(render_assistant_answer(
                         &p.text,
@@ -1017,9 +1049,6 @@ impl ConversationRenderInternals for ConversationModel {
                         false,
                         density,
                     ));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::ActiveProgress(p) => {
                     let label = format!("{} · {}", p.label, p.summary);
@@ -1150,21 +1179,24 @@ impl ConversationRenderInternals for ConversationModel {
                         );
                         spans.push(Span::styled(format!(" · {label}"), theme::dim()));
                     }
-                    spans.push(Span::styled(
-                        if width >= 80 {
-                            activity_detail_label(p.expanded)
-                        } else {
-                            ""
-                        },
-                        theme::dim(),
-                    ));
+                    // The hint names a key, not a row: once, on the newest
+                    // collapsed group, is enough to teach it.
+                    if width >= 80 && last_activity_group == Some(block_index) {
+                        spans.push(Span::styled(
+                            activity_detail_label(p.expanded),
+                            theme::dim(),
+                        ));
+                    }
                     let line = Line::from(spans);
                     lines.push(line);
+                    // Disclosed detail nests under the group's label, not on
+                    // the prose edge: at the prose indent a failed command's
+                    // output was indistinguishable from the answer below it.
+                    let detail_width = width.saturating_sub(ACTIVITY_DETAIL_INDENT.len());
                     for subcommand in p.subcommands.iter().filter(|_| p.expanded) {
-                        let sub_width = width.saturating_sub(5);
-                        for wrapped in wrap(subcommand, sub_width) {
+                        for wrapped in wrap(subcommand, detail_width) {
                             let sub_line = Line::from(Span::styled(
-                                format!("{INDENT_UNIT}{wrapped}"),
+                                format!("{ACTIVITY_DETAIL_INDENT}{wrapped}"),
                                 theme::muted(),
                             ));
                             lines.push(sub_line);
@@ -1174,22 +1206,20 @@ impl ConversationRenderInternals for ConversationModel {
                         let rendered_items: Vec<String> = p
                             .items
                             .iter()
-                            .flat_map(|item| {
-                                wrap(item, width.saturating_sub(MESSAGE_PADDING)).into_iter()
-                            })
+                            .flat_map(|item| wrap(item, detail_width).into_iter())
                             .collect();
                         let visible = rendered_items.len();
                         let shown = rendered_items.iter().take(7);
                         for wrapped in shown {
                             let item_line = Line::from(Span::styled(
-                                format!("{INDENT_UNIT}{wrapped}"),
+                                format!("{ACTIVITY_DETAIL_INDENT}{wrapped}"),
                                 theme::muted(),
                             ));
                             lines.push(item_line);
                         }
                         if visible > 7 {
                             lines.push(Line::from(Span::styled(
-                                format!("{INDENT_UNIT}... {} more lines", visible - 7),
+                                format!("{ACTIVITY_DETAIL_INDENT}... {} more lines", visible - 7),
                                 theme::dim(),
                             )));
                         }
@@ -1197,15 +1227,9 @@ impl ConversationRenderInternals for ConversationModel {
                 }
                 ConversationBlock::ApprovalPending(p) => {
                     lines.extend(render_approval_card(&p, prose_width));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::QuestionPending(p) => {
                     lines.extend(render_question_card(&p, prose_width));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::Callout(p) => {
                     // The kind leads as a bracketed tag, not only as colour:
@@ -1217,11 +1241,12 @@ impl ConversationRenderInternals for ConversationModel {
                         BannerKind::Error => ("[✗]", theme::error_callout()),
                         BannerKind::Ok => ("[✓]", theme::ok()),
                     };
-                    for l in wrap(&format!("{tag} {}", p.text), width) {
-                        lines.push(Line::from(Span::styled(l, st)));
-                    }
-                    if gap {
-                        lines.push(Line::from(""));
+                    // On the prose edge like every other block: a callout
+                    // flush against the pane divider read as chrome, not as a
+                    // line of the conversation.
+                    let indent = " ".repeat(MESSAGE_PADDING);
+                    for l in wrap(&format!("{tag} {}", p.text), message_content_width(width)) {
+                        lines.push(Line::from(Span::styled(format!("{indent}{l}"), st)));
                     }
                 }
                 ConversationBlock::CodeBlock(p) => {
@@ -1233,20 +1258,17 @@ impl ConversationRenderInternals for ConversationModel {
                     for line in render_markdown_links(&p.text, width) {
                         lines.push(line);
                     }
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::DiffBlock(p) => {
                     lines.push(diff_title_line(&p.path, &p.lines));
+                    // The box is inset by the prose padding on both sides and
+                    // draws a border plus one cell of padding inside that.
+                    let inner_width = diff_box_inner_width(width);
                     if !p.rationale.is_empty() {
                         // Inside the card's own border+padding, so the
                         // rationale shares the diff content's left edge rather
                         // than sitting two columns in from it.
-                        for l in wrap(&p.rationale, width.saturating_sub(4))
-                            .into_iter()
-                            .take(2)
-                        {
+                        for l in wrap(&p.rationale, inner_width).into_iter().take(2) {
                             lines.push(Line::from(Span::styled(
                                 l,
                                 theme::muted().add_modifier(Modifier::ITALIC),
@@ -1256,21 +1278,11 @@ impl ConversationRenderInternals for ConversationModel {
                         // line of the diff.
                         lines.push(Line::from(""));
                     }
-                    lines.extend(render_numbered_diff(
-                        &p.path,
-                        &p.lines,
-                        width.saturating_sub(2),
-                    ));
+                    lines.extend(render_numbered_diff(&p.path, &p.lines, inner_width));
                     lines.push(Line::from(DIFF_BLOCK_END_MARKER));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::VerificationBlock(p) => {
                     lines.extend(render_verification_card(&p, width));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::PlanChecklist(p) => {
                     // Pulse only while a turn runs: settled history renders
@@ -1278,15 +1290,9 @@ impl ConversationRenderInternals for ConversationModel {
                     // footer's running dot which animate only while working.
                     let pulse_dim = self.opts.busy && self.opts.pulse_dim;
                     lines.extend(render_plan_checklist_with_pulse(&p, width, pulse_dim));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::Home(p) => {
                     lines.extend(render_home_card(&p, prose_width, self.opts.compact));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::TurnSummary(p) => {
                     // §11 receipt: one muted row, neutral finish wording.
@@ -1310,9 +1316,6 @@ impl ConversationRenderInternals for ConversationModel {
                     );
                     spans.push(Span::styled(detail, theme::metadata_style()));
                     lines.push(Line::from(spans));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::Metadata(p) => {
                     // Metadata is a one-line summary — `block_height` budgets
@@ -1322,9 +1325,6 @@ impl ConversationRenderInternals for ConversationModel {
                     // keeps the folder name.
                     let fitted = crate::path_display::elide_path(&p.text, width);
                     lines.push(Line::from(Span::styled(fitted, theme::muted())));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::Thinking(p) if p.collapsed => {
                     // Spent reasoning: one line saying it happened and how
@@ -1346,24 +1346,26 @@ impl ConversationRenderInternals for ConversationModel {
                         Span::styled(indent, theme::dim()),
                         Span::styled(label, theme::dim().add_modifier(Modifier::ITALIC)),
                     ]));
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
                 }
                 ConversationBlock::Thinking(p) => {
                     // Recedes rather than announces: no glyph, no bold label,
                     // no status word — deeper-indented and dim so it reads as
                     // background reasoning, not another activity item.
                     lines.extend(render_thinking(&p.text, p.duration_secs, width));
-                    // A blank closes the reasoning block, the same as every
-                    // other major block: the tool/activity rows this reasoning
-                    // produced are rail rows and get no separator of their
-                    // own, so without one here they would hug the thoughts.
-                    if gap {
-                        lines.push(Line::from(""));
-                    }
+                }
+                ConversationBlock::AgentRoster(p) => {
+                    lines.extend(render_agent_roster(&p, width, in_latest_turn));
+                }
+                ConversationBlock::AgentReceipt(p) => {
+                    lines.push(render_agent_receipt(&p, width));
                 }
             }
+        }
+        // The one trailing blank the transcript owns, so whatever follows it
+        // (the live preview, the turn line, the composer) stands off the last
+        // block without that block having to know.
+        if gap && !lines.is_empty() {
+            ensure_blank_line(&mut lines);
         }
         (lines.into_inner(), start_block == 0)
     }
@@ -1645,7 +1647,15 @@ pub(super) fn render_visible_conversation_lines(
             // the box above the bottom edge.
             let block_height =
                 (end - index + 1).min(area.bottom().saturating_sub(y) as usize) as u16;
-            let block_area = Rect::new(area.x, y, area.width, block_height);
+            // Inset to the prose edge: flush against the pane divider the box
+            // was the one block that started on a different left edge.
+            let inset = DIFF_BOX_INSET.min(area.width / 4);
+            let block_area = Rect::new(
+                area.x + inset,
+                y,
+                area.width.saturating_sub(2 * inset),
+                block_height,
+            );
             let title = Line::from(lines[index].spans[1..].to_vec());
             let block = Block::default()
                 .title(title)
@@ -2140,8 +2150,14 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         out.push(Line::from(all));
     };
 
+    // A child's request leads with who is asking: the card is the same shape
+    // as the session's own approval, and the name is what tells them apart.
+    let title = match p.asker.as_deref() {
+        Some(asker) => format!("{asker} needs approval"),
+        None => APPROVAL_TITLE.to_string(),
+    };
     row(vec![Span::styled(
-        APPROVAL_TITLE,
+        title,
         border.add_modifier(Modifier::BOLD),
     )]);
 
@@ -2156,10 +2172,16 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
         .question
         .as_deref()
         .unwrap_or_else(|| approval_question(&p.tool));
+    // A child's request is the child's: "fix-tests wants to run a shell
+    // command", not Forge's.
+    let question = match p.asker.as_deref() {
+        Some(asker) if question.starts_with("Forge ") => question.replacen("Forge", asker, 1),
+        _ => question.to_string(),
+    };
     // The title row already says this is an approval; a second "Approval
     // summary" label under it only repeats the word.
     row(vec![]);
-    for wrapped in wrap(question, inner) {
+    for wrapped in wrap(&question, inner) {
         row(vec![Span::styled(wrapped, theme::text())]);
     }
     // What the sandbox actually said about this command. The category
@@ -2335,7 +2357,12 @@ fn render_approval_card(p: &ApprovalPendingPresentation, prose_width: usize) -> 
     row(vec![]);
     // Built as spans, not wrapped text: `wrap` collapses runs of spaces, which
     // would flatten the gaps that separate one key/verb pair from the next.
-    row(crate::hints::hint_spans(crate::hints::APPROVAL, inner));
+    let hints = match (p.asker.is_some(), p.focused) {
+        (true, true) => crate::hints::CHILD_APPROVAL,
+        (true, false) => crate::hints::CHILD_APPROVAL_UNFOCUSED,
+        (false, _) => crate::hints::APPROVAL,
+    };
+    row(crate::hints::hint_spans(hints, inner));
 
     out
 }
@@ -2406,6 +2433,297 @@ fn prose_width_for(width: usize) -> usize {
 
 fn message_content_width(width: usize) -> usize {
     width.saturating_sub(MESSAGE_PADDING)
+}
+
+/// Indent of a disclosed activity group's commands and output: under the
+/// group's label (marker, bar slot), not on the prose edge.
+const ACTIVITY_DETAIL_INDENT: &str = "      ";
+
+/// Child rows an open roster shows before deferring to `/tasks`.
+const AGENT_ROSTER_MAX_ROWS: usize = 6;
+
+/// Glyph that marks a child agent, shared with the footer's agents chip.
+const AGENT_GLYPH: &str = "◆";
+
+/// Marker and style for a child's state: the same shape grammar the activity
+/// rows use (`✓ ✗ ! −`), so a roster reads as part of the tool trail.
+fn agent_state_marker(state: &AgentRowState, in_latest_turn: bool) -> (&'static str, Style) {
+    match state {
+        AgentRowState::Running => (AGENT_GLYPH, theme::accent_style()),
+        AgentRowState::Waiting { .. } => ("!", theme::warn().add_modifier(Modifier::BOLD)),
+        AgentRowState::Finished if in_latest_turn => ("✓", theme::tool_success_style()),
+        AgentRowState::Finished => ("✓", theme::text_secondary()),
+        AgentRowState::Failed { .. } => ("✗", theme::danger().add_modifier(Modifier::BOLD)),
+        AgentRowState::Cancelled => ("−", theme::muted()),
+    }
+}
+
+/// The roster: a rail block with one row per child, standing where the
+/// children were spawned.
+///
+/// ```text
+///   ▾   ◆ Agents  3 running · 1 waiting
+///       ◆ explore      Writer · running 1m12s
+///       ! fix-tests    Writer · waiting on approval: bash rm -rf target   a/d decide · → read
+/// ```
+///
+/// Under 80 columns the mode and the actions go; marker, name and state stay.
+/// A finished roster folds to its header, the way a spent tool group does.
+fn render_agent_roster(
+    p: &AgentRosterPresentation,
+    width: usize,
+    in_latest_turn: bool,
+) -> Vec<Line<'static>> {
+    let expanded = p.expanded();
+    let running = p
+        .rows
+        .iter()
+        .filter(|r| r.state == AgentRowState::Running)
+        .count();
+    let waiting = p
+        .rows
+        .iter()
+        .filter(|r| matches!(r.state, AgentRowState::Waiting { .. }))
+        .count();
+    let failed = p
+        .rows
+        .iter()
+        .filter(|r| matches!(r.state, AgentRowState::Failed { .. }))
+        .count();
+    let done = p
+        .rows
+        .iter()
+        .filter(|r| matches!(r.state, AgentRowState::Finished))
+        .count();
+    let mut counts: Vec<String> = Vec::new();
+    for (n, word) in [
+        (waiting, "waiting"),
+        (failed, "failed"),
+        (running, "running"),
+        (done, "finished"),
+    ] {
+        if n > 0 {
+            counts.push(format!("{n} {word}"));
+        }
+    }
+    let header_style = if waiting > 0 || failed > 0 {
+        theme::warn().add_modifier(Modifier::BOLD)
+    } else if in_latest_turn {
+        theme::accent_style().add_modifier(Modifier::BOLD)
+    } else {
+        theme::text_secondary().add_modifier(Modifier::BOLD)
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            if expanded { "  ▾ " } else { "  ▸ " },
+            theme::metadata_style(),
+        ),
+        Span::styled("  ", theme::metadata_style()),
+        Span::styled(format!("{AGENT_GLYPH} "), header_style),
+        Span::styled(
+            if p.rows.len() == 1 { "Agent" } else { "Agents" },
+            header_style,
+        ),
+        Span::styled(
+            // The counts are the one part of the header that can outgrow a
+            // narrow pane; they give way from the right, the rarest first.
+            crate::path_display::truncate_end(
+                &format!("  {}", counts.join(" · ")),
+                width.saturating_sub(ACTIVITY_DETAIL_INDENT.len() + 2 + 6),
+            ),
+            theme::metadata_style(),
+        ),
+    ])];
+    // The verbs the conversation offers act on the marked row; they are named
+    // once, on the header, and only when there is a marked row to act on.
+    if expanded && width >= 80 && p.selected.is_some() {
+        lines[0]
+            .spans
+            .push(Span::styled("   → read · i insert", theme::dim()));
+    }
+    if !expanded {
+        return lines;
+    }
+    let narrow = width < 80;
+    let name_width = p
+        .rows
+        .iter()
+        .map(|r| r.label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(4, 24);
+    for row in p.rows.iter().take(AGENT_ROSTER_MAX_ROWS) {
+        let (marker, style) = agent_state_marker(&row.state, in_latest_turn);
+        // The shared `›` cursor grammar: shape, not colour, says which child
+        // the conversation's keys will reach.
+        let indent = if p.selected == Some(row.task_id) {
+            "    › "
+        } else {
+            ACTIVITY_DETAIL_INDENT
+        };
+        let mut spans = vec![
+            Span::styled(indent.to_string(), theme::accent_style()),
+            Span::styled(format!("{marker} "), style),
+            Span::styled(
+                format!(
+                    "{:<name_width$}",
+                    crate::path_display::elide_middle(&row.label, name_width)
+                ),
+                style,
+            ),
+            Span::styled("  ", theme::metadata_style()),
+        ];
+        if !narrow {
+            if let Some(mode) = row.mode.as_deref().filter(|m| !m.is_empty()) {
+                spans.push(Span::styled(format!("{mode} · "), theme::metadata_style()));
+            }
+        }
+        let state_text = match &row.state {
+            AgentRowState::Running => format!("running {}", row.elapsed),
+            AgentRowState::Waiting { request } => {
+                if request.is_empty() || narrow {
+                    row.state.word().to_string()
+                } else {
+                    format!("{}: {request}", row.state.word())
+                }
+            }
+            AgentRowState::Finished => format!("finished {}", row.elapsed),
+            AgentRowState::Failed { error } => {
+                if error.is_empty() || narrow {
+                    format!("failed after {}", row.elapsed)
+                } else {
+                    format!("failed after {}: {error}", row.elapsed)
+                }
+            }
+            AgentRowState::Cancelled => format!("was cancelled after {}", row.elapsed),
+        };
+        let actions = match (&row.state, narrow) {
+            (AgentRowState::Waiting { .. }, false) => "   a/d decide",
+            _ => "",
+        };
+        let used: usize = spans.iter().map(Span::width).sum::<usize>() + actions.chars().count();
+        // Cut at the end, never the middle: the state word and the start of
+        // the request or error are what the row is for.
+        let state_text = crate::path_display::truncate_end(&state_text, width.saturating_sub(used));
+        spans.push(Span::styled(
+            state_text,
+            if matches!(row.state, AgentRowState::Waiting { .. }) {
+                theme::warn()
+            } else {
+                theme::metadata_style()
+            },
+        ));
+        if !actions.is_empty() {
+            spans.push(Span::styled(actions.to_string(), theme::dim()));
+        }
+        lines.push(Line::from(spans));
+    }
+    if p.rows.len() > AGENT_ROSTER_MAX_ROWS {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "{ACTIVITY_DETAIL_INDENT}· +{} more · /tasks",
+                p.rows.len() - AGENT_ROSTER_MAX_ROWS
+            ),
+            theme::dim(),
+        )));
+    }
+    lines
+}
+
+/// One receipt row at the end of a turn, on the turn summary's indent:
+///
+/// ```text
+///       ✓ explore finished in 1m12s · on forge/explore-7 · → read · i insert
+///       ✗ fix-tests failed after 0m48s: exit status 101 · → read
+///       ✓ fix-tests · allowed once
+/// ```
+fn render_agent_receipt(p: &AgentReceiptPresentation, width: usize) -> Line<'static> {
+    let (marker, style, verb) = match &p.kind {
+        AgentReceiptKind::Finished => (
+            "✓",
+            theme::tool_success_style(),
+            format!("finished in {}", p.elapsed),
+        ),
+        AgentReceiptKind::Failed { error } => (
+            "✗",
+            theme::danger().add_modifier(Modifier::BOLD),
+            if error.is_empty() {
+                format!("failed after {}", p.elapsed)
+            } else {
+                format!("failed after {}: {error}", p.elapsed)
+            },
+        ),
+        AgentReceiptKind::Cancelled => (
+            "−",
+            theme::muted(),
+            format!("was cancelled after {}", p.elapsed),
+        ),
+        AgentReceiptKind::Decided { allowed: true } => (
+            "✓",
+            theme::tool_success_style(),
+            "· allowed once".to_string(),
+        ),
+        AgentReceiptKind::Decided { allowed: false } => {
+            ("−", theme::muted(), "· not run".to_string())
+        }
+    };
+    // No key hints here: the conversation's `→`/`i` act on the roster's
+    // marked child, not on whichever receipt the eye lands on, and a hint
+    // that is sometimes wrong is worse than none. The Tasks view has them all.
+    //
+    // The row is cut from the right, in order of what it can spare: the
+    // branch keeps its last segment, the summary keeps its opening words, and
+    // the outcome itself is the last thing to go.
+    let lead = format!("      {marker} ");
+    let head = crate::path_display::truncate_end(
+        &format!("{} {verb}", p.label),
+        width.saturating_sub(lead.chars().count()),
+    );
+    let mut used = lead.chars().count() + head.chars().count();
+    let mut spans = vec![
+        Span::styled(lead, style),
+        Span::styled(head, theme::metadata_style()),
+    ];
+    let branch = p.branch.as_deref().filter(|b| !b.is_empty()).map(|b| {
+        format!(
+            "on {}",
+            crate::path_display::elide_middle(b, RECEIPT_BRANCH_MAX)
+        )
+    });
+    let branch_cells = branch.as_ref().map_or(0, |b| b.chars().count() + 3);
+    if let Some(summary) = p
+        .summary
+        .as_deref()
+        .map(|s| s.lines().next().unwrap_or("").trim())
+        .filter(|s| !s.is_empty())
+    {
+        let room = width.saturating_sub(used + 3 + branch_cells);
+        if room >= RECEIPT_SUMMARY_MIN {
+            let summary = crate::path_display::truncate_end(summary, room);
+            used += summary.chars().count() + 3;
+            spans.push(Span::styled(format!(" · {summary}"), theme::dim()));
+        }
+    }
+    if let Some(branch) = branch {
+        if width >= used + branch_cells {
+            spans.push(Span::styled(format!(" · {branch}"), theme::dim()));
+        }
+    }
+    Line::from(spans)
+}
+
+/// Widest a branch name is drawn on a receipt before its middle goes.
+const RECEIPT_BRANCH_MAX: usize = 32;
+/// Fewer cells than this and a summary is dropped rather than cut to a stub.
+const RECEIPT_SUMMARY_MIN: usize = 12;
+
+/// Horizontal inset of the diff box from the pane's edges, each side.
+const DIFF_BOX_INSET: u16 = MESSAGE_PADDING as u16;
+
+/// Columns available to a diff row inside the box: the pane less the inset on
+/// each side, less the border and one cell of padding on each side.
+fn diff_box_inner_width(width: usize) -> usize {
+    width.saturating_sub(2 * DIFF_BOX_INSET as usize + 4)
 }
 
 /// Widest a *card* may be drawn: the approval, question, home and plan cards.
@@ -2948,5 +3266,524 @@ mod tests {
         assert!(text.contains("Choose a target"), "{text}");
         assert!(text.contains("(1/3)"), "{text}");
         assert!(card.iter().all(|line| line.width() <= 72), "{text}");
+    }
+
+    fn model(items: Vec<ChatItem>, opts: ConversationViewOpts) -> ConversationModel {
+        ConversationModel {
+            items: forge_transcript::group_routine_activity(items),
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+            scroll: 0,
+            follow: true,
+            opts,
+        }
+    }
+
+    fn tool(name: &str, summary: &str, outcome: forge_types::ExecutionOutcome) -> ChatItem {
+        ChatItem::ToolCard {
+            name: name.into(),
+            summary: summary.into(),
+            detail: "stdout line 1\nstdout line 2".into(),
+            state: ToolCardState::from(&outcome),
+            duration: None,
+            subcommand: Some(summary.into()),
+            outcome,
+        }
+    }
+
+    /// A turn that mixes every kind of content: thinking, a tool trail with a
+    /// failure, a plan, a diff, a callout and an answer.
+    fn mixed_turn(answer: ChatItem) -> Vec<ChatItem> {
+        use forge_types::{ExecutionOutcome, PlanItem, PlanStepStatus};
+        vec![
+            ChatItem::User {
+                text: "Fix the flaky retry test.".into(),
+            },
+            ChatItem::Thinking {
+                text: "Read retry.rs first.".into(),
+                duration_secs: Some(4.1),
+            },
+            tool("read_file", "crates/a.rs", ExecutionOutcome::Success),
+            tool("read_file", "crates/b.rs", ExecutionOutcome::Success),
+            tool(
+                "shell",
+                "cargo test -p forge-core retry",
+                ExecutionOutcome::Failed { exit_code: Some(1) },
+            ),
+            ChatItem::PlanChecklist {
+                explanation: None,
+                steps: vec![PlanItem {
+                    step: "Inject a clock".into(),
+                    status: PlanStepStatus::Completed,
+                }],
+                evidence: vec![vec![]],
+            },
+            ChatItem::DiffCard {
+                path: "crates/a.rs".into(),
+                lines: vec!["@@ -1 +1 @@".into(), "-a".into(), "+b".into()],
+                rationale: String::new(),
+            },
+            ChatItem::Banner {
+                text: "Context at 62%".into(),
+                kind: BannerKind::Warn,
+            },
+            answer,
+        ]
+    }
+
+    fn rows(model: &ConversationModel, width: usize) -> Vec<String> {
+        model
+            .lines_for_width(width)
+            .iter()
+            .map(|l| l.row_text().trim_end().to_string())
+            .collect()
+    }
+
+    /// Spacing is owned by the loop: never two blank rows in a row, one
+    /// blank before every non-rail block, rail rows tight, one blank closing
+    /// the transcript. Checked over a mixed turn both settled and streaming.
+    #[test]
+    fn vertical_rhythm_is_single_blank_everywhere() {
+        for answer in [
+            ChatItem::Assistant {
+                text: "Done.\n\n- one\n- two".into(),
+            },
+            ChatItem::StreamingAssistant {
+                text: "Done.\n\n- one\n- tw".into(),
+            },
+        ] {
+            let m = model(mixed_turn(answer), ConversationViewOpts::default());
+            let rows = rows(&m, 100);
+            let text = rows.join("\n");
+            assert!(!text.contains("\n\n\n"), "double blank:\n{text}");
+            assert_eq!(rows.last().map(String::as_str), Some(""), "{text}");
+            // The tool trail is tight, then one blank, then the next block.
+            let first_tool = rows.iter().position(|r| r.contains("▸")).unwrap();
+            assert!(!rows[first_tool + 1].is_empty(), "{text}");
+            // Prose follows the callout after exactly one blank.
+            let callout = rows.iter().position(|r| r.contains("[!]")).unwrap();
+            assert!(rows[callout + 1].is_empty(), "{text}");
+            assert!(rows[callout + 2].contains("Forge"), "{text}");
+        }
+    }
+
+    /// The author label lands with the first streamed token, in the model
+    /// path and in the live preview alike, so settling repaints the same rows.
+    #[test]
+    fn label_is_present_while_streaming_in_both_paths() {
+        let streaming = single_item_model(ChatItem::StreamingAssistant {
+            text: "Here".into(),
+        })
+        .lines_for_width(80);
+        assert!(lines_text(&streaming).contains("Forge"));
+
+        let mut cache = StreamPreviewCache::default();
+        let live = render_streaming_preview(
+            "thinking",
+            "Here",
+            None,
+            80,
+            usize::MAX,
+            &mut cache,
+            Density::Airy,
+        );
+        let live_rows: Vec<String> = live
+            .iter()
+            .map(|l| l.row_text().trim_end().into())
+            .collect();
+        let settled = model(
+            vec![
+                ChatItem::Thinking {
+                    text: "thinking".into(),
+                    duration_secs: None,
+                },
+                ChatItem::Assistant {
+                    text: "Here".into(),
+                },
+            ],
+            ConversationViewOpts::default(),
+        );
+        let settled_rows: Vec<String> = rows(&settled, 80)
+            .into_iter()
+            .map(|r| r.trim_end_matches(STREAM_CARET).trim_end().to_string())
+            .collect();
+        let settled_rows = &settled_rows[..settled_rows.len() - 1]; // drop the owned trailing blank
+        assert_eq!(
+            live_rows
+                .iter()
+                .map(|r| r.trim_end_matches(STREAM_CARET).trim_end().to_string())
+                .collect::<Vec<_>>(),
+            settled_rows,
+            "live preview and settled transcript lay out differently"
+        );
+    }
+
+    /// Reasoning keeps its line breaks: one step per line in the source is
+    /// one row per step on screen, settled and live, while a paragraph break
+    /// still reads as a paragraph break.
+    #[test]
+    fn thinking_keeps_its_line_breaks() {
+        let text = "First step.\nSecond step.\n\nNew paragraph.";
+        let settled: Vec<String> = render_thinking(text, None, 80)
+            .iter()
+            .map(|l| l.row_text().trim().to_string())
+            .collect();
+        assert_eq!(
+            settled,
+            ["First step.", "Second step.", "", "New paragraph."],
+            "{settled:#?}"
+        );
+
+        let mut cache = StreamPreviewCache::default();
+        let live: Vec<String> =
+            render_streaming_preview(text, "", None, 80, usize::MAX, &mut cache, Density::Airy)
+                .iter()
+                .map(|l| l.row_text().trim().to_string())
+                .collect();
+        assert_eq!(
+            live,
+            ["First step.", "Second step.", "", "New paragraph."],
+            "{live:#?}"
+        );
+    }
+
+    /// Callouts share the prose edge instead of hugging the pane divider.
+    #[test]
+    fn callouts_sit_on_the_prose_edge() {
+        let rows = rows(
+            &single_item_model(ChatItem::Banner {
+                text: "heads up".into(),
+                kind: BannerKind::Info,
+            }),
+            80,
+        );
+        assert_eq!(
+            rows[0],
+            format!("{}[i] heads up", " ".repeat(MESSAGE_PADDING))
+        );
+    }
+
+    /// Disclosed command output nests under the group label rather than
+    /// sharing the answer's left edge.
+    #[test]
+    fn expanded_activity_detail_nests_under_its_label() {
+        let m = model(
+            mixed_turn(ChatItem::Assistant {
+                text: "Done.".into(),
+            }),
+            ConversationViewOpts {
+                tool_expanded: true,
+                ..Default::default()
+            },
+        );
+        let rows = rows(&m, 100);
+        let output = rows
+            .iter()
+            .find(|r| r.contains("stdout line 1"))
+            .expect("expanded output");
+        assert!(output.starts_with(ACTIVITY_DETAIL_INDENT), "{output:?}");
+        assert!(!output.starts_with(&" ".repeat(ACTIVITY_DETAIL_INDENT.len() + 1)));
+    }
+
+    /// The disclosure hint teaches a key once, on the newest group.
+    #[test]
+    fn disclosure_hint_appears_once() {
+        let m = model(
+            mixed_turn(ChatItem::Assistant {
+                text: "Done.".into(),
+            }),
+            ConversationViewOpts::default(),
+        );
+        let rows = rows(&m, 100);
+        let hinted: Vec<_> = rows.iter().filter(|r| r.contains("Ctrl+O")).collect();
+        assert_eq!(hinted.len(), 1, "{rows:#?}");
+        // The newest *collapsed* group carries it; the failed group after it
+        // is already disclosed and has nothing to hint at.
+        let collapsed: Vec<_> = rows.iter().filter(|r| r.contains('▸')).collect();
+        assert!(collapsed.last().unwrap().contains("Ctrl+O"), "{rows:#?}");
+    }
+
+    /// The caret must not borrow the fence gutter's glyph.
+    #[test]
+    fn stream_caret_is_not_the_code_gutter() {
+        assert_ne!(STREAM_CARET, '▌');
+        let mut cache = StreamPreviewCache::default();
+        let live = render_streaming_preview(
+            "",
+            "```rust\nlet x",
+            None,
+            80,
+            usize::MAX,
+            &mut cache,
+            Density::Airy,
+        );
+        let code = live
+            .iter()
+            .find(|l| l.row_text().contains("let x"))
+            .expect("code row");
+        let text = code.row_text();
+        assert!(text.trim_start().starts_with('▌'), "{text:?}");
+        assert!(text.contains(&format!("let x{STREAM_CARET}")), "{text:?}");
+        // The caret keeps its live colour even with the chip after it.
+        let caret = code
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == STREAM_CARET.to_string())
+            .expect("caret span");
+        assert_eq!(caret.style.fg, theme::text().fg);
+    }
+
+    /// The diff box is inset to the prose edge on both sides.
+    #[test]
+    fn diff_box_is_inset_from_the_pane_edges() {
+        use ratatui::buffer::Buffer;
+        let m = single_item_model(ChatItem::DiffCard {
+            path: "a.rs".into(),
+            lines: vec!["@@ -1 +1 @@".into(), "-a".into(), "+b".into()],
+            rationale: String::new(),
+        });
+        let lines = m.lines_for_width(40);
+        let refs: Vec<&HyperlinkLine> = lines.iter().collect();
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        render_visible_conversation_lines(&refs, area, &mut buf, None, None, false);
+        let row0: String = (0..40).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+        assert!(row0.starts_with("  ┌"), "{row0:?}");
+        assert!(row0.trim_end().ends_with("┐"), "{row0:?}");
+        assert_eq!(row0.trim_end().chars().count(), 38, "{row0:?}");
+    }
+
+    fn agent_row(label: &str, id: u64, state: AgentRowState) -> AgentRosterRow {
+        AgentRosterRow {
+            task_id: id,
+            label: label.into(),
+            mode: Some("Writer".into()),
+            state,
+            elapsed: "1m12s".into(),
+            child_session_id: None,
+            turn_ordinal: None,
+        }
+    }
+
+    /// Every roster row carries its state as a word, the marked row carries
+    /// the `›` cursor, and the verbs appear once on the header, only when
+    /// there is a marked row to act on.
+    #[test]
+    fn roster_rows_say_their_state_in_words() {
+        let roster = AgentRosterPresentation {
+            rows: vec![
+                agent_row("explore", 1, AgentRowState::Running),
+                agent_row(
+                    "fix-tests",
+                    2,
+                    AgentRowState::Waiting {
+                        request: "bash rm -rf target".into(),
+                    },
+                ),
+                agent_row(
+                    "docs",
+                    3,
+                    AgentRowState::Failed {
+                        error: "exit status 101".into(),
+                    },
+                ),
+                agent_row("review", 4, AgentRowState::Finished),
+            ],
+            selected: Some(2),
+        };
+        let rendered = rows(
+            &single_item_model(ChatItem::AgentRoster(roster.clone())),
+            100,
+        );
+        let text = rendered.join("\n");
+        assert!(
+            text.contains("◆ Agents  1 waiting · 1 failed · 1 running · 1 finished"),
+            "{text}"
+        );
+        assert!(text.contains("→ read · i insert"), "{text}");
+        assert!(text.contains("◆ explore"), "{text}");
+        assert!(text.contains("running 1m12s"), "{text}");
+        assert!(text.contains("› ! fix-tests"), "{text}");
+        assert!(
+            text.contains("waiting on approval: bash rm -rf target"),
+            "{text}"
+        );
+        assert!(text.contains("a/d decide"), "{text}");
+        assert!(text.contains("✗ docs"), "{text}");
+        assert!(
+            text.contains("failed after 1m12s: exit status 101"),
+            "{text}"
+        );
+        assert!(text.contains("✓ review"), "{text}");
+        assert!(text.contains("finished 1m12s"), "{text}");
+        assert!(rendered.iter().all(|r| r.chars().count() <= 100), "{text}");
+
+        // Narrow: mode and verbs go, marker, name and state stay.
+        let narrow = rows(
+            &single_item_model(ChatItem::AgentRoster(roster.clone())),
+            60,
+        )
+        .join("\n");
+        assert!(!narrow.contains("Writer"), "{narrow}");
+        assert!(!narrow.contains("→ read"), "{narrow}");
+        assert!(narrow.contains("fix-tests"), "{narrow}");
+        assert!(narrow.contains("waiting on approval"), "{narrow}");
+
+        // Nothing marked: no verbs promised.
+        let unmarked = AgentRosterPresentation {
+            selected: None,
+            ..roster
+        };
+        let text = rows(&single_item_model(ChatItem::AgentRoster(unmarked)), 100).join("\n");
+        assert!(!text.contains("→ read"), "{text}");
+        assert!(!text.contains('›'), "{text}");
+    }
+
+    /// A roster of finished children folds to its header; one over the row
+    /// cap defers the rest to the Tasks view.
+    #[test]
+    fn roster_folds_when_done_and_caps_its_rows() {
+        let done = AgentRosterPresentation {
+            rows: vec![
+                agent_row("a", 1, AgentRowState::Finished),
+                agent_row("b", 2, AgentRowState::Cancelled),
+            ],
+            selected: None,
+        };
+        let rows_done = rows(&single_item_model(ChatItem::AgentRoster(done)), 100);
+        assert_eq!(rows_done.iter().filter(|r| !r.is_empty()).count(), 1);
+        assert!(rows_done[0].contains("▸"), "{rows_done:?}");
+
+        let many = AgentRosterPresentation {
+            rows: (0..8)
+                .map(|i| agent_row(&format!("agent-{i}"), i, AgentRowState::Running))
+                .collect(),
+            selected: None,
+        };
+        let text = rows(&single_item_model(ChatItem::AgentRoster(many)), 100).join("\n");
+        assert!(text.contains("agent-5"), "{text}");
+        assert!(!text.contains("agent-6"), "{text}");
+        assert!(text.contains("+2 more · /tasks"), "{text}");
+    }
+
+    /// One receipt per terminal outcome and per decision, each with its
+    /// marker and its word.
+    #[test]
+    fn receipts_name_the_outcome() {
+        let receipt = |kind: AgentReceiptKind| {
+            ChatItem::AgentReceipt(AgentReceiptPresentation {
+                task_id: 1,
+                label: "explore".into(),
+                kind,
+                elapsed: "1m12s".into(),
+                summary: Some("Found the race in retry.rs".into()),
+                branch: Some("forge/explore-7".into()),
+                turn_ordinal: None,
+            })
+        };
+        let text = |kind| rows(&single_item_model(receipt(kind)), 100)[0].clone();
+        assert!(
+            text(AgentReceiptKind::Finished).contains(
+                "✓ explore finished in 1m12s · Found the race in retry.rs · on forge/explore-7"
+            ),
+            "{}",
+            text(AgentReceiptKind::Finished)
+        );
+        assert!(text(AgentReceiptKind::Failed {
+            error: "exit status 101".into()
+        })
+        .contains("✗ explore failed after 1m12s: exit status 101"));
+        assert!(text(AgentReceiptKind::Cancelled).contains("− explore was cancelled after 1m12s"));
+        assert!(
+            text(AgentReceiptKind::Decided { allowed: true }).contains("✓ explore · allowed once")
+        );
+        assert!(text(AgentReceiptKind::Decided { allowed: false }).contains("− explore · not run"));
+        // No key hints: the conversation's keys act on the roster's marked
+        // child, not on a receipt.
+        assert!(!text(AgentReceiptKind::Finished).contains("→ read"));
+    }
+
+    /// A child's card leads with who is asking and hints the child's keys;
+    /// unfocused it says how to reach it.
+    #[test]
+    fn child_card_names_the_asker_and_its_keys() {
+        let card = |focused: bool| ApprovalPendingPresentation {
+            tool: "bash".into(),
+            command: "rm -rf target".into(),
+            cwd: "/tmp/wt".into(),
+            env_delta: String::new(),
+            question: None,
+            reason: None,
+            failure: None,
+            options: vec![
+                ApprovalMenuRow {
+                    label: "Don't run".into(),
+                    detail: None,
+                    help: None,
+                    key: Some("d".into()),
+                },
+                ApprovalMenuRow {
+                    label: "Allow once".into(),
+                    detail: None,
+                    help: None,
+                    key: Some("a".into()),
+                },
+            ],
+            selected: 0,
+            focused,
+            asker: Some("fix-tests".into()),
+        };
+        let focused = lines_text(&render_approval_card(&card(true), 80));
+        assert!(focused.contains("fix-tests needs approval"), "{focused}");
+        assert!(focused.contains("rm -rf target"), "{focused}");
+        assert!(focused.contains("a allow once"), "{focused}");
+        assert!(focused.contains("d don't run"), "{focused}");
+        let passive = lines_text(&render_approval_card(&card(false), 80));
+        assert!(passive.contains("Tab to this card"), "{passive}");
+        assert!(!passive.contains("Esc leave"), "{passive}");
+    }
+
+    /// A child moving from running to finished changes its own row and
+    /// nothing above it: the answer before the roster keeps its row.
+    #[test]
+    fn roster_updates_in_place_without_reflowing_the_answer_above() {
+        let items = |state: AgentRowState| {
+            vec![
+                ChatItem::User { text: "go".into() },
+                ChatItem::Assistant {
+                    text: "Spawning a helper.".into(),
+                },
+                ChatItem::AgentRoster(AgentRosterPresentation {
+                    rows: vec![agent_row("explore", 1, state)],
+                    selected: Some(1),
+                }),
+                ChatItem::Assistant {
+                    text: "Meanwhile, here is the plan.".into(),
+                },
+            ]
+        };
+        let position = |state: AgentRowState| {
+            rows(&model(items(state), ConversationViewOpts::default()), 100)
+                .iter()
+                .position(|r| r.contains("Spawning a helper"))
+                .unwrap()
+        };
+        assert_eq!(
+            position(AgentRowState::Running),
+            position(AgentRowState::Finished)
+        );
+        // Below the roster, the one settle is the fold: a finished roster is
+        // its header alone, so what follows moves up by exactly the rows the
+        // child row took, once, the way a turn settles elsewhere.
+        let below = |state: AgentRowState| {
+            rows(&model(items(state), ConversationViewOpts::default()), 100)
+                .iter()
+                .position(|r| r.contains("here is the plan"))
+                .unwrap()
+        };
+        assert_eq!(
+            below(AgentRowState::Running),
+            below(AgentRowState::Finished) + 1
+        );
     }
 }

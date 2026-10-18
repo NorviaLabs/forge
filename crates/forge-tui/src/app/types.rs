@@ -119,6 +119,7 @@ pub(crate) struct SessionViewState {
     pub(crate) stream: StreamState,
     pub(crate) activity: ActivityFeed,
     pub(crate) banner_state: BannerState,
+    pub(crate) agents: AgentViewState,
     pub(crate) turn_summaries: Vec<TurnSummaryRecord>,
     pub(crate) turn_summaries_revision: u64,
     pub(crate) tool_detail: ToolDetailState,
@@ -188,6 +189,7 @@ impl Default for SessionViewState {
             stream: StreamState::default(),
             activity: ActivityFeed::default(),
             banner_state: BannerState::default(),
+            agents: AgentViewState::default(),
             turn_summaries: Vec::new(),
             turn_summaries_revision: 0,
             tool_detail: ToolDetailState::default(),
@@ -1129,6 +1131,12 @@ pub(crate) struct ConversationRenderKey {
     /// toggling changes no other keyed field, so the card would stay stale.
     pub(crate) question_selected: Vec<String>,
     pub(crate) question_custom: Option<String>,
+    /// Digest of the child agents as drawn: ids, states, elapsed seconds,
+    /// receipt anchors and decisions. A running child moves its elapsed once
+    /// a second, which is the one time-driven rebuild the transcript has.
+    pub(crate) agents: u64,
+    /// The inline child card: (task id, selected row, focused).
+    pub(crate) child_card: Option<(u64, usize, bool)>,
 }
 
 pub(crate) struct ConversationRenderCache {
@@ -1212,6 +1220,43 @@ pub(crate) struct ChildApprovalPaint {
     pub(crate) task_id: forge_types::BackgroundTaskId,
     pub(crate) request: forge_core::BackgroundApprovalRequest,
     pub(crate) choices: [ratatui::layout::Rect; 2],
+}
+
+/// The inline child card as last painted: the request the operator saw, so a
+/// decision key acts on exactly that request and nothing newer.
+#[derive(Debug, Clone)]
+pub(crate) struct ChildCardPaint {
+    pub(crate) owner: uuid::Uuid,
+    pub(crate) task_id: forge_types::BackgroundTaskId,
+    pub(crate) request: forge_core::BackgroundApprovalRequest,
+}
+
+/// One decision taken on a child's request from the inline card, kept so the
+/// card settles into a receipt line rather than vanishing.
+#[derive(Debug, Clone)]
+pub(crate) struct ChildDecisionRecord {
+    pub(crate) task_id: forge_types::BackgroundTaskId,
+    pub(crate) request_id: uuid::Uuid,
+    pub(crate) label: String,
+    pub(crate) allowed: bool,
+    /// Absolute user ordinal of the turn the decision was taken in.
+    pub(crate) turn_ordinal: u64,
+}
+
+/// Per-session view state for child agents in the transcript.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentViewState {
+    /// The turn each finished child's receipt lands under, recorded when the
+    /// poller saw the finish. A child that finished before this view existed
+    /// (a restored session) has no anchor and lands at the end.
+    pub(crate) receipt_anchors: Vec<(forge_types::BackgroundTaskId, u64)>,
+    /// The turn each child was first seen in, for a roster row with no spawn
+    /// tool row to stand at.
+    pub(crate) roster_anchors: Vec<(forge_types::BackgroundTaskId, u64)>,
+    pub(crate) decisions: Vec<ChildDecisionRecord>,
+    /// Which option row the inline card's cursor rests on: 0 is "Don't run".
+    pub(crate) card_selected: usize,
+    pub(crate) card_paint: Option<ChildCardPaint>,
 }
 
 impl TaskSelectionState {
@@ -1987,6 +2032,11 @@ pub struct TuiApp {
     /// Phase 10 / TUI-08 — always-visible feedback strip model.
     pub(crate) feedback: FeedbackModel,
     pub(crate) banner_state: BannerState,
+    /// What this session's child agents have done, as the transcript tells
+    /// it: where each receipt lands, which requests were decided from the
+    /// inline card, and the card's own cursor. View-only; the registry and
+    /// the journal are the record.
+    pub(crate) agents: AgentViewState,
     /// Per-turn completion metadata (DESIGN-005): view-only presentation
     /// state keyed by session plus user-message ordinal. Each record renders
     /// under its own turn's answer; newer live turns never inherit an older

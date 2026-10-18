@@ -1113,6 +1113,53 @@ impl TuiApp {
             / TRANSCRIPT_SCROLL_BUCKET
             * TRANSCRIPT_SCROLL_BUCKET;
         let (question_selected, question_custom) = self.question_selection_key();
+        // The children as they will be drawn this frame. Their rows come from
+        // the registry, not the message stream, so the key has to carry them
+        // or a child could finish without the transcript ever repainting.
+        let agent_rows = self.agent_roster_rows(&background_tasks, strip_now);
+        let agent_receipts = self.agent_receipts(&background_tasks);
+        let child_card_task = self.first_waiting_child(&background_tasks);
+        // The child `→` and `i` act on, marked on the roster so the keys never
+        // steer a cursor nobody can see.
+        let agent_selected = self
+            .task_selection
+            .task(self.selected_session_id)
+            .map(|id| id.0);
+        let agents_digest = {
+            use std::hash::{Hash, Hasher};
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            for row in &agent_rows {
+                row.task_id.hash(&mut hash);
+                row.label.hash(&mut hash);
+                row.state.word().hash(&mut hash);
+                row.elapsed.hash(&mut hash);
+                if let crate::conversation::AgentRowState::Waiting { request } = &row.state {
+                    request.hash(&mut hash);
+                }
+            }
+            for receipt in &agent_receipts {
+                receipt.task_id.hash(&mut hash);
+                receipt.turn_ordinal.hash(&mut hash);
+                receipt.summary.hash(&mut hash);
+                matches!(
+                    receipt.kind,
+                    crate::conversation::AgentReceiptKind::Decided { .. }
+                )
+                .hash(&mut hash);
+            }
+            agent_selected.hash(&mut hash);
+            hash.finish()
+        };
+        let child_card_focused = self.focus.block() == FocusBlock::Approval
+            && self.selected_pending_hitl().is_none()
+            && self.selected_pending_question().is_none();
+        let child_card_key = child_card_task.as_ref().map(|task| {
+            (
+                task.id.0,
+                self.agents.card_selected.min(1),
+                child_card_focused,
+            )
+        });
         let mut key = ConversationRenderKey {
             session_id: conversation_session_id,
             transcript_revision: self.transcript_view.revision(),
@@ -1173,6 +1220,8 @@ impl TuiApp {
             question_option_idx: self.question_menu_indexes().1,
             question_selected,
             question_custom,
+            agents: agents_digest,
+            child_card: child_card_key,
         };
         // A complete cache already contains every settled line. Keep it
         // complete while scrolling instead of rebuilding a smaller tail, but
@@ -1244,6 +1293,35 @@ impl TuiApp {
                 conv = conv
                     .with_turn_summaries(turn_summaries, window_user_base)
                     .with_extra_banners(self.banner_state.items.iter().cloned());
+                // Children live in the conversation: the roster where they
+                // were spawned, a receipt under the turn each one finished in,
+                // and a waiting child's request as an inline card.
+                if !agent_rows.is_empty() {
+                    conv = conv.with_agent_roster(agent_rows.clone(), agent_selected);
+                }
+                if !agent_receipts.is_empty() {
+                    conv = conv.with_agent_receipts(agent_receipts.clone());
+                }
+                if let Some(task) = child_card_task.as_ref() {
+                    if let Some(payload) = task.pending_approval.as_ref().map(|r| &r.payload) {
+                        let cwd = task
+                            .child
+                            .as_ref()
+                            .map(|child| child.workspace.display().to_string())
+                            .unwrap_or_else(|| {
+                                self.session_view.workspace_root().display().to_string()
+                            });
+                        let request =
+                            crate::overlays::ApprovalOverlayState::request_view(payload, cwd);
+                        conv = conv.with_pending_child_approval(
+                            task.label.clone(),
+                            request,
+                            Self::child_card_options(),
+                            self.agents.card_selected,
+                            child_card_focused,
+                        );
+                    }
+                }
             } else if let Some(view) = self.child_view.as_ref() {
                 conv = conv.with_extra_banners([ChatItem::Banner {
                     text: format!("Read-only child inspection · {}\nParent: {}\nViewed execution unavailable or replaced · ← return to inspect the current task", view.label, view.owner),
@@ -1312,6 +1390,9 @@ impl TuiApp {
                 plan_dock,
             });
         }
+        // The card the frame paints is the request a decision key acts on.
+        // After the transcript borrow ends, so the paint can be recorded.
+        self.paint_child_card(child_card_task.as_ref());
 
         if regions.queue.height > 0 {
             self.queue_area = Some(regions.queue);

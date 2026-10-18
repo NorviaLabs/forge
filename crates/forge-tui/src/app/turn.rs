@@ -107,7 +107,7 @@ pub(super) fn child_reading_banner(
     width: usize,
 ) -> String {
     let (mode, workspace, branch) = child_execution_info(task);
-    format!("Read-only inspection · Mode: {mode}\nWorkspace: {}\nBranch: {}\n← parent · a/d decision · /sessions full details",
+    format!("Read-only inspection · Mode: {mode}\nWorkspace: {}\nBranch: {}\n← parent · a/d decision · /tasks full details",
         crate::path_display::elide_path(&crate::decision::visible_text(&workspace), width.saturating_sub(11)),
         crate::path_display::elide_middle(&crate::decision::visible_text(branch), width.saturating_sub(8)))
 }
@@ -226,6 +226,47 @@ fn terminal_outcome(status: &forge_core::BackgroundTaskStatus) -> &'static str {
         BackgroundTaskStatus::Failed { .. } => "failed",
         BackgroundTaskStatus::Cancelled => "was cancelled",
         _ => "stopped",
+    }
+}
+
+/// Longest error excerpt a toast carries before it defers to `/tasks`.
+const TOAST_ERROR_MAX_CHARS: usize = 60;
+
+/// The in-app notice for a background task reaching a terminal state: the
+/// severity it paints with and the one line it says.
+///
+/// Built from the outcome, never from the transition. The old notice said
+/// "finished" for a crash because every terminal state is a finish to the
+/// poller; to the operator a failed child is not finished, it is failed, and
+/// the product promises that status strings tell the truth. A failure carries
+/// its error when the error is one short line, and otherwise points at the
+/// place that holds the whole of it.
+pub(super) fn background_task_notice(
+    label: &str,
+    id: forge_types::BackgroundTaskId,
+    status: &forge_core::BackgroundTaskStatus,
+) -> (FeedbackSeverity, String) {
+    use forge_core::BackgroundTaskStatus;
+    let name = background_task_name(label, id);
+    let outcome = terminal_outcome(status);
+    match status {
+        BackgroundTaskStatus::Failed { error } => {
+            let error = error.trim().lines().next().unwrap_or("").trim();
+            let detail = if error.is_empty() {
+                " · /tasks for details".to_string()
+            } else if error.chars().count() <= TOAST_ERROR_MAX_CHARS {
+                format!(": {error}")
+            } else {
+                let cut: String = error.chars().take(TOAST_ERROR_MAX_CHARS).collect();
+                format!(": {}… · /tasks for the rest", cut.trim_end())
+            };
+            (FeedbackSeverity::Error, format!("{name} {outcome}{detail}"))
+        }
+        BackgroundTaskStatus::Cancelled => (FeedbackSeverity::Warn, format!("{name} {outcome}")),
+        BackgroundTaskStatus::Succeeded { .. } => {
+            (FeedbackSeverity::Ok, format!("{name} {outcome}"))
+        }
+        _ => (FeedbackSeverity::Info, format!("{name} {outcome}")),
     }
 }
 
@@ -870,20 +911,35 @@ impl TuiApp {
             .map(|t| t.id)
             .collect();
         self.session_runtime.poll_background_tasks().await?;
+        // Every child is placed in the conversation the first time it is
+        // seen, so a roster row has a fixed turn to stand in even when no
+        // spawn tool row is in view.
+        let children: Vec<_> = self
+            .session_runtime
+            .background()
+            .list()
+            .filter(|task| matches!(task.kind, forge_core::BackgroundTaskKind::Subagent { .. }))
+            .map(|task| task.id)
+            .collect();
+        self.anchor_agent_rosters(children);
         for id in running_before {
             if let Some(task) = self.session_runtime.background().get(id) {
                 if task.status.is_terminal() {
-                    let text = format!("background task #{} finished: {}", id.0, task.label);
                     // Out of band only when the operator is away; the toast
                     // below still fires either way, because the terminal
                     // notification and the in-app notice answer different
-                    // questions.
+                    // questions. Both say what happened, not that something did.
                     crate::notify::notify(&format!(
                         "{} {}",
                         background_task_name(&task.label, id),
                         terminal_outcome(&task.status)
                     ));
-                    self.push_toast(text);
+                    let (severity, text) = background_task_notice(&task.label, id, &task.status);
+                    self.push_toast_with(severity, text);
+                    // The receipt lands under the turn that was running when
+                    // the child finished, not wherever the transcript ends
+                    // later.
+                    self.anchor_agent_receipt(id);
                 }
             }
         }
@@ -1034,7 +1090,7 @@ impl TuiApp {
             }
             self.set_feedback(
                 FeedbackSeverity::Info,
-                "hidden from dock · /sessions retains the result",
+                "hidden from this list · /tasks keeps the result",
             );
             return;
         }
@@ -1835,6 +1891,71 @@ impl TuiApp {
             self.advance_goal_after_turn().await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod background_notice_tests {
+    use super::*;
+    use forge_core::BackgroundTaskStatus;
+    use forge_types::BackgroundTaskId;
+
+    /// The in-app notice names the outcome, not the transition: a crash is
+    /// "failed", a stop is "was cancelled", and only success is "finished".
+    #[test]
+    fn notice_tells_the_outcome_not_the_transition() {
+        let id = BackgroundTaskId(3);
+        let (severity, text) = background_task_notice(
+            "explore",
+            id,
+            &BackgroundTaskStatus::Failed {
+                error: "exit status 101".into(),
+            },
+        );
+        assert_eq!(severity, FeedbackSeverity::Error);
+        assert_eq!(text, "explore failed: exit status 101");
+
+        let (severity, text) =
+            background_task_notice("explore", id, &BackgroundTaskStatus::Cancelled);
+        assert_eq!(severity, FeedbackSeverity::Warn);
+        assert_eq!(text, "explore was cancelled");
+
+        let (severity, text) = background_task_notice(
+            "",
+            id,
+            &BackgroundTaskStatus::Succeeded {
+                summary: String::new(),
+            },
+        );
+        assert_eq!(severity, FeedbackSeverity::Ok);
+        assert_eq!(text, "task #3 finished");
+    }
+
+    /// A long or multi-line error is cut to one short line and defers to
+    /// `/tasks`; an empty error still points there.
+    #[test]
+    fn failure_notice_keeps_to_one_short_line() {
+        let id = BackgroundTaskId(1);
+        let long = "x".repeat(TOAST_ERROR_MAX_CHARS + 20);
+        let (_, text) = background_task_notice(
+            "build",
+            id,
+            &BackgroundTaskStatus::Failed {
+                error: format!("{long}\nsecond line"),
+            },
+        );
+        assert!(text.ends_with("… · /tasks for the rest"), "{text}");
+        assert!(!text.contains("second line"));
+        assert!(text.chars().count() < TOAST_ERROR_MAX_CHARS + 40, "{text}");
+
+        let (_, text) = background_task_notice(
+            "build",
+            id,
+            &BackgroundTaskStatus::Failed {
+                error: String::new(),
+            },
+        );
+        assert_eq!(text, "build failed · /tasks for details");
     }
 }
 

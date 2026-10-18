@@ -238,7 +238,28 @@ pub(crate) fn render_markdown_join(
 }
 
 /// The streaming caret appended to the live preview by `forge-transcript`.
-pub(crate) const STREAM_CARET: char = '▌';
+pub(crate) use forge_transcript::STREAM_CARET;
+
+/// Turn every lone newline into a markdown hard break so it survives
+/// rendering as a line break.
+///
+/// Markdown joins a single newline into the paragraph as a space, which is
+/// right for prose an author wrapped by hand and wrong for reasoning: models
+/// write thinking one sentence or step per line, and joined together those
+/// read as a wall. A blank-line paragraph break is left as it is.
+pub(crate) fn preserve_line_breaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 16);
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        out.push_str(line);
+        match lines.peek() {
+            None => {}
+            Some(next) if line.trim().is_empty() || next.trim().is_empty() => out.push('\n'),
+            Some(_) => out.push_str("  \n"),
+        }
+    }
+    out
+}
 
 /// Dim the lines of the unsettled tail so a streaming answer visibly *sets*.
 ///
@@ -262,20 +283,26 @@ pub(crate) fn fade_streaming_tail(lines: &mut [Line<'static>]) {
     let Some(last) = lines.iter_mut().rev().find(|line| line.width() > 0) else {
         return;
     };
-    let Some(span) = last.spans.last_mut() else {
+    // The caret-bearing span is not always the last one: a fence's language
+    // chip rides the right edge of its first row, after the code.
+    let Some(index) = last
+        .spans
+        .iter()
+        .rposition(|span| span.content.ends_with(STREAM_CARET))
+    else {
         return;
     };
-    if !span.content.ends_with(STREAM_CARET) {
-        return;
-    }
+    let span = &mut last.spans[index];
     let body = span
         .content
         .strip_suffix(STREAM_CARET)
         .expect("checked above")
         .to_string();
     span.content = body.into();
-    last.spans
-        .push(Span::styled(STREAM_CARET.to_string(), theme::text()));
+    last.spans.insert(
+        index + 1,
+        Span::styled(STREAM_CARET.to_string(), theme::text()),
+    );
 }
 
 pub fn render_markdown(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -948,23 +975,42 @@ impl MdRenderer {
         if body.is_empty() {
             return;
         }
-        if code.fenced && !code.language.is_empty() {
-            // The chip used to go through `code_row`, which put it inside the
-            // gutter and gave it the code tint — so it read as a line of code
-            // that says "rust". It belongs above the block, outside the rail,
-            // right-aligned to the block's own width.
-            self.out.push(self.language_chip(&code.language).into());
-        }
+        let chip = code.fenced && !code.language.is_empty();
         if code.fenced && matches!(code.language.as_str(), "mermaid" | "mmd") {
             if let Some(lines) = crate::mermaid::render(body, self.width) {
+                if chip {
+                    self.out.push(self.language_chip(&code.language).into());
+                }
                 self.out.extend(lines.into_iter().map(HyperlinkLine::from));
                 self.out.push(Line::from("").into());
                 return;
             }
         }
         let theme = theme::syntax_theme();
-        for line_segments in highlight_to_lines(&code.language, body, &theme).iter() {
-            let row = self.code_row(render_highlighted_line(line_segments));
+        let mut rows: Vec<Line<'static>> = highlight_to_lines(&code.language, body, &theme)
+            .iter()
+            .map(|segments| self.code_row(render_highlighted_line(segments)))
+            .collect();
+        if chip {
+            // The chip rides the right edge of the first row of code when that
+            // row leaves room for it. On a row of its own it capped the block
+            // from up to ninety cells away on a wide pane and cost a line;
+            // beside the code it labels, it reads as the block's own tag. A
+            // first line too long to share falls back to the row above.
+            let label = code.language.clone();
+            let needed = display_width(&label) + CHIP_GAP;
+            match rows.first_mut() {
+                Some(first) if first.width() + needed <= self.width => {
+                    let pad = self.width - first.width() - display_width(&label);
+                    first.spans.push(Span::raw(" ".repeat(pad)));
+                    first
+                        .spans
+                        .push(Span::styled(label, theme::code_punctuation()));
+                }
+                _ => self.out.push(self.language_chip(&label).into()),
+            }
+        }
+        for row in rows.drain(..) {
             self.out.push(row.into());
         }
         // A block opens with air above it and used to close with none, so the
@@ -983,6 +1029,8 @@ impl MdRenderer {
 const CODE_INDENT: &str = "";
 /// Rule drawn down the left edge of every row of a fenced block.
 const CODE_GUTTER: &str = "▌ ";
+/// Least space between the end of a code row and the language chip beside it.
+const CHIP_GAP: usize = 2;
 
 /// Paint the scan-band ground across a whole list block's lines.
 ///
@@ -1625,5 +1673,45 @@ mod tests {
             .expect("heading rule");
         let width: usize = rule.spans.iter().map(|s| s.content.chars().count()).sum();
         assert!((2..80).contains(&width), "heading rule width {width}");
+    }
+
+    /// The language chip rides the first code row's right edge when it fits,
+    /// instead of taking a row of its own far from the code it labels.
+    #[test]
+    fn language_chip_shares_the_first_code_row() {
+        let lines = render_markdown("```rust\nlet x = 1;\nlet y = 2;\n```", 40);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        let first_code = texts.iter().find(|t| t.contains("let x")).unwrap();
+        assert!(first_code.ends_with("rust"), "{texts:#?}");
+        assert_eq!(first_code.chars().count(), 40, "{first_code:?}");
+        assert!(
+            !texts.iter().any(|t| t.trim() == "rust"),
+            "chip still on its own row:\n{texts:#?}"
+        );
+    }
+
+    /// A first line too long to share its row keeps the chip above it.
+    #[test]
+    fn language_chip_falls_back_to_its_own_row_when_the_code_is_wide() {
+        let code = "x".repeat(38);
+        let lines = render_markdown(&format!("```rust\n{code}\n```"), 40);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.trim() == "rust"), "{texts:#?}");
     }
 }

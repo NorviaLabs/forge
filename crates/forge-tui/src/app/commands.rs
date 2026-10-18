@@ -528,9 +528,16 @@ impl TuiApp {
         }
     }
 
-    /// Background-task selection/cancel/approve/deny — moved out of the
-    /// bottom panel's (now-deleted) Tasks tab; gated on the sidebar itself
-    /// having focus, since the task strip lives there now.
+    /// Keys while the conversation block (the sidebar) has focus: the starter
+    /// list when the home card is up, otherwise transcript paging plus the
+    /// two child-agent verbs the roster advertises.
+    ///
+    /// Background tasks used to own `↑↓ a d x` here too, steering a selection
+    /// that nothing in the frame painted. Children now live in the transcript:
+    /// the roster marks the child `→` and `i` act on with `›`, a waiting
+    /// child's request is an inline card reached by Tab and decided with
+    /// `a`/`d` there, and stopping stays in the Tasks view where the row is
+    /// chosen on screen.
     pub(super) fn semantic_command_for_sidebar_key(
         &self,
         key: event::KeyEvent,
@@ -544,35 +551,19 @@ impl TuiApp {
             };
         }
         match key.code {
-            KeyCode::Up if key.modifiers.is_empty() => {
-                Some(SemanticCommand::MoveTasksSelection(-1))
-            }
-            KeyCode::Down if key.modifiers.is_empty() => {
-                Some(SemanticCommand::MoveTasksSelection(1))
-            }
-            // `→` opens the selected subagent's own session; `←` (handled
-            // globally while a child view is open) returns. The strip is the
-            // block's only selection, so `→` has nothing else to mean here.
+            // `→` opens the marked child's own session read-only; `←`
+            // (handled globally while a child view is open) returns.
             KeyCode::Right if key.modifiers.is_empty() => {
                 Some(SemanticCommand::OpenSelectedChildSession)
             }
-            // The strip above is the block's only selection; the pane the
-            // block owns is the transcript, so paging stays reachable without
-            // stealing ↑↓ from the background tasks.
+            KeyCode::Char('i') if key.modifiers.is_empty() => {
+                Some(SemanticCommand::AttachSelectedBackgroundTask)
+            }
             KeyCode::PageUp if key.modifiers.is_empty() => {
                 Some(SemanticCommand::PageConversation(true))
             }
             KeyCode::PageDown if key.modifiers.is_empty() => {
                 Some(SemanticCommand::PageConversation(false))
-            }
-            KeyCode::Char('x') if key.modifiers.is_empty() => {
-                Some(SemanticCommand::CancelSelectedBackgroundTask)
-            }
-            KeyCode::Char('a') | KeyCode::Char('d') if key.modifiers.is_empty() => {
-                Some(SemanticCommand::OpenSelectedChildDecision)
-            }
-            KeyCode::Char('i') if key.modifiers.is_empty() => {
-                Some(SemanticCommand::AttachSelectedBackgroundTask)
             }
             KeyCode::Esc if key.modifiers.is_empty() => {
                 Some(SemanticCommand::CancelCurrentInteraction)
@@ -1915,14 +1906,6 @@ mod tests {
         let (_d, app) = app().await;
         for (k, expected) in [
             (
-                key(KeyCode::Up, NONE),
-                SemanticCommand::MoveTasksSelection(-1),
-            ),
-            (
-                key(KeyCode::Down, NONE),
-                SemanticCommand::MoveTasksSelection(1),
-            ),
-            (
                 key(KeyCode::PageUp, NONE),
                 SemanticCommand::PageConversation(true),
             ),
@@ -1931,16 +1914,12 @@ mod tests {
                 SemanticCommand::PageConversation(false),
             ),
             (
-                key(KeyCode::Char('x'), NONE),
-                SemanticCommand::CancelSelectedBackgroundTask,
+                key(KeyCode::Right, NONE),
+                SemanticCommand::OpenSelectedChildSession,
             ),
             (
-                key(KeyCode::Char('a'), NONE),
-                SemanticCommand::OpenSelectedChildDecision,
-            ),
-            (
-                key(KeyCode::Char('d'), NONE),
-                SemanticCommand::OpenSelectedChildDecision,
+                key(KeyCode::Char('i'), NONE),
+                SemanticCommand::AttachSelectedBackgroundTask,
             ),
         ] {
             assert_eq!(
@@ -1948,6 +1927,17 @@ mod tests {
                 Some(expected.clone()),
                 "{k:?}"
             );
+        }
+        // No key steers a cursor the frame does not paint: selection moves,
+        // stop and decide belong to the Tasks view and the inline child card.
+        for k in [
+            key(KeyCode::Up, NONE),
+            key(KeyCode::Down, NONE),
+            key(KeyCode::Char('x'), NONE),
+            key(KeyCode::Char('a'), NONE),
+            key(KeyCode::Char('d'), NONE),
+        ] {
+            assert_eq!(app.semantic_command_for_sidebar_key(k), None, "{k:?}");
         }
         assert_eq!(
             app.semantic_command_for_sidebar_key(key(KeyCode::Esc, NONE)),

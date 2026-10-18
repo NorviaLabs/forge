@@ -86,6 +86,19 @@ pub const MOVE_SELECT_CLOSE: &[Hint] = &[("↑↓", "move"), ("Enter", "select")
 /// would fail the displayed-hints-match-routing invariant.
 pub const PICKER: &[Hint] = &[("↑↓", "move"), ("Enter", "select"), ("Esc", "close")];
 pub const APPROVAL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
+/// A child agent's inline request while its card holds focus. The decision
+/// pair is the child's (`a`/`d`), the same letters the Tasks view uses for the
+/// same decision; Esc leaves the card without deciding, because the child's
+/// request does not block this session's own work.
+pub const CHILD_APPROVAL: &[Hint] = &[
+    ("a", "allow once"),
+    ("d", "don't run"),
+    ("↑↓", "move"),
+    ("Enter", "confirm"),
+    ("Esc", "leave"),
+];
+/// The same card while the composer still has focus: one key gets there.
+pub const CHILD_APPROVAL_UNFOCUSED: &[Hint] = &[("Tab", "to this card"), ("a/d", "decide")];
 pub const QUESTION: &[Hint] = &[("↑↓", "move"), ("Enter", "answer"), ("Esc", "skip")];
 pub const QUESTION_MULTI: &[Hint] = &[
     ("↑↓", "move"),

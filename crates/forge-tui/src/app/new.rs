@@ -102,6 +102,7 @@ impl TuiApp {
             banner_state: BannerState {
                 items: startup_banners,
             },
+            agents: AgentViewState::default(),
             turn_summaries: Vec::new(),
             turn_summaries_revision: 0,
             search_status: SearchStatusState { label: None },
@@ -351,6 +352,7 @@ impl TuiApp {
             banner_state: BannerState {
                 items: startup_banners,
             },
+            agents: AgentViewState::default(),
             turn_summaries: Vec::new(),
             turn_summaries_revision: 0,
             search_status: SearchStatusState { label: None },

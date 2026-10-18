@@ -184,24 +184,32 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
     })
     .await;
 
-    app.focus_block(FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
+    // The child's request is an inline card in the parent conversation. It is
+    // passive: the composer keeps focus, one Tab reaches the card, and `a`
+    // decides from there. The frame must have painted the card first, so a
+    // decision key acts on the request the operator saw.
+    let request_text = render_app_text(&mut app, 160, 50);
+    assert!(
+        request_text.contains("risky-runner needs approval"),
+        "{request_text}"
+    );
+    assert!(request_text.contains("echo risky"), "{request_text}");
+    assert!(request_text.contains("Don't run"), "{request_text}");
+    assert!(request_text.contains("Allow once"), "{request_text}");
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
         .await
         .unwrap();
-    app.handle_key(press(KeyCode::Char('a'), KeyModifiers::NONE))
-        .await
-        .unwrap();
-
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
     assert!(is_waiting(
         &app.session_runtime.background().get(id).unwrap().status
     ));
-    let request_text = render_app_text(&mut app, 160, 50);
-    assert!(
-        request_text.contains("Environment: inherited"),
-        "{request_text}"
-    );
-    assert!(request_text.contains("Mode: Writer"), "{request_text}");
-    confirm_child_decision(&mut app, true).await;
+    app.handle_key(press(KeyCode::Char('a'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    // No modal, no auto-opened child reader: the card settles in place.
+    assert!(app.overlay.is_none());
+    assert!(app.child_view.is_none());
 
     // The confirmation names the agent rather than its row id.
     assert!(
@@ -218,6 +226,54 @@ async fn approving_the_selected_waiting_task_from_the_sidebar_lets_it_finish() {
         }
         other => panic!("expected Succeeded, got {other:?}"),
     }
+    // The decision and the finish each leave a receipt in the parent
+    // conversation, and the card is gone.
+    let text = render_app_text(&mut app, 160, 50);
+    assert!(text.contains("✓ risky-runner · allowed once"), "{text}");
+    assert!(text.contains("✓ risky-runner finished in"), "{text}");
+    assert!(!text.contains("risky-runner needs approval"), "{text}");
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+}
+
+/// The inline card never decides by accident: Esc leaves it with the request
+/// still pending, `d` refuses it, and the roster says what happened.
+#[tokio::test]
+async fn child_card_esc_leaves_and_d_refuses() {
+    let dir = TempDir::new().unwrap();
+    let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
+    wait_for_task_status(&mut app, id, is_waiting).await;
+
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(text.contains("◆ Agent  1 waiting"), "{text}");
+    assert!(text.contains("! risky-runner"), "{text}");
+    assert!(text.contains("waiting on approval"), "{text}");
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Approval);
+    app.handle_key(press(KeyCode::Esc, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.focus.block(), FocusBlock::Composer);
+    assert!(is_waiting(
+        &app.session_runtime.background().get(id).unwrap().status
+    ));
+
+    app.handle_key(press(KeyCode::Tab, KeyModifiers::NONE))
+        .await
+        .unwrap();
+    app.handle_key(press(KeyCode::Char('d'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert!(
+        app.feedback.text.contains("don't run sent to risky-runner"),
+        "{}",
+        app.feedback.text
+    );
+    wait_for_task_status(&mut app, id, |s| s.is_terminal()).await;
+    let text = render_app_text(&mut app, 120, 40);
+    assert!(text.contains("− risky-runner · not run"), "{text}");
 }
 
 /// An app whose only background task is a subagent that blocks on a `bash`
@@ -357,13 +413,13 @@ async fn opening_a_subagent_shows_its_own_session_read_only() {
     let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
     wait_for_task_status(&mut app, id, is_waiting).await;
 
+    // The roster marks the child `→` opens; the mark is placed when the frame
+    // is drawn, the way it is in the running app.
+    render_app_text(&mut app, 120, 40);
     let parent_messages = app.transcript_view.messages().len();
     let parent_revision = app.transcript_view.revision();
 
     app.focus_block(FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -413,10 +469,10 @@ async fn a_shell_task_has_no_session_to_open() {
         .await
         .unwrap();
 
+    // The roster marks the child `→` opens; the mark is placed when the frame
+    // is drawn, the way it is in the running app.
+    render_app_text(&mut app, 120, 40);
     app.focus_block(FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -437,10 +493,10 @@ async fn the_composer_refuses_input_while_viewing_a_subagent() {
     let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
     wait_for_task_status(&mut app, id, is_waiting).await;
 
+    // The roster marks the child `→` opens; the mark is placed when the frame
+    // is drawn, the way it is in the running app.
+    render_app_text(&mut app, 120, 40);
     app.focus_block(FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -466,10 +522,10 @@ async fn a_running_child_view_advances_across_a_poll() {
     let (mut app, id) = app_with_a_blocking_subagent(&dir, vec![risky_bash_call()]).await;
     wait_for_task_status(&mut app, id, is_waiting).await;
 
+    // The roster marks the child `→` opens; the mark is placed when the frame
+    // is drawn, the way it is in the running app.
+    render_app_text(&mut app, 120, 40);
     app.focus_block(FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))
-        .await
-        .unwrap();
     app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
         .await
         .unwrap();
@@ -628,7 +684,18 @@ async fn parent_progress_during_child_inspection_preserves_the_reading_row() {
     assert!(!child_text.contains("New parent progress"), "{child_text}");
     app.close_child_session();
     render_app_text(&mut app, 120, 40);
-    assert_eq!(app.conversation_rows, rows);
+    // The reading row is preserved. The child's live roster row sits after the
+    // parent's newest message (this child has no spawn row to stand at), so
+    // only the retained prose is compared, not the live row that moved with
+    // the transcript's end.
+    let retained = |rows: &[String]| -> Vec<String> {
+        rows.iter()
+            .filter(|row| row.contains("Retained row"))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(retained(&app.conversation_rows), retained(&rows));
+    assert_eq!(app.conversation_rows[0], rows[0]);
     assert!(app.selection.active);
     assert_eq!(app.selection.text, selected);
     assert!(!app.conversation_view.follow);
@@ -961,7 +1028,10 @@ async fn sidebar_down_then_cancel_targets_the_selected_row() {
         .await
         .unwrap();
 
-    app.focus_block(FocusBlock::Sidebar);
+    // Stopping lives where the row is chosen on screen: the Tasks view. The
+    // sidebar no longer steers a selection the frame does not paint.
+    app.open_tasks_view(Some(crate::tasks_strip::TaskFilter::Jobs));
+    render_app_text(&mut app, 120, 40);
     // Down from no selection lands on row index 1 (the second-spawned task) —
     // `move_tasks_selection`'s wrap starts `cur` at 0, so `+1` selects index 1.
     app.handle_key(press(KeyCode::Down, KeyModifiers::NONE))

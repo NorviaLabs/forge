@@ -110,6 +110,7 @@ mod shell;
 pub(crate) use session_state::{
     session_needs_attention, session_notice_severity, SessionChromeItem,
 };
+mod agents;
 mod child_approval;
 mod task_stop;
 mod tasks_view;

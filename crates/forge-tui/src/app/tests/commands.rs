@@ -1193,9 +1193,11 @@ async fn control_surface_verbs_still_beat_type_to_chat() {
     assert_eq!(app.focus.block(), FocusBlock::TaskStrip);
     assert!(app.input.text.is_empty());
 
-    // `x` at the sidebar stops a background task instead of typing an `x`.
+    // `i` at the sidebar inserts the marked child's result instead of typing
+    // an `i`. (`x` is no longer a sidebar verb: stopping lives in the Tasks
+    // view, so `x` here is an ordinary character for the composer.)
     app.focus_block(FocusBlock::Sidebar);
-    app.handle_key(press(KeyCode::Char('x'), KeyModifiers::NONE))
+    app.handle_key(press(KeyCode::Char('i'), KeyModifiers::NONE))
         .await
         .unwrap();
     assert_eq!(app.focus.block(), FocusBlock::Sidebar);

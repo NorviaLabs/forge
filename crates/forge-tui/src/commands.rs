@@ -300,7 +300,9 @@ fn parse_slash_inner(line: &str) -> Result<SlashCommand, CommandError> {
         }
         "terminal" | "term" | "shell" => Ok(SlashCommand::Terminal),
         "architecture" | "arch" => Ok(SlashCommand::Architecture),
-        "board" => Ok(SlashCommand::Tasks),
+        // `/tasks` is the name the view itself uses ("Tasks"); `/board` stays
+        // as the historical alias.
+        "tasks" | "board" => Ok(SlashCommand::Tasks),
         "resize" => match parts.next() {
             None => Ok(SlashCommand::Resize),
             Some("reset") if parts.next().is_none() => Ok(SlashCommand::ResizeReset),
@@ -368,6 +370,9 @@ mod tests {
     #[test]
     fn tasks_board_command_is_parseable() {
         assert_eq!(parse_slash("/board").unwrap().unwrap(), SlashCommand::Tasks);
+        // The view is titled "Tasks", so its command is `/tasks`; the queue
+        // strip, the child banner and the dismiss notice all point here.
+        assert_eq!(parse_slash("/tasks").unwrap().unwrap(), SlashCommand::Tasks);
     }
 
     #[test]
@@ -485,7 +490,6 @@ mod tests {
             "/diff turn",
             "/d",
             "/refresh",
-            "/tasks",
         ] {
             assert!(matches!(
                 parse_slash(command).unwrap().unwrap_err(),

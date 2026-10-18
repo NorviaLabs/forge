@@ -374,6 +374,7 @@ impl TuiApp {
             stream: std::mem::take(&mut self.stream),
             activity: std::mem::take(&mut self.activity),
             banner_state: std::mem::take(&mut self.banner_state),
+            agents: std::mem::take(&mut self.agents),
             turn_summaries: std::mem::take(&mut self.turn_summaries),
             turn_summaries_revision: self.turn_summaries_revision,
             tool_detail: std::mem::take(&mut self.tool_detail),
@@ -426,6 +427,7 @@ impl TuiApp {
         self.stream = state.stream;
         self.activity = state.activity;
         self.banner_state = state.banner_state;
+        self.agents = state.agents;
         self.turn_summaries = state.turn_summaries;
         self.turn_summaries_revision = state.turn_summaries_revision;
         self.tool_detail = state.tool_detail;
@@ -2364,6 +2366,10 @@ impl TuiApp {
             && self.selected_pending_hitl().is_some()
             && self.handle_approval_menu_key(key).await?
         {
+            return Ok(());
+        }
+
+        if self.handle_child_card_key(key).await? {
             return Ok(());
         }
 

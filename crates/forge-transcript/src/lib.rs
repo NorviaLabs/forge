@@ -11,6 +11,13 @@ use forge_types::{
     is_readonly_git_subcommand, ExecutionOutcome, Message, MessageRole, TaskLifecycle, ToolCall,
 };
 
+/// The glyph appended to an answer that is still arriving.
+///
+/// A thin bar, deliberately not the half block `▌`: that one already rules
+/// the left edge of every fenced-code row, so an open fence mid-stream read
+/// `▌ code▌` — a box, not code plus a cursor.
+pub const STREAM_CARET: char = '▎';
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCardState {
     Running,
@@ -228,6 +235,13 @@ pub enum ChatItem {
     /// Pending `ask_user_question` questionnaire, rendered inline like
     /// approval (not a boxed card).
     QuestionPending(QuestionPendingPresentation),
+    /// The child agents this session spawned, one live row each, standing
+    /// where the spawn happened. Replaces the spawn tool's own row.
+    AgentRoster(AgentRosterPresentation),
+    /// One child agent reaching a terminal state, or one decision taken on
+    /// its approval request: a single receipt row at the end of the turn in
+    /// which it happened.
+    AgentReceipt(AgentReceiptPresentation),
     /// Structured TODO checklist from the `update_plan` tool.
     ///
     /// Only the newest one survives in the transcript; superseded cards are
@@ -284,6 +298,8 @@ pub enum ConversationBlock {
     Metadata(MetadataPresentation),
     Thinking(ThinkingPresentation),
     TurnSummary(TurnSummaryPresentation),
+    AgentRoster(AgentRosterPresentation),
+    AgentReceipt(AgentReceiptPresentation),
 }
 
 /// The closing line of a finished turn.
@@ -567,6 +583,111 @@ pub struct ApprovalPendingPresentation {
     pub selected: usize,
     /// Whether the approval card itself holds focus (accent border vs muted).
     pub focused: bool,
+    /// The child agent asking, when this is a child's request rather than
+    /// the session's own. The card then leads with who is asking, and its
+    /// decision keys are the child pair (`a`/`d`) rather than the menu's.
+    pub asker: Option<String>,
+}
+
+/// Where a child agent is in its life, as the roster and receipts say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRowState {
+    Running,
+    /// Blocked on the operator; carries the request's first line.
+    Waiting {
+        request: String,
+    },
+    Finished,
+    /// Carries the error's first line.
+    Failed {
+        error: String,
+    },
+    Cancelled,
+}
+
+impl AgentRowState {
+    /// The one word a row carries for its state, so the state survives
+    /// with colour stripped.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Waiting { .. } => "waiting on approval",
+            Self::Finished => "finished",
+            Self::Failed { .. } => "failed",
+            Self::Cancelled => "was cancelled",
+        }
+    }
+
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Finished | Self::Failed { .. } | Self::Cancelled)
+    }
+}
+
+/// One child agent on the roster.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRosterRow {
+    pub task_id: u64,
+    pub label: String,
+    /// `Writer` / `Reader`, when the child reports one.
+    pub mode: Option<String>,
+    pub state: AgentRowState,
+    /// Already formatted; frozen at the finish for a terminal row.
+    pub elapsed: String,
+    /// Lets the roster stand where this child's spawn row stood.
+    pub child_session_id: Option<String>,
+    /// Absolute user ordinal of the turn this child was first seen in. Where
+    /// the row stands when no spawn tool row is in view to replace.
+    pub turn_ordinal: Option<u64>,
+}
+
+/// The children spawned at one point in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRosterPresentation {
+    pub rows: Vec<AgentRosterRow>,
+    /// The child the conversation's `→` and `i` act on, marked `›`.
+    pub selected: Option<u64>,
+}
+
+impl AgentRosterPresentation {
+    /// Open while any child still needs attention or is still working; a
+    /// roster of finished children folds to its header.
+    pub fn expanded(&self) -> bool {
+        self.rows.iter().any(|row| !row.state.is_terminal())
+            || self
+                .rows
+                .iter()
+                .any(|row| matches!(row.state, AgentRowState::Failed { .. }))
+    }
+}
+
+/// What a receipt reports.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentReceiptKind {
+    Finished,
+    Failed {
+        error: String,
+    },
+    Cancelled,
+    /// The operator decided the child's approval request.
+    Decided {
+        allowed: bool,
+    },
+}
+
+/// One line at the end of a turn saying what became of a child.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentReceiptPresentation {
+    pub task_id: u64,
+    pub label: String,
+    pub kind: AgentReceiptKind,
+    /// Lifetime at the finish, already formatted; empty for a decision.
+    pub elapsed: String,
+    /// The child's own last line, when it said one.
+    pub summary: Option<String>,
+    pub branch: Option<String>,
+    /// Absolute user ordinal of the turn this receipt belongs under. `None`
+    /// lands at the end of the transcript.
+    pub turn_ordinal: Option<u64>,
 }
 
 /// One option row on the inline question prompt.
@@ -1007,6 +1128,62 @@ fn strip_ansi(line: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// A one-line, operator-facing summary for an orchestration tool call, from
+/// its arguments. `None` for every other tool.
+fn orchestration_summary(name: &str, call: Option<&ToolCall>) -> Option<String> {
+    let arg = |key: &str| {
+        call.and_then(|call| call.arguments.get(key))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let target = || arg("target").map(|t| short_agent_ref(&t));
+    Some(match name {
+        "spawn_agent" => match arg("task_name") {
+            Some(task) => format!("started {task}"),
+            None => "started an agent".to_string(),
+        },
+        "wait_agent" => "waited for agents".to_string(),
+        "list_agents" => "listed agents".to_string(),
+        "send_message" => match target() {
+            Some(target) => format!("messaged {target}"),
+            None => "sent a message".to_string(),
+        },
+        "followup_task" => match target() {
+            Some(target) => format!("sent a follow-up to {target}"),
+            None => "sent a follow-up".to_string(),
+        },
+        "interrupt_agent" => match target() {
+            Some(target) => format!("interrupted {target}"),
+            None => "interrupted an agent".to_string(),
+        },
+        _ => return None,
+    })
+}
+
+/// An agent reference short enough for a row: a UUID keeps its first block.
+fn short_agent_ref(target: &str) -> String {
+    if target.len() >= 32 && target.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        format!("agent {}", target.chars().take(8).collect::<String>())
+    } else {
+        target.to_string()
+    }
+}
+
+/// Elapsed time for a row that lives for minutes or hours: `12s`, `1m12s`,
+/// `1h02m`. Whole units only; tenths on a child agent's lifetime are noise.
+pub fn format_elapsed_compact(secs: f64) -> String {
+    let secs = secs.max(0.0).floor() as u64;
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3600 {
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
+    }
+}
+
 /// Format elapsed time in 0.1s increments through 5s, then whole seconds.
 pub fn format_elapsed_tenths(secs: f64) -> String {
     let secs = secs.max(0.0);
@@ -1250,6 +1427,14 @@ impl ConversationModel {
                             .and_then(|id| tool_calls.get(id).copied());
                         let (state, summary, invocation, detail) =
                             classify_tool_content(name, &m.content, call, &m.outcome);
+                        // The orchestration tools answer in JSON the parent
+                        // reads, not the operator. Their row says what was done
+                        // in words; the JSON stays as the row's detail (the
+                        // roster finds a spawned child's id there).
+                        let (summary, invocation) = match orchestration_summary(name, call) {
+                            Some(human) => (human, None),
+                            None => (summary, invocation),
+                        };
                         // A command run to *check* the work earns the same
                         // always-visible treatment a change already gets.
                         if let Some(command) = invocation
@@ -1344,8 +1529,8 @@ impl ConversationModel {
         }
         if !text.is_empty() {
             let mut body = text;
-            if self.opts.busy && !body.ends_with('▌') {
-                body.push('▌');
+            if self.opts.busy && !body.ends_with(STREAM_CARET) {
+                body.push(STREAM_CARET);
             }
             self.items.push(ChatItem::StreamingAssistant { text: body });
         }
@@ -1490,7 +1675,144 @@ impl ConversationModel {
                 options,
                 selected,
                 focused,
+                asker: None,
             }));
+        self
+    }
+
+    /// Append a child agent's pending approval as an inline card, the same
+    /// card the session's own approvals use, led by who is asking.
+    pub fn with_pending_child_approval(
+        mut self,
+        asker: impl Into<String>,
+        request: ApprovalRequestView,
+        options: Vec<ApprovalMenuRow>,
+        selected: usize,
+        focused: bool,
+    ) -> Self {
+        let selected = if options.is_empty() {
+            0
+        } else {
+            selected.min(options.len() - 1)
+        };
+        self.items
+            .push(ChatItem::ApprovalPending(ApprovalPendingPresentation {
+                tool: request.tool,
+                command: request.command,
+                cwd: request.cwd,
+                env_delta: request.env_delta,
+                question: request.question,
+                reason: request.reason,
+                failure: request.failure,
+                options,
+                selected,
+                focused,
+                asker: Some(asker.into()),
+            }));
+        self
+    }
+
+    /// Place the child agents where their spawns happened.
+    ///
+    /// Each row replaces the `spawn_agent` tool row whose output named that
+    /// child, so the roster stands at the point in the conversation where the
+    /// agent was started; rows that replace adjacent spawn rows merge into one
+    /// roster. A child with no spawn row in view stands at the top of the turn
+    /// it was first seen in, directly under that turn's prompt: a fixed place
+    /// that later messages in the turn append below, never a row that floats
+    /// to the end and moves whenever the parent speaks. With no turn to go
+    /// by, it stands under the latest prompt, or at the end of an empty
+    /// transcript.
+    pub fn with_agent_roster(mut self, rows: Vec<AgentRosterRow>, selected: Option<u64>) -> Self {
+        let mut unplaced: Vec<AgentRosterRow> = Vec::new();
+        for row in rows {
+            let spawn_index = row.child_session_id.as_deref().and_then(|child| {
+                self.items.iter().position(|item| {
+                    matches!(
+                        item,
+                        ChatItem::ToolCard { name, detail, summary, .. }
+                            if name == "spawn_agent"
+                                && (detail.contains(child) || summary.contains(child))
+                    )
+                })
+            });
+            let Some(index) = spawn_index else {
+                unplaced.push(row);
+                continue;
+            };
+            // Merge into the roster the previous spawn left, when the spawn
+            // rows were adjacent; otherwise this child opens its own roster.
+            let merge_into_previous =
+                index > 0 && matches!(self.items[index - 1], ChatItem::AgentRoster(_));
+            self.items.remove(index);
+            if merge_into_previous {
+                if let ChatItem::AgentRoster(roster) = &mut self.items[index - 1] {
+                    roster.rows.push(row);
+                }
+            } else {
+                self.items.insert(
+                    index,
+                    ChatItem::AgentRoster(AgentRosterPresentation {
+                        rows: vec![row],
+                        selected,
+                    }),
+                );
+            }
+        }
+        for row in unplaced {
+            let user_indices: Vec<usize> = self
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, item)| matches!(item, ChatItem::User { .. }))
+                .map(|(index, _)| index)
+                .collect();
+            let turn_start = row
+                .turn_ordinal
+                .and_then(|ordinal| ordinal.checked_sub(self.turn_summary_base))
+                .and_then(|local| user_indices.get(local as usize).copied())
+                .or_else(|| user_indices.last().copied());
+            let at = match turn_start {
+                Some(index) => index + 1,
+                None => self.items.len(),
+            };
+            match self.items.get_mut(at) {
+                Some(ChatItem::AgentRoster(roster)) => roster.rows.push(row),
+                _ => self.items.insert(
+                    at,
+                    ChatItem::AgentRoster(AgentRosterPresentation {
+                        rows: vec![row],
+                        selected,
+                    }),
+                ),
+            }
+        }
+        self
+    }
+
+    /// Place each receipt at the end of the turn it belongs to.
+    ///
+    /// A receipt with a turn ordinal goes just before the user message that
+    /// opens the next turn; the ordinal is absolute, so it is read against
+    /// this window's base. One with no ordinal, or one whose turn is the
+    /// latest, lands at the end. Receipts are given in the order they
+    /// happened and keep that order within a turn.
+    pub fn with_agent_receipts(mut self, receipts: Vec<AgentReceiptPresentation>) -> Self {
+        for receipt in receipts {
+            let next_turn_start = receipt.turn_ordinal.and_then(|ordinal| {
+                let local_turn = ordinal.checked_sub(self.turn_summary_base)? as usize;
+                self.items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, item)| matches!(item, ChatItem::User { .. }))
+                    .nth(local_turn + 1)
+                    .map(|(index, _)| index)
+            });
+            match next_turn_start {
+                Some(index) => self.items.insert(index, ChatItem::AgentReceipt(receipt)),
+                None => self.items.push(ChatItem::AgentReceipt(receipt)),
+            }
+        }
         self
     }
 
@@ -1793,6 +2115,16 @@ fn semantic_blocks_from_items(
                 flush_progress(&mut blocks, &mut progress);
                 flush_activity(&mut blocks, &mut activity_group);
                 blocks.push(ConversationBlock::ApprovalPending(presentation.clone()));
+            }
+            ChatItem::AgentRoster(roster) => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::AgentRoster(roster.clone()));
+            }
+            ChatItem::AgentReceipt(receipt) => {
+                flush_progress(&mut blocks, &mut progress);
+                flush_activity(&mut blocks, &mut activity_group);
+                blocks.push(ConversationBlock::AgentReceipt(receipt.clone()));
             }
             ChatItem::QuestionPending(presentation) => {
                 flush_progress(&mut blocks, &mut progress);
@@ -6082,5 +6414,176 @@ mod verification_tests {
         assert_eq!(visible_result_count("fff: header\nfirst\n\nsecond"), 2);
         assert_eq!(result_count_label(1, "match", "matches"), "1 match");
         assert_eq!(result_count_label(2, "match", "matches"), "2 matches");
+    }
+}
+
+#[cfg(test)]
+mod agent_placement_tests {
+    use super::*;
+
+    fn model(items: Vec<ChatItem>) -> ConversationModel {
+        ConversationModel {
+            items,
+            scroll: 0,
+            follow: true,
+            opts: ConversationViewOpts::default(),
+            turn_summaries: Vec::new(),
+            turn_summary_base: 0,
+        }
+    }
+
+    fn user(text: &str) -> ChatItem {
+        ChatItem::User { text: text.into() }
+    }
+
+    fn spawn_row(child: &str) -> ChatItem {
+        ChatItem::ToolCard {
+            name: "spawn_agent".into(),
+            summary: "started explore".into(),
+            detail: format!(r#"{{"agent_id":"{child}","status":"running"}}"#),
+            state: ToolCardState::Done,
+            duration: None,
+            subcommand: None,
+            outcome: ExecutionOutcome::Success,
+        }
+    }
+
+    fn row(label: &str, child: Option<&str>, turn: Option<u64>) -> AgentRosterRow {
+        AgentRosterRow {
+            task_id: label.len() as u64,
+            label: label.into(),
+            mode: Some("Writer".into()),
+            state: AgentRowState::Running,
+            elapsed: "12s".into(),
+            child_session_id: child.map(str::to_string),
+            turn_ordinal: turn,
+        }
+    }
+
+    fn kinds(model: &ConversationModel) -> Vec<&'static str> {
+        model
+            .items
+            .iter()
+            .map(|item| match item {
+                ChatItem::User { .. } => "user",
+                ChatItem::Assistant { .. } => "assistant",
+                ChatItem::ToolCard { .. } => "tool",
+                ChatItem::AgentRoster(_) => "roster",
+                ChatItem::AgentReceipt(_) => "receipt",
+                _ => "other",
+            })
+            .collect()
+    }
+
+    /// A child's row replaces its spawn tool row where it stood; adjacent
+    /// spawns merge into one roster.
+    #[test]
+    fn roster_stands_where_the_spawn_rows_stood() {
+        let m = model(vec![
+            user("go"),
+            spawn_row("aaaa"),
+            spawn_row("bbbb"),
+            ChatItem::Assistant {
+                text: "done".into(),
+            },
+        ])
+        .with_agent_roster(
+            vec![row("a", Some("aaaa"), None), row("b", Some("bbbb"), None)],
+            Some(1),
+        );
+        assert_eq!(kinds(&m), ["user", "roster", "assistant"]);
+        let ChatItem::AgentRoster(roster) = &m.items[1] else {
+            unreachable!()
+        };
+        assert_eq!(roster.rows.len(), 2);
+        assert_eq!(roster.selected, Some(1));
+    }
+
+    /// With no spawn row in view, the row stands under the prompt of the
+    /// turn it was first seen in, so later messages append below it.
+    #[test]
+    fn unplaced_rows_stand_under_their_turns_prompt() {
+        let m = model(vec![
+            user("first"),
+            ChatItem::Assistant { text: "a1".into() },
+            user("second"),
+            ChatItem::Assistant { text: "a2".into() },
+        ])
+        .with_agent_roster(vec![row("x", None, Some(0)), row("y", None, None)], None);
+        // Turn 0's row sits right under "first"; the unknown one under the
+        // latest prompt.
+        assert_eq!(
+            kinds(&m),
+            ["user", "roster", "assistant", "user", "roster", "assistant"]
+        );
+    }
+
+    /// A receipt lands just before the prompt that opens the next turn; one
+    /// with no turn, or in the latest turn, lands at the end.
+    #[test]
+    fn receipts_land_at_the_end_of_their_turn() {
+        let receipt = |label: &str, turn: Option<u64>| AgentReceiptPresentation {
+            task_id: 1,
+            label: label.into(),
+            kind: AgentReceiptKind::Finished,
+            elapsed: "1m02s".into(),
+            summary: None,
+            branch: None,
+            turn_ordinal: turn,
+        };
+        let m = model(vec![
+            user("first"),
+            ChatItem::Assistant { text: "a1".into() },
+            user("second"),
+            ChatItem::Assistant { text: "a2".into() },
+        ])
+        .with_agent_receipts(vec![receipt("early", Some(0)), receipt("late", None)]);
+        assert_eq!(
+            kinds(&m),
+            [
+                "user",
+                "assistant",
+                "receipt",
+                "user",
+                "assistant",
+                "receipt"
+            ]
+        );
+    }
+
+    /// The orchestration tools say what they did in words; a UUID target is
+    /// shortened to something a row can carry.
+    #[test]
+    fn orchestration_rows_are_human() {
+        let call = |name: &str, args: serde_json::Value| ToolCall {
+            id: "1".into(),
+            name: name.into(),
+            arguments: args,
+        };
+        let spawn = call("spawn_agent", serde_json::json!({"task_name": "reviewer"}));
+        assert_eq!(
+            orchestration_summary("spawn_agent", Some(&spawn)).as_deref(),
+            Some("started reviewer")
+        );
+        let msg = call(
+            "send_message",
+            serde_json::json!({"target": "1d311769-9a2b-45e0-9ffc-41394eaf8820"}),
+        );
+        assert_eq!(
+            orchestration_summary("send_message", Some(&msg)).as_deref(),
+            Some("messaged agent 1d311769")
+        );
+        assert_eq!(
+            orchestration_summary("wait_agent", None).as_deref(),
+            Some("waited for agents")
+        );
+        assert_eq!(orchestration_summary("read_file", None), None);
+    }
+
+    #[test]
+    fn compact_elapsed_uses_whole_units() {
+        assert_eq!(format_elapsed_compact(12.9), "12s");
+        assert_eq!(format_elapsed_compact(72.0), "1m12s");
+        assert_eq!(format_elapsed_compact(3720.0), "1h02m");
     }
 }

@@ -23,7 +23,9 @@ impl TuiApp {
             // draw() additionally checks the actual frame geometry.
             sidebar: agent,
             bottom_panel: self.bottom_panel.open,
-            approval: decision,
+            // A child's inline card is a Tab stop too, but only a stop: it
+            // never claims focus the way the session's own decision does.
+            approval: decision || (agent && self.child_card_available()),
             composer: self.child_view.is_none() && agent,
         }
     }
@@ -283,6 +285,18 @@ impl TuiApp {
             }
         }
         let available = self.focus_availability();
+        // A child's inline card is one Tab from the composer, not a lap round
+        // the frame: it is the one block that is there because something is
+        // waiting on the operator, and it never takes focus on its own.
+        if forward
+            && self.focus.block() == FocusBlock::Composer
+            && available.approval
+            && self.selected_pending_hitl().is_none()
+            && self.selected_pending_question().is_none()
+        {
+            self.focus_block(FocusBlock::Approval);
+            return;
+        }
         let current = FocusBlock::ORDER
             .iter()
             .position(|block| *block == self.focus.block())
@@ -381,11 +395,6 @@ impl TuiApp {
             && !self.selected_queue_messages().is_empty()
         {
             return Some("Ctrl+↑↓ select queued · Ctrl+Backspace remove".into());
-        }
-        if self.focus.block() == FocusBlock::Sidebar
-            && self.task_selection.task(self.selected_session_id).is_some()
-        {
-            return Some("↑↓ select · i insert · a/d inspect decision · x stop".into());
         }
         match self.focus.mode() {
             FocusMode::Transient(TransientOwner::SourceSearch) => {
