@@ -42,6 +42,12 @@ PY
 # record a different file list each time.
 printf '__pycache__/\n' > .gitignore
 
+# The tape points ZDOTDIR here so the embedded terminal shows a neutral prompt
+# instead of the recorder's user@host.
+ZDOT="${WS}-zdot"
+mkdir -p "$ZDOT"
+printf 'PROMPT="%%F{8}%%1~%%f %%F{blue}❯%%f "\n' > "$ZDOT/.zshrc"
+
 git init -q -b main .
 git add -A
 git -c user.email=demo@example.com -c user.name=Demo commit -qm "Add stats helpers"
