@@ -461,10 +461,11 @@ Inside the sandbox a command can:
   credentials: Cargo's mutable state is redirected into the per-session temp
   directory, and XDG-aware clients get session-local config, cache, and state
   directories;
-- **reach the network** only through the egress proxy described below;
-- **hand a file to a host app** with macOS `open` (Launch Services). That app
-  is not confined. The same Apple Event right also lets a command drive other
-  GUI apps via `osascript`.
+- **reach the network** only through the egress proxy described below.
+
+On macOS, Apple Event sending is denied so sandboxed commands cannot drive
+host GUI apps via `osascript`. Application handoffs through `open` may also
+require approval to retry outside the sandbox.
 
 `.git` and `.forge` are read-only: the agent can inspect history but cannot
 rewrite it, and cannot edit the permission rules that govern it.

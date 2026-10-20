@@ -802,11 +802,8 @@ fn xcrun_cache_regex() -> Option<String> {
 /// dead. Canonicalisation failure returns `None`, which callers must treat as
 /// "no sandbox" and therefore "ask the user".
 ///
-/// Launch Services is the other deliberate hole. `open <path>` does not read
-/// the file; it asks `launchservicesd` to hand it to another app. That needs
-/// `appleevent-send` and `user-preference-read` (the default-app binding).
-/// Those apps are not confined, and the same rights let `osascript` drive
-/// GUI apps. Accepted so `open` works the way it did before confinement.
+/// Apple Event sending remains denied so confined commands cannot drive
+/// unconfined GUI apps.
 pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     let canonical_root = policy.workspace_root.canonicalize().ok()?;
     let root = sbpl_literal(&canonical_root)?;
@@ -817,7 +814,6 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
          (allow process-fork)\n\
          (allow sysctl-read)\n\
          (allow mach-lookup)\n\
-         (allow appleevent-send)\n\
          (allow user-preference-read)\n\
          (allow signal (target same-sandbox))\n\
          (allow file-write-data \
@@ -1649,14 +1645,11 @@ mod tests {
         assert!(cargo_home.is_dir());
     }
 
-    /// `open <path>` talks to Launch Services, not the filesystem. Without
-    /// these two rights it fails with `kLSApplicationNotFoundErr` / `-54`
-    /// even though the file is readable.
     #[test]
-    fn profile_allows_launch_services_handoff() {
+    fn profile_does_not_allow_apple_event_sending() {
         let ws = workspace();
         let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
-        assert!(profile.contains("(allow appleevent-send)"));
+        assert!(!profile.contains("(allow appleevent-send)"));
         assert!(profile.contains("(allow user-preference-read)"));
     }
 
