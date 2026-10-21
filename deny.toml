@@ -24,17 +24,6 @@ yanked = "deny"
 # that is reachable from Forge should be fixed or the dependency dropped — not
 # added here.
 ignore = [
-    # RUSTSEC-2026-0183, RUSTSEC-2026-0184 — `git2` unsoundness in
-    # `Remote::list()` and in `Signature` from a buffer-created `BlameHunk`.
-    #
-    # Forge has no direct `git2` dependency and calls neither API; the crate
-    # arrives transitively through `fff-search`. Our own git integration shells
-    # out to the `git` binary through an allowlist, it does not link libgit2.
-    # Residual risk is whatever `fff-search` calls internally, which we do not
-    # control. Revisit when `fff-search` bumps `git2`.
-    { id = "RUSTSEC-2026-0183", reason = "no direct git2 usage; transitive via fff-search, affected API never called" },
-    { id = "RUSTSEC-2026-0184", reason = "no direct git2 usage; transitive via fff-search, affected API never called" },
-
     # RUSTSEC-2025-0141 — `bincode` 1.3.3 is unmaintained.
     #
     # Transitive through `fff-search` -> `heed` -> `heed-types`. Not a
