@@ -1852,6 +1852,20 @@ impl Widget for FileExplorerWidget<'_> {
                     " ".repeat(field_width.saturating_sub(used + reserved) as usize),
                 ));
                 spans.push(Span::styled(count, theme::muted()));
+            } else {
+                let hint = if content_mode {
+                    "Ctrl+P: files"
+                } else {
+                    "Ctrl+Shift+F: contents"
+                };
+                let used = Span::raw(&search).width();
+                let hint_width = Span::raw(hint).width();
+                if used + hint_width + 2 <= field_width as usize {
+                    spans.push(Span::raw(
+                        " ".repeat(field_width as usize - used - hint_width),
+                    ));
+                    spans.push(Span::styled(hint, theme::muted()));
+                }
             }
             Paragraph::new(Line::from(spans)).render(search_inner, buf);
             if text_focused {
@@ -2841,7 +2855,7 @@ mod tests {
     }
 
     #[test]
-    fn search_draft_keeps_placeholder_origin_without_shortcut_hint() {
+    fn search_draft_keeps_placeholder_origin_with_shortcut_hint() {
         let mut explorer = FileExplorer::new(None, forge_config::FileIconMode::Unicode);
         let area = Rect::new(0, 0, 40, 18);
         explorer.search_query = "main.rs".into();
@@ -2852,14 +2866,49 @@ mod tests {
             buf[(text_x + 7, SEARCH_TEXT_ROW)].bg,
             theme::caret().bg.unwrap()
         );
-        for mode in [FileSearchMode::Names, FileSearchMode::Content] {
+        for (mode, hint, other_hint) in [
+            (
+                FileSearchMode::Names,
+                "Ctrl+Shift+F: contents",
+                "Ctrl+P: files",
+            ),
+            (
+                FileSearchMode::Content,
+                "Ctrl+P: files",
+                "Ctrl+Shift+F: contents",
+            ),
+        ] {
             explorer.set_search_mode(mode);
             let buf = render_widget(&mut explorer, area, true);
-            let text = (0..area.height)
-                .map(|y| row_text(&buf, area, y))
-                .collect::<String>();
-            assert!(!text.contains("Ctrl+Shift+F"));
-            assert!(!text.contains("Ctrl+P"));
+            let text = row_text(&buf, area, SEARCH_TEXT_ROW);
+            assert!(text.contains(hint), "{text}");
+            assert!(!text.contains(other_hint), "{text}");
+
+            let narrow = Rect::new(0, 0, 20, 18);
+            let buf = render_widget(&mut explorer, narrow, true);
+            let text = row_text(&buf, narrow, SEARCH_TEXT_ROW);
+            assert!(text.contains("main.rs"), "{text}");
+            assert!(!text.contains("Ctrl+"), "{text}");
+        }
+    }
+
+    #[test]
+    fn empty_search_shows_the_other_mode_shortcut() {
+        let mut explorer = FileExplorer::new(None, forge_config::FileIconMode::Unicode);
+        let area = Rect::new(0, 0, 60, 18);
+        for (mode, placeholder, hint) in [
+            (
+                FileSearchMode::Names,
+                "Search files...",
+                "Ctrl+Shift+F: contents",
+            ),
+            (FileSearchMode::Content, "Find in files...", "Ctrl+P: files"),
+        ] {
+            explorer.set_search_mode(mode);
+            let buf = render_widget(&mut explorer, area, true);
+            let text = row_text(&buf, area, SEARCH_TEXT_ROW);
+            assert!(text.contains(placeholder), "{text}");
+            assert!(text.contains(hint), "{text}");
         }
     }
 
@@ -2932,6 +2981,13 @@ mod tests {
             truncated: true,
         }));
         assert_eq!(explorer.search_result_count().as_deref(), Some("2+ files"));
+
+        let area = Rect::new(0, 0, 60, 18);
+        let buf = render_widget(&mut explorer, area, true);
+        let text = row_text(&buf, area, SEARCH_TEXT_ROW);
+        assert!(text.contains("token"), "{text}");
+        assert!(text.contains("2+ files"), "{text}");
+        assert!(!text.contains("Ctrl+"), "{text}");
     }
 
     #[test]
