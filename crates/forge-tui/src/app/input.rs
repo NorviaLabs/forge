@@ -1464,11 +1464,11 @@ impl TuiApp {
                 self.source_viewer.move_to_end_of_line();
                 true
             }
-            KeyCode::Char('h') if key.modifiers.is_empty() => {
+            KeyCode::Left | KeyCode::Char('h') if key.modifiers.is_empty() => {
                 self.source_viewer.move_cursor_horizontal(-1);
                 true
             }
-            KeyCode::Char('l') if key.modifiers.is_empty() => {
+            KeyCode::Right | KeyCode::Char('l') if key.modifiers.is_empty() => {
                 self.source_viewer.move_cursor_horizontal(1);
                 true
             }

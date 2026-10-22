@@ -165,6 +165,45 @@ async fn external_editor_keybind_sets_flag() {
 }
 
 #[tokio::test]
+async fn plain_arrows_navigate_editor_and_read_only_viewer_without_closing_file() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("main.rs");
+    fs::write(&path, "one\ntwo\n").unwrap();
+    for read_only in [false, true] {
+        app.execute_semantic_command(SemanticCommand::OpenFile(path.clone()))
+            .await
+            .unwrap();
+        if read_only {
+            app.editor_session = None;
+            app.source_viewer.h_scroll = 1;
+        } else {
+            app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+                .await
+                .unwrap();
+            assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 1);
+        }
+
+        app.handle_key(press(KeyCode::Left, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        assert_eq!(
+            app.workspace_navigation.current(),
+            Some(WorkspaceView::File(path.clone()))
+        );
+        assert_eq!(app.focus.block(), FocusBlock::Workspace);
+        if read_only {
+            assert_eq!(app.source_viewer.h_scroll, 0);
+            app.handle_key(press(KeyCode::Right, KeyModifiers::NONE))
+                .await
+                .unwrap();
+            assert_eq!(app.source_viewer.h_scroll, 1);
+        } else {
+            assert_eq!(app.editor_session.as_ref().unwrap().cursor_col(), 0);
+        }
+    }
+}
+
+#[tokio::test]
 async fn left_arrow_stays_in_editor_while_inserting() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
