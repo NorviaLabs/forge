@@ -28,6 +28,15 @@ impl TuiApp {
                     self.run_scratchpad_command(&command);
                     return Ok(true);
                 }
+                if let Ok(line) = command.parse::<usize>() {
+                    if let Some(editor) = self.editor_session.as_mut() {
+                        self.source_viewer.leave_preview_mode();
+                        editor.set_cursor(line.saturating_sub(1), 0);
+                        self.source_viewer.current_line = editor.cursor_row();
+                        self.editor_message = Some(format!("line {}", editor.cursor_row() + 1));
+                        return Ok(true);
+                    }
+                }
                 match command.as_str() {
                     "w" | "write" => {
                         self.save_active_editor();

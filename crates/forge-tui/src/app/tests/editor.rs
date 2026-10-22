@@ -165,6 +165,35 @@ async fn external_editor_keybind_sets_flag() {
 }
 
 #[tokio::test]
+async fn normal_mode_line_command_jumps_without_editing() {
+    let (dir, mut app) = focus_test_app().await;
+    let path = dir.path().join("lines.rs");
+    let source = "one\ntwo\nthree\nfour\n";
+    fs::write(&path, source).unwrap();
+    app.open_file_in_editor(&path);
+
+    for (command, expected_row) in [("3", 2), ("999", 4), ("0", 0), ("1", 0)] {
+        for ch in format!(":{command}").chars() {
+            app.handle_key(press(KeyCode::Char(ch), KeyModifiers::NONE))
+                .await
+                .unwrap();
+        }
+        app.handle_key(press(KeyCode::Enter, KeyModifiers::NONE))
+            .await
+            .unwrap();
+        let editor = app.editor_session.as_ref().unwrap();
+        assert_eq!(editor.cursor_row(), expected_row, ":{command}");
+        assert_eq!(editor.cursor_col(), 0);
+        assert_eq!(editor.mode(), edtui::EditorMode::Normal);
+        assert_eq!(editor.text(), source);
+        assert!(!editor.is_dirty());
+        assert_eq!(app.source_viewer.current_line, expected_row);
+        assert!(app.editor_command.is_none());
+        assert_eq!(app.focus.block(), FocusBlock::Workspace);
+    }
+}
+
+#[tokio::test]
 async fn plain_arrows_navigate_editor_and_read_only_viewer_without_closing_file() {
     let (dir, mut app) = focus_test_app().await;
     let path = dir.path().join("main.rs");
