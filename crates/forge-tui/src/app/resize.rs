@@ -163,7 +163,7 @@ impl TuiApp {
                 (
                     current,
                     content_width,
-                    60,
+                    i32::from(crate::layout::RESOURCE_LIST_MIN_WIDTH),
                     area.right()
                         .saturating_sub(crate::design::FRAME_INSET_X + conversation_start + 45),
                 )

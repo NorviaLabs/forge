@@ -58,6 +58,10 @@ const TRANSCRIPT_MIN_ROWS: u16 = 3;
 /// Floors for simultaneous conversation and resource inspection.
 const RESOURCE_MIN_WIDTH: u16 = 44;
 const CONVERSATION_MIN_WIDTH: u16 = 60;
+/// Floor for the Files/Git list beside an open resource. The list is a tree
+/// and a search field, not a transcript, so it shares the navigator's floor
+/// rather than the conversation's and leaves the width to the editor.
+pub(crate) const RESOURCE_LIST_MIN_WIDTH: u16 = crate::design::NAVIGATOR_MIN_WIDTH;
 
 fn content_width(area: Rect) -> u16 {
     content_width_for(area.width)
@@ -383,9 +387,9 @@ pub fn split_areas_with_preferences(
         let conversation_width = preferences
             .conversation_width_ratio
             .map(|ratio| (f64::from(content_area.width) * ratio).round() as u16)
-            .unwrap_or(body.width * 3 / 5)
+            .unwrap_or(body.width / 4)
             .clamp(
-                CONVERSATION_MIN_WIDTH,
+                RESOURCE_LIST_MIN_WIDTH,
                 body.width - PANE_GAP_X - RESOURCE_MIN_WIDTH,
             );
         let columns = Layout::horizontal([
@@ -467,5 +471,46 @@ mod tests {
         assert!(!is_too_small(Rect::new(0, 0, MIN_FRAME_W, MIN_FRAME_H)));
         assert!(is_too_small(Rect::new(0, 0, MIN_FRAME_W - 1, MIN_FRAME_H)));
         assert!(is_too_small(Rect::new(0, 0, MIN_FRAME_W, MIN_FRAME_H - 1)));
+    }
+
+    fn resource_columns(preferences: PaneLayoutPreferences) -> (Rect, Rect) {
+        let regions = split_areas_with_preferences(
+            Rect::new(0, 0, 200, 45),
+            0,
+            3,
+            true,
+            0,
+            0,
+            2,
+            true,
+            0,
+            0,
+            false,
+            false,
+            true,
+            false,
+            preferences,
+        );
+        (regions.sidebar.expect("resource list"), regions.chat)
+    }
+
+    #[test]
+    fn resource_list_leaves_the_width_to_the_open_resource() {
+        let (list, resource) = resource_columns(PaneLayoutPreferences::default());
+        assert!(list.width < CONVERSATION_MIN_WIDTH, "{list:?}");
+        assert!(resource.width > list.width * 2, "{resource:?}");
+
+        // A saved width under the conversation floor is honoured, down to the
+        // list's own floor.
+        let (list, _) = resource_columns(PaneLayoutPreferences {
+            conversation_width_ratio: Some(0.2),
+            ..Default::default()
+        });
+        assert_eq!(list.width, 40);
+        let (list, _) = resource_columns(PaneLayoutPreferences {
+            conversation_width_ratio: Some(0.05),
+            ..Default::default()
+        });
+        assert_eq!(list.width, RESOURCE_LIST_MIN_WIDTH);
     }
 }
