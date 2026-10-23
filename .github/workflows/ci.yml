@@ -12,6 +12,10 @@ permissions:
 jobs:
   test:
     name: Test and format
+    # GitHub-hosted, not Blacksmith: Blacksmith's transparent cache makes
+    # network calls whenever git runs, and inside Forge those reach the egress
+    # gateway (via HTTP_PROXY) in tests that assert which hosts git contacts.
+    # Release's `verify` job runs the same suite and stays here too.
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -65,7 +69,7 @@ jobs:
   # deny.toml.
   deny:
     name: Dependency audit
-    runs-on: ubuntu-24.04
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
