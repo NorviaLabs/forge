@@ -1811,9 +1811,34 @@ Not a free-form shell. Prefer this over `bash(git …)`."
             )));
         }
         let parsed = validate_git_args(ctx, &sub, &a.args)?;
+        // Fast path: refuse a remote the policy does not permit before git
+        // runs, so the host-grant prompt names it without a failed attempt.
         crate::git_network::check_git_network(ctx, &sub, &parsed.operands, &parsed.options).await?;
 
+        // Enforcement: a network subcommand's traffic goes through this
+        // call's gateway, which refuses any host the pre-check could not see.
+        // No grant (no live proxy) keeps the direct path; a grant whose
+        // gateway cannot start fails the call rather than going direct.
+        let gateway = if crate::git_network::is_network_invocation(&sub, &parsed.operands) {
+            ctx.gateway_for_call().await.map_err(|e| {
+                ToolError::Execution(format!(
+                    "git {sub}: could not start the egress gateway: {e}; refusing to contact the remote"
+                ))
+            })?
+        } else {
+            None
+        };
+        let routed = match &gateway {
+            Some(gateway) => {
+                Some(crate::git_network::route_through_gateway(ctx, &sub, gateway).await?)
+            }
+            None => None,
+        };
+
         let mut cmd = Command::new("git");
+        if let Some(routed) = &routed {
+            routed.apply(&mut cmd);
+        }
         cmd.arg(&sub)
             .args(&a.args)
             .current_dir(&ctx.workspace_root)
@@ -1821,10 +1846,6 @@ Not a free-form shell. Prefer this over `bash(git …)`."
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // TODO(broker gateway): once the gateway TCP endpoint lands, route
-        // network subcommands through it here (`http.proxy` /
-        // `GIT_SSH_COMMAND`) so the proxy enforces the host decision that
-        // `check_git_network` currently makes up front.
         let timeout = crate::git_network::git_timeout(&sub, &a.args);
         let out = match crate::git_network::run_git_bounded(cmd, timeout).await? {
             crate::git_network::GitRun::Finished(out) => out,
@@ -1852,6 +1873,14 @@ Not a free-form shell. Prefer this over `bash(git …)`."
         }
         if content.trim().is_empty() && out.status.success() {
             content = format!("git {sub}: ok");
+        }
+        // A host the gateway refused (a redirect, a submodule, an ssh alias)
+        // becomes the same host-grant prompt as a pre-check denial, instead of
+        // git's raw "403" or "connection closed".
+        if !out.status.success() {
+            if let Some(denied) = gateway.as_ref().and_then(|g| g.sandbox_denied(&content)) {
+                return Err(denied);
+            }
         }
         Ok(ToolOutput {
             outcome: Default::default(),
@@ -3091,6 +3120,143 @@ mod tests {
             .unwrap();
         assert!(out.is_error);
         assert!(marker.exists());
+    }
+
+    /// An HTTP origin that redirects every request to `location`, counting
+    /// the requests it answers.
+    async fn redirecting_origin(location: &'static str) -> (u16, Arc<Mutex<usize>>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = Arc::new(Mutex::new(0));
+        let counter = Arc::clone(&served);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                        if line == "\r\n" {
+                            break;
+                        }
+                        line.clear();
+                    }
+                    *counter.lock().unwrap() += 1;
+                    let response = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\n\
+                         Content-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = reader.get_mut().write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (port, served)
+    }
+
+    /// The pre-check only sees the permitted origin; the redirect to another
+    /// host is refused by the gateway, and that refusal becomes the
+    /// host-grant prompt rather than git's raw HTTP error. Per-URL and
+    /// per-remote proxies pointing at a dead port prove the user's own proxy
+    /// settings cannot route around the gateway.
+    #[tokio::test]
+    async fn git_fetch_redirected_to_an_unpermitted_host_is_denied_by_the_gateway() {
+        let (port, served) =
+            redirecting_origin("http://blocked.example/r.git/info/refs?service=git-upload-pack")
+                .await;
+        let origin = format!("http://127.0.0.1:{port}/r.git");
+        let (dir, _marker) = repo_with_origin(&origin);
+        let root = dir.path();
+        sh_git(
+            root,
+            &[
+                "config",
+                &format!("http.{origin}.proxy"),
+                "http://127.0.0.1:1",
+            ],
+        );
+        sh_git(
+            root,
+            &["config", "remote.origin.proxy", "http://127.0.0.1:1"],
+        );
+        let (_proxy, ctx) = ctx_with_hosts(root, &["127.0.0.1"]).await;
+
+        let error = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))
+            .await
+            .unwrap_err();
+        match error {
+            ToolError::SandboxDenied {
+                denied_host,
+                content,
+                ..
+            } => {
+                assert_eq!(denied_host.as_deref(), Some("blocked.example"));
+                assert!(content.contains("git"), "{content}");
+            }
+            other => panic!("expected a gateway host denial, got {other:?}"),
+        }
+        assert!(*served.lock().unwrap() >= 1, "the origin was reached");
+    }
+
+    /// SSH leaves through the gateway: the user's `core.sshCommand` is kept,
+    /// with the connect helper appended as its ProxyCommand.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_ssh_keeps_the_users_command_and_adds_the_gateway_proxy() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _marker) = repo_with_origin("ssh://git@allowed.example/o/r.git");
+        let root = dir.path();
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let argv = root.join("ssh-argv");
+        let ssh = bin.join("ssh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 1\n",
+                argv.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+        sh_git(
+            root,
+            &[
+                "config",
+                "core.sshCommand",
+                &format!("'{}' -i ~/.ssh/work_key", ssh.display()),
+            ],
+        );
+        let (_proxy, ctx) = ctx_with_hosts(root, &["allowed.example"]).await;
+
+        let out = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))
+            .await
+            .unwrap();
+        assert!(out.is_error, "the fake ssh fails: {}", out.content);
+        let recorded = std::fs::read_to_string(&argv).unwrap();
+        let args: Vec<&str> = recorded.lines().collect();
+        let exe = std::env::current_exe().unwrap();
+        let proxy = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("ProxyCommand="))
+            .unwrap_or_else(|| panic!("no ProxyCommand in {args:?}"));
+        let expected_prefix = format!(
+            "'{}' __egress-connect 127.0.0.1:",
+            exe.display().to_string().replace('%', "%%")
+        );
+        assert!(proxy.starts_with(&expected_prefix), "{proxy}");
+        assert!(proxy.ends_with(" %h %p"), "{proxy}");
+        assert_eq!(
+            &args[..2],
+            [
+                "-i",
+                &format!("{}/.ssh/work_key", std::env::var("HOME").unwrap())
+            ]
+        );
+        assert!(args.contains(&"ControlPath=none"), "{args:?}");
+        assert!(args.contains(&"git@allowed.example"), "{args:?}");
     }
 
     #[tokio::test]
