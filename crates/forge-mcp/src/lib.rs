@@ -107,6 +107,9 @@ pub struct McpStdioClient {
     /// server is. `None` for an unsandboxed server, or a sandboxed one whose
     /// endpoint could not start (it then has no network at all).
     _egress: Option<EgressInvocation>,
+    /// A sandboxed server's private writable temp directory (its `TMPDIR`),
+    /// removed when the client is dropped. `None` for an unsandboxed server.
+    _tmp: Option<tempfile::TempDir>,
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     next_id: Mutex<u64>,
@@ -157,12 +160,14 @@ async fn spawn_retrying_text_file_busy(
     unreachable!("loop always returns by the final attempt")
 }
 
-/// What to spawn for a sandboxed server, plus the endpoint that must outlive it.
+/// What to spawn for a sandboxed server, plus the endpoint and temp
+/// directory that must outlive it.
 struct SandboxedLaunch {
     program: String,
     args: Vec<String>,
     env: Vec<(String, String)>,
     egress: Option<EgressInvocation>,
+    tmp: tempfile::TempDir,
 }
 
 /// The label a sandboxed server's connections carry in the session egress
@@ -205,12 +210,26 @@ async fn sandboxed_launch(
             unavailable.reason()
         ))
     })?;
+    // One private temp directory per server, outside the workspace, and the
+    // only writable place besides a `read_write` workspace. Many servers
+    // (and the runtimes under them) need somewhere to write; the shared
+    // per-user temp tree stays denied.
+    let tmp = tempfile::Builder::new()
+        .prefix("forge-mcp-")
+        .tempdir()
+        .map_err(|err| {
+            McpError::Sandbox(format!(
+                "`sandbox = true` but the server's temp directory could not be created \
+                 ({err}); refusing to start the server unconfined"
+            ))
+        })?;
     let egress = start_mcp_egress(egress, &cfg.id).await;
     // Same profile as the shell tool: read access to the workspace, system
     // paths and the resolved server executable; network denied except the
     // egress proxy.
     let mut policy = SandboxPolicy::for_workspace(workspace)
         .with_command_access(&cfg.command)
+        .with_session_tmp(tmp.path())
         .with_egress(egress.as_ref().and_then(EgressInvocation::grant));
     if cfg.sandbox_workspace == McpSandboxWorkspace::ReadOnly {
         policy = policy.with_read_only_workspace();
@@ -224,11 +243,18 @@ async fn sandboxed_launch(
                     .into(),
             )
         })?;
+    let mut env = sandbox::egress_env(&policy);
+    env.extend(
+        sandbox::temp_env(&policy)
+            .into_iter()
+            .map(|(name, path)| (name.to_string(), path.to_string_lossy().into_owned())),
+    );
     Ok(SandboxedLaunch {
         program,
         args,
-        env: sandbox::egress_env(&policy),
+        env,
         egress,
+        tmp,
     })
 }
 
@@ -264,7 +290,7 @@ impl McpStdioClient {
                 cfg.transport
             )));
         }
-        let (program, args, extra_env, egress) = if cfg.sandbox {
+        let (program, args, extra_env, egress, tmp) = if cfg.sandbox {
             let workspace = match workspace {
                 Some(workspace) => workspace.to_path_buf(),
                 None => std::env::current_dir()?,
@@ -274,10 +300,17 @@ impl McpStdioClient {
                 args,
                 env,
                 egress,
+                tmp,
             } = sandboxed_launch(cfg, &workspace, egress).await?;
-            (program, args, env, egress)
+            (program, args, env, egress, Some(tmp))
         } else {
-            (cfg.command.clone(), cfg.args.clone(), Vec::new(), None)
+            (
+                cfg.command.clone(),
+                cfg.args.clone(),
+                Vec::new(),
+                None,
+                None,
+            )
         };
         let mut child =
             spawn_retrying_text_file_busy(&program, &args, workspace, &extra_env).await?;
@@ -292,6 +325,7 @@ impl McpStdioClient {
         let client = Self {
             child,
             _egress: egress,
+            _tmp: tmp,
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
             next_id: Mutex::new(1),
@@ -1538,6 +1572,58 @@ done
         session.replace_policy(policy);
         let report = client.call_tool("probe", json!({})).await.unwrap().content;
         assert!(report.contains("status=200"), "{report}");
+    }
+
+    /// A sandboxed server gets a private writable temp directory as
+    /// `TMPDIR`/`TMP`/`TEMP` — while a read-only workspace stays unwritable —
+    /// and the directory is removed when the client is dropped.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_writes_its_private_temp_dir_but_not_a_read_only_workspace() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "echo tmpdir=$TMPDIR\n\
+                 [ \"$TMP\" = \"$TMPDIR\" ] && [ \"$TEMP\" = \"$TMPDIR\" ] && echo same=yes\n\
+                 if (echo x > \"$TMPDIR/scratch\") 2>/dev/null; then echo tmp=ok; else echo tmp=denied; fi\n\
+                 if (echo x > '{}/written') 2>/dev/null; then echo ws=ok; else echo ws=denied; fi\n",
+                workspace.path().display()
+            ),
+        );
+        let server = fixture_server_running();
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+
+        let client =
+            McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+                .await
+                .unwrap();
+        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(report.contains("tmp=ok"), "{report}");
+        assert!(report.contains("same=yes"), "{report}");
+        assert!(report.contains("ws=denied"), "{report}");
+        assert!(!workspace.path().join("written").exists());
+        let tmpdir = report
+            .split("tmpdir=")
+            .nth(1)
+            .and_then(|rest| rest.split("same=").next())
+            .map(str::trim)
+            .unwrap()
+            .to_string();
+        assert!(
+            Path::new(&tmpdir).join("scratch").is_file(),
+            "{tmpdir:?}: {report}"
+        );
+        drop(client);
+        assert!(
+            !Path::new(&tmpdir).exists(),
+            "the temp dir is removed on drop"
+        );
     }
 
     #[tokio::test]
