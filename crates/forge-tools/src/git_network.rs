@@ -1,18 +1,24 @@
 //! The `git` tool's network operations under the session host allowlist.
 //!
-//! The `git` tool runs host `git` directly — not in the sandbox and not through
-//! the egress proxy — because it relies on the user's own credential helpers,
-//! SSH keys and config. The proxy therefore never sees its traffic, so the
-//! host decision is made here instead: before spawning a subcommand that
-//! contacts a remote, the remote's URL is resolved locally (config reads only,
-//! never the network), its host extracted, and checked against the same
-//! session policy a confined shell is held to. A host the policy does not
-//! permit is reported as [`ToolError::SandboxDenied`] with `denied_host`, which
-//! is what raises the existing "allow this host" prompt; the approved retry
-//! re-runs the same call against the updated policy.
+//! The `git` tool runs host `git` directly, not in the sandbox, because it
+//! relies on the user's own credential helpers, SSH keys and config. Two
+//! layers hold it to the same session policy a confined shell is held to:
 //!
-//! Resolution fails closed: a remote whose URL cannot be determined, or whose
-//! transport this module does not understand, is refused rather than guessed.
+//! 1. A fast pre-check ([`check_git_network`]): before spawning a subcommand
+//!    that contacts a remote, the remote's URL is resolved locally (config
+//!    reads only, never the network), its host extracted, and checked against
+//!    the policy. A host the policy does not permit is reported as
+//!    [`ToolError::SandboxDenied`] with `denied_host`, which is what raises the
+//!    existing "allow this host" prompt; the approved retry re-runs the same
+//!    call against the updated policy. Resolution fails closed: a remote whose
+//!    URL cannot be determined, or whose transport this module does not
+//!    understand, is refused rather than guessed.
+//! 2. Enforcement ([`route_through_gateway`]): the network subcommand itself
+//!    runs with its HTTP(S), SSH and `git://` traffic pointed at the call's
+//!    egress gateway, so a host the pre-check could not see (a redirect, a
+//!    submodule, a hook, an ssh alias) is still refused by the gateway. The
+//!    gateway only tunnels: TLS and SSH authentication stay end to end with
+//!    the user's own credentials.
 
 use std::path::Path;
 use std::process::{Output, Stdio};
@@ -20,6 +26,7 @@ use std::time::Duration;
 
 use tokio::process::Command;
 
+use crate::egress::CallGateway;
 use crate::registry::ToolContext;
 use crate::ToolError;
 
@@ -68,7 +75,7 @@ pub(crate) fn git_timeout(subcommand: &str, args: &[String]) -> Duration {
     }
 }
 
-fn is_network_invocation(subcommand: &str, operands: &[String]) -> bool {
+pub(crate) fn is_network_invocation(subcommand: &str, operands: &[String]) -> bool {
     match subcommand {
         "fetch" | "pull" | "push" | "clone" => true,
         "remote" => operands
@@ -218,6 +225,362 @@ pub(crate) async fn check_git_network(
         }
     }
     Ok(())
+}
+
+/// The extra `-c` settings and environment that point one git invocation at
+/// the per-call gateway.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct GatewayRouting {
+    /// `-c key=value` pairs, passed before the subcommand. Git exports them to
+    /// its children (`GIT_CONFIG_PARAMETERS`), so submodule fetches and remote
+    /// helpers see them too.
+    pub(crate) config: Vec<(String, String)>,
+    pub(crate) env: Vec<(&'static str, String)>,
+    pub(crate) env_remove: Vec<&'static str>,
+}
+
+/// The parts of the user's own git and ssh setup that routing builds on,
+/// read before git is spawned.
+#[derive(Debug, Default)]
+pub(crate) struct UserGitSetup {
+    /// `GIT_SSH_COMMAND` from the environment.
+    pub(crate) git_ssh_command: Option<String>,
+    /// The effective `core.sshCommand`.
+    pub(crate) core_ssh_command: Option<String>,
+    /// `GIT_SSH` from the environment: a program path, not a shell command.
+    pub(crate) git_ssh: Option<String>,
+    /// `GIT_SSH_VARIANT`, else `ssh.variant`.
+    pub(crate) ssh_variant: Option<String>,
+    /// Every configured `http.<url>.proxy` and `remote.<name>.proxy` key.
+    pub(crate) proxy_keys: Vec<String>,
+}
+
+/// Where the gateway listens and how to reach it from a child process.
+#[derive(Debug)]
+pub(crate) struct GatewayEndpoint<'a> {
+    /// `http://127.0.0.1:PORT`.
+    pub(crate) proxy_url: &'a str,
+    /// `127.0.0.1:PORT`, as `__egress-connect` takes it.
+    pub(crate) connect_addr: &'a str,
+    /// The forge executable that provides `__egress-connect`.
+    pub(crate) exe: &'a str,
+    /// A program git can run as `GIT_PROXY_COMMAND <host> <port>`.
+    pub(crate) git_proxy_command: &'a str,
+}
+
+/// Environment variables curl-based clients (git's own `http.proxy`
+/// fallback, git-lfs, credential helpers) read for their proxy.
+const PROXY_ENV: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+];
+
+/// Short options OpenSSH takes without an argument, for reading a cluster
+/// such as `-vJ bastion` the way `getopt` does.
+const SSH_FLAGS_WITHOUT_ARGUMENT: &str = "46AaCfGgKkMNnqsTtVvXxYy";
+
+/// Build the routing for one invocation. An `Err` refuses the call outright;
+/// an SSH setup that cannot be pointed at the gateway is instead refused
+/// lazily (see [`ssh_refusal`]), so it only fails a call that really uses SSH.
+pub(crate) fn plan_routing(
+    setup: &UserGitSetup,
+    endpoint: &GatewayEndpoint<'_>,
+) -> Result<GatewayRouting, String> {
+    let mut routing = GatewayRouting::default();
+
+    // HTTP(S). `http.proxy` is the least specific of git's proxy settings:
+    // a matching `http.<url>.proxy` (urlmatch: the more specific URL wins
+    // whatever the order) and `remote.<name>.proxy` both take precedence over
+    // it. Each such key the user configured is overridden by name; for equal
+    // keys the last value wins, and `-c` is read after every config file and
+    // after `GIT_CONFIG_COUNT`.
+    routing
+        .config
+        .push(("http.proxy".into(), endpoint.proxy_url.into()));
+    for key in &setup.proxy_keys {
+        if key.contains('=') {
+            return Err(format!(
+                "cannot override the proxy setting `{key}` (it contains `=`); \
+                 refusing to contact the remote around the egress gateway"
+            ));
+        }
+        if !routing.config.iter().any(|(k, _)| k == key) {
+            routing
+                .config
+                .push((key.clone(), endpoint.proxy_url.into()));
+        }
+    }
+    for name in PROXY_ENV {
+        routing.env.push((name, endpoint.proxy_url.into()));
+    }
+    // Removed rather than emptied: no host may skip the gateway.
+    routing.env_remove.extend(["NO_PROXY", "no_proxy"]);
+
+    // SSH. `GIT_SSH_COMMAND` outranks every other ssh setting git reads, so
+    // setting it is enough to be authoritative.
+    match compose_ssh_command(setup, endpoint) {
+        Ok(command) => routing.env.push(("GIT_SSH_COMMAND", command)),
+        Err(why) => {
+            routing.env.push(("GIT_SSH_COMMAND", ssh_refusal(&why)));
+            // Without an explicit variant git would probe the refusal with
+            // `-G` and could die on a port before printing it.
+            routing.env.push(("GIT_SSH_VARIANT", "ssh".into()));
+        }
+    }
+
+    // git:// (port 9418). Git runs `GIT_PROXY_COMMAND <host> <port>` without
+    // a shell and lets the environment outrank `core.gitProxy`.
+    routing
+        .env
+        .push(("GIT_PROXY_COMMAND", endpoint.git_proxy_command.into()));
+    Ok(routing)
+}
+
+/// The user's ssh command with the gateway as its `ProxyCommand`, or why the
+/// setup cannot be routed.
+///
+/// OpenSSH keeps the first value it obtains for each option, and the command
+/// line is read before any config file. So the appended `-o ProxyCommand`
+/// overrides a `ProxyCommand` or `ProxyJump` in `~/.ssh/config` (the two
+/// compete, and the first one seen wins), but not one already on the user's
+/// own command line — that case is refused. `%h` expands to the resolved
+/// `HostName`, so an ssh alias is checked by the gateway against the real host
+/// it names. `ControlPath=none` keeps ssh from multiplexing over a master
+/// connection opened outside the gateway.
+fn compose_ssh_command(
+    setup: &UserGitSetup,
+    endpoint: &GatewayEndpoint<'_>,
+) -> Result<String, String> {
+    let variant = setup
+        .ssh_variant
+        .as_deref()
+        .map(|v| v.trim().to_ascii_lowercase());
+    if let Some(variant) = variant.as_deref() {
+        if !matches!(variant, "auto" | "ssh") {
+            return Err(format!(
+                "the ssh variant is `{variant}`; only an OpenSSH-compatible ssh can be routed \
+                 through the egress gateway"
+            ));
+        }
+    }
+    let user_command = setup
+        .git_ssh_command
+        .as_deref()
+        .map(|source| ("GIT_SSH_COMMAND", source))
+        .or_else(|| {
+            setup
+                .core_ssh_command
+                .as_deref()
+                .map(|source| ("core.sshCommand", source))
+        })
+        .filter(|(_, command)| !command.trim().is_empty());
+    let base = match user_command {
+        Some((source, command)) => {
+            if sets_its_own_route(command) {
+                return Err(format!(
+                    "{source} sets its own ProxyCommand, ProxyJump or ControlPath, which would \
+                     take precedence over the egress gateway"
+                ));
+            }
+            command.trim().to_string()
+        }
+        None => match setup.git_ssh.as_deref().filter(|p| !p.trim().is_empty()) {
+            Some(program) => {
+                let name = Path::new(program)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                if !(matches!(name, "ssh" | "ssh.exe") || variant.as_deref() == Some("ssh")) {
+                    return Err(format!(
+                        "GIT_SSH is `{program}`, which cannot be given a ProxyCommand; set \
+                         GIT_SSH_COMMAND or core.sshCommand to an OpenSSH command instead"
+                    ));
+                }
+                shell_quote(program)
+            }
+            None => "ssh".to_string(),
+        },
+    };
+    // `%` starts an ssh token in ProxyCommand; the command itself is run by
+    // ssh through the shell, and the whole option again by git's shell.
+    let proxy_command = format!(
+        "{} __egress-connect {} %h %p",
+        shell_quote(&endpoint.exe.replace('%', "%%")),
+        endpoint.connect_addr
+    );
+    Ok(format!(
+        "{base} -o ControlPath=none -o {}",
+        shell_quote(&format!("ProxyCommand={proxy_command}"))
+    ))
+}
+
+/// Whether a user ssh command already chooses its own route, which OpenSSH
+/// would prefer over the gateway's (first value wins).
+fn sets_its_own_route(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    if ["proxycommand", "proxyjump", "controlpath"]
+        .iter()
+        .any(|option| lower.contains(option))
+    {
+        return true;
+    }
+    command.split_whitespace().any(|token| {
+        let Some(cluster) = token.strip_prefix('-').filter(|c| !c.starts_with('-')) else {
+            return false;
+        };
+        for flag in cluster.chars() {
+            if flag == 'J' || flag == 'S' {
+                return true;
+            }
+            if !SSH_FLAGS_WITHOUT_ARGUMENT.contains(flag) {
+                // The rest of the token is this option's argument.
+                return false;
+            }
+        }
+        false
+    })
+}
+
+/// An ssh "command" that fails with `why`, so an SSH remote fails closed with
+/// a readable message while an HTTPS remote in the same call is unaffected.
+fn ssh_refusal(why: &str) -> String {
+    format!(
+        "printf '%s\\n' {} >&2; false",
+        shell_quote(&format!("forge: refusing git over SSH: {why}"))
+    )
+}
+
+/// POSIX single-quoting.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// A git invocation's routing, and the scratch files it needs while git runs.
+#[derive(Debug)]
+pub(crate) struct RoutedGit {
+    routing: GatewayRouting,
+    _scratch: Option<tempfile::TempDir>,
+}
+
+impl RoutedGit {
+    /// Add the routing to `cmd`. Call before the subcommand is added: `-c`
+    /// is a global option.
+    pub(crate) fn apply(&self, cmd: &mut Command) {
+        for (key, value) in &self.routing.config {
+            cmd.arg("-c").arg(format!("{key}={value}"));
+        }
+        for name in &self.routing.env_remove {
+            cmd.env_remove(name);
+        }
+        for (name, value) in &self.routing.env {
+            cmd.env(name, value);
+        }
+    }
+}
+
+/// Point a network subcommand's traffic at `gateway`. Fails closed: when the
+/// routing cannot be built, the call is refused rather than run direct.
+pub(crate) async fn route_through_gateway(
+    ctx: &ToolContext,
+    subcommand: &str,
+    gateway: &CallGateway,
+) -> Result<RoutedGit, ToolError> {
+    let refuse = |why: String| {
+        ToolError::Execution(format!(
+            "git {subcommand}: {why}; refusing to contact the remote"
+        ))
+    };
+    let repo = LocalRepo {
+        root: &ctx.workspace_root,
+    };
+    // Clone reads no repository config, so the workspace's own settings
+    // neither feed nor change its ssh command.
+    let include_repo = subcommand != "clone";
+    let setup = UserGitSetup {
+        git_ssh_command: env_value("GIT_SSH_COMMAND"),
+        core_ssh_command: repo
+            .config_all_scoped("core.sshCommand", include_repo)
+            .await?
+            .pop(),
+        git_ssh: env_value("GIT_SSH"),
+        ssh_variant: match env_value("GIT_SSH_VARIANT") {
+            Some(variant) => Some(variant),
+            None => repo
+                .config_all_scoped("ssh.variant", include_repo)
+                .await?
+                .pop(),
+        },
+        proxy_keys: repo.proxy_keys().await?,
+    };
+    let exe = std::env::current_exe()
+        .map_err(|e| refuse(format!("cannot locate the forge executable: {e}")))?;
+    let exe = exe
+        .to_str()
+        .ok_or_else(|| refuse("the forge executable path is not UTF-8".into()))?
+        .to_string();
+    let connect_addr = gateway.addr().to_string();
+    let (scratch, git_proxy_command) = git_proxy_command(&exe, &connect_addr)
+        .map_err(|e| refuse(format!("cannot prepare the git:// proxy command: {e}")))?;
+    let routing = plan_routing(
+        &setup,
+        &GatewayEndpoint {
+            proxy_url: &gateway.proxy_url(),
+            connect_addr: &connect_addr,
+            exe: &exe,
+            git_proxy_command: &git_proxy_command,
+        },
+    )
+    .map_err(refuse)?;
+    Ok(RoutedGit {
+        routing,
+        _scratch: scratch,
+    })
+}
+
+fn env_value(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.is_empty())
+}
+
+/// `GIT_PROXY_COMMAND` is a program, run without a shell as
+/// `<program> <host> <port>`, so the gateway address is supplied by a small
+/// wrapper script that lives as long as the call.
+#[cfg(unix)]
+fn git_proxy_command(
+    exe: &str,
+    connect_addr: &str,
+) -> std::io::Result<(Option<tempfile::TempDir>, String)> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::Builder::new()
+        .prefix("forge-git-proxy-")
+        .tempdir()?;
+    let path = dir.path().join("git-proxy");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nexec {} __egress-connect {connect_addr} \"$1\" \"$2\"\n",
+            shell_quote(exe)
+        ),
+    )?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
+    let path = path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?
+        .to_string();
+    Ok((Some(dir), path))
+}
+
+/// Without a wrapper script git:// cannot be routed; a program that does not
+/// exist makes git fail with "cannot start proxy" instead of going direct.
+#[cfg(not(unix))]
+fn git_proxy_command(
+    _exe: &str,
+    _connect_addr: &str,
+) -> std::io::Result<(Option<tempfile::TempDir>, String)> {
+    Ok((None, "forge-git-protocol-is-not-routed".into()))
 }
 
 /// One URL a subcommand will contact, with a label that names its origin
@@ -382,6 +745,46 @@ impl LocalRepo<'_> {
             .await?
             .map(|value| value.lines().map(str::to_string).collect())
             .unwrap_or_default())
+    }
+
+    /// Every value of `key`, oldest first, so the last one is git's. With
+    /// `include_repo` false the repository's own scopes are skipped.
+    async fn config_all_scoped(
+        &self,
+        key: &str,
+        include_repo: bool,
+    ) -> Result<Vec<String>, ToolError> {
+        let listing = self
+            .lookup(&["config", "--show-scope", "-z", "--get-all", key])
+            .await?
+            .unwrap_or_default();
+        let mut tokens = listing.split('\0');
+        let mut values = Vec::new();
+        while let (Some(scope), Some(value)) = (tokens.next(), tokens.next()) {
+            if include_repo || !matches!(scope, "local" | "worktree") {
+                values.push(value.to_string());
+            }
+        }
+        Ok(values)
+    }
+
+    /// Names of the per-URL and per-remote proxy settings, which outrank
+    /// `http.proxy`.
+    async fn proxy_keys(&self) -> Result<Vec<String>, ToolError> {
+        Ok(self
+            .lookup(&[
+                "config",
+                "-z",
+                "--name-only",
+                "--get-regexp",
+                r"^(http\..+|remote\..+)\.proxy$",
+            ])
+            .await?
+            .unwrap_or_default()
+            .split('\0')
+            .filter(|key| !key.is_empty())
+            .map(str::to_string)
+            .collect())
     }
 
     async fn remotes(&self) -> Result<Vec<String>, ToolError> {
@@ -779,6 +1182,222 @@ mod tests {
             git_timeout("remote", &["add".to_string()]),
             GIT_LOCAL_TIMEOUT
         );
+    }
+
+    const ENDPOINT: GatewayEndpoint<'static> = GatewayEndpoint {
+        proxy_url: "http://127.0.0.1:4242",
+        connect_addr: "127.0.0.1:4242",
+        exe: "/opt/my forge/50%'s/forge",
+        git_proxy_command: "/tmp/forge-git-proxy-x/git-proxy",
+    };
+
+    /// The ProxyCommand option as it appears, shell-quoted, in the command.
+    const PROXY_OPTION: &str = r#"-o ControlPath=none -o 'ProxyCommand='\''/opt/my forge/50%%'\''\'\'''\''s/forge'\'' __egress-connect 127.0.0.1:4242 %h %p'"#;
+
+    fn env<'a>(routing: &'a GatewayRouting, name: &str) -> Option<&'a str> {
+        routing
+            .env
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn routing_points_http_ssh_and_git_protocol_at_the_gateway() {
+        let routing = plan_routing(&UserGitSetup::default(), &ENDPOINT).unwrap();
+        assert_eq!(
+            routing.config,
+            vec![("http.proxy".to_string(), ENDPOINT.proxy_url.to_string())]
+        );
+        for name in PROXY_ENV {
+            assert_eq!(env(&routing, name), Some(ENDPOINT.proxy_url), "{name}");
+        }
+        assert_eq!(routing.env_remove, vec!["NO_PROXY", "no_proxy"]);
+        assert_eq!(
+            env(&routing, "GIT_SSH_COMMAND"),
+            Some(format!("ssh {PROXY_OPTION}").as_str())
+        );
+        assert_eq!(env(&routing, "GIT_SSH_VARIANT"), None);
+        assert_eq!(
+            env(&routing, "GIT_PROXY_COMMAND"),
+            Some(ENDPOINT.git_proxy_command)
+        );
+    }
+
+    /// The quoted ProxyCommand survives git's shell and then ssh's: what ssh
+    /// receives as one `-o` argument is the exe path, quoted for ssh's shell,
+    /// with `%` doubled for ssh's token expansion.
+    #[cfg(unix)]
+    #[test]
+    fn the_proxy_command_survives_both_shells() {
+        let routing = plan_routing(&UserGitSetup::default(), &ENDPOINT).unwrap();
+        let command = env(&routing, "GIT_SSH_COMMAND").unwrap();
+        let command = command.replacen("ssh", "printf '%s\\n'", 1);
+        let out = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "-o\nControlPath=none\n-o\n\
+             ProxyCommand='/opt/my forge/50%%'\\''s/forge' __egress-connect 127.0.0.1:4242 %h %p\n"
+        );
+    }
+
+    #[test]
+    fn per_url_and_per_remote_proxies_are_overridden_by_name() {
+        let setup = UserGitSetup {
+            proxy_keys: vec![
+                "http.https://github.com/.proxy".into(),
+                "remote.origin.proxy".into(),
+                "remote.origin.proxy".into(),
+            ],
+            ..Default::default()
+        };
+        let routing = plan_routing(&setup, &ENDPOINT).unwrap();
+        let keys: Vec<&str> = routing.config.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            [
+                "http.proxy",
+                "http.https://github.com/.proxy",
+                "remote.origin.proxy"
+            ]
+        );
+        assert!(routing.config.iter().all(|(_, v)| v == ENDPOINT.proxy_url));
+
+        let unsettable = UserGitSetup {
+            proxy_keys: vec!["http.https://h/?a=b.proxy".into()],
+            ..Default::default()
+        };
+        let error = plan_routing(&unsettable, &ENDPOINT).unwrap_err();
+        assert!(error.contains("cannot override"), "{error}");
+    }
+
+    #[test]
+    fn the_users_ssh_command_is_kept_and_extended() {
+        let core = UserGitSetup {
+            core_ssh_command: Some("ssh -i ~/.ssh/work_key".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            env(&plan_routing(&core, &ENDPOINT).unwrap(), "GIT_SSH_COMMAND"),
+            Some(format!("ssh -i ~/.ssh/work_key {PROXY_OPTION}").as_str())
+        );
+        // `GIT_SSH_COMMAND` outranks `core.sshCommand`, as in git.
+        let both = UserGitSetup {
+            git_ssh_command: Some("ssh -v".into()),
+            core_ssh_command: Some("ssh -i k".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            env(&plan_routing(&both, &ENDPOINT).unwrap(), "GIT_SSH_COMMAND"),
+            Some(format!("ssh -v {PROXY_OPTION}").as_str())
+        );
+        // A GIT_SSH that is OpenSSH is used as a quoted program.
+        let openssh = UserGitSetup {
+            git_ssh: Some("/usr/local/my bin/ssh".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            env(
+                &plan_routing(&openssh, &ENDPOINT).unwrap(),
+                "GIT_SSH_COMMAND"
+            ),
+            Some(format!("'/usr/local/my bin/ssh' {PROXY_OPTION}").as_str())
+        );
+    }
+
+    fn assert_ssh_refused(setup: UserGitSetup, needle: &str) {
+        let routing = plan_routing(&setup, &ENDPOINT).unwrap();
+        let command = env(&routing, "GIT_SSH_COMMAND").unwrap();
+        assert!(command.starts_with("printf '%s\\n' 'forge: refusing git over SSH: "));
+        assert!(command.ends_with(">&2; false"), "{command}");
+        assert!(command.contains(needle), "{command}");
+        assert!(!command.contains("ProxyCommand="), "{command}");
+        assert_eq!(env(&routing, "GIT_SSH_VARIANT"), Some("ssh"));
+        // HTTP routing is unaffected by an SSH refusal.
+        assert_eq!(env(&routing, "HTTPS_PROXY"), Some(ENDPOINT.proxy_url));
+    }
+
+    #[test]
+    fn ssh_setups_that_cannot_be_routed_fail_closed() {
+        assert_ssh_refused(
+            UserGitSetup {
+                git_ssh: Some("C:/PuTTY/plink.exe".into()),
+                ..Default::default()
+            },
+            "GIT_SSH is `C:/PuTTY/plink.exe`",
+        );
+        assert_ssh_refused(
+            UserGitSetup {
+                ssh_variant: Some("plink".into()),
+                ..Default::default()
+            },
+            "variant is `plink`",
+        );
+        for command in [
+            "ssh -J bastion",
+            "ssh -vJ bastion",
+            "ssh -o ProxyCommand=nc\\ %h\\ %p",
+            "ssh -oProxyJump=b",
+            "ssh -S /tmp/mux",
+            "ssh -o ControlPath=/tmp/mux",
+        ] {
+            assert_ssh_refused(
+                UserGitSetup {
+                    core_ssh_command: Some(command.into()),
+                    ..Default::default()
+                },
+                "core.sshCommand sets its own",
+            );
+        }
+        // An option argument that merely contains a `J` is not a jump host.
+        for command in ["ssh -iJkey", "ssh -i ~/.ssh/Jkey", "ssh -p 22 -v"] {
+            assert!(!sets_its_own_route(command), "{command}");
+        }
+    }
+
+    #[cfg(unix)]
+    fn recorder(dir: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("fake-forge");
+        std::fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 1\n",
+                dir.join("argv").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// git runs `GIT_PROXY_COMMAND <host> <port>` without a shell; the wrapper
+    /// turns that into `<exe> __egress-connect <gateway> <host> <port>`.
+    #[cfg(unix)]
+    #[test]
+    fn git_protocol_goes_through_the_connect_helper() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = recorder(dir.path());
+        let (scratch, script) = git_proxy_command(&exe, "127.0.0.1:4242").unwrap();
+        let out = std::process::Command::new("git")
+            .args(["ls-remote", "git://allowed.example:9999/r.git"])
+            .current_dir(dir.path())
+            .env("GIT_PROXY_COMMAND", &script)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("argv")).unwrap(),
+            "__egress-connect\n127.0.0.1:4242\nallowed.example\n9999\n"
+        );
+        let scratch = scratch.unwrap();
+        let script_dir = scratch.path().to_path_buf();
+        drop(scratch);
+        assert!(!script_dir.exists(), "the wrapper goes with the call");
     }
 
     /// A blocking git invocation (an alias that sleeps) is cut off at the
