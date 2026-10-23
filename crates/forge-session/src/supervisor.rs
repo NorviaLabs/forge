@@ -4291,25 +4291,74 @@ mod tests {
         // still coming. A genuine hang still trips this.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut events = handle.subscribe();
+        // The last snapshot seen for this session, reported on timeout so a
+        // flake shows the state the session was stuck in.
+        let mut last: Option<SessionRuntimeSnapshot> = None;
+        let mut check = |snapshot: SessionRuntimeSnapshot| {
+            if snapshot.task.session_id != session_id {
+                return None;
+            }
+            if predicate(&snapshot) {
+                return Some(snapshot);
+            }
+            last = Some(snapshot);
+            None
+        };
         while std::time::Instant::now() < deadline {
             handle.command(SupervisorCommand::Refresh).await.unwrap();
-            match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv()).await {
-                Ok(Ok(SupervisorEvent::SessionUpdated(snapshot))) => {
-                    if snapshot.task.session_id == session_id && predicate(&snapshot) {
-                        return *snapshot;
+            // Read through to a roster on every round. Each refresh publishes
+            // at least a roster and a selection, so reading one event per
+            // refresh let the receiver fall a whole channel behind; from there
+            // every refresh evicted the event it was about to read and `recv`
+            // returned `Lagged` forever, never reaching a state the supervisor
+            // had already published.
+            loop {
+                match tokio::time::timeout(std::time::Duration::from_millis(100), events.recv())
+                    .await
+                {
+                    Ok(Ok(SupervisorEvent::SessionUpdated(snapshot))) => {
+                        if let Some(found) = check(*snapshot) {
+                            return found;
+                        }
                     }
-                }
-                Ok(Ok(SupervisorEvent::Roster(roster))) => {
-                    if let Some(snapshot) = roster.into_iter().find(|snapshot| {
-                        snapshot.task.session_id == session_id && predicate(snapshot)
-                    }) {
-                        return snapshot;
+                    Ok(Ok(SupervisorEvent::Roster(roster))) => {
+                        if let Some(found) = roster.into_iter().find_map(&mut check) {
+                            return found;
+                        }
+                        break;
                     }
+                    Ok(Ok(_)) => {}
+                    // Fallen behind: the retained history is partial, so
+                    // resubscribe (as the TUI does) and let the next refresh's
+                    // roster report the current state.
+                    Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
+                        events = handle.subscribe();
+                        break;
+                    }
+                    Ok(Err(broadcast::error::RecvError::Closed)) => {
+                        panic!("supervisor event channel closed")
+                    }
+                    Err(_) => break,
                 }
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
             }
         }
-        panic!("timed out waiting for supervisor state");
+        let last = last.map(|snapshot| {
+            format!(
+                "turn_state={:?} pending_hitl={:?} pending_question={:?} last_messages={:?}",
+                snapshot.task.turn_state,
+                snapshot.session.pending_hitl.as_ref().map(|p| &p.call_id),
+                snapshot.session.pending_question.is_some(),
+                snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .rev()
+                    .take(4)
+                    .map(|m| (m.role, m.content.chars().take(160).collect::<String>()))
+                    .collect::<Vec<_>>()
+            )
+        });
+        panic!("timed out waiting for supervisor state of {session_id}; last seen: {last:?}");
     }
 
     #[tokio::test]
