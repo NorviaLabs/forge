@@ -8,6 +8,8 @@ mod edit;
 pub mod egress;
 mod fast_file_tools;
 mod git_network;
+#[doc(hidden)]
+pub use git_network::set_egress_connect_exe;
 mod invocation;
 mod orchestration;
 mod output_filters;

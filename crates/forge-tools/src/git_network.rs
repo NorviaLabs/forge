@@ -516,8 +516,11 @@ pub(crate) async fn route_through_gateway(
         },
         proxy_keys: repo.proxy_keys().await?,
     };
-    let exe = std::env::current_exe()
-        .map_err(|e| refuse(format!("cannot locate the forge executable: {e}")))?;
+    let exe = match EGRESS_CONNECT_EXE.get() {
+        Some(exe) => exe.clone(),
+        None => std::env::current_exe()
+            .map_err(|e| refuse(format!("cannot locate the forge executable: {e}")))?,
+    };
     let exe = exe
         .to_str()
         .ok_or_else(|| refuse("the forge executable path is not UTF-8".into()))?
@@ -539,6 +542,21 @@ pub(crate) async fn route_through_gateway(
         routing,
         _scratch: scratch,
     })
+}
+
+/// The executable that provides `__egress-connect`, when it is not the
+/// running one. Only [`set_egress_connect_exe`] sets it.
+static EGRESS_CONNECT_EXE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Internal, for tests only: use `exe` instead of [`std::env::current_exe`]
+/// as the `__egress-connect` helper in git's routing. In production the
+/// running process is the forge binary and this is never called; a test
+/// binary is not, so the forge-cli end-to-end tests point it at the real
+/// `forge`. Not reachable from configuration, flags or the environment. The
+/// first call wins for the life of the process.
+#[doc(hidden)]
+pub fn set_egress_connect_exe(exe: std::path::PathBuf) {
+    let _ = EGRESS_CONNECT_EXE.set(exe);
 }
 
 fn env_value(name: &str) -> Option<String> {
