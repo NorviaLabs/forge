@@ -222,6 +222,29 @@ pub struct McpServerConfig {
     /// them (or when it's unset and every tool is admitted by default).
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
+    /// Run this server inside the same OS sandbox as the shell tool
+    /// (Seatbelt on macOS, bubblewrap on Linux): network denied except the
+    /// session egress proxy, filesystem limited to the workspace and system
+    /// paths. Opt-in (`false` by default) so existing setups keep working;
+    /// when `true` and the host cannot confine, the server is not started.
+    #[serde(default)]
+    pub sandbox: bool,
+    /// Workspace access for a sandboxed server. Ignored unless `sandbox` is
+    /// set. Defaults to `read_only`.
+    #[serde(default)]
+    pub sandbox_workspace: McpSandboxWorkspace,
+}
+
+/// How a sandboxed MCP server sees the workspace.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSandboxWorkspace {
+    /// The server may read the workspace but not change it.
+    #[default]
+    ReadOnly,
+    /// The server may read and write the workspace (`.git`/`.forge` stay
+    /// read-only, as for the shell tool).
+    ReadWrite,
 }
 
 fn default_mcp_side_effect_class() -> SideEffectClass {
@@ -242,6 +265,8 @@ impl Default for McpServerConfig {
             side_effect_class: default_mcp_side_effect_class(),
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
+            sandbox_workspace: McpSandboxWorkspace::default(),
         }
     }
 }
@@ -1568,6 +1593,77 @@ disabled_tools = ["send_message"]
             slack.disabled_tools.as_deref(),
             Some(["send_message".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn mcp_server_sandbox_fields_default_off_and_read_only() {
+        let cfg: ConfigFile = parse(
+            r#"
+[[mcp.servers]]
+id = "plain"
+command = "plain-mcp"
+
+[[mcp.servers]]
+id = "boxed"
+command = "boxed-mcp"
+sandbox = true
+
+[[mcp.servers]]
+id = "writer"
+command = "writer-mcp"
+sandbox = true
+sandbox_workspace = "read_write"
+"#,
+        );
+        let mut config = Config::default();
+        cfg.apply(&mut config, ConfigScope::Trusted);
+        let servers = &config.mcp.servers;
+        assert_eq!(servers.len(), 3);
+        assert!(!servers[0].sandbox, "sandboxing is opt-in");
+        assert_eq!(servers[0].sandbox_workspace, McpSandboxWorkspace::ReadOnly);
+        assert!(servers[1].sandbox);
+        assert_eq!(servers[1].sandbox_workspace, McpSandboxWorkspace::ReadOnly);
+        assert!(servers[2].sandbox);
+        assert_eq!(servers[2].sandbox_workspace, McpSandboxWorkspace::ReadWrite);
+        assert!(!McpServerConfig::default().sandbox);
+    }
+
+    #[test]
+    fn mcp_server_sandbox_workspace_rejects_unknown_values() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+[[mcp.servers]]
+id = "boxed"
+command = "boxed-mcp"
+sandbox = true
+sandbox_workspace = "everything"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("sandbox_workspace") || err.to_string().contains("read_only"),
+            "{err}"
+        );
+    }
+
+    /// Sandbox fields do not make `mcp.servers` acceptable from an untrusted
+    /// project layer: a sandboxed server is still a command spawned at start.
+    #[test]
+    fn untrusted_project_layer_refuses_sandboxed_mcp_servers_too() {
+        let mut cfg = Config::default();
+        parse(
+            r#"
+[[mcp.servers]]
+id = "evil"
+command = "sh"
+args = ["-c", "exfiltrate"]
+sandbox = true
+sandbox_workspace = "read_write"
+"#,
+        )
+        .apply(&mut cfg, ConfigScope::UntrustedProject);
+        assert!(cfg.mcp.servers.is_empty(), "no server may be spawned");
+        assert_eq!(cfg.refused_project_keys, ["mcp.servers"]);
     }
 
     #[test]
