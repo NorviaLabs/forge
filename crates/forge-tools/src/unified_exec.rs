@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use forge_types::{SideEffectClass, ToolOutput};
-use portable_pty::{native_pty_system, Child as PtyChild, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{native_pty_system, Child as PtyChild, MasterPty, PtySize};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -13,7 +13,7 @@ use std::sync::{mpsc, Arc, Mutex as StdMutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -442,70 +442,6 @@ async fn write_process_input(process: &mut Process, chars: &str) -> Result<(), T
     }
 }
 
-fn configure_pipe_environment(
-    command: &mut Command,
-    policy: &crate::sandbox::SandboxPolicy,
-    command_egress: Option<&crate::sandbox::EgressGrant>,
-    confined: bool,
-    identity_dir: &std::path::Path,
-) {
-    for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
-        command.env_remove(name);
-    }
-    for (name, value) in crate::sandbox::shell_env(policy) {
-        command.env(name, value);
-    }
-    if confined {
-        for name in crate::credentials::HOST_CREDENTIAL_ENV {
-            command.env_remove(name);
-        }
-        for (name, value) in crate::sandbox::egress_env(policy) {
-            command.env(name, value);
-        }
-        for (name, value) in crate::credentials::isolated_config_env(identity_dir) {
-            command.env(name, value);
-        }
-        for (name, value) in crate::credentials::host_identity_env(command_egress, identity_dir) {
-            command.env(name, value);
-        }
-        for (name, value) in policy.toolchain_env() {
-            command.env(name, value);
-        }
-    }
-}
-
-fn configure_pty_environment(
-    command: &mut CommandBuilder,
-    policy: &crate::sandbox::SandboxPolicy,
-    command_egress: Option<&crate::sandbox::EgressGrant>,
-    confined: bool,
-    identity_dir: &std::path::Path,
-) {
-    for name in crate::builtins::PROVIDER_CREDENTIAL_ENV {
-        command.env_remove(name);
-    }
-    for (name, value) in crate::sandbox::shell_env(policy) {
-        command.env(name, value);
-    }
-    if confined {
-        for name in crate::credentials::HOST_CREDENTIAL_ENV {
-            command.env_remove(name);
-        }
-        for (name, value) in crate::sandbox::egress_env(policy) {
-            command.env(name, value);
-        }
-        for (name, value) in crate::credentials::isolated_config_env(identity_dir) {
-            command.env(name, value);
-        }
-        for (name, value) in crate::credentials::host_identity_env(command_egress, identity_dir) {
-            command.env(name, value);
-        }
-        for (name, value) in policy.toolchain_env() {
-            command.env(name, value);
-        }
-    }
-}
-
 async fn start(
     sessions: &ExecSessionStore,
     ctx: &ToolContext,
@@ -517,79 +453,30 @@ async fn start(
     // itself gated — a session that starts unconfined accepts arbitrary
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
-    let requested_confined = !ctx.unconfined_shell;
-    if requested_confined {
-        if let Err(unavailable) = crate::sandbox::availability() {
-            return Err(ToolError::SandboxDenied {
-                content: args.cmd.clone(),
-                reason: unavailable.reason(),
-                denied_host: None,
-            });
-        }
-    }
-    let egress_invocation = if requested_confined {
-        crate::egress::EgressInvocation::start_labeled(
-            ctx.egress.as_deref(),
-            ctx.tool_call_id.as_deref(),
-        )
-        .await
-        .map_err(|error| {
-            ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
-        })?
-    } else {
-        None
-    };
-    let command_egress = egress_invocation
-        .as_ref()
-        .and_then(crate::egress::EgressInvocation::grant)
-        .or(ctx.egress.as_deref());
-    let mut policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root)
-        .with_command_access(&args.cmd)
-        .with_egress(command_egress);
-    if crate::credentials::needs_git_writes(&args.cmd) {
-        policy = policy.with_git_writable();
-    }
-    if let Some(session_tmp) = &ctx.session_tmp {
-        policy = policy.with_session_tmp(session_tmp.path());
-    }
-    let wrapped = requested_confined
-        .then(|| crate::sandbox::wrap_shell_command(shell, &args.cmd, &policy))
-        .flatten();
-    let confined = wrapped.is_some();
-    // A missing wrapper is allowed only for hosts where the process-wide CLI
-    // sandbox probe already refused startup. If the host can sandbox but the
-    // workspace policy could not be built, never silently downgrade.
-    if requested_confined && wrapped.is_none() && crate::sandbox::availability().is_ok() {
-        return Err(ToolError::Execution(format!(
-            "refusing to run unconfined: no sandbox could be built for workspace {}",
-            ctx.workspace_root.display()
-        )));
-    }
-    let (program, command_args) =
-        wrapped.unwrap_or_else(|| (shell.to_string(), vec!["-c".to_string(), args.cmd.clone()]));
-    let identity_dir = ctx
-        .session_tmp
-        .as_ref()
-        .map(|dir| dir.path().join("host-identity"))
-        .unwrap_or_else(|| ctx.workspace_root.join(".forge-host-identity"));
-    if confined {
-        let _ = std::fs::create_dir_all(&identity_dir);
-    }
+    let mut spec =
+        crate::shell_spawn::ShellSpawnSpec::build(crate::shell_spawn::ShellSpawnRequest {
+            mode: if args.tty {
+                crate::shell_spawn::ShellSpawnMode::Pty
+            } else {
+                crate::shell_spawn::ShellSpawnMode::Pipe
+            },
+            shell,
+            command: &args.cmd,
+            workspace_root: &ctx.workspace_root,
+            egress: ctx.egress.as_deref(),
+            session_tmp: ctx.session_tmp.as_ref().map(|dir| dir.path()),
+            confined: !ctx.unconfined_shell,
+            egress_label: ctx.tool_call_id.as_deref(),
+        })
+        .await?;
+    let confined = spec.confined();
+    let egress_invocation = spec.take_egress_invocation();
 
     let (process, pgid) = if args.tty {
         let pty = native_pty_system()
             .openpty(PTY_DEFAULT_SIZE)
             .map_err(|error| ToolError::Execution(format!("failed to open exec PTY: {error}")))?;
-        let mut command = CommandBuilder::new(&program);
-        command.args(&command_args);
-        command.cwd(&ctx.workspace_root);
-        configure_pty_environment(
-            &mut command,
-            &policy,
-            command_egress,
-            confined,
-            &identity_dir,
-        );
+        let command = spec.pty_command();
         let child = pty
             .slave
             .spawn_command(command)
@@ -638,18 +525,9 @@ async fn start(
             pgid,
         )
     } else {
-        let mut command = Command::new(&program);
-        command.args(&command_args);
-        configure_pipe_environment(
-            &mut command,
-            &policy,
-            command_egress,
-            confined,
-            &identity_dir,
-        );
+        let mut command = spec.tokio_command();
         set_process_group(&mut command);
         let mut child = command
-            .current_dir(&ctx.workspace_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
