@@ -254,9 +254,20 @@ async fn a_stale_socket_file_does_not_block_binding() {
 // The gateway: address checks, pinning, idle timeout, attribution.
 // ---------------------------------------------------------------------------
 
-use forge_tools::egress::PRIVATE_ADDRESS_DENIED_REASON;
+use forge_tools::egress::{EgressOptions, PRIVATE_ADDRESS_DENIED_REASON};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+
+async fn started_proxy_with(policy: EgressPolicy, options: EgressOptions) -> Option<EgressProxy> {
+    match EgressProxy::start_with_options(policy, options).await {
+        Ok(proxy) => Some(proxy),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipping: this host denies binding a listener");
+            None
+        }
+        Err(e) => panic!("egress proxy failed to start: {e}"),
+    }
+}
 
 /// An upstream that greets, then echoes the byte count it read before EOF
 /// by simply reading to the end and closing. Counts accepted connections.
@@ -319,4 +330,55 @@ async fn a_wildcard_grant_does_not_reach_a_private_address() {
         None,
         "an address refusal is not a host a grant could fix"
     );
+}
+
+/// A tunnel that carries nothing is closed on both sides after the idle
+/// timeout, instead of pinning sockets for the life of the session.
+#[tokio::test]
+async fn an_idle_tunnel_is_closed() {
+    let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return,
+        Err(e) => panic!("{e}"),
+    };
+    let port = listener.local_addr().unwrap().port();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        // Silent upstream: reads until the gateway closes it.
+        let mut sink = Vec::new();
+        let _ = sock.read_to_end(&mut sink).await;
+        let _ = closed_tx.send(());
+    });
+
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let options = EgressOptions {
+        idle_timeout: Duration::from_millis(200),
+        ..EgressOptions::default()
+    };
+    let Some(proxy) = started_proxy_with(policy, options).await else {
+        return;
+    };
+    let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
+    stream
+        .write_all(format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    assert!(status.contains("200"), "{status}");
+    let mut blank = String::new();
+    reader.read_line(&mut blank).await.unwrap();
+
+    let mut rest = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(5), reader.read_to_end(&mut rest))
+        .await
+        .expect("an idle tunnel must be closed on the client side");
+    assert_eq!(read.unwrap(), 0);
+    tokio::time::timeout(Duration::from_secs(5), closed_rx)
+        .await
+        .expect("an idle tunnel must be closed on the upstream side")
+        .unwrap();
 }

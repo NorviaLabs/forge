@@ -35,10 +35,11 @@ use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 /// Hosts a confined process may reach.
@@ -67,13 +68,32 @@ pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
 /// cannot fix it: the name was allowed, the address it resolved to was not.
 pub const PRIVATE_ADDRESS_DENIED_REASON: &str = "Forge Sandbox Denied: private address";
 
+/// How long the gateway waits for name resolution plus the upstream dial.
+pub const EGRESS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A tunnel that carries no bytes in either direction for this long is closed
+/// on both sides, so an abandoned connection cannot pin a socket forever.
+pub const EGRESS_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 /// Gateway behaviour that is not part of the host policy.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct EgressOptions {
+    pub connect_timeout: Duration,
+    pub idle_timeout: Duration,
     /// Permit loopback/private/link-local destinations even when the allow
     /// pattern does not name the host exactly. Off in production; exists for
     /// hermetic tests whose upstream is a loopback listener behind a name.
     pub allow_private_destinations: bool,
+}
+
+impl Default for EgressOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: EGRESS_CONNECT_TIMEOUT,
+            idle_timeout: EGRESS_IDLE_TIMEOUT,
+            allow_private_destinations: false,
+        }
+    }
 }
 
 /// Explanation attached when the proxy refused a host, even if the client
@@ -585,8 +605,11 @@ where
     // Resolve here, check every address, and dial only what was checked. A
     // second resolution by the dialler is a rebinding window: the name could
     // answer with a public address for the check and loopback for the dial.
-    let Ok(addrs) = resolve(&host, port).await else {
-        return respond(&mut write_half, 502, "Bad Gateway", "").await;
+    let deadline = tokio::time::Instant::now() + shared.options.connect_timeout;
+    let addrs = match tokio::time::timeout_at(deadline, resolve(&host, port)).await {
+        Ok(Ok(addrs)) => addrs,
+        Ok(Err(_)) => return respond(&mut write_half, 502, "Bad Gateway", "").await,
+        Err(_) => return respond(&mut write_half, 504, "Gateway Timeout", "").await,
     };
 
     if addrs.iter().any(|addr| !is_public_address(addr.ip()))
@@ -602,9 +625,13 @@ where
 
     let mut dialled = None;
     for addr in &addrs {
-        if let Ok(stream) = TcpStream::connect(addr).await {
-            dialled = Some(stream);
-            break;
+        match tokio::time::timeout_at(deadline, TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => {
+                dialled = Some(stream);
+                break;
+            }
+            Ok(Err(_)) => {}
+            Err(_) => break,
         }
     }
     let Some(upstream) = dialled else {
@@ -616,12 +643,15 @@ where
         .await?;
 
     // From here the proxy copies bytes and never sees the plaintext.
-    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
-    let client_to_upstream =
-        tokio::spawn(async move { tokio::io::copy(&mut reader, &mut upstream_write).await });
-    let upstream_to_client =
-        tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut write_half).await });
-    let _ = tokio::join!(client_to_upstream, upstream_to_client);
+    let (upstream_read, upstream_write) = tokio::io::split(upstream);
+    relay(
+        reader,
+        write_half,
+        upstream_read,
+        upstream_write,
+        shared.options.idle_timeout,
+    )
+    .await;
     Ok(())
 }
 
@@ -677,6 +707,85 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || ip.is_broadcast()
         || (a == 100 && (b & 0xc0) == 64)
         || a >= 240)
+}
+
+/// Last time either direction of a tunnel moved a byte, as nanoseconds since
+/// the tunnel opened.
+struct Activity {
+    opened: Instant,
+    last: AtomicU64,
+}
+
+impl Activity {
+    fn touch(&self) {
+        let now = self.opened.elapsed().as_nanos() as u64;
+        self.last.fetch_max(now, Ordering::Relaxed);
+    }
+
+    fn idle_for(&self) -> Duration {
+        let last = Duration::from_nanos(self.last.load(Ordering::Relaxed));
+        self.opened.elapsed().saturating_sub(last)
+    }
+}
+
+/// Copy both directions until both finish or the tunnel goes idle. Returning
+/// drops every half, which closes both sockets — that is what makes the idle
+/// timeout close the tunnel.
+async fn relay<CR, CW, UR, UW>(
+    client_read: CR,
+    client_write: CW,
+    upstream_read: UR,
+    upstream_write: UW,
+    idle_timeout: Duration,
+) where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    UR: AsyncRead + Unpin,
+    UW: AsyncWrite + Unpin,
+{
+    let activity = Activity {
+        opened: Instant::now(),
+        last: AtomicU64::new(0),
+    };
+    let watchdog = async {
+        loop {
+            let idle = activity.idle_for();
+            if idle >= idle_timeout {
+                return;
+            }
+            tokio::time::sleep(idle_timeout - idle).await;
+        }
+    };
+    tokio::select! {
+        _ = async {
+            tokio::join!(
+                pump(client_read, upstream_write, &activity),
+                pump(upstream_read, client_write, &activity),
+            )
+        } => {}
+        () = watchdog => {}
+    }
+}
+
+async fn pump<R, W>(mut from: R, mut to: W, activity: &Activity)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let read = match from.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        activity.touch();
+        if to.write_all(&buf[..read]).await.is_err() {
+            break;
+        }
+        activity.touch();
+    }
+    // Propagate the half-close so the far side sees end of stream.
+    let _ = to.shutdown().await;
 }
 
 async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> {
