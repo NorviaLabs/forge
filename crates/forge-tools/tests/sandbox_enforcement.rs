@@ -1032,6 +1032,87 @@ async fn a_granted_command_reaches_only_allowlisted_hosts() {
     }
 }
 
+/// Plain HTTP from a confined command. The sandbox already points
+/// `HTTP_PROXY` at the gateway; now that the gateway forwards absolute-form
+/// requests, `curl http://…` style traffic works through it under the same
+/// allowlist rather than failing with a 400. Driven with bash's `/dev/tcp` so
+/// it needs no client binary.
+#[tokio::test]
+async fn a_granted_command_can_send_plain_http_through_the_gateway() {
+    require_sandbox!();
+    use forge_tools::egress::{EgressPolicy, EgressProxy};
+    use forge_tools::run_shell_command_with_egress;
+    use forge_tools::sandbox::EgressGrant;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let ws = workspace();
+    let sockdir = tempfile::tempdir().unwrap();
+
+    let origin = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = origin.accept().await {
+            tokio::spawn(async move {
+                let mut reader = BufReader::new(sock);
+                let mut line = String::new();
+                while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                let _ = reader
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nPLAIN-HTTP-OK")
+                    .await;
+            });
+        }
+    });
+
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let mut proxy = EgressProxy::start(policy.clone()).await.unwrap();
+    let socket_path = sockdir.path().join("egress.sock");
+    proxy
+        .serve_on_unix_socket(&socket_path, policy)
+        .await
+        .unwrap();
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path,
+        control: Some(proxy.shared().clone()),
+    };
+
+    let get = |host: &str| {
+        [
+            r#"addr="${HTTP_PROXY#http://}"; addr="${addr%/}";"#,
+            r#"h="${addr%%:*}"; p="${addr##*:}";"#,
+            r#"exec 3<>/dev/tcp/"$h"/"$p";"#,
+            &format!(r#"printf 'GET http://{host}:{origin_port}/ HTTP/1.1\r\n\r\n' >&3;"#),
+            "cat <&3",
+        ]
+        .join(" ")
+    };
+
+    let out = run_shell_command_with_egress(&get("127.0.0.1"), ws.path(), Some(&grant))
+        .await
+        .unwrap();
+    assert!(
+        out.content.contains("200 OK") && out.content.contains("PLAIN-HTTP-OK"),
+        "plain HTTP must be forwarded from inside the sandbox: {}",
+        out.content
+    );
+
+    match run_shell_command_with_egress(&get("blocked.example"), ws.path(), Some(&grant)).await {
+        Err(forge_tools::ToolError::SandboxDenied { denied_host, .. }) => {
+            assert_eq!(denied_host.as_deref(), Some("blocked.example"));
+        }
+        other => panic!("a denied plain-HTTP host must be a host denial: {other:?}"),
+    }
+}
+
 /// A client can deliberately swallow a proxy refusal (`|| true` is common in
 /// probes). The proxy observed the denied CONNECT even though Bash exits zero,
 /// so that invocation must still request the host grant. Its denied host must

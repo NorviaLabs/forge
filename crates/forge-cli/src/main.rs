@@ -1,5 +1,7 @@
 //! Forge CLI — launches the full-screen TUI by default.
 
+mod egress_connect;
+
 use std::{io::Read, path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
@@ -84,6 +86,17 @@ enum Command {
 }
 
 fn main() {
+    // Internal helpers run before clap so they stay out of `--help` and
+    // skip the logging and runtime setup the TUI needs.
+    let mut args = std::env::args_os().skip(1);
+    if args
+        .next()
+        .is_some_and(|arg| arg == egress_connect::SUBCOMMAND)
+    {
+        let rest: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(egress_connect::run(&rest));
+    }
+
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()

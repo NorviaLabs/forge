@@ -541,7 +541,7 @@ async fn start(
     };
     let command_egress = egress_invocation
         .as_ref()
-        .map(crate::egress::EgressInvocation::grant)
+        .and_then(crate::egress::EgressInvocation::grant)
         .or(ctx.egress.as_deref());
     let mut policy = crate::sandbox::SandboxPolicy::for_workspace(&ctx.workspace_root)
         .with_command_access(&args.cmd)
