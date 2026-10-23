@@ -19,6 +19,10 @@ pub(crate) struct TurnState {
     failed_unconfined_call_shapes: HashSet<String>,
     pub(crate) approved_retry_calls: HashMap<String, ToolCall>,
     pub(crate) retry_requests: HashMap<String, ToolCall>,
+    /// Original (unredacted) calls paused on a policy or host-grant approval,
+    /// keyed by call id. The HITL payload only carries redacted arguments for
+    /// display, so approval must execute this copy instead.
+    pub(crate) pending_hitl_calls: HashMap<String, ToolCall>,
 }
 
 impl TurnState {
@@ -32,6 +36,7 @@ impl TurnState {
             failed_unconfined_call_shapes: HashSet::new(),
             approved_retry_calls: HashMap::new(),
             retry_requests: HashMap::new(),
+            pending_hitl_calls: HashMap::new(),
         }
     }
 
@@ -44,6 +49,7 @@ impl TurnState {
         self.failed_unconfined_call_shapes.clear();
         self.approved_retry_calls.clear();
         self.retry_requests.clear();
+        self.pending_hitl_calls.clear();
     }
 
     pub(crate) fn calls(&self) -> &[ToolCall] {

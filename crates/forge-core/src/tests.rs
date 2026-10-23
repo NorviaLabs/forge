@@ -3122,6 +3122,103 @@ impl forge_tools::Tool for SandboxProbeTool {
     }
 }
 
+/// Records the arguments it was executed with.
+struct ArgsProbeTool {
+    seen: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl forge_tools::Tool for ArgsProbeTool {
+    fn name(&self) -> &str {
+        "args_probe"
+    }
+
+    fn description(&self) -> &str {
+        "record the arguments it ran with"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        *self.seen.lock().unwrap() = Some(args);
+        Ok(ToolOutput::success("args probe ran"))
+    }
+}
+
+async fn session_paused_on_args_probe(
+    dir: &std::path::Path,
+    seen: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+) -> AgentSession {
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(ArgsProbeTool { seen }));
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "secret-call".into(),
+                name: "args_probe".into(),
+                arguments: json!({"api_key": "sk-live-123", "repo": "forge"}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir), model, tools)
+        .await
+        .unwrap();
+    s.set_governance(Governance::default().require_hitl_for_tool("args_probe"));
+    s.set_workspace_trusted(true);
+    s.run_user_message("go").await.unwrap();
+    let payload = s.pending_hitl().expect("policy HITL prompt");
+    assert_eq!(payload.args_redacted["api_key"], "[REDACTED]");
+    s
+}
+
+#[tokio::test]
+async fn approved_hitl_call_executes_the_original_unredacted_arguments() {
+    let dir = tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut s = session_paused_on_args_probe(dir.path(), seen.clone()).await;
+
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        Some(json!({"api_key": "sk-live-123", "repo": "forge"})),
+        "approval must execute the original call, not the redacted display copy"
+    );
+    assert!(s.turn.pending_hitl_calls.is_empty());
+}
+
+#[tokio::test]
+async fn approval_without_original_arguments_never_runs_the_redacted_copy() {
+    let dir = tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut s = session_paused_on_args_probe(dir.path(), seen.clone()).await;
+    s.turn.reset(); // Resume reconstructs turn-local state as empty.
+
+    assert!(s.prepare_approved_hitl("test").await.is_err());
+    assert!(seen.lock().unwrap().is_none());
+    s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
+    assert!(s.pending_hitl().is_none());
+}
+
 #[tokio::test]
 async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
     let dir = tempdir().unwrap();

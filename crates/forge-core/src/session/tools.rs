@@ -880,6 +880,9 @@ impl AgentSession {
             let decision = self.authorize_tool_call(&call, class);
             match decision {
                 PolicyDecision::Hitl => {
+                    self.turn
+                        .pending_hitl_calls
+                        .insert(call.id.clone(), call.clone());
                     let payload = HitlPayload {
                         call_id: call.id.clone(),
                         tool: call.name.clone(),
@@ -1427,6 +1430,7 @@ impl AgentSession {
         // still verify succeeded.
         self.turn.retire_resolved_hitl_call(&call);
         self.turn.approved_retry_calls.remove(&call.id);
+        self.turn.pending_hitl_calls.remove(&call.id);
         let result_call = self
             .turn
             .retry_requests
@@ -1490,6 +1494,10 @@ impl AgentSession {
         if denied_host.is_none() {
             self.turn
                 .approved_retry_calls
+                .insert(call.id.clone(), call.clone());
+        } else {
+            self.turn
+                .pending_hitl_calls
                 .insert(call.id.clone(), call.clone());
         }
         let payload = HitlPayload {
