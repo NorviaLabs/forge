@@ -118,6 +118,18 @@ impl ToolContext {
         }
     }
 
+    /// A per-call egress gateway for a tool that opens its own connections
+    /// (in-process, or a host process it spawns), attributed to this call.
+    ///
+    /// `Ok(None)` when the session has no egress grant: the caller keeps its
+    /// direct behaviour. An `Err` means a grant exists but its endpoint could
+    /// not be started; callers should fail the call rather than fall back to
+    /// a direct connection the policy never saw.
+    pub async fn gateway_for_call(&self) -> std::io::Result<Option<crate::egress::CallGateway>> {
+        crate::egress::CallGateway::start(self.egress.as_deref(), self.tool_call_id.as_deref())
+            .await
+    }
+
     /// Attribute work done under this context to the tool call `id`.
     pub fn with_tool_call_id(mut self, id: impl Into<Arc<str>>) -> Self {
         self.tool_call_id = Some(id.into());
