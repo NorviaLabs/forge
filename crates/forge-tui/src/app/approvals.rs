@@ -444,11 +444,12 @@ impl TuiApp {
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
+        // Approve-all never covers leaving the sandbox, so it is not offered
+        // here: this prompt is answered for this one command only.
         if payload.sandbox_escalation {
             return vec![
                 ApprovalMenuKind::Deny,
                 ApprovalMenuKind::AllowOnce,
-                ApprovalMenuKind::ApproveAll,
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
@@ -496,7 +497,7 @@ impl TuiApp {
                             },
                             detail: Some(pattern.clone()),
                             help: Some(if kind == ApprovalMenuKind::ApproveAll {
-                                "Approves future review prompts for this session. Policy denies remain enforced; filesystem and network access may be unconfined.".into()
+                                "Approves review prompts and network host requests for this session. The sandbox stays on; running a command outside it still asks.".into()
                             } else {
                                 "The sandbox stays on. You will be asked again next session.".into()
                             }),
@@ -545,7 +546,7 @@ impl TuiApp {
                 ApprovalMenuKind::ApproveAll => crate::conversation::ApprovalMenuRow {
                     label: "Trust all commands for this session".into(),
                     detail: None,
-                    help: Some("Approves future review prompts for this session. Policy denies remain enforced; filesystem and network access may be unconfined.".into()),
+                    help: Some("Approves review prompts and network host requests for this session. The sandbox stays on; running a command outside it still asks.".into()),
                     key: Some(kind.shortcut().into()),
                 },
                 // The pattern goes in the label, not only in the elided detail

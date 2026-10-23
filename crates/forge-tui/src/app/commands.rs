@@ -927,10 +927,16 @@ impl TuiApp {
             }) {
                 return;
             }
-            if on && self.selected_pending_hitl().is_some() {
+            // A pending sandbox escalation is not covered by approve-all and
+            // keeps waiting for its own answer.
+            if let Some(payload) = self
+                .selected_pending_hitl()
+                .filter(|payload| on && !payload.sandbox_escalation)
+                .cloned()
+            {
                 self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
                     session_id: self.selected_session_id,
-                    expected_call_id: None,
+                    expected_call_id: Some(payload.call_id),
                     decision: forge_types::HitlDecision::Approve,
                     actor: "tui-approve-all".into(),
                     feedback: None,
@@ -943,7 +949,11 @@ impl TuiApp {
             let trusted = forge_config::is_trusted(self.session_view.workspace_root());
             self.session_runtime.set_workspace_trusted(trusted);
             self.session_runtime.set_approve_all(on);
-            if let Some(payload) = self.selected_pending_hitl().filter(|_| on).cloned() {
+            if let Some(payload) = self
+                .selected_pending_hitl()
+                .filter(|payload| on && !payload.sandbox_escalation)
+                .cloned()
+            {
                 self.pending_interaction.request_hitl_decision(
                     HitlDecision::Approve,
                     ApprovalGrant::Once,
@@ -960,7 +970,7 @@ impl TuiApp {
     pub(super) fn handle_approve_all_command(&mut self) {
         if self.approve_all {
             self.set_approve_all(false);
-            self.set_feedback(FeedbackSeverity::Ok, "approve-all off · sandbox restored");
+            self.set_feedback(FeedbackSeverity::Ok, "approve-all off · prompts restored");
             return;
         }
         let workspace = self.session_view.workspace_root().to_path_buf();
@@ -976,7 +986,7 @@ impl TuiApp {
             session_id: self.selected_session_id.to_string(),
             label: self.selected_session_label(),
             detail:
-                "approvals auto-approved · filesystem and network unconfined · this session only"
+                "approvals and network hosts auto-approved · sandbox stays on · this session only"
                     .into(),
         });
         self.status_state.message = "confirm approve-all".into();

@@ -492,6 +492,34 @@ impl AgentSession {
                     execution.result = Err(ToolError::Execution(format!(
                             "command still failed after an approved unconfined attempt; not requesting sandbox approval again: {content}"
                         )));
+                } else if let Some(host) = denied_host
+                    .as_deref()
+                    .filter(|_| self.approve_all && !parallel)
+                    .filter(|_| self.turn.take_host_auto_grant(&call.id))
+                {
+                    // Approve-all answers a host prompt the way "Allow for this
+                    // session" would: grant the host, then re-run the same call
+                    // still confined. Once per call, so a grant that does not
+                    // help falls through to an ordinary prompt below.
+                    let pattern = forge_tools::egress::suggest_host_pattern(host);
+                    self.grant_egress_host(&pattern);
+                    self.events.push(TurnEvent {
+                        kind: "egress_grant".into(),
+                        detail: pattern,
+                    });
+                    let budget = std::mem::take(&mut execution.budget);
+                    return Ok(ModelResponseApplication::Execute(Box::new(
+                        PendingToolApplication {
+                            executions: vec![PendingToolExecution {
+                                call,
+                                tools: self.tools.clone(),
+                                tool_ctx: self.tool_ctx.clone(),
+                                budget,
+                                prepared: None,
+                            }],
+                            remaining: pending,
+                        },
+                    )));
                 } else {
                     if !parallel {
                         pending.budget = execution.budget;
@@ -950,11 +978,9 @@ impl AgentSession {
             PendingToolExecution {
                 call: call.clone(),
                 tools: self.tools.clone(),
-                tool_ctx: if self.approve_all {
-                    self.tool_ctx.clone().with_unconfined_shell()
-                } else {
-                    self.tool_ctx.clone()
-                },
+                // Approve-all never widens the sandbox: shell stays confined,
+                // and leaving it is a separate per-command approval.
+                tool_ctx: self.tool_ctx.clone(),
                 budget: std::mem::take(budget),
                 prepared: validated
                     .then(|| self.tools.prepare_call(&call.name, call.arguments.clone()))

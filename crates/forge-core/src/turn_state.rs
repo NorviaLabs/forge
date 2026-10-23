@@ -23,6 +23,8 @@ pub(crate) struct TurnState {
     /// keyed by call id. The HITL payload only carries redacted arguments for
     /// display, so approval must execute this copy instead.
     pub(crate) pending_hitl_calls: HashMap<String, ToolCall>,
+    /// Call ids approve-all already granted a denied host for and re-ran.
+    host_auto_granted_calls: HashSet<String>,
 }
 
 impl TurnState {
@@ -37,6 +39,7 @@ impl TurnState {
             approved_retry_calls: HashMap::new(),
             retry_requests: HashMap::new(),
             pending_hitl_calls: HashMap::new(),
+            host_auto_granted_calls: HashSet::new(),
         }
     }
 
@@ -50,6 +53,13 @@ impl TurnState {
         self.approved_retry_calls.clear();
         self.retry_requests.clear();
         self.pending_hitl_calls.clear();
+        self.host_auto_granted_calls.clear();
+    }
+
+    /// Claim approve-all's single automatic host grant for `call_id`. True the
+    /// first time per call this turn, false afterwards.
+    pub(crate) fn take_host_auto_grant(&mut self, call_id: &str) -> bool {
+        self.host_auto_granted_calls.insert(call_id.to_string())
     }
 
     pub(crate) fn calls(&self) -> &[ToolCall] {

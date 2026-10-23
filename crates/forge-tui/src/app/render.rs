@@ -652,7 +652,7 @@ impl TuiApp {
             frame.render_widget(
                 ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
                     ratatui::text::Span::styled(
-                        "⚠ SANDBOX OFF · approvals, filesystem and network unconfined · this session only · /approve-all to re-enable",
+                        "⚠ APPROVE-ALL ON · prompts and network hosts auto-approved · sandbox still on · this session only · /approve-all to turn off",
                         theme::danger(),
                     ),
                 ))

@@ -302,8 +302,8 @@ pub enum SessionConfirmKind {
     Cleanup,
     /// Explicit second confirmation to discard dirty worktree contents.
     CleanupDirty,
-    /// Enables approve-all: confirms that the sandbox goes off for the
-    /// session before the first auto-approval can happen.
+    /// Enables approve-all: confirms that prompts will be auto-approved for
+    /// the session before the first auto-approval can happen.
     ApproveAll,
 }
 

@@ -133,8 +133,9 @@ pub struct AgentSession {
     enable_context: bool,
     enable_gov: bool,
     /// Per-session "approve-all" mode. When on, every `Hitl` governance
-    /// decision is auto-approved and shell tools run unconfined (no
-    /// filesystem/network sandbox). Never persisted; defaults off.
+    /// decision is auto-approved and a sandbox-denied host is granted for the
+    /// session. Shell stays confined: running outside the sandbox is still a
+    /// per-command prompt. Never persisted; defaults off.
     approve_all: bool,
     /// Whether this session's workspace is trusted. The owner sets this from
     /// the trust store at assembly; `set_approve_all` refuses to enable

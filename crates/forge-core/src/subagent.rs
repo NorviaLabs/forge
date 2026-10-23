@@ -150,7 +150,6 @@ impl AgentSession {
                 let mut ctx = ToolContext::new(workspace)
                     .with_session_id(session_id)
                     .with_session_tmp(session_tmp);
-                ctx.unconfined_shell = self.approve_all;
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx
             },
@@ -262,7 +261,6 @@ impl AgentSession {
                 let mut ctx = ToolContext::new(workspace)
                     .with_session_id(session_id)
                     .with_session_tmp(session_tmp);
-                ctx.unconfined_shell = self.approve_all;
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx
             },
