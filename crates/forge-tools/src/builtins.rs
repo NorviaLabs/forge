@@ -27,12 +27,12 @@ pub(crate) fn schema_for<T: JsonSchema>() -> Value {
 /// descendant reachable. No-op off unix, where `kill_on_drop` stays the
 /// fallback.
 #[cfg(unix)]
-pub(crate) fn set_process_group(command: &mut Command) {
+pub fn set_process_group(command: &mut Command) {
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-pub(crate) fn set_process_group(_command: &mut Command) {}
+pub fn set_process_group(_command: &mut Command) {}
 
 /// Signal an entire process group with `SIGKILL`. `pgid` is the group leader's
 /// pid (`process_group(0)` and `setsid` both make the child's pid its pgid).
@@ -64,13 +64,13 @@ pub(crate) fn kill_process_group(_pgid: i32) {}
 /// future reaps grandchildren, not just the direct child. For a process whose
 /// lifetime is handed to a store that will kill it explicitly later, `disarm`
 /// transfers that responsibility.
-pub(crate) struct ProcessGroupGuard {
+pub struct ProcessGroupGuard {
     pgid: i32,
     armed: bool,
 }
 
 impl ProcessGroupGuard {
-    pub(crate) fn new(pgid: Option<i32>) -> Self {
+    pub fn new(pgid: Option<i32>) -> Self {
         Self {
             pgid: pgid.unwrap_or(0),
             armed: pgid.is_some_and(|pid| pid > 0),
@@ -78,7 +78,7 @@ impl ProcessGroupGuard {
     }
 
     /// Kill the group now and stop the drop from killing it again.
-    pub(crate) fn kill(&mut self) {
+    pub fn kill(&mut self) {
         if self.armed {
             self.armed = false;
             kill_process_group(self.pgid);
@@ -86,7 +86,7 @@ impl ProcessGroupGuard {
     }
 
     /// Hand the group to another owner; this guard no longer kills on drop.
-    pub(crate) fn disarm(&mut self) {
+    pub fn disarm(&mut self) {
         self.armed = false;
     }
 }

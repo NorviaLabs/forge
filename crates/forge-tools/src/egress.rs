@@ -351,7 +351,11 @@ pub struct EgressShared {
 }
 
 impl EgressShared {
-    pub(crate) fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
+    /// Fresh live state: `policy`, an empty refusal queue and an empty event
+    /// log. A caller that needs several listeners (the session proxy and the
+    /// MCP servers' endpoints) on one state builds it once and starts each
+    /// listener from it, so a grant reaches all of them at once.
+    pub fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),
@@ -451,6 +455,17 @@ impl EgressShared {
             .allow_patterns()
             .iter()
             .any(|pattern| pattern == &host)
+    }
+
+    /// Replace the host policy in place. Every listener on this state (and
+    /// every invocation endpoint derived from it) enforces the new policy on
+    /// its next CONNECT; grants made with [`Self::grant_host`] are discarded
+    /// with the old policy. The event log is kept.
+    pub fn replace_policy(&self, policy: EgressPolicy) {
+        *self
+            .policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
     }
 
     /// Permit `pattern` for the rest of this proxy's life.
@@ -562,7 +577,9 @@ impl EgressProxy {
         Self::start_with_shared(EgressShared::new(policy, options)).await
     }
 
-    async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
+    /// Serve `shared` — an existing live state — on a new loopback listener.
+    /// Grants, refusals and events are those of `shared`, not a copy.
+    pub async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let addr = listener.local_addr()?;
 
@@ -708,6 +725,14 @@ impl EgressInvocation {
         let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
             return Ok(None);
         };
+        Self::start_for_shared(shared, label).await.map(Some)
+    }
+
+    /// A sandbox mode endpoint (loopback TCP plus a Unix socket) on the live
+    /// state `shared`: its policy, grants and event log, with a refusal queue
+    /// of its own and every connection attributed to `label`. For a confined
+    /// process that is not a shell call, such as a long-lived MCP server.
+    pub async fn start_for_shared(shared: &EgressShared, label: Option<&str>) -> io::Result<Self> {
         let mut proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket_path =
@@ -718,10 +743,10 @@ impl EgressInvocation {
             socket_path,
             control: Some(proxy.shared().clone()),
         };
-        Ok(Some(Self {
+        Ok(Self {
             proxy,
             grant: Some(grant),
-        }))
+        })
     }
 
     /// A TCP-only endpoint (`127.0.0.1`, ephemeral port) for a caller that

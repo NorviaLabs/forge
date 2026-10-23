@@ -463,9 +463,10 @@ impl AgentSession {
         self.egress.as_ref().map(|runtime| runtime.tcp_addr())
     }
 
-    /// Take the egress connection events recorded so far this session.
-    /// Events from before an `apply_egress_policy` replacement are discarded
-    /// with the runtime that recorded them.
+    /// Take the egress connection events recorded so far this session,
+    /// including those of MCP servers sharing the session's egress state.
+    /// Events from before an [`Self::adopt_egress_state`] are discarded with
+    /// the state that recorded them.
     pub fn drain_egress_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
         self.egress
             .as_ref()
@@ -492,15 +493,37 @@ impl AgentSession {
         self.governance = g;
     }
 
-    /// Replace the session proxy with one that enforces `policy`.
+    /// Enforce `policy` on the session gateway.
     ///
-    /// The previous runtime is dropped first so the session-id socket is
-    /// free before the new listener binds. Called from session open after
-    /// personal `host(...)` rules are loaded.
+    /// The policy is replaced in place on the live state, so the socket, the
+    /// event log and every endpoint sharing the state — notably sandboxed MCP
+    /// servers started before the session — follow it from their next
+    /// CONNECT. Hosts granted at a prompt are discarded with the old policy.
+    /// Only when no gateway is running is a new one started. Called from
+    /// session open after personal `host(...)` rules are loaded.
     pub async fn apply_egress_policy(&mut self, policy: forge_tools::egress::EgressPolicy) {
+        if let Some(runtime) = &self.egress {
+            runtime.replace_policy(policy);
+            return;
+        }
+        let runtime = crate::permission::start_egress(self.session_id, policy).await;
+        self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
+        self.egress = runtime;
+    }
+
+    /// Serve `shared` — live egress state built before the session, which
+    /// MCP servers already route through — as this session's gateway, so a
+    /// host granted for the session reaches those servers too and their
+    /// connections land in this session's event log.
+    ///
+    /// The previous gateway is dropped first so the session-id socket is
+    /// free before the new listener binds; its events are discarded. When
+    /// the new gateway cannot start the session has no network, and the
+    /// MCP servers keep their own endpoints on `shared`.
+    pub async fn adopt_egress_state(&mut self, shared: forge_tools::egress::EgressShared) {
         self.egress = None;
         self.tool_ctx.egress = None;
-        let runtime = crate::permission::start_egress(self.session_id, policy).await;
+        let runtime = crate::permission::start_egress_with_shared(self.session_id, shared).await;
         self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
         self.egress = runtime;
     }

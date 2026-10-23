@@ -28,6 +28,7 @@ pub use builtins::{
     ReadFileTool, ShellOutputCapture, ShellOutputSnapshot, UpdatePlanTool, WriteFileTool,
     PROVIDER_CREDENTIAL_ENV,
 };
+pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
 pub use orchestration::{
