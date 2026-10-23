@@ -571,6 +571,45 @@ impl SandboxPolicy {
         env
     }
 
+    /// Permit reading (and mapping executables from) the directory tree at
+    /// `path`, for a caller-chosen location outside the default profile — an
+    /// MCP server's install directory or a package-manager cache.
+    ///
+    /// Refused (`Err` with the reason) when `path` is relative, is a broad
+    /// root (`/`, `/home`, `/Users`, `/root`), or is the home directory or
+    /// one of its ancestors: those would expose `~/.ssh` and every other
+    /// secret under `$HOME`, which must stay unreadable. A path that does
+    /// not exist is accepted and contributes nothing.
+    pub fn with_read_path(self, path: &Path) -> Result<Self, String> {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        self.with_read_path_under_home(path, home.as_deref())
+    }
+
+    fn with_read_path_under_home(
+        mut self,
+        path: &Path,
+        home: Option<&Path>,
+    ) -> Result<Self, String> {
+        if !path.is_absolute() {
+            return Err(format!("`{}` is not an absolute path", path.display()));
+        }
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if is_unscoped_runtime_root(path) || is_unscoped_runtime_root(&canonical) {
+            return Err(format!("`{}` is too broad to expose", path.display()));
+        }
+        if let Some(home) = home.filter(|home| home.is_absolute()) {
+            let canonical_home = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+            if home.starts_with(path) || canonical_home.starts_with(&canonical) {
+                return Err(format!(
+                    "`{}` would expose the whole home directory",
+                    path.display()
+                ));
+            }
+        }
+        add_existing_path(&mut self.toolchain_read_paths, path.to_path_buf());
+        Ok(self)
+    }
+
     /// Permit writes under `.git` for this spawn only. `.git/hooks` stays
     /// read-only regardless — see [`Self::readonly_subpaths_of`].
     ///
@@ -1425,6 +1464,64 @@ fn masked_home_root(path: &Path) -> Option<&'static Path> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_paths_refuse_home_and_its_ancestors_but_accept_subdirectories() {
+        let home = tempfile::tempdir().unwrap();
+        let cache = home.path().join(".npm");
+        std::fs::create_dir_all(&cache).unwrap();
+        let policy = || SandboxPolicy::for_workspace(home.path().join("ws"));
+
+        let accepted = policy()
+            .with_read_path_under_home(&cache, Some(home.path()))
+            .unwrap();
+        assert!(accepted.toolchain_read_paths.contains(&cache));
+
+        for refused in [
+            home.path().to_path_buf(),
+            home.path().parent().unwrap().to_path_buf(),
+            PathBuf::from("/"),
+            PathBuf::from("relative/dir"),
+        ] {
+            assert!(
+                policy()
+                    .with_read_path_under_home(&refused, Some(home.path()))
+                    .is_err(),
+                "{} must be refused",
+                refused.display()
+            );
+        }
+
+        let missing = policy()
+            .with_read_path_under_home(&home.path().join("missing"), Some(home.path()))
+            .unwrap();
+        assert!(missing.toolchain_read_paths.is_empty());
+    }
+
+    #[test]
+    fn a_read_path_is_readable_in_the_seatbelt_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().join("extra");
+        let workspace = dir.path().join("ws");
+        std::fs::create_dir_all(&extra).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let profile = seatbelt_profile(
+            &SandboxPolicy::for_workspace(&workspace)
+                .with_read_path_under_home(&extra, None)
+                .unwrap(),
+        )
+        .unwrap();
+        let canonical = extra.canonicalize().unwrap();
+        assert!(
+            primary_file_read_rule(&profile)
+                .contains(&format!("(subpath \"{}\")", canonical.display())),
+            "{profile}"
+        );
+        assert!(
+            !primary_file_write_rule(&profile).contains(&canonical.display().to_string()),
+            "a read path must not become writable: {profile}"
+        );
+    }
 
     /// A real directory, because the profile canonicalises and a path that
     /// does not exist cannot be resolved.

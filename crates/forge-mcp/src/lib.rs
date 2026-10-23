@@ -1,7 +1,7 @@
 //! MCP protocol (protocol-mcp.md) — CORE-02 Phase 1.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -234,6 +234,28 @@ async fn sandboxed_launch(
     if cfg.sandbox_workspace == McpSandboxWorkspace::ReadOnly {
         policy = policy.with_read_only_workspace();
     }
+    // The server's own install directory: a command given as a path, and a
+    // first argument naming a script file (`node /opt/srv/index.js`). Skipped
+    // (not fatal) when it would expose the whole home directory.
+    for dir in server_install_dirs(cfg, workspace) {
+        policy = match policy.clone().with_read_path(&dir) {
+            Ok(policy) => policy,
+            Err(reason) => {
+                warn!(server = %cfg.id, %reason, "not exposing the MCP server's directory");
+                policy
+            }
+        };
+    }
+    // Explicitly configured read paths fail closed: a path the user asked for
+    // that cannot be granted safely is a configuration error, not a silent
+    // narrowing.
+    for path in &cfg.sandbox_read_paths {
+        policy = policy.with_read_path(path).map_err(|reason| {
+            McpError::Sandbox(format!(
+                "sandbox_read_paths: {reason}; refusing to start the server"
+            ))
+        })?;
+    }
     let (program, args) =
         sandbox::wrap_command(&cfg.command, &cfg.args, &policy).ok_or_else(|| {
             McpError::Sandbox(
@@ -256,6 +278,38 @@ async fn sandboxed_launch(
         egress,
         tmp,
     })
+}
+
+/// Directories holding the server itself: the command's directory when the
+/// command is a path, and the first argument's directory when it names an
+/// existing file by path. Relative paths resolve against the workspace (the
+/// server's working directory).
+fn server_install_dirs(cfg: &McpServerConfig, workspace: &Path) -> Vec<PathBuf> {
+    let resolve = |raw: &str| -> Option<PathBuf> {
+        if !raw.contains('/') {
+            return None;
+        }
+        let path = Path::new(raw);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        let path = path.canonicalize().ok()?;
+        path.is_file()
+            .then(|| path.parent().map(Path::to_path_buf))?
+    };
+    let mut dirs = Vec::new();
+    let script = cfg.args.first().filter(|arg| !arg.starts_with('-'));
+    for dir in std::iter::once(cfg.command.as_str())
+        .chain(script.map(String::as_str))
+        .filter_map(resolve)
+    {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
 }
 
 /// Egress state with nothing allowed, for a client spawned on its own.
@@ -1624,6 +1678,109 @@ done
             !Path::new(&tmpdir).exists(),
             "the temp dir is removed on drop"
         );
+    }
+
+    /// A sandboxed server reads its own install directory and a configured
+    /// `sandbox_read_paths` directory, but not a sibling directory outside
+    /// them — the rest of a home tree stays denied.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_reads_configured_paths_but_not_the_rest_of_home() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let allowed = home.path().join(".npm");
+        let secret = home.path().join(".ssh");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(allowed.join("cached"), "cache").unwrap();
+        std::fs::write(secret.join("id_ed25519"), "key").unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let server = fixture_server_running();
+        std::fs::write(server.path().join("server-data"), "own").unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "cat '{}/cached' >/dev/null 2>&1 && echo cache=read || echo cache=denied\n\
+                 cat '{}/id_ed25519' >/dev/null 2>&1 && echo secret=read || echo secret=denied\n\
+                 cat '{}/server-data' >/dev/null 2>&1 && echo own=read || echo own=denied\n",
+                allowed.display(),
+                secret.display(),
+                server.path().display()
+            ),
+        );
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+        cfg.sandbox_read_paths = vec![allowed.clone()];
+
+        let client =
+            McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+                .await
+                .unwrap();
+        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(report.contains("cache=read"), "{report}");
+        assert!(report.contains("own=read"), "{report}");
+        assert!(report.contains("secret=denied"), "{report}");
+    }
+
+    /// A configured read path that would expose the home directory refuses
+    /// the server rather than starting it with a narrower or wider profile.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandbox_read_paths_covering_home_refuse_the_server() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let workspace = tempfile::tempdir().unwrap();
+        let server = fixture_server();
+        let mut cfg = fixture_cfg(&server);
+        cfg.sandbox = true;
+        cfg.sandbox_read_paths = vec![home];
+        match McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+            .await
+        {
+            Err(McpError::Sandbox(message)) => {
+                assert!(message.contains("sandbox_read_paths"), "{message}")
+            }
+            Ok(_) => panic!("a read path exposing $HOME must refuse the server"),
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_install_dirs_cover_a_path_command_and_a_script_argument() {
+        let workspace = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let command = bin.path().join("server");
+        std::fs::write(&command, "").unwrap();
+        std::fs::create_dir_all(workspace.path().join("srv")).unwrap();
+        std::fs::write(workspace.path().join("srv/index.js"), "").unwrap();
+        let cfg = McpServerConfig {
+            command: command.to_string_lossy().into_owned(),
+            args: vec!["srv/index.js".into(), "--flag".into()],
+            ..Default::default()
+        };
+        let dirs = server_install_dirs(&cfg, workspace.path());
+        assert_eq!(
+            dirs,
+            vec![
+                bin.path().canonicalize().unwrap(),
+                workspace.path().join("srv").canonicalize().unwrap(),
+            ]
+        );
+
+        let bare = McpServerConfig {
+            command: "node".into(),
+            args: vec!["--stdio".into()],
+            ..Default::default()
+        };
+        assert!(server_install_dirs(&bare, workspace.path()).is_empty());
     }
 
     #[tokio::test]
