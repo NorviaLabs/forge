@@ -1226,6 +1226,7 @@ dependencies = [
  "portable-pty",
  "predicates",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing-subscriber",
 ]
