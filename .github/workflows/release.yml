@@ -83,8 +83,14 @@ jobs:
       # Must match CI's install step. The sandbox enforcement suite panics
       # rather than skips when CI is set and nothing can confine, so without
       # these every tagged release fails at this gate.
+      # GitHub-hosted Ubuntu 24.04 restricts unprivileged user namespaces via
+      # AppArmor, which stops bubblewrap from creating the sandbox's network
+      # namespace ("bwrap: loopback: Failed RTM_NEWADDR"). Lift it on the
+      # runner so the real sandbox is exercised.
       - name: Install sandbox dependencies
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: cargo fmt --all -- --check
       - run: cargo test --workspace --all-targets --locked --no-fail-fast
 

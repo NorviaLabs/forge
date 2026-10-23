@@ -27,8 +27,14 @@ jobs:
       # stay green while testing nothing — which is the failure mode worth
       # spending an apt-get on. `sandbox_is_available_on_linux_in_ci` asserts
       # they are present, so removing this step breaks the build loudly.
+      # GitHub-hosted Ubuntu 24.04 restricts unprivileged user namespaces via
+      # AppArmor, which stops bubblewrap from creating the sandbox's network
+      # namespace ("bwrap: loopback: Failed RTM_NEWADDR"). Lift it on the
+      # runner so the real sandbox is exercised.
       - name: Install sandbox dependencies
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # The installer is what puts bubblewrap and socat on a user's machine, so
       # a regression there costs every new Linux user the sandbox silently.
       - name: Test the installer
