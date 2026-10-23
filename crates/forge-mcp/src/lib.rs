@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use forge_config::{McpSandboxWorkspace, McpServerConfig};
 use forge_tools::egress::{EgressInvocation, EgressOptions, EgressPolicy, EgressShared};
 use forge_tools::sandbox::{self, SandboxPolicy};
-use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
+use forge_tools::{ProcessGroupGuard, Tool, ToolContext, ToolError, ToolRegistry};
 use forge_types::{
     SideEffectClass, ToolDescriptor, ToolOutput, MCP_TOOL_NAME_PREFIX, SEARCH_TOOLS_TOOL_NAME,
 };
@@ -101,6 +101,10 @@ pub fn register_static_mcp(
 
 /// Minimal stdio JSON-RPC MCP client (tools/list + tools/call).
 pub struct McpStdioClient {
+    /// Kills the server's whole process group — the server and anything it
+    /// forked — when the client is dropped. Declared first so it runs before
+    /// the temp directory below is removed.
+    _process_group: ProcessGroupGuard,
     #[allow(dead_code)]
     child: Child,
     /// The sandboxed server's only route out, kept alive as long as the
@@ -146,6 +150,10 @@ async fn spawn_retrying_text_file_busy(
             // execs the server in place) or `bwrap` (run with
             // `--die-with-parent`), so the kill reaches the server either way.
             .kill_on_drop(true);
+        // Its own process group, so the client's drop can kill everything
+        // the server forked (`npx` → `node`, a shell → its children), not
+        // only the direct child `kill_on_drop` reaches.
+        forge_tools::set_process_group(&mut child_command);
         if let Some(current_dir) = current_dir {
             child_command.current_dir(current_dir);
         }
@@ -377,6 +385,7 @@ impl McpStdioClient {
             .take()
             .ok_or_else(|| McpError::Protocol("missing stdout".into()))?;
         let client = Self {
+            _process_group: ProcessGroupGuard::new(child.id().map(|pid| pid as i32)),
             child,
             _egress: egress,
             _tmp: tmp,
@@ -1781,6 +1790,77 @@ done
             ..Default::default()
         };
         assert!(server_install_dirs(&bare, workspace.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: &str) -> bool {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Wait up to 5s for `pid` to go away. A killed process whose parent
+    /// died is briefly a zombie until init reaps it, hence the polling.
+    #[cfg(unix)]
+    async fn process_gone(pid: &str) -> bool {
+        for _ in 0..100 {
+            if !process_alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// A grandchild the server forked is killed with the server when the
+    /// client is dropped — sandboxed or not.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn dropping_the_client_kills_the_servers_grandchildren() {
+        for sandboxed in [false, true] {
+            if sandboxed && forge_tools::sandbox::availability().is_err() {
+                continue;
+            }
+            let workspace = tempfile::tempdir().unwrap();
+            let probe = write_probe(
+                workspace.path(),
+                "/bin/sleep 300 >/dev/null 2>&1 &\necho grandchild=$!\n",
+            );
+            let server = fixture_server_running();
+            let mut cfg = fixture_cfg(&server);
+            cfg.args = vec![probe];
+            cfg.sandbox = sandboxed;
+
+            let client = McpStdioClient::spawn_with_workspace(
+                &cfg,
+                Some(workspace.path()),
+                &deny_all_egress(),
+            )
+            .await
+            .unwrap();
+            let report = client.call_tool("probe", json!({})).await.unwrap().content;
+            let pid = report
+                .split("grandchild=")
+                .nth(1)
+                .map(|rest| {
+                    rest.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                })
+                .filter(|pid| !pid.is_empty())
+                .unwrap_or_else(|| panic!("no grandchild pid: {report}"));
+            assert!(
+                process_alive(&pid),
+                "grandchild {pid} should be running before the drop"
+            );
+            drop(client);
+            assert!(
+                process_gone(&pid).await,
+                "grandchild {pid} survived the client (sandboxed={sandboxed})"
+            );
+        }
     }
 
     #[tokio::test]
