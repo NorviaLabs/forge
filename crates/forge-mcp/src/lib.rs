@@ -1,12 +1,15 @@
 //! MCP protocol (protocol-mcp.md) — CORE-02 Phase 1.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use forge_config::McpServerConfig;
+use forge_config::{McpSandboxWorkspace, McpServerConfig};
+use forge_tools::egress::{EgressPolicy, EgressProxy};
+use forge_tools::sandbox::{self, EgressGrant, SandboxPolicy};
 use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
 use forge_types::{
     SideEffectClass, ToolDescriptor, ToolOutput, MCP_TOOL_NAME_PREFIX, SEARCH_TOOLS_TOOL_NAME,
@@ -35,6 +38,10 @@ pub enum McpError {
     Timeout(&'static str),
     #[error("server `{0}` not found")]
     NotFound(String),
+    /// `sandbox = true` was requested but the server could not be confined.
+    /// The server is not started: it never falls back to running unconfined.
+    #[error("sandbox: {0}")]
+    Sandbox(String),
 }
 
 /// In-process MCP-like tool source for tests (no real subprocess).
@@ -97,6 +104,10 @@ pub fn register_static_mcp(
 pub struct McpStdioClient {
     #[allow(dead_code)]
     child: Child,
+    /// The sandboxed server's only route out, kept alive as long as the
+    /// server is. `None` for an unsandboxed server, or a sandboxed one whose
+    /// proxy could not start (it then has no network at all).
+    _egress: Option<EgressProxy>,
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     next_id: Mutex<u64>,
@@ -113,16 +124,26 @@ async fn spawn_retrying_text_file_busy(
     command: &str,
     args: &[String],
     current_dir: Option<&Path>,
+    extra_env: &[(String, String)],
 ) -> Result<Child, std::io::Error> {
     const ETXTBSY: i32 = 26;
     const MAX_ATTEMPTS: u32 = 5;
     for attempt in 1..=MAX_ATTEMPTS {
         let mut child_command = Command::new(command);
+        // The environment is inherited in full — servers commonly need API
+        // keys from it. `extra_env` only *adds* (the egress proxy variables
+        // for a sandboxed server).
         child_command
             .args(args)
+            .envs(extra_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            // A server must not outlive the client that owns it. For a
+            // sandboxed server the direct child is `sandbox-exec` (which
+            // execs the server in place) or `bwrap` (run with
+            // `--die-with-parent`), so the kill reaches the server either way.
+            .kill_on_drop(true);
         if let Some(current_dir) = current_dir {
             child_command.current_dir(current_dir);
         }
@@ -137,9 +158,100 @@ async fn spawn_retrying_text_file_busy(
     unreachable!("loop always returns by the final attempt")
 }
 
+/// What to spawn for a sandboxed server, plus the proxy that must outlive it.
+struct SandboxedLaunch {
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    egress: Option<EgressProxy>,
+}
+
+static NEXT_MCP_EGRESS_SOCKET: AtomicU64 = AtomicU64::new(1);
+
+/// Short and outside the workspace: Linux caps `sun_path` at 108 bytes, and a
+/// socket inside the workspace could be replaced by the confined server.
+fn mcp_egress_socket_path() -> PathBuf {
+    let sequence = NEXT_MCP_EGRESS_SOCKET.fetch_add(1, Ordering::Relaxed);
+    Path::new("/tmp").join(format!("fmcp{}-{sequence}.sock", std::process::id()))
+}
+
+/// Start the per-server egress proxy. `None` (with a warning) when it cannot
+/// start — the server then runs with no network at all, the safe direction.
+///
+/// The proxy enforces `policy`, the same personal `host(...)` allowlist the
+/// session proxy loads at open. It is a separate listener rather than the
+/// session's own: the session proxy is replaced when its policy is applied,
+/// and a long-lived server needs an endpoint that stays put. Consequence for
+/// now: a host granted for *this session only* through HITL does not reach
+/// MCP traffic, and a CONNECT to a host the allowlist does not permit simply
+/// fails (403 from the proxy). Prompting for MCP host grants is future work.
+async fn start_mcp_egress(policy: &EgressPolicy) -> Option<(EgressProxy, EgressGrant)> {
+    let mut proxy = match EgressProxy::start(policy.clone()).await {
+        Ok(proxy) => proxy,
+        Err(err) => {
+            warn!(%err, "MCP egress proxy failed to start; sandboxed server gets no network");
+            return None;
+        }
+    };
+    let socket_path = mcp_egress_socket_path();
+    if let Err(err) = proxy
+        .serve_on_unix_socket(&socket_path, policy.clone())
+        .await
+    {
+        warn!(%err, "MCP egress socket failed to bind; sandboxed server gets no network");
+        return None;
+    }
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path,
+        control: Some(proxy.shared().clone()),
+    };
+    Some((proxy, grant))
+}
+
+/// Build the confined launch for `cfg`. Fails closed: if the host cannot
+/// confine, or the profile cannot be expressed, the server is not started.
+async fn sandboxed_launch(
+    cfg: &McpServerConfig,
+    workspace: &Path,
+    egress_policy: &EgressPolicy,
+) -> Result<SandboxedLaunch, McpError> {
+    sandbox::availability().map_err(|unavailable| {
+        McpError::Sandbox(format!(
+            "`sandbox = true` but {}; refusing to start the server unconfined",
+            unavailable.reason()
+        ))
+    })?;
+    let egress = start_mcp_egress(egress_policy).await;
+    // Same profile as the shell tool: read access to the workspace, system
+    // paths and the resolved server executable; network denied except the
+    // egress proxy.
+    let mut policy = SandboxPolicy::for_workspace(workspace)
+        .with_command_access(&cfg.command)
+        .with_egress(egress.as_ref().map(|(_, grant)| grant));
+    if cfg.sandbox_workspace == McpSandboxWorkspace::ReadOnly {
+        policy = policy.with_read_only_workspace();
+    }
+    let (program, args) =
+        sandbox::wrap_command(&cfg.command, &cfg.args, &policy).ok_or_else(|| {
+            McpError::Sandbox(
+                "`sandbox = true` but the sandbox profile could not be built for this server \
+             (unresolvable workspace, or the egress relay `socat` is missing on Linux); \
+             refusing to start the server unconfined"
+                    .into(),
+            )
+        })?;
+    Ok(SandboxedLaunch {
+        program,
+        args,
+        env: sandbox::egress_env(&policy),
+        egress: egress.map(|(proxy, _)| proxy),
+    })
+}
+
 impl McpStdioClient {
     pub async fn spawn(cfg: &McpServerConfig) -> Result<Self, McpError> {
-        Self::spawn_with_workspace(cfg, None).await
+        Self::spawn_with_workspace(cfg, None, &EgressPolicy::new()).await
     }
 
     /// Spawn an MCP server with its process working directory bound to the
@@ -148,12 +260,15 @@ impl McpStdioClient {
         cfg: &McpServerConfig,
         workspace: &Path,
     ) -> Result<Self, McpError> {
-        Self::spawn_with_workspace(cfg, Some(workspace)).await
+        Self::spawn_with_workspace(cfg, Some(workspace), &EgressPolicy::new()).await
     }
 
+    /// `egress_policy` is the host allowlist a sandboxed server's proxy
+    /// enforces; it is unused for an unsandboxed server.
     async fn spawn_with_workspace(
         cfg: &McpServerConfig,
         workspace: Option<&Path>,
+        egress_policy: &EgressPolicy,
     ) -> Result<Self, McpError> {
         if cfg.transport != "stdio" {
             return Err(McpError::Protocol(format!(
@@ -161,7 +276,23 @@ impl McpStdioClient {
                 cfg.transport
             )));
         }
-        let mut child = spawn_retrying_text_file_busy(&cfg.command, &cfg.args, workspace).await?;
+        let (program, args, extra_env, egress) = if cfg.sandbox {
+            let workspace = match workspace {
+                Some(workspace) => workspace.to_path_buf(),
+                None => std::env::current_dir()?,
+            };
+            let SandboxedLaunch {
+                program,
+                args,
+                env,
+                egress,
+            } = sandboxed_launch(cfg, &workspace, egress_policy).await?;
+            (program, args, env, egress)
+        } else {
+            (cfg.command.clone(), cfg.args.clone(), Vec::new(), None)
+        };
+        let mut child =
+            spawn_retrying_text_file_busy(&program, &args, workspace, &extra_env).await?;
         let stdin = child
             .stdin
             .take()
@@ -172,6 +303,7 @@ impl McpStdioClient {
             .ok_or_else(|| McpError::Protocol("missing stdout".into()))?;
         let client = Self {
             child,
+            _egress: egress,
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
             next_id: Mutex::new(1),
@@ -405,6 +537,7 @@ pub struct McpManager {
     clients: HashMap<String, Arc<McpStdioClient>>,
     side_effect_classes: HashMap<String, SideEffectClass>,
     tool_filters: HashMap<String, ToolFilter>,
+    egress_policy: EgressPolicy,
 }
 
 impl McpManager {
@@ -413,7 +546,15 @@ impl McpManager {
             clients: HashMap::new(),
             side_effect_classes: HashMap::new(),
             tool_filters: HashMap::new(),
+            egress_policy: EgressPolicy::new(),
         }
+    }
+
+    /// Host allowlist enforced on outbound traffic from servers configured
+    /// with `sandbox = true`. Defaults to empty (every host denied).
+    pub fn with_egress_policy(mut self, policy: EgressPolicy) -> Self {
+        self.egress_policy = policy;
+        self
     }
 
     pub async fn connect_all(&mut self, servers: &[McpServerConfig]) -> Vec<String> {
@@ -438,7 +579,7 @@ impl McpManager {
     ) -> Vec<String> {
         let mut errors = Vec::new();
         for s in servers {
-            match McpStdioClient::spawn_with_workspace(s, workspace).await {
+            match McpStdioClient::spawn_with_workspace(s, workspace, &self.egress_policy).await {
                 Ok(c) => {
                     self.clients.insert(s.id.clone(), Arc::new(c));
                     self.side_effect_classes
@@ -699,6 +840,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         }
     }
 
@@ -942,6 +1084,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
 
@@ -974,6 +1117,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
         let (first, second) = tokio::join!(
@@ -994,6 +1138,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
         match McpStdioClient::spawn(&cfg).await {
             Err(McpError::Protocol(message)) => {
@@ -1020,6 +1165,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
 
         let mut manager = McpManager::new();
@@ -1056,6 +1202,7 @@ done
                 side_effect_class: SideEffectClass::Exec,
                 enabled_tools: None,
                 disabled_tools: None,
+                ..Default::default()
             }])
             .await;
         assert_eq!(errors.len(), 1);
@@ -1101,6 +1248,140 @@ done
             std::fs::read_to_string(cwd_b).unwrap().trim(),
             workspace_b.path().canonicalize().unwrap().to_string_lossy()
         );
+    }
+
+    /// A server whose `probe` tool tries to open a direct TCP connection to
+    /// `127.0.0.1:$1` and to create the file `$2`, then reports what worked.
+    #[cfg(unix)]
+    fn fixture_server_probe() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+port="$1"
+target="$2"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/call"'*)
+      if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then net=open; else net=denied; fi
+      if (: > "$target") 2>/dev/null; then write=ok; else write=denied; fi
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"net=$net write=$write proxy=${HTTPS_PROXY:-none}\"}]}}"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// Run the probe server once with `sandbox`/`workspace_mode` and return
+    /// its report, whether the host listener saw a connection, and whether
+    /// the target file exists afterwards. `Err` carries a spawn error.
+    #[cfg(unix)]
+    async fn run_probe(
+        sandbox: bool,
+        workspace_mode: McpSandboxWorkspace,
+    ) -> Result<(String, bool, bool), McpError> {
+        let server = fixture_server_probe();
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("written-by-mcp");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![port.to_string(), target.to_string_lossy().into_owned()];
+        cfg.sandbox = sandbox;
+        cfg.sandbox_workspace = workspace_mode;
+
+        let client = McpStdioClient::spawn_with_workspace(
+            &cfg,
+            Some(workspace.path()),
+            &EgressPolicy::new(),
+        )
+        .await?;
+        let report = client.call_tool("probe", json!({})).await?.content;
+        let connected = timeout(Duration::from_millis(200), listener.accept())
+            .await
+            .is_ok();
+        Ok((report, connected, target.exists()))
+    }
+
+    /// Control: unsandboxed, the same probe reaches the host listener and
+    /// writes the workspace — so the sandboxed assertions below cannot pass
+    /// vacuously because the probe itself is broken.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn unsandboxed_probe_reaches_the_network_and_writes_the_workspace() {
+        let (report, connected, written) = run_probe(false, McpSandboxWorkspace::ReadOnly)
+            .await
+            .unwrap();
+        assert!(report.contains("net=open"), "{report}");
+        assert!(report.contains("write=ok"), "{report}");
+        assert!(report.contains("proxy=none"), "{report}");
+        assert!(connected);
+        assert!(written);
+    }
+
+    /// A sandboxed server cannot open a direct outbound socket and cannot
+    /// write a read-only workspace. Where the host cannot confine, the server
+    /// must not start at all (fail closed), never start unconfined.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_cannot_reach_the_network_or_write_a_read_only_workspace() {
+        match run_probe(true, McpSandboxWorkspace::ReadOnly).await {
+            Ok((report, connected, written)) => {
+                assert!(
+                    forge_tools::sandbox::availability().is_ok(),
+                    "a sandboxed server started on a host that cannot confine: {report}"
+                );
+                assert!(report.contains("net=denied"), "{report}");
+                assert!(!connected, "the host listener must see no connection");
+                assert!(report.contains("write=denied"), "{report}");
+                assert!(!written, "a read-only workspace must not be written");
+                assert!(
+                    report.contains("proxy=http://127.0.0.1:"),
+                    "the egress proxy must be advertised: {report}"
+                );
+            }
+            Err(McpError::Sandbox(message)) => {
+                assert!(
+                    forge_tools::sandbox::availability().is_err(),
+                    "sandbox is available yet spawn refused: {message}"
+                );
+                assert!(message.contains("refusing to start"), "{message}");
+            }
+            Err(other) => panic!("unexpected spawn error: {other:?}"),
+        }
+    }
+
+    /// `read_write` lets a sandboxed server write the workspace — the network
+    /// stays denied.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_with_read_write_workspace_can_write_it() {
+        if forge_tools::sandbox::availability().is_err() {
+            return; // covered by the fail-closed branch above
+        }
+        let (report, connected, written) = run_probe(true, McpSandboxWorkspace::ReadWrite)
+            .await
+            .unwrap();
+        assert!(report.contains("write=ok"), "{report}");
+        assert!(written);
+        assert!(report.contains("net=denied"), "{report}");
+        assert!(!connected);
     }
 
     #[tokio::test]

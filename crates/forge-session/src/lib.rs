@@ -154,7 +154,11 @@ async fn open_session_with_model(
 
     let mut notices = cfg.refused_key_notices();
     if !cfg.mcp.servers.is_empty() {
-        let mut mgr = McpManager::new();
+        // Servers with `sandbox = true` route egress through their own proxy
+        // enforcing the same personal `host(...)` allowlist as the session.
+        let mut mgr = McpManager::new().with_egress_policy(
+            forge_core::egress_policy_for_workspace(cfg.workspace_root()),
+        );
         let errors = mgr
             .connect_all_in_workspace(&cfg.mcp.servers, cfg.workspace_root())
             .await;
