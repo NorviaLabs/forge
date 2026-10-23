@@ -1146,6 +1146,14 @@ impl TuiApp {
             return Ok(());
         };
         Box::pin(self.session_runtime.finish_hitl_execution(completed)).await?;
+        if self.session_runtime.pending_hitl().is_some() {
+            // The approved call raised a follow-up approval (a host the
+            // gateway refused it); the turn stays paused on that one.
+            self.busy_state.stop();
+            self.set_feedback(FeedbackSeverity::Warn, "awaiting human approval");
+            self.enter_chat_composer();
+            return Ok(());
+        }
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
         Ok(())

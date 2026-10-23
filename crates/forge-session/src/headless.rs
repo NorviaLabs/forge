@@ -74,13 +74,20 @@ async fn run_headless_in(
     // Hosts approve-all already granted this turn. A grant that did not help
     // is not repeated; the second denial of the same host is refused.
     let mut granted_hosts = std::collections::HashSet::new();
+    let mut response = None;
     for _ in 0..MAX_APPROVAL_ROUNDS {
-        let response = session
-            .run_agent_turns(None)
-            .await
-            .map_err(|error| anyhow::anyhow!(error))?;
+        // An approved call can raise a follow-up approval itself (a host the
+        // gateway refused it); answer that one before running the turn on.
+        if response.is_none() || session.pending_hitl().is_none() {
+            response = Some(
+                session
+                    .run_agent_turns(None)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?,
+            );
+        }
         let Some(payload) = session.pending_hitl().cloned() else {
-            return Ok(response);
+            return Ok(response.expect("the turn ran this round"));
         };
 
         let decision = match policy {
@@ -284,6 +291,23 @@ mod tests {
         assert_eq!(result, "ran confined");
         assert!(!ran_unconfined, "a host grant must keep the call sandboxed");
         assert_eq!(final_text, "done");
+    }
+
+    /// A gated call approved once, then refused a host by the gateway, raises
+    /// the host prompt from inside the approval; approve-all answers it
+    /// without running the turn on in between, and the grant re-runs the call.
+    #[tokio::test]
+    async fn approve_all_answers_a_host_prompt_raised_by_an_approved_call() {
+        let ran_unconfined = Arc::new(AtomicBool::new(false));
+        let (mut session, _dir) =
+            sandboxed_session(Some("api.github.com"), ran_unconfined.clone()).await;
+        session.set_governance(Governance::default().require_hitl_for_tool("sandboxed"));
+        let response = run_headless_in(&mut session, "go", ApprovalPolicy::ApproveAll)
+            .await
+            .unwrap();
+        assert_eq!(tool_result(&session), "ran confined");
+        assert!(!ran_unconfined.load(Ordering::SeqCst));
+        assert_eq!(response.text, "done");
     }
 
     #[tokio::test]

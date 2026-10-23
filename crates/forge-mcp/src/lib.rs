@@ -110,7 +110,7 @@ pub struct McpStdioClient {
     /// The sandboxed server's only route out, kept alive as long as the
     /// server is. `None` for an unsandboxed server, or a sandboxed one whose
     /// endpoint could not start (it then has no network at all).
-    _egress: Option<EgressInvocation>,
+    egress: Option<EgressInvocation>,
     /// A sandboxed server's private writable temp directory (its `TMPDIR`),
     /// removed when the client is dropped. `None` for an unsandboxed server.
     _tmp: Option<tempfile::TempDir>,
@@ -387,7 +387,7 @@ impl McpStdioClient {
         let client = Self {
             _process_group: ProcessGroupGuard::new(child.id().map(|pid| pid as i32)),
             child,
-            _egress: egress,
+            egress,
             _tmp: tmp,
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
@@ -519,28 +519,129 @@ impl McpStdioClient {
     }
 
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolOutput, McpError> {
-        let result = self
-            .request("tools/call", json!({ "name": name, "arguments": args }))
-            .await?;
-        let is_error = result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let content = result
-            .get("content")
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| result.to_string());
-        Ok(ToolOutput {
-            outcome: Default::default(),
-            content,
-            is_error,
-            exit_code: None,
-            attachments: Vec::new(),
-        })
+        self.call_tool_attributed(name, args, None).await.result
+    }
+
+    /// Run one `tools/call` and report the hosts the server's egress endpoint
+    /// refused while it was in flight. While the call runs, the endpoint's
+    /// connections are attributed to `call_id` (when given) instead of
+    /// `mcp:<server>`, so they correlate with the call in the audit trail.
+    ///
+    /// The window is the request lock: requests to one server are strictly
+    /// sequential (one request on the wire at a time; overlapping calls,
+    /// such as a subagent's on a shared registry, queue), so a refusal
+    /// recorded inside it happened while this call was the only one in
+    /// flight. The limit is a server that opens connections on its own,
+    /// outside any request (a background refresh): one that lands inside a
+    /// call's window is attributed to that call, and one between calls is
+    /// cleared at the next call's start.
+    pub async fn call_tool_attributed(
+        &self,
+        name: &str,
+        args: Value,
+        call_id: Option<&str>,
+    ) -> McpCallOutcome {
+        let _request_guard = self.request_lock.lock().await;
+        if let Some(egress) = &self.egress {
+            // Refusals from before this call (startup, a previous call's
+            // stragglers) are not this call's to report.
+            let _ = egress.take_denied_host();
+            egress.set_call_label(call_id);
+        }
+        let result = match timeout(
+            MCP_IO_TIMEOUT,
+            self.request_inner("tools/call", json!({ "name": name, "arguments": args })),
+        )
+        .await
+        {
+            Ok(result) => result.map(call_output),
+            Err(_) => Err(McpError::Timeout("request")),
+        };
+        let denied_hosts = match &self.egress {
+            Some(egress) => {
+                egress.set_call_label(None);
+                let denied = egress.denied_hosts();
+                let _ = egress.take_denied_host();
+                denied
+            }
+            None => Vec::new(),
+        };
+        McpCallOutcome {
+            result,
+            denied_hosts,
+        }
     }
 
     pub fn server_id(&self) -> &str {
         &self.server_id
+    }
+}
+
+/// One `tools/call` and the egress refusals made while it ran.
+#[derive(Debug)]
+pub struct McpCallOutcome {
+    pub result: Result<ToolOutput, McpError>,
+    /// Hosts the server's egress endpoint refused during the call, oldest
+    /// first. Always empty for an unsandboxed server.
+    pub denied_hosts: Vec<String>,
+}
+
+impl McpCallOutcome {
+    /// The tool result forge-core sees. A call that failed (an MCP error or
+    /// a result flagged `isError`) after the gateway refused a host becomes
+    /// [`ToolError::SandboxDenied`] naming that host, so the session raises
+    /// the host-grant prompt and, on a grant, re-runs the call. A call that
+    /// succeeded anyway is returned unchanged: the server tolerated the
+    /// refusal, and prompting for a host it did not need would be noise.
+    pub fn into_tool_result(self, server_id: &str) -> Result<ToolOutput, ToolError> {
+        let Some(host) = self.denied_hosts.first().cloned() else {
+            return self.result.map_err(|e| ToolError::Execution(e.to_string()));
+        };
+        let content = match self.result {
+            Ok(output) if !output.is_error => {
+                warn!(
+                    server = %server_id,
+                    hosts = ?self.denied_hosts,
+                    "MCP server's egress was refused, but the call succeeded"
+                );
+                return Ok(output);
+            }
+            Ok(output) => output.content,
+            Err(error) => error.to_string(),
+        };
+        let reason = format!(
+            "blocked by the sandbox: MCP server `{server_id}` tried to reach {host}, \
+             which the personal host(...) network permissions do not allow."
+        );
+        let mut reported = content;
+        if !reported.is_empty() {
+            reported.push('\n');
+        }
+        reported.push_str(&reason);
+        Err(ToolError::SandboxDenied {
+            content: reported,
+            reason,
+            denied_host: Some(host),
+        })
+    }
+}
+
+/// A `tools/call` result as a tool output; `isError` marks a failed call.
+fn call_output(result: Value) -> ToolOutput {
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let content = result
+        .get("content")
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| result.to_string());
+    ToolOutput {
+        outcome: Default::default(),
+        content,
+        is_error,
+        exit_code: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -576,11 +677,11 @@ impl Tool for RemoteMcpTool {
     fn side_effect_class(&self) -> SideEffectClass {
         self.side_effect_class
     }
-    async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         self.client
-            .call_tool(&self.remote_name, args)
+            .call_tool_attributed(&self.remote_name, args, ctx.tool_call_id.as_deref())
             .await
-            .map_err(|e| ToolError::Execution(e.to_string()))
+            .into_tool_result(self.client.server_id())
     }
 }
 
@@ -1602,6 +1703,156 @@ done
             events.iter().any(|e| !e.allowed()),
             "the refusal before the grant must be logged: {events:?}"
         );
+    }
+
+    /// A server whose `fetch` tool runs the probe and flags the call failed
+    /// unless the probe reports `status=200`, and whose `tolerant` tool runs
+    /// the same probe but always reports success.
+    #[cfg(unix)]
+    fn fixture_server_flags_failures() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+probe="$1"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"tools\":[{\"name\":\"fetch\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"tolerant\",\"inputSchema\":{\"type\":\"object\"}}]}}"
+      ;;
+    *'"method":"tools/call"'*)
+      out=$(/bin/bash "$probe" 2>/dev/null | tr -d '"\\\n')
+      failed=false
+      case "$line" in
+        *'"name":"fetch"'*) case "$out" in *status=200*) ;; *) failed=true ;; esac ;;
+      esac
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}],"isError":%s}}\n' "$id" "$out" "$failed"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// A failed call during which the gateway refused a host is reported as
+    /// a host denial naming that host (what makes forge-core prompt for a
+    /// grant); a call that succeeded despite a refusal is returned as is.
+    /// Connections made during a call carry its call id.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_refused_host_during_a_failed_call_is_a_host_denial() {
+        if forge_tools::sandbox::availability().is_err() {
+            return; // covered by the fail-closed test above
+        }
+        let upstream = local_upstream().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "/usr/bin/curl -q -s -o /dev/null -w 'status=%{{http_code}}' --max-time 5 \
+                 --proxy \"$HTTP_PROXY\" http://127.0.0.1:{upstream}/\n"
+            ),
+        );
+        let server = fixture_server_flags_failures();
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+
+        let session = deny_all_egress();
+        let mut manager = McpManager::new().with_egress_shared(session.clone());
+        assert!(manager
+            .connect_all_in_workspace(&[cfg], workspace.path())
+            .await
+            .is_empty());
+        let mut registry = ToolRegistry::new();
+        manager.register_into(&mut registry).await.unwrap();
+        let fetch = registry.get("mcp:fixture:fetch").unwrap();
+        let tolerant = registry.get("mcp:fixture:tolerant").unwrap();
+        let ctx = |id: &str| ToolContext::new(workspace.path().to_path_buf()).with_tool_call_id(id);
+
+        let denied = fetch.call(&ctx("call-1"), json!({})).await;
+        let Err(ToolError::SandboxDenied {
+            content,
+            reason,
+            denied_host,
+        }) = denied
+        else {
+            panic!("a refused host must surface as a host denial: {denied:?}");
+        };
+        assert_eq!(denied_host.as_deref(), Some("127.0.0.1"));
+        assert!(content.contains("status=403"), "{content}");
+        assert!(reason.contains("MCP server `fixture`"), "{reason}");
+        assert!(reason.contains("127.0.0.1"), "{reason}");
+
+        let tolerated = tolerant.call(&ctx("call-2"), json!({})).await.unwrap();
+        assert!(!tolerated.is_error);
+        assert!(tolerated.content.contains("status=403"), "{tolerated:?}");
+
+        session.grant_host("127.0.0.1");
+        let granted = fetch.call(&ctx("call-3"), json!({})).await.unwrap();
+        assert!(!granted.is_error, "{granted:?}");
+        assert!(granted.content.contains("status=200"), "{granted:?}");
+
+        let events = session.drain_events();
+        let labelled = |label: &str| {
+            events
+                .iter()
+                .filter(|e| e.label.as_deref() == Some(label))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            labelled("call-1").iter().all(|e| !e.allowed()) && !labelled("call-1").is_empty(),
+            "{events:?}"
+        );
+        assert!(!labelled("call-2").is_empty(), "{events:?}");
+        assert!(labelled("call-3").iter().any(|e| e.allowed()), "{events:?}");
+    }
+
+    #[test]
+    fn a_call_outcome_without_refusals_is_the_plain_result() {
+        let ok = McpCallOutcome {
+            result: Ok(ToolOutput::success("fine")),
+            denied_hosts: Vec::new(),
+        };
+        assert_eq!(ok.into_tool_result("s").unwrap().content, "fine");
+        let failed = McpCallOutcome {
+            result: Err(McpError::Protocol("boom".into())),
+            denied_hosts: Vec::new(),
+        };
+        assert!(matches!(
+            failed.into_tool_result("s"),
+            Err(ToolError::Execution(message)) if message.contains("boom")
+        ));
+    }
+
+    #[test]
+    fn a_protocol_error_after_a_refusal_is_a_host_denial() {
+        let outcome = McpCallOutcome {
+            result: Err(McpError::Protocol("upstream 403".into())),
+            denied_hosts: vec!["api.example.com".into(), "other.example".into()],
+        };
+        let Err(ToolError::SandboxDenied {
+            content,
+            denied_host,
+            ..
+        }) = outcome.into_tool_result("s")
+        else {
+            panic!("expected a host denial");
+        };
+        assert_eq!(denied_host.as_deref(), Some("api.example.com"));
+        assert!(content.contains("upstream 403"), "{content}");
     }
 
     /// Replacing the session policy in place (what the session does when it

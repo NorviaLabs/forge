@@ -348,6 +348,10 @@ pub struct EgressShared {
     events: Arc<Mutex<EgressEventLog>>,
     options: EgressOptions,
     label: Option<Arc<str>>,
+    /// Attribution that overrides `label` while it is set: a long-lived
+    /// endpoint (an MCP server's) names the tool call in flight, so its
+    /// connections correlate with that call rather than only the server.
+    call_label: Arc<Mutex<Option<Arc<str>>>>,
 }
 
 impl EgressShared {
@@ -363,6 +367,7 @@ impl EgressShared {
             events: Arc::new(Mutex::new(EgressEventLog::default())),
             options,
             label: None,
+            call_label: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -378,12 +383,33 @@ impl EgressShared {
             events: Arc::clone(&self.events),
             options: self.options,
             label: label.map(Arc::from),
+            call_label: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// The attribution label connections through this endpoint carry.
+    /// The attribution label connections through this endpoint carry when
+    /// no call label is set.
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
+    }
+
+    /// Attribute connections opened from now on to `label` (a tool call id)
+    /// instead of [`Self::label`]; `None` restores the endpoint's own label.
+    pub fn set_call_label(&self, label: Option<&str>) {
+        *self
+            .call_label
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = label.map(Arc::from);
+    }
+
+    /// The label a connection opened now is recorded under.
+    fn attribution(&self) -> Option<String> {
+        self.call_label
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_deref()
+            .or(self.label.as_deref())
+            .map(str::to_string)
     }
 
     /// Take every recorded connection event, oldest first.
@@ -790,6 +816,12 @@ impl EgressInvocation {
     pub fn label(&self) -> Option<&str> {
         self.proxy.shared().label()
     }
+
+    /// Attribute this endpoint's connections to `label` until it is cleared
+    /// with `None`. See [`EgressShared::set_call_label`].
+    pub fn set_call_label(&self, label: Option<&str>) {
+        self.proxy.shared().set_call_label(label);
+    }
 }
 
 /// The gateway endpoint for one in-process or host-side tool call.
@@ -961,6 +993,7 @@ where
     };
     let attempt = Attempt {
         shared: &shared,
+        label: shared.attribution(),
         host: &host,
         port,
         started,
@@ -1028,6 +1061,9 @@ where
 /// One destination decision, attributed and timed from the client's arrival.
 struct Attempt<'a> {
     shared: &'a EgressShared,
+    /// Captured when the client arrives, so a tunnel that outlives a call
+    /// label is still recorded under the call that opened it.
+    label: Option<String>,
     host: &'a str,
     port: u16,
     started: Instant,
@@ -1036,7 +1072,7 @@ struct Attempt<'a> {
 impl Attempt<'_> {
     fn record(&self, outcome: EgressOutcome, upstream: Option<SocketAddr>, up: u64, down: u64) {
         self.shared.record_event(EgressEvent {
-            label: self.shared.label().map(str::to_string),
+            label: self.label.clone(),
             host: self.host.to_string(),
             port: self.port,
             outcome,

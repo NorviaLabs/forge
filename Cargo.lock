@@ -1284,6 +1284,7 @@ dependencies = [
  "forge-context",
  "forge-durable",
  "forge-governance",
+ "forge-mcp",
  "forge-model",
  "forge-storage",
  "forge-tools",
