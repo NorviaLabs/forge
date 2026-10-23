@@ -498,6 +498,10 @@ pub struct SandboxPolicy {
     /// The host Rustup state needed by a selected Rust toolchain. It is never
     /// made writable by the sandbox.
     rustup_home: Option<PathBuf>,
+    /// Whether the workspace root is writable. True for every shell spawn;
+    /// a long-lived MCP server can opt into a read-only workspace through
+    /// [`Self::with_read_only_workspace`].
+    workspace_writable: bool,
 }
 
 impl SandboxPolicy {
@@ -515,7 +519,20 @@ impl SandboxPolicy {
             toolchain_read_paths: Vec::new(),
             toolchain_executable_paths: Vec::new(),
             rustup_home: None,
+            workspace_writable: true,
         }
+    }
+
+    /// Mount the workspace read-only: the process can read it but cannot
+    /// create, modify or delete anything under it. A granted session scratch
+    /// directory stays writable.
+    pub fn with_read_only_workspace(mut self) -> Self {
+        self.workspace_writable = false;
+        self
+    }
+
+    pub fn workspace_writable(&self) -> bool {
+        self.workspace_writable
     }
 
     /// Add the read-only runtime paths selected from the host environment and
@@ -982,22 +999,34 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         ));
     }
 
-    // Writable: the workspace, and a session scratch directory if one was
-    // granted. Nothing else — in particular not all of `$TMPDIR`.
-    profile.push_str(&format!("(allow file-write* (subpath \"{root}\")"));
+    // Writable: the workspace (unless the policy mounts it read-only), and a
+    // session scratch directory if one was granted. Nothing else — in
+    // particular not all of `$TMPDIR`.
+    let mut writable = Vec::new();
+    if policy.workspace_writable {
+        writable.push(format!(" (subpath \"{root}\")"));
+    }
     if let Some(tmp) = &policy.session_tmp {
         let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
-        profile.push_str(&format!(" (subpath \"{tmp}\")"));
+        writable.push(format!(" (subpath \"{tmp}\")"));
     }
     // Linked-worktree metadata is always readable for repository discovery,
     // but only writable for commands that explicitly opt into Git writes.
-    if policy.git_writable {
+    if policy.git_writable && policy.workspace_writable {
         for path in &policy.linked_git_dirs {
             let path = sbpl_literal(path)?;
-            profile.push_str(&format!(" (subpath \"{path}\")"));
+            writable.push(format!(" (subpath \"{path}\")"));
         }
     }
-    profile.push_str(")\n");
+    // An `(allow file-write*)` with no filter would allow *every* write, so a
+    // policy with nothing writable must emit no allow rule at all.
+    if !writable.is_empty() {
+        profile.push_str("(allow file-write*");
+        for filter in writable {
+            profile.push_str(&filter);
+        }
+        profile.push_str(")\n");
+    }
 
     #[cfg(target_os = "macos")]
     if policy.session_tmp.is_some() {
@@ -1081,6 +1110,43 @@ pub fn wrap_shell_command(
     ))
 }
 
+/// Rewrite an arbitrary argv so it runs confined — the non-shell counterpart
+/// of [`wrap_shell_command`], used for long-lived processes such as MCP
+/// servers that are launched by program and arguments rather than by a shell
+/// command line.
+///
+/// The same profile applies: filesystem per `policy`, network denied except
+/// the egress proxy the policy names. `program` is resolved through `PATH`
+/// by the sandbox launcher (`sandbox-exec` / `bwrap` both `execvp`).
+///
+/// Returns `None` exactly when [`wrap_shell_command`] would: callers must not
+/// fall back to spawning unconfined.
+pub fn wrap_command(
+    program: &str,
+    args: &[String],
+    policy: &SandboxPolicy,
+) -> Option<(String, Vec<String>)> {
+    availability().ok()?;
+    if cfg!(target_os = "linux") {
+        return bubblewrap_invocation_for(Payload::Argv { program, args }, policy);
+    }
+    let profile = seatbelt_profile(policy)?;
+    let mut argv = vec!["-p".to_string(), profile, program.to_string()];
+    argv.extend(args.iter().cloned());
+    Some(("/usr/bin/sandbox-exec".to_string(), argv))
+}
+
+/// What a bubblewrap invocation finally runs inside the namespace.
+enum Payload<'a> {
+    /// `shell -c command`, the shell tool's shape.
+    Shell { shell: &'a str, command: &'a str },
+    /// A program and its arguments, passed through without a shell.
+    Argv {
+        program: &'a str,
+        args: &'a [String],
+    },
+}
+
 /// Build the `bwrap` invocation for `policy`.
 ///
 /// Bubblewrap applies binds in order and a later bind wins, which is the same
@@ -1106,6 +1172,13 @@ pub fn wrap_shell_command(
 fn bubblewrap_invocation(
     shell: &str,
     command: &str,
+    policy: &SandboxPolicy,
+) -> Option<(String, Vec<String>)> {
+    bubblewrap_invocation_for(Payload::Shell { shell, command }, policy)
+}
+
+fn bubblewrap_invocation_for(
+    payload: Payload<'_>,
     policy: &SandboxPolicy,
 ) -> Option<(String, Vec<String>)> {
     let bwrap = bwrap_path()?;
@@ -1206,8 +1279,14 @@ fn bubblewrap_invocation(
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
     }
 
-    // The one writable place, re-exposed over the mask above.
-    args.extend(["--bind".into(), root.clone(), root.clone()]);
+    // The one writable place, re-exposed over the mask above — or, for a
+    // read-only policy, re-exposed without write access.
+    let root_bind = if policy.workspace_writable {
+        "--bind"
+    } else {
+        "--ro-bind"
+    };
+    args.extend([root_bind.into(), root.clone(), root.clone()]);
 
     if let Some(tmp) = &policy.session_tmp {
         let tmp = tmp.canonicalize().ok()?.to_str()?.to_string();
@@ -1219,7 +1298,7 @@ fn bubblewrap_invocation(
     // opt into writable mounts, with hooks carved back to read-only below.
     for dir in &policy.linked_git_dirs {
         let dir = dir.to_str()?.to_string();
-        let bind = if policy.git_writable {
+        let bind = if policy.git_writable && policy.workspace_writable {
             "--bind"
         } else {
             "--ro-bind"
@@ -1265,7 +1344,40 @@ fn bubblewrap_invocation(
         args.extend(["--ro-bind-try".into(), hooks.clone(), hooks]);
     }
 
+    // A long-lived argv payload (an MCP server) must not outlive Forge: if
+    // bwrap is killed, the sandboxed child is killed with it.
+    if matches!(payload, Payload::Argv { .. }) {
+        args.push("--die-with-parent".into());
+    }
+
     args.extend(["--chdir".into(), root, "--".into()]);
+
+    let (shell, command) = match payload {
+        Payload::Shell { shell, command } => (shell, command),
+        Payload::Argv {
+            program,
+            args: program_args,
+        } => {
+            if let Some((socat, socket)) = relay {
+                // Same relay as the shell shape below, then `exec "$@"`
+                // so the program replaces the shell and is never
+                // re-parsed by it — its arguments stay argv elements.
+                let script = format!(
+                    "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork \
+                     UNIX-CONNECT:{socket} >/dev/null 2>&1 & \
+                     for _ in 1 2 3 4 5 6 7 8 9 10; do \
+                     {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} >/dev/null 2>&1 && break; \
+                     sleep 0.1; done; exec \"$@\"",
+                    port = SANDBOX_PROXY_PORT,
+                    socket = shell_quote(&socket),
+                );
+                args.extend(["/bin/sh".into(), "-c".into(), script, "sh".into()]);
+            }
+            args.push(program.to_string());
+            args.extend(program_args.iter().cloned());
+            return Some((bwrap.to_string(), args));
+        }
+    };
 
     match relay {
         Some((socat, socket)) => {
@@ -1318,6 +1430,71 @@ mod tests {
     /// does not exist cannot be resolved.
     fn workspace() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    /// A read-only workspace must drop the workspace from the write allow —
+    /// and, with nothing else writable, emit no `(allow file-write*)` at all,
+    /// because an unfiltered allow would permit every write on the host.
+    #[test]
+    fn read_only_workspace_profile_grants_no_workspace_writes() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        let root = root.to_str().unwrap();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_read_only_workspace();
+        assert!(!policy.workspace_writable());
+        let profile = seatbelt_profile(&policy).unwrap();
+        assert!(
+            !profile.contains("(allow file-write*"),
+            "nothing is writable, so no write allow may be emitted: {profile}"
+        );
+        assert!(
+            primary_file_read_rule(&profile).contains(&format!("(subpath \"{root}\")")),
+            "the workspace must stay readable"
+        );
+        assert!(profile.contains("(deny network*)"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_root = tmp.path().canonicalize().unwrap();
+        let profile = seatbelt_profile(&policy.clone().with_session_tmp(tmp.path())).unwrap();
+        let write = primary_file_write_rule(&profile);
+        assert!(write.contains(tmp_root.to_str().unwrap()), "{write}");
+        assert!(
+            !write.contains(&format!("(subpath \"{root}\")")),
+            "the workspace must not be writable: {write}"
+        );
+    }
+
+    #[test]
+    fn writable_workspace_is_the_default() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
+        assert!(primary_file_write_rule(&profile)
+            .contains(&format!("(subpath \"{}\")", root.to_str().unwrap())));
+    }
+
+    /// The argv wrapper passes the program and its arguments through as
+    /// separate elements after the profile — never joined into a shell line —
+    /// and only the egress proxy port gets a network hole.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn wrap_command_passes_argv_through_under_the_profile() {
+        if availability().is_err() {
+            return; // cannot confine on this host; nothing to assert
+        }
+        let ws = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path())
+            .with_read_only_workspace()
+            .with_egress_proxy(4242);
+        let args = vec!["--flag".to_string(), "a b; rm -rf /".to_string()];
+        let (program, argv) = wrap_command("node", &args, &policy).unwrap();
+        assert_eq!(program, "/usr/bin/sandbox-exec");
+        assert_eq!(argv[0], "-p");
+        assert_eq!(&argv[2..], ["node", "--flag", "a b; rm -rf /"]);
+        let profile = &argv[1];
+        assert!(profile.contains("(deny network*)"));
+        assert!(profile.contains("(allow network-outbound (remote ip \"localhost:4242\"))"));
+        assert!(!profile.contains("(allow file-write*"), "{profile}");
     }
 
     #[test]
@@ -2107,6 +2284,78 @@ mod bubblewrap_tests {
             unshare < bound,
             "the bind must follow the unshare, or it is binding into the host namespace"
         );
+    }
+
+    /// A read-only workspace is bound with `--ro-bind`, never `--bind`.
+    #[test]
+    fn read_only_workspace_is_bound_read_only() {
+        let ws = workspace();
+        let root = ws.path().canonicalize().unwrap();
+        let root = root.to_str().unwrap();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_read_only_workspace();
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return; // bwrap not installed on this host; nothing to assert
+        };
+        assert!(
+            args.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == root && w[2] == root),
+            "{args:?}"
+        );
+        assert!(
+            !args.windows(2).any(|w| w[0] == "--bind" && w[1] == root),
+            "the workspace must not be bound writable: {args:?}"
+        );
+    }
+
+    /// An argv payload runs the program directly after `--`, with its
+    /// arguments as separate elements, and dies with bwrap.
+    #[test]
+    fn argv_payload_runs_the_program_without_a_shell() {
+        let ws = workspace();
+        let args = vec!["serve".to_string(), "a b; rm -rf /".to_string()];
+        let Some((_, argv)) = bubblewrap_invocation_for(
+            Payload::Argv {
+                program: "mcp-server",
+                args: &args,
+            },
+            &SandboxPolicy::for_workspace(ws.path()),
+        ) else {
+            return; // bwrap not installed on this host; nothing to assert
+        };
+        let dashdash = argv.iter().position(|a| a == "--").unwrap();
+        assert_eq!(
+            &argv[dashdash + 1..],
+            ["mcp-server", "serve", "a b; rm -rf /"]
+        );
+        assert!(argv[..dashdash].iter().any(|a| a == "--die-with-parent"));
+        assert!(argv.iter().any(|a| a == "--unshare-net"));
+    }
+
+    /// With egress, the relay starts first and then `exec "$@"` hands over to
+    /// the program, whose argv is passed positionally rather than re-parsed.
+    #[test]
+    fn argv_payload_with_egress_execs_the_program_after_the_relay() {
+        let ws = workspace();
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("egress.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let args = vec!["--x".to_string()];
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_egress_socket(&sock);
+        let Some((_, argv)) = bubblewrap_invocation_for(
+            Payload::Argv {
+                program: "mcp-server",
+                args: &args,
+            },
+            &policy,
+        ) else {
+            return; // bwrap or socat not installed on this host
+        };
+        let dashdash = argv.iter().position(|a| a == "--").unwrap();
+        let tail = &argv[dashdash + 1..];
+        assert_eq!(tail[0], "/bin/sh");
+        assert_eq!(tail[1], "-c");
+        assert!(tail[2].ends_with("exec \"$@\""), "{}", tail[2]);
+        assert_eq!(&tail[3..], ["sh", "mcp-server", "--x"]);
     }
 
     #[test]
