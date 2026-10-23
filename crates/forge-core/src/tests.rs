@@ -683,7 +683,12 @@ impl forge_tools::Tool for NetworkDeniedOnceTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        json!({"type": "object", "additionalProperties": false})
+        // `token` lets an audit test pass an argument governance redacts.
+        json!({
+            "type": "object",
+            "properties": {"token": {"type": "string"}},
+            "additionalProperties": false
+        })
     }
 
     fn side_effect_class(&self) -> SideEffectClass {
@@ -1382,6 +1387,96 @@ async fn a_grant_decision_is_validated_then_grants_the_host_and_retries() {
         .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
         .expect("confined retry should record a tool result");
     assert_eq!(result.content, "retried confined after host grant");
+}
+
+/// A call refused by the egress proxy, granted at the prompt and retried
+/// leaves one ordered, durable trail correlated by its call id, and the
+/// trail survives a resume.
+#[tokio::test]
+async fn a_host_grant_and_retry_leave_an_ordered_durable_audit_trail() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.append_user_message("open a pr").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({"token": "s3cret"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+    session
+        .decide_hitl(GrantDecision::AllowHostForSession, "test")
+        .await
+        .unwrap();
+
+    let rows = session.audit_events().await.unwrap();
+    let trail: Vec<_> = rows
+        .iter()
+        .map(|row| (row.kind, row.call_id.as_deref()))
+        .collect();
+    use forge_durable::AuditKind;
+    assert_eq!(
+        trail,
+        [
+            (AuditKind::Authorize, Some("call-host")),
+            (AuditKind::ToolResult, Some("call-host")),
+            (AuditKind::HitlRequest, Some("call-host")),
+            (AuditKind::HostGrant, Some("call-host")),
+            (AuditKind::HitlResolution, Some("call-host")),
+            (AuditKind::ToolResult, Some("call-host")),
+        ],
+        "{rows:#?}"
+    );
+    assert_eq!(rows[0].detail["decision"], "Allow");
+    assert_eq!(rows[0].tool.as_deref(), Some("network_denied"));
+    assert_eq!(rows[1].detail["outcome"], "sandbox_denied");
+    assert_eq!(rows[1].detail["denied_host"], "api.github.com");
+    assert_eq!(rows[2].detail["kind"], "network_host");
+    assert_eq!(rows[3].detail["pattern"], "**.github.com");
+    assert_eq!(rows[3].detail["scope"], "session");
+    assert_eq!(rows[4].detail["decision"], "allow_host_for_session");
+    assert_eq!(rows[4].detail["actor"], "test");
+    assert_eq!(rows[5].detail["outcome"], "ok");
+    assert!(rows[5].detail["duration_ms"].is_u64());
+    // The call's arguments are only ever stored as governance redacted them.
+    let stored =
+        serde_json::to_string(&rows.iter().map(|row| &row.detail).collect::<Vec<_>>()).unwrap();
+    assert_eq!(
+        rows[0].detail["args_redacted"],
+        json!({"token": "[REDACTED]"})
+    );
+    assert!(!stored.contains("s3cret"), "{stored}");
+
+    let session_id = session.session_id;
+    drop(session);
+    let resumed = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        session_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.audit_events().await.unwrap(), rows);
 }
 
 /// The real `git` tool: a push to a host outside the session allowlist raises

@@ -693,6 +693,7 @@ impl AgentSession {
         &mut self,
         turn: u32,
     ) -> Result<ModelRequest, LoopError> {
+        self.flush_audit_at_boundary().await?;
         let request = self.build_model_request();
         self.record_prompt_snapshot(&request, None);
         tracing::debug!(turn, "model step");

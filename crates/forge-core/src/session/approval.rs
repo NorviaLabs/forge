@@ -94,6 +94,9 @@ impl AgentSession {
         self.journal
             .append_hitl_resume(self.session_id, dec, actor)
             .await?;
+        let note = feedback.map(str::trim).filter(|note| !note.is_empty());
+        self.audit_hitl_resolution(&payload, dec, actor, if approved { None } else { note });
+        self.flush_audit().await?;
 
         if !approved {
             let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
@@ -182,6 +185,8 @@ impl AgentSession {
         self.journal
             .append_hitl_resume(self.session_id, "approve", actor)
             .await?;
+        self.audit_hitl_resolution(&payload, "approve", actor, None);
+        self.flush_audit().await?;
         self.turn.reset_hitl_denials();
         let call = self.approval_execution_call(&payload)?;
         self.ensure_approved_tool_allowed(&call).await?;

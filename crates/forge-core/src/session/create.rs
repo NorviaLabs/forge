@@ -235,6 +235,7 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             approve_all: false,
             workspace_trusted: false,
+            audit: crate::audit::SessionAudit::default(),
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage: SessionTokenUsage::default(),
@@ -332,6 +333,7 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             approve_all: false,
             workspace_trusted: false,
+            audit: crate::audit::SessionAudit::default(),
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage,
@@ -506,10 +508,17 @@ impl AgentSession {
     }
 
     /// Permit `pattern` on the live proxy without replacing the socket.
+    /// Audited against the pending approval's call, when there is one.
     pub fn grant_egress_host(&self, pattern: &str) {
+        let call_id = self.pending_hitl().map(|payload| payload.call_id.clone());
+        self.grant_egress_host_for(pattern, call_id.as_deref(), "operator");
+    }
+
+    pub(crate) fn grant_egress_host_for(&self, pattern: &str, call_id: Option<&str>, source: &str) {
         if let Some(runtime) = &self.egress {
             runtime.grant_host(pattern);
         }
+        self.audit_host_grant(call_id, pattern, None, source);
     }
 
     /// Remember the suggested pattern for `call` for the rest of this session.
@@ -519,7 +528,9 @@ impl AgentSession {
         &mut self,
         call: &forge_types::ToolCall,
     ) -> Option<String> {
-        self.governance.allow_suggested_pattern_for_session(call)
+        let pattern = self.governance.allow_suggested_pattern_for_session(call)?;
+        self.audit_pattern_grant(Some(&call.id), Some(&call.name), &pattern, None);
+        Some(pattern)
     }
 
     pub fn clear_session_pattern_allows(&mut self) {

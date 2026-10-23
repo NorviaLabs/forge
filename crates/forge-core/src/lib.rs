@@ -1,6 +1,7 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
 mod agent_coordinator;
+mod audit;
 mod background;
 mod completion;
 mod lifecycle;
@@ -145,6 +146,8 @@ pub struct AgentSession {
     /// approve-all unless it is true, so the trust gate is enforced below the
     /// TUI rather than only there.
     workspace_trusted: bool,
+    /// Durable audit rows waiting for the next journal write.
+    audit: audit::SessionAudit,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the

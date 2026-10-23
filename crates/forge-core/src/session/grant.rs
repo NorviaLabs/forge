@@ -130,8 +130,10 @@ impl AgentSession {
             .pending_hitl()
             .cloned()
             .ok_or(LoopError::NoPendingHitl)?;
+        self.audit.set_resolving(None);
         validate_grant_decision(&payload, decision)
             .map_err(|rejection| LoopError::Other(rejection.to_string()))?;
+        let call_id = payload.call_id.as_str();
         let mut outcome = GrantOutcome {
             decision: decision.clone(),
             grant: AppliedGrant::None,
@@ -146,9 +148,10 @@ impl AgentSession {
                         "approve-all requires a trusted workspace".into(),
                     ));
                 }
+                self.audit_approve_all(call_id);
                 if let Some(host) = payload.denied_host.as_deref() {
                     let pattern = forge_tools::egress::suggest_host_pattern(host);
-                    self.grant_egress_host(&pattern);
+                    self.grant_egress_host_for(&pattern, Some(call_id), "approve_all");
                     outcome.grant = AppliedGrant::Host { pattern };
                 }
             }
@@ -163,9 +166,15 @@ impl AgentSession {
                     outcome.persist_error = forge_config::append_user_allow_rule(&rule)
                         .err()
                         .map(|error| error.to_string());
+                    self.audit_host_grant(
+                        Some(call_id),
+                        &pattern,
+                        Some((&rule, outcome.persist_error.as_deref())),
+                        "approval",
+                    );
                     outcome.persisted_rule = Some(rule);
                 }
-                self.grant_egress_host(&pattern);
+                self.grant_egress_host_for(&pattern, Some(call_id), "approval");
                 outcome.grant = AppliedGrant::Host { pattern };
             }
             GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways => {
@@ -182,11 +191,18 @@ impl AgentSession {
                     outcome.persist_error = forge_config::append_user_allow_rule(&pattern)
                         .err()
                         .map(|error| error.to_string());
+                    self.audit_pattern_grant(
+                        Some(call_id),
+                        Some(&payload.tool),
+                        &pattern,
+                        Some((&pattern, outcome.persist_error.as_deref())),
+                    );
                     outcome.persisted_rule = Some(pattern.clone());
                 }
                 outcome.grant = AppliedGrant::Pattern { pattern };
             }
         }
+        self.audit.set_resolving(Some(decision.clone()));
         Ok(outcome)
     }
 
