@@ -597,10 +597,14 @@ async fn installed_cargo_can_use_the_session_toolchain_surface() {
     .unwrap();
     std::fs::write(dependency.join("src/lib.rs"), "pub fn dependency() {}\n").unwrap();
 
+    // The spawn inherits this process's env, and a developer or CI job may
+    // export CARGO_TARGET_DIR pointing outside the fixture workspace. The
+    // sandbox rightly denies that write, so pin the target dir inside the
+    // workspace (it also outranks CARGO_BUILD_TARGET_DIR).
     for command in [
-        "cargo build --offline",
-        "cargo test --offline",
-        "cargo package --offline",
+        "CARGO_TARGET_DIR=target cargo build --offline",
+        "CARGO_TARGET_DIR=target cargo test --offline",
+        "CARGO_TARGET_DIR=target cargo package --offline",
         "cargo add --help",
     ] {
         let out = forge_tools::run_shell_command_with_egress_and_temp(
