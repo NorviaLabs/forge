@@ -1,13 +1,15 @@
 //! MCP protocol (protocol-mcp.md) — CORE-02 Phase 1.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use forge_config::McpServerConfig;
-use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
+use forge_config::{McpSandboxWorkspace, McpServerConfig};
+use forge_tools::egress::{EgressInvocation, EgressOptions, EgressPolicy, EgressShared};
+use forge_tools::sandbox::{self, SandboxPolicy};
+use forge_tools::{ProcessGroupGuard, Tool, ToolContext, ToolError, ToolRegistry};
 use forge_types::{
     SideEffectClass, ToolDescriptor, ToolOutput, MCP_TOOL_NAME_PREFIX, SEARCH_TOOLS_TOOL_NAME,
 };
@@ -35,6 +37,10 @@ pub enum McpError {
     Timeout(&'static str),
     #[error("server `{0}` not found")]
     NotFound(String),
+    /// `sandbox = true` was requested but the server could not be confined.
+    /// The server is not started: it never falls back to running unconfined.
+    #[error("sandbox: {0}")]
+    Sandbox(String),
 }
 
 /// In-process MCP-like tool source for tests (no real subprocess).
@@ -95,8 +101,19 @@ pub fn register_static_mcp(
 
 /// Minimal stdio JSON-RPC MCP client (tools/list + tools/call).
 pub struct McpStdioClient {
+    /// Kills the server's whole process group — the server and anything it
+    /// forked — when the client is dropped. Declared first so it runs before
+    /// the temp directory below is removed.
+    _process_group: ProcessGroupGuard,
     #[allow(dead_code)]
     child: Child,
+    /// The sandboxed server's only route out, kept alive as long as the
+    /// server is. `None` for an unsandboxed server, or a sandboxed one whose
+    /// endpoint could not start (it then has no network at all).
+    egress: Option<EgressInvocation>,
+    /// A sandboxed server's private writable temp directory (its `TMPDIR`),
+    /// removed when the client is dropped. `None` for an unsandboxed server.
+    _tmp: Option<tempfile::TempDir>,
     stdin: Mutex<ChildStdin>,
     stdout: Mutex<BufReader<ChildStdout>>,
     next_id: Mutex<u64>,
@@ -113,16 +130,30 @@ async fn spawn_retrying_text_file_busy(
     command: &str,
     args: &[String],
     current_dir: Option<&Path>,
+    extra_env: &[(String, String)],
 ) -> Result<Child, std::io::Error> {
     const ETXTBSY: i32 = 26;
     const MAX_ATTEMPTS: u32 = 5;
     for attempt in 1..=MAX_ATTEMPTS {
         let mut child_command = Command::new(command);
+        // The environment is inherited in full — servers commonly need API
+        // keys from it. `extra_env` only *adds* (the egress proxy variables
+        // for a sandboxed server).
         child_command
             .args(args)
+            .envs(extra_env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            // A server must not outlive the client that owns it. For a
+            // sandboxed server the direct child is `sandbox-exec` (which
+            // execs the server in place) or `bwrap` (run with
+            // `--die-with-parent`), so the kill reaches the server either way.
+            .kill_on_drop(true);
+        // Its own process group, so the client's drop can kill everything
+        // the server forked (`npx` → `node`, a shell → its children), not
+        // only the direct child `kill_on_drop` reaches.
+        forge_tools::set_process_group(&mut child_command);
         if let Some(current_dir) = current_dir {
             child_command.current_dir(current_dir);
         }
@@ -137,9 +168,166 @@ async fn spawn_retrying_text_file_busy(
     unreachable!("loop always returns by the final attempt")
 }
 
+/// What to spawn for a sandboxed server, plus the endpoint and temp
+/// directory that must outlive it.
+struct SandboxedLaunch {
+    program: String,
+    args: Vec<String>,
+    env: Vec<(String, String)>,
+    egress: Option<EgressInvocation>,
+    tmp: tempfile::TempDir,
+}
+
+/// The label a sandboxed server's connections carry in the session egress
+/// event log.
+pub fn mcp_egress_label(server_id: &str) -> String {
+    format!("mcp:{server_id}")
+}
+
+/// Start the server's egress endpoint. `None` (with a warning) when it cannot
+/// start — the server then runs with no network at all, the safe direction.
+///
+/// The endpoint is the server's own listener (it must stay put for the
+/// server's whole life) on the *live* egress state `egress`. When the session
+/// shares its state here (see [`McpManager::with_egress_shared`]), a host the
+/// user grants for the session — or persistently — reaches MCP traffic on the
+/// next CONNECT, and each connection is recorded in the session's egress
+/// event log labelled `mcp:<server>`. A CONNECT to a host the policy does not
+/// permit fails (403 from the proxy); prompting for MCP host grants is future
+/// work.
+async fn start_mcp_egress(egress: &EgressShared, server_id: &str) -> Option<EgressInvocation> {
+    match EgressInvocation::start_for_shared(egress, Some(&mcp_egress_label(server_id))).await {
+        Ok(invocation) => Some(invocation),
+        Err(err) => {
+            warn!(%err, server = %server_id, "MCP egress endpoint failed to start; sandboxed server gets no network");
+            None
+        }
+    }
+}
+
+/// Build the confined launch for `cfg`. Fails closed: if the host cannot
+/// confine, or the profile cannot be expressed, the server is not started.
+async fn sandboxed_launch(
+    cfg: &McpServerConfig,
+    workspace: &Path,
+    egress: &EgressShared,
+) -> Result<SandboxedLaunch, McpError> {
+    sandbox::availability().map_err(|unavailable| {
+        McpError::Sandbox(format!(
+            "`sandbox = true` but {}; refusing to start the server unconfined",
+            unavailable.reason()
+        ))
+    })?;
+    // One private temp directory per server, outside the workspace, and the
+    // only writable place besides a `read_write` workspace. Many servers
+    // (and the runtimes under them) need somewhere to write; the shared
+    // per-user temp tree stays denied.
+    let tmp = tempfile::Builder::new()
+        .prefix("forge-mcp-")
+        .tempdir()
+        .map_err(|err| {
+            McpError::Sandbox(format!(
+                "`sandbox = true` but the server's temp directory could not be created \
+                 ({err}); refusing to start the server unconfined"
+            ))
+        })?;
+    let egress = start_mcp_egress(egress, &cfg.id).await;
+    // Same profile as the shell tool: read access to the workspace, system
+    // paths and the resolved server executable; network denied except the
+    // egress proxy.
+    let mut policy = SandboxPolicy::for_workspace(workspace)
+        .with_command_access(&cfg.command)
+        .with_session_tmp(tmp.path())
+        .with_egress(egress.as_ref().and_then(EgressInvocation::grant));
+    if cfg.sandbox_workspace == McpSandboxWorkspace::ReadOnly {
+        policy = policy.with_read_only_workspace();
+    }
+    // The server's own install directory: a command given as a path, and a
+    // first argument naming a script file (`node /opt/srv/index.js`). Skipped
+    // (not fatal) when it would expose the whole home directory.
+    for dir in server_install_dirs(cfg, workspace) {
+        policy = match policy.clone().with_read_path(&dir) {
+            Ok(policy) => policy,
+            Err(reason) => {
+                warn!(server = %cfg.id, %reason, "not exposing the MCP server's directory");
+                policy
+            }
+        };
+    }
+    // Explicitly configured read paths fail closed: a path the user asked for
+    // that cannot be granted safely is a configuration error, not a silent
+    // narrowing.
+    for path in &cfg.sandbox_read_paths {
+        policy = policy.with_read_path(path).map_err(|reason| {
+            McpError::Sandbox(format!(
+                "sandbox_read_paths: {reason}; refusing to start the server"
+            ))
+        })?;
+    }
+    let (program, args) =
+        sandbox::wrap_command(&cfg.command, &cfg.args, &policy).ok_or_else(|| {
+            McpError::Sandbox(
+                "`sandbox = true` but the sandbox profile could not be built for this server \
+             (unresolvable workspace, or the egress relay `socat` is missing on Linux); \
+             refusing to start the server unconfined"
+                    .into(),
+            )
+        })?;
+    let mut env = sandbox::egress_env(&policy);
+    env.extend(
+        sandbox::temp_env(&policy)
+            .into_iter()
+            .map(|(name, path)| (name.to_string(), path.to_string_lossy().into_owned())),
+    );
+    Ok(SandboxedLaunch {
+        program,
+        args,
+        env,
+        egress,
+        tmp,
+    })
+}
+
+/// Directories holding the server itself: the command's directory when the
+/// command is a path, and the first argument's directory when it names an
+/// existing file by path. Relative paths resolve against the workspace (the
+/// server's working directory).
+fn server_install_dirs(cfg: &McpServerConfig, workspace: &Path) -> Vec<PathBuf> {
+    let resolve = |raw: &str| -> Option<PathBuf> {
+        if !raw.contains('/') {
+            return None;
+        }
+        let path = Path::new(raw);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        let path = path.canonicalize().ok()?;
+        path.is_file()
+            .then(|| path.parent().map(Path::to_path_buf))?
+    };
+    let mut dirs = Vec::new();
+    let script = cfg.args.first().filter(|arg| !arg.starts_with('-'));
+    for dir in std::iter::once(cfg.command.as_str())
+        .chain(script.map(String::as_str))
+        .filter_map(resolve)
+    {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// Egress state with nothing allowed, for a client spawned on its own.
+fn deny_all_egress() -> EgressShared {
+    EgressShared::new(EgressPolicy::new(), EgressOptions::default())
+}
+
 impl McpStdioClient {
     pub async fn spawn(cfg: &McpServerConfig) -> Result<Self, McpError> {
-        Self::spawn_with_workspace(cfg, None).await
+        Self::spawn_with_workspace(cfg, None, &deny_all_egress()).await
     }
 
     /// Spawn an MCP server with its process working directory bound to the
@@ -148,12 +336,15 @@ impl McpStdioClient {
         cfg: &McpServerConfig,
         workspace: &Path,
     ) -> Result<Self, McpError> {
-        Self::spawn_with_workspace(cfg, Some(workspace)).await
+        Self::spawn_with_workspace(cfg, Some(workspace), &deny_all_egress()).await
     }
 
+    /// `egress` is the live egress state a sandboxed server's endpoint
+    /// enforces; it is unused for an unsandboxed server.
     async fn spawn_with_workspace(
         cfg: &McpServerConfig,
         workspace: Option<&Path>,
+        egress: &EgressShared,
     ) -> Result<Self, McpError> {
         if cfg.transport != "stdio" {
             return Err(McpError::Protocol(format!(
@@ -161,7 +352,30 @@ impl McpStdioClient {
                 cfg.transport
             )));
         }
-        let mut child = spawn_retrying_text_file_busy(&cfg.command, &cfg.args, workspace).await?;
+        let (program, args, extra_env, egress, tmp) = if cfg.sandbox {
+            let workspace = match workspace {
+                Some(workspace) => workspace.to_path_buf(),
+                None => std::env::current_dir()?,
+            };
+            let SandboxedLaunch {
+                program,
+                args,
+                env,
+                egress,
+                tmp,
+            } = sandboxed_launch(cfg, &workspace, egress).await?;
+            (program, args, env, egress, Some(tmp))
+        } else {
+            (
+                cfg.command.clone(),
+                cfg.args.clone(),
+                Vec::new(),
+                None,
+                None,
+            )
+        };
+        let mut child =
+            spawn_retrying_text_file_busy(&program, &args, workspace, &extra_env).await?;
         let stdin = child
             .stdin
             .take()
@@ -171,7 +385,10 @@ impl McpStdioClient {
             .take()
             .ok_or_else(|| McpError::Protocol("missing stdout".into()))?;
         let client = Self {
+            _process_group: ProcessGroupGuard::new(child.id().map(|pid| pid as i32)),
             child,
+            egress,
+            _tmp: tmp,
             stdin: Mutex::new(stdin),
             stdout: Mutex::new(BufReader::new(stdout)),
             next_id: Mutex::new(1),
@@ -302,28 +519,129 @@ impl McpStdioClient {
     }
 
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolOutput, McpError> {
-        let result = self
-            .request("tools/call", json!({ "name": name, "arguments": args }))
-            .await?;
-        let is_error = result
-            .get("isError")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let content = result
-            .get("content")
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| result.to_string());
-        Ok(ToolOutput {
-            outcome: Default::default(),
-            content,
-            is_error,
-            exit_code: None,
-            attachments: Vec::new(),
-        })
+        self.call_tool_attributed(name, args, None).await.result
+    }
+
+    /// Run one `tools/call` and report the hosts the server's egress endpoint
+    /// refused while it was in flight. While the call runs, the endpoint's
+    /// connections are attributed to `call_id` (when given) instead of
+    /// `mcp:<server>`, so they correlate with the call in the audit trail.
+    ///
+    /// The window is the request lock: requests to one server are strictly
+    /// sequential (one request on the wire at a time; overlapping calls,
+    /// such as a subagent's on a shared registry, queue), so a refusal
+    /// recorded inside it happened while this call was the only one in
+    /// flight. The limit is a server that opens connections on its own,
+    /// outside any request (a background refresh): one that lands inside a
+    /// call's window is attributed to that call, and one between calls is
+    /// cleared at the next call's start.
+    pub async fn call_tool_attributed(
+        &self,
+        name: &str,
+        args: Value,
+        call_id: Option<&str>,
+    ) -> McpCallOutcome {
+        let _request_guard = self.request_lock.lock().await;
+        if let Some(egress) = &self.egress {
+            // Refusals from before this call (startup, a previous call's
+            // stragglers) are not this call's to report.
+            let _ = egress.take_denied_host();
+            egress.set_call_label(call_id);
+        }
+        let result = match timeout(
+            MCP_IO_TIMEOUT,
+            self.request_inner("tools/call", json!({ "name": name, "arguments": args })),
+        )
+        .await
+        {
+            Ok(result) => result.map(call_output),
+            Err(_) => Err(McpError::Timeout("request")),
+        };
+        let denied_hosts = match &self.egress {
+            Some(egress) => {
+                egress.set_call_label(None);
+                let denied = egress.denied_hosts();
+                let _ = egress.take_denied_host();
+                denied
+            }
+            None => Vec::new(),
+        };
+        McpCallOutcome {
+            result,
+            denied_hosts,
+        }
     }
 
     pub fn server_id(&self) -> &str {
         &self.server_id
+    }
+}
+
+/// One `tools/call` and the egress refusals made while it ran.
+#[derive(Debug)]
+pub struct McpCallOutcome {
+    pub result: Result<ToolOutput, McpError>,
+    /// Hosts the server's egress endpoint refused during the call, oldest
+    /// first. Always empty for an unsandboxed server.
+    pub denied_hosts: Vec<String>,
+}
+
+impl McpCallOutcome {
+    /// The tool result forge-core sees. A call that failed (an MCP error or
+    /// a result flagged `isError`) after the gateway refused a host becomes
+    /// [`ToolError::SandboxDenied`] naming that host, so the session raises
+    /// the host-grant prompt and, on a grant, re-runs the call. A call that
+    /// succeeded anyway is returned unchanged: the server tolerated the
+    /// refusal, and prompting for a host it did not need would be noise.
+    pub fn into_tool_result(self, server_id: &str) -> Result<ToolOutput, ToolError> {
+        let Some(host) = self.denied_hosts.first().cloned() else {
+            return self.result.map_err(|e| ToolError::Execution(e.to_string()));
+        };
+        let content = match self.result {
+            Ok(output) if !output.is_error => {
+                warn!(
+                    server = %server_id,
+                    hosts = ?self.denied_hosts,
+                    "MCP server's egress was refused, but the call succeeded"
+                );
+                return Ok(output);
+            }
+            Ok(output) => output.content,
+            Err(error) => error.to_string(),
+        };
+        let reason = format!(
+            "blocked by the sandbox: MCP server `{server_id}` tried to reach {host}, \
+             which the personal host(...) network permissions do not allow."
+        );
+        let mut reported = content;
+        if !reported.is_empty() {
+            reported.push('\n');
+        }
+        reported.push_str(&reason);
+        Err(ToolError::SandboxDenied {
+            content: reported,
+            reason,
+            denied_host: Some(host),
+        })
+    }
+}
+
+/// A `tools/call` result as a tool output; `isError` marks a failed call.
+fn call_output(result: Value) -> ToolOutput {
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let content = result
+        .get("content")
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| result.to_string());
+    ToolOutput {
+        outcome: Default::default(),
+        content,
+        is_error,
+        exit_code: None,
+        attachments: Vec::new(),
     }
 }
 
@@ -359,11 +677,11 @@ impl Tool for RemoteMcpTool {
     fn side_effect_class(&self) -> SideEffectClass {
         self.side_effect_class
     }
-    async fn call(&self, _ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+    async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         self.client
-            .call_tool(&self.remote_name, args)
+            .call_tool_attributed(&self.remote_name, args, ctx.tool_call_id.as_deref())
             .await
-            .map_err(|e| ToolError::Execution(e.to_string()))
+            .into_tool_result(self.client.server_id())
     }
 }
 
@@ -405,6 +723,7 @@ pub struct McpManager {
     clients: HashMap<String, Arc<McpStdioClient>>,
     side_effect_classes: HashMap<String, SideEffectClass>,
     tool_filters: HashMap<String, ToolFilter>,
+    egress: EgressShared,
 }
 
 impl McpManager {
@@ -413,7 +732,30 @@ impl McpManager {
             clients: HashMap::new(),
             side_effect_classes: HashMap::new(),
             tool_filters: HashMap::new(),
+            egress: deny_all_egress(),
         }
+    }
+
+    /// Host allowlist enforced on outbound traffic from servers configured
+    /// with `sandbox = true`, as a state of its own: later grants do not
+    /// reach it. Defaults to empty (every host denied). A session should use
+    /// [`Self::with_egress_shared`] instead.
+    pub fn with_egress_policy(self, policy: EgressPolicy) -> Self {
+        self.with_egress_shared(EgressShared::new(policy, EgressOptions::default()))
+    }
+
+    /// Route sandboxed servers through the live egress state `egress` — the
+    /// same state the session gateway serves. Its policy is read on every
+    /// CONNECT, so grants and policy replacements apply to MCP traffic
+    /// immediately, and connections land in its event log as `mcp:<server>`.
+    pub fn with_egress_shared(mut self, egress: EgressShared) -> Self {
+        self.egress = egress;
+        self
+    }
+
+    /// The live egress state sandboxed servers route through.
+    pub fn egress_shared(&self) -> &EgressShared {
+        &self.egress
     }
 
     pub async fn connect_all(&mut self, servers: &[McpServerConfig]) -> Vec<String> {
@@ -438,7 +780,7 @@ impl McpManager {
     ) -> Vec<String> {
         let mut errors = Vec::new();
         for s in servers {
-            match McpStdioClient::spawn_with_workspace(s, workspace).await {
+            match McpStdioClient::spawn_with_workspace(s, workspace, &self.egress).await {
                 Ok(c) => {
                     self.clients.insert(s.id.clone(), Arc::new(c));
                     self.side_effect_classes
@@ -699,6 +1041,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         }
     }
 
@@ -942,6 +1285,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
 
@@ -974,6 +1318,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
         let (first, second) = tokio::join!(
@@ -994,6 +1339,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
         match McpStdioClient::spawn(&cfg).await {
             Err(McpError::Protocol(message)) => {
@@ -1020,6 +1366,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            ..Default::default()
         };
 
         let mut manager = McpManager::new();
@@ -1056,6 +1403,7 @@ done
                 side_effect_class: SideEffectClass::Exec,
                 enabled_tools: None,
                 disabled_tools: None,
+                ..Default::default()
             }])
             .await;
         assert_eq!(errors.len(), 1);
@@ -1101,6 +1449,669 @@ done
             std::fs::read_to_string(cwd_b).unwrap().trim(),
             workspace_b.path().canonicalize().unwrap().to_string_lossy()
         );
+    }
+
+    /// A server whose `probe` tool tries to open a direct TCP connection to
+    /// `127.0.0.1:$1` and to create the file `$2`, then reports what worked.
+    #[cfg(unix)]
+    fn fixture_server_probe() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+port="$1"
+target="$2"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/call"'*)
+      if (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then net=open; else net=denied; fi
+      if (: > "$target") 2>/dev/null; then write=ok; else write=denied; fi
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"net=$net write=$write proxy=${HTTPS_PROXY:-none}\"}]}}"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// Run the probe server once with `sandbox`/`workspace_mode` and return
+    /// its report, whether the host listener saw a connection, and whether
+    /// the target file exists afterwards. `Err` carries a spawn error.
+    #[cfg(unix)]
+    async fn run_probe(
+        sandbox: bool,
+        workspace_mode: McpSandboxWorkspace,
+    ) -> Result<(String, bool, bool), McpError> {
+        let server = fixture_server_probe();
+        let workspace = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("written-by-mcp");
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![port.to_string(), target.to_string_lossy().into_owned()];
+        cfg.sandbox = sandbox;
+        cfg.sandbox_workspace = workspace_mode;
+
+        let client =
+            McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+                .await?;
+        let report = client.call_tool("probe", json!({})).await?.content;
+        let connected = timeout(Duration::from_millis(200), listener.accept())
+            .await
+            .is_ok();
+        Ok((report, connected, target.exists()))
+    }
+
+    /// Control: unsandboxed, the same probe reaches the host listener and
+    /// writes the workspace — so the sandboxed assertions below cannot pass
+    /// vacuously because the probe itself is broken.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn unsandboxed_probe_reaches_the_network_and_writes_the_workspace() {
+        let (report, connected, written) = run_probe(false, McpSandboxWorkspace::ReadOnly)
+            .await
+            .unwrap();
+        assert!(report.contains("net=open"), "{report}");
+        assert!(report.contains("write=ok"), "{report}");
+        assert!(report.contains("proxy=none"), "{report}");
+        assert!(connected);
+        assert!(written);
+    }
+
+    /// A sandboxed server cannot open a direct outbound socket and cannot
+    /// write a read-only workspace. Where the host cannot confine, the server
+    /// must not start at all (fail closed), never start unconfined.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_cannot_reach_the_network_or_write_a_read_only_workspace() {
+        match run_probe(true, McpSandboxWorkspace::ReadOnly).await {
+            Ok((report, connected, written)) => {
+                assert!(
+                    forge_tools::sandbox::availability().is_ok(),
+                    "a sandboxed server started on a host that cannot confine: {report}"
+                );
+                assert!(report.contains("net=denied"), "{report}");
+                assert!(!connected, "the host listener must see no connection");
+                assert!(report.contains("write=denied"), "{report}");
+                assert!(!written, "a read-only workspace must not be written");
+                assert!(
+                    report.contains("proxy=http://127.0.0.1:"),
+                    "the egress proxy must be advertised: {report}"
+                );
+            }
+            Err(McpError::Sandbox(message)) => {
+                assert!(
+                    forge_tools::sandbox::availability().is_err(),
+                    "sandbox is available yet spawn refused: {message}"
+                );
+                assert!(message.contains("refusing to start"), "{message}");
+            }
+            Err(other) => panic!("unexpected spawn error: {other:?}"),
+        }
+    }
+
+    /// `read_write` lets a sandboxed server write the workspace — the network
+    /// stays denied.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_with_read_write_workspace_can_write_it() {
+        if forge_tools::sandbox::availability().is_err() {
+            return; // covered by the fail-closed branch above
+        }
+        let (report, connected, written) = run_probe(true, McpSandboxWorkspace::ReadWrite)
+            .await
+            .unwrap();
+        assert!(report.contains("write=ok"), "{report}");
+        assert!(written);
+        assert!(report.contains("net=denied"), "{report}");
+        assert!(!connected);
+    }
+
+    /// A server whose every tool call runs the bash script `$1` and returns
+    /// its stdout (quotes, backslashes and newlines stripped so it stays a
+    /// JSON string). The script lives wherever the test puts it — the
+    /// workspace is always readable to a sandboxed server.
+    #[cfg(unix)]
+    fn fixture_server_running() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+probe="$1"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/call"'*)
+      out=$(/bin/bash "$probe" 2>/dev/null | tr -d '"\\\n')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$id" "$out"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// Write `body` as the probe script `probe.sh` in `dir`.
+    #[cfg(unix)]
+    fn write_probe(dir: &Path, body: &str) -> String {
+        let probe = dir.join("probe.sh");
+        std::fs::write(&probe, body).unwrap();
+        probe.to_string_lossy().into_owned()
+    }
+
+    /// A one-shot plain-HTTP upstream on loopback answering `200 ok`.
+    #[cfg(unix)]
+    async fn local_upstream() -> u16 {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    let _ = stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .await;
+                });
+            }
+        });
+        port
+    }
+
+    /// A host granted on the live session state *after* the server started
+    /// reaches the server's traffic on its next connection, and that
+    /// connection is recorded in the shared event log as `mcp:<server>`.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_follows_session_grants_made_after_spawn() {
+        if forge_tools::sandbox::availability().is_err() {
+            return; // covered by the fail-closed test above
+        }
+        let upstream = local_upstream().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "/usr/bin/curl -q -s -o /dev/null -w 'status=%{{http_code}}' --max-time 5 \
+                 --proxy \"$HTTP_PROXY\" http://127.0.0.1:{upstream}/\n"
+            ),
+        );
+        let server = fixture_server_running();
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+
+        let session = deny_all_egress();
+        let mut manager = McpManager::new().with_egress_shared(session.clone());
+        assert!(manager
+            .connect_all_in_workspace(&[cfg], workspace.path())
+            .await
+            .is_empty());
+        let client = manager.clients.get("fixture").unwrap().clone();
+
+        let before = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(before.contains("status=403"), "{before}");
+
+        session.grant_host("127.0.0.1");
+        let after = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(after.contains("status=200"), "{after}");
+
+        let events = session.drain_events();
+        assert!(
+            events
+                .iter()
+                .all(|e| e.label.as_deref() == Some("mcp:fixture")),
+            "{events:?}"
+        );
+        assert!(
+            events.iter().any(|e| e.allowed() && e.host == "127.0.0.1"),
+            "the granted connection must be logged: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| !e.allowed()),
+            "the refusal before the grant must be logged: {events:?}"
+        );
+    }
+
+    /// A server whose `fetch` tool runs the probe and flags the call failed
+    /// unless the probe reports `status=200`, and whose `tolerant` tool runs
+    /// the same probe but always reports success.
+    #[cfg(unix)]
+    fn fixture_server_flags_failures() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+probe="$1"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"tools\":[{\"name\":\"fetch\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"tolerant\",\"inputSchema\":{\"type\":\"object\"}}]}}"
+      ;;
+    *'"method":"tools/call"'*)
+      out=$(/bin/bash "$probe" 2>/dev/null | tr -d '"\\\n')
+      failed=false
+      case "$line" in
+        *'"name":"fetch"'*) case "$out" in *status=200*) ;; *) failed=true ;; esac ;;
+      esac
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}],"isError":%s}}\n' "$id" "$out" "$failed"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// A failed call during which the gateway refused a host is reported as
+    /// a host denial naming that host (what makes forge-core prompt for a
+    /// grant); a call that succeeded despite a refusal is returned as is.
+    /// Connections made during a call carry its call id.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_refused_host_during_a_failed_call_is_a_host_denial() {
+        if forge_tools::sandbox::availability().is_err() {
+            return; // covered by the fail-closed test above
+        }
+        let upstream = local_upstream().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "/usr/bin/curl -q -s -o /dev/null -w 'status=%{{http_code}}' --max-time 5 \
+                 --proxy \"$HTTP_PROXY\" http://127.0.0.1:{upstream}/\n"
+            ),
+        );
+        let server = fixture_server_flags_failures();
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+
+        let session = deny_all_egress();
+        let mut manager = McpManager::new().with_egress_shared(session.clone());
+        assert!(manager
+            .connect_all_in_workspace(&[cfg], workspace.path())
+            .await
+            .is_empty());
+        let mut registry = ToolRegistry::new();
+        manager.register_into(&mut registry).await.unwrap();
+        let fetch = registry.get("mcp:fixture:fetch").unwrap();
+        let tolerant = registry.get("mcp:fixture:tolerant").unwrap();
+        let ctx = |id: &str| ToolContext::new(workspace.path().to_path_buf()).with_tool_call_id(id);
+
+        let denied = fetch.call(&ctx("call-1"), json!({})).await;
+        let Err(ToolError::SandboxDenied {
+            content,
+            reason,
+            denied_host,
+        }) = denied
+        else {
+            panic!("a refused host must surface as a host denial: {denied:?}");
+        };
+        assert_eq!(denied_host.as_deref(), Some("127.0.0.1"));
+        assert!(content.contains("status=403"), "{content}");
+        assert!(reason.contains("MCP server `fixture`"), "{reason}");
+        assert!(reason.contains("127.0.0.1"), "{reason}");
+
+        let tolerated = tolerant.call(&ctx("call-2"), json!({})).await.unwrap();
+        assert!(!tolerated.is_error);
+        assert!(tolerated.content.contains("status=403"), "{tolerated:?}");
+
+        session.grant_host("127.0.0.1");
+        let granted = fetch.call(&ctx("call-3"), json!({})).await.unwrap();
+        assert!(!granted.is_error, "{granted:?}");
+        assert!(granted.content.contains("status=200"), "{granted:?}");
+
+        let events = session.drain_events();
+        let labelled = |label: &str| {
+            events
+                .iter()
+                .filter(|e| e.label.as_deref() == Some(label))
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            labelled("call-1").iter().all(|e| !e.allowed()) && !labelled("call-1").is_empty(),
+            "{events:?}"
+        );
+        assert!(!labelled("call-2").is_empty(), "{events:?}");
+        assert!(labelled("call-3").iter().any(|e| e.allowed()), "{events:?}");
+    }
+
+    #[test]
+    fn a_call_outcome_without_refusals_is_the_plain_result() {
+        let ok = McpCallOutcome {
+            result: Ok(ToolOutput::success("fine")),
+            denied_hosts: Vec::new(),
+        };
+        assert_eq!(ok.into_tool_result("s").unwrap().content, "fine");
+        let failed = McpCallOutcome {
+            result: Err(McpError::Protocol("boom".into())),
+            denied_hosts: Vec::new(),
+        };
+        assert!(matches!(
+            failed.into_tool_result("s"),
+            Err(ToolError::Execution(message)) if message.contains("boom")
+        ));
+    }
+
+    #[test]
+    fn a_protocol_error_after_a_refusal_is_a_host_denial() {
+        let outcome = McpCallOutcome {
+            result: Err(McpError::Protocol("upstream 403".into())),
+            denied_hosts: vec!["api.example.com".into(), "other.example".into()],
+        };
+        let Err(ToolError::SandboxDenied {
+            content,
+            denied_host,
+            ..
+        }) = outcome.into_tool_result("s")
+        else {
+            panic!("expected a host denial");
+        };
+        assert_eq!(denied_host.as_deref(), Some("api.example.com"));
+        assert!(content.contains("upstream 403"), "{content}");
+    }
+
+    /// Replacing the session policy in place (what the session does when it
+    /// applies the personal `host(...)` rules) reaches a running server.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_follows_a_policy_replacement() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let upstream = local_upstream().await;
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "/usr/bin/curl -q -s -o /dev/null -w 'status=%{{http_code}}' --max-time 5 \
+                 --proxy \"$HTTP_PROXY\" http://127.0.0.1:{upstream}/\n"
+            ),
+        );
+        let server = fixture_server_running();
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+
+        let session = deny_all_egress();
+        let client = McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &session)
+            .await
+            .unwrap();
+        let mut policy = EgressPolicy::new();
+        policy.allow("127.0.0.1");
+        session.replace_policy(policy);
+        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(report.contains("status=200"), "{report}");
+    }
+
+    /// A sandboxed server gets a private writable temp directory as
+    /// `TMPDIR`/`TMP`/`TEMP` — while a read-only workspace stays unwritable —
+    /// and the directory is removed when the client is dropped.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_writes_its_private_temp_dir_but_not_a_read_only_workspace() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "echo tmpdir=$TMPDIR\n\
+                 [ \"$TMP\" = \"$TMPDIR\" ] && [ \"$TEMP\" = \"$TMPDIR\" ] && echo same=yes\n\
+                 if (echo x > \"$TMPDIR/scratch\") 2>/dev/null; then echo tmp=ok; else echo tmp=denied; fi\n\
+                 if (echo x > '{}/written') 2>/dev/null; then echo ws=ok; else echo ws=denied; fi\n",
+                workspace.path().display()
+            ),
+        );
+        let server = fixture_server_running();
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+
+        let client =
+            McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+                .await
+                .unwrap();
+        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(report.contains("tmp=ok"), "{report}");
+        assert!(report.contains("same=yes"), "{report}");
+        assert!(report.contains("ws=denied"), "{report}");
+        assert!(!workspace.path().join("written").exists());
+        let tmpdir = report
+            .split("tmpdir=")
+            .nth(1)
+            .and_then(|rest| rest.split("same=").next())
+            .map(str::trim)
+            .unwrap()
+            .to_string();
+        assert!(
+            Path::new(&tmpdir).join("scratch").is_file(),
+            "{tmpdir:?}: {report}"
+        );
+        drop(client);
+        assert!(
+            !Path::new(&tmpdir).exists(),
+            "the temp dir is removed on drop"
+        );
+    }
+
+    /// A sandboxed server reads its own install directory and a configured
+    /// `sandbox_read_paths` directory, but not a sibling directory outside
+    /// them — the rest of a home tree stays denied.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_reads_configured_paths_but_not_the_rest_of_home() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let allowed = home.path().join(".npm");
+        let secret = home.path().join(".ssh");
+        std::fs::create_dir_all(&allowed).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(allowed.join("cached"), "cache").unwrap();
+        std::fs::write(secret.join("id_ed25519"), "key").unwrap();
+
+        let workspace = tempfile::tempdir().unwrap();
+        let server = fixture_server_running();
+        std::fs::write(server.path().join("server-data"), "own").unwrap();
+        let probe = write_probe(
+            workspace.path(),
+            &format!(
+                "cat '{}/cached' >/dev/null 2>&1 && echo cache=read || echo cache=denied\n\
+                 cat '{}/id_ed25519' >/dev/null 2>&1 && echo secret=read || echo secret=denied\n\
+                 cat '{}/server-data' >/dev/null 2>&1 && echo own=read || echo own=denied\n",
+                allowed.display(),
+                secret.display(),
+                server.path().display()
+            ),
+        );
+        let mut cfg = fixture_cfg(&server);
+        cfg.args = vec![probe];
+        cfg.sandbox = true;
+        cfg.sandbox_read_paths = vec![allowed.clone()];
+
+        let client =
+            McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+                .await
+                .unwrap();
+        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        assert!(report.contains("cache=read"), "{report}");
+        assert!(report.contains("own=read"), "{report}");
+        assert!(report.contains("secret=denied"), "{report}");
+    }
+
+    /// A configured read path that would expose the home directory refuses
+    /// the server rather than starting it with a narrower or wider profile.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandbox_read_paths_covering_home_refuse_the_server() {
+        if forge_tools::sandbox::availability().is_err() {
+            return;
+        }
+        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+            return;
+        };
+        let workspace = tempfile::tempdir().unwrap();
+        let server = fixture_server();
+        let mut cfg = fixture_cfg(&server);
+        cfg.sandbox = true;
+        cfg.sandbox_read_paths = vec![home];
+        match McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
+            .await
+        {
+            Err(McpError::Sandbox(message)) => {
+                assert!(message.contains("sandbox_read_paths"), "{message}")
+            }
+            Ok(_) => panic!("a read path exposing $HOME must refuse the server"),
+            Err(other) => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_install_dirs_cover_a_path_command_and_a_script_argument() {
+        let workspace = tempfile::tempdir().unwrap();
+        let bin = tempfile::tempdir().unwrap();
+        let command = bin.path().join("server");
+        std::fs::write(&command, "").unwrap();
+        std::fs::create_dir_all(workspace.path().join("srv")).unwrap();
+        std::fs::write(workspace.path().join("srv/index.js"), "").unwrap();
+        let cfg = McpServerConfig {
+            command: command.to_string_lossy().into_owned(),
+            args: vec!["srv/index.js".into(), "--flag".into()],
+            ..Default::default()
+        };
+        let dirs = server_install_dirs(&cfg, workspace.path());
+        assert_eq!(
+            dirs,
+            vec![
+                bin.path().canonicalize().unwrap(),
+                workspace.path().join("srv").canonicalize().unwrap(),
+            ]
+        );
+
+        let bare = McpServerConfig {
+            command: "node".into(),
+            args: vec!["--stdio".into()],
+            ..Default::default()
+        };
+        assert!(server_install_dirs(&bare, workspace.path()).is_empty());
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: &str) -> bool {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    /// Wait up to 5s for `pid` to go away. A killed process whose parent
+    /// died is briefly a zombie until init reaps it, hence the polling.
+    #[cfg(unix)]
+    async fn process_gone(pid: &str) -> bool {
+        for _ in 0..100 {
+            if !process_alive(pid) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// A grandchild the server forked is killed with the server when the
+    /// client is dropped — sandboxed or not.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn dropping_the_client_kills_the_servers_grandchildren() {
+        for sandboxed in [false, true] {
+            if sandboxed && forge_tools::sandbox::availability().is_err() {
+                continue;
+            }
+            let workspace = tempfile::tempdir().unwrap();
+            let probe = write_probe(
+                workspace.path(),
+                "/bin/sleep 300 >/dev/null 2>&1 &\necho grandchild=$!\n",
+            );
+            let server = fixture_server_running();
+            let mut cfg = fixture_cfg(&server);
+            cfg.args = vec![probe];
+            cfg.sandbox = sandboxed;
+
+            let client = McpStdioClient::spawn_with_workspace(
+                &cfg,
+                Some(workspace.path()),
+                &deny_all_egress(),
+            )
+            .await
+            .unwrap();
+            let report = client.call_tool("probe", json!({})).await.unwrap().content;
+            let pid = report
+                .split("grandchild=")
+                .nth(1)
+                .map(|rest| {
+                    rest.chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect::<String>()
+                })
+                .filter(|pid| !pid.is_empty())
+                .unwrap_or_else(|| panic!("no grandchild pid: {report}"));
+            assert!(
+                process_alive(&pid),
+                "grandchild {pid} should be running before the drop"
+            );
+            drop(client);
+            assert!(
+                process_gone(&pid).await,
+                "grandchild {pid} survived the client (sandboxed={sandboxed})"
+            );
+        }
     }
 
     #[tokio::test]

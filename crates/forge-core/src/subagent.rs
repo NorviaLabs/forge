@@ -150,7 +150,6 @@ impl AgentSession {
                 let mut ctx = ToolContext::new(workspace)
                     .with_session_id(session_id)
                     .with_session_tmp(session_tmp);
-                ctx.unconfined_shell = self.approve_all;
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx
             },
@@ -161,6 +160,7 @@ impl AgentSession {
             enable_gov: self.enable_gov,
             approve_all: self.approve_all,
             workspace_trusted: self.workspace_trusted,
+            audit: crate::audit::SessionAudit::default(),
             cancel_token: Some(cancel_token),
             turn_cancel_token: CancellationToken::new(),
             token_usage: SessionTokenUsage::default(),
@@ -262,7 +262,6 @@ impl AgentSession {
                 let mut ctx = ToolContext::new(workspace)
                     .with_session_id(session_id)
                     .with_session_tmp(session_tmp);
-                ctx.unconfined_shell = self.approve_all;
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx
             },
@@ -273,6 +272,7 @@ impl AgentSession {
             enable_gov: self.enable_gov,
             approve_all: self.approve_all,
             workspace_trusted: self.workspace_trusted,
+            audit: crate::audit::SessionAudit::default(),
             cancel_token: Some(cancel_token),
             turn_cancel_token: CancellationToken::new(),
             token_usage,

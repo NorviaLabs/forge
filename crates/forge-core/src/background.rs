@@ -666,8 +666,8 @@ async fn run_shell_job(
     workspace_root: std::path::PathBuf,
     egress: Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>>,
     session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
-    unconfined: bool,
     capture: Arc<forge_tools::ShellOutputCapture>,
+    call_id: Option<String>,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
     // calling the grantless variant, so a background `cargo build` was confined
@@ -675,17 +675,17 @@ async fn run_shell_job(
     // difference with no reason behind it, and one that would have surfaced as
     // a mysteriously failing build rather than as a permission decision.
     //
-    // Under approve-all the foreground runs unconfined; the background job must
-    // match, or a sandbox denial here would raise an approval prompt the mode
-    // is meant to remove.
+    // Always confined, approve-all included: approve-all answers prompts, it
+    // does not take the sandbox away.
     let tmp = session_tmp.as_deref().map(|temp| temp.path());
     let result = forge_tools::run_shell_command_observed(
         &command,
         &workspace_root,
         egress.as_deref(),
         tmp,
-        unconfined,
+        false,
         capture,
+        call_id.as_deref(),
     )
     .await;
     match result {
@@ -793,6 +793,19 @@ impl AgentSession {
         command: String,
         label: String,
     ) -> Result<BackgroundTaskId, LoopError> {
+        self.spawn_background_shell_for_call(command, label, None)
+            .await
+    }
+
+    /// As [`Self::spawn_background_shell`], for a job started by the tool
+    /// call `call_id`: the job's egress gateway is labelled with it, so its
+    /// connections land in the audit trail correlated to that call.
+    pub(crate) async fn spawn_background_shell_for_call(
+        &mut self,
+        command: String,
+        label: String,
+        call_id: Option<String>,
+    ) -> Result<BackgroundTaskId, LoopError> {
         let cancel = CancellationToken::new();
         let id = self.tasks.background.spawn_slot(
             BackgroundTaskKind::Shell {
@@ -825,10 +838,9 @@ impl AgentSession {
         });
         let egress = self.tool_ctx.egress.clone();
         let session_tmp = self.tool_ctx.session_tmp.clone();
-        let unconfined = self.approve_all;
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(command, workspace_root, egress, session_tmp, unconfined, capture) => outcome,
+                outcome = run_shell_job(command, workspace_root, egress, session_tmp, capture, call_id) => outcome,
                 // Dropping the job future on cancel drops the shell spawn's
                 // process-group guard, which kills the whole tree — not just
                 // the direct child — so no side effect runs after cancel.
@@ -1046,7 +1058,11 @@ impl AgentSession {
                     .label
                     .unwrap_or_else(|| crate::truncate(&args.command, 40));
                 let id = self
-                    .spawn_background_shell(args.command, label.clone())
+                    .spawn_background_shell_for_call(
+                        args.command,
+                        label.clone(),
+                        Some(call.id.clone()),
+                    )
                     .await?;
                 forge_types::ToolOutput::success(format!(
                     "Started background task #{} ('{label}'). You'll see the result once it finishes.",
@@ -1528,8 +1544,6 @@ mod tests {
             let dir = tempdir().unwrap();
             let marker = dir.path().join("bg-marker");
             let mut s = session(dir.path()).await;
-            // Approve-all runs the background job unconfined so the test never
-            // depends on a sandbox being installed on the host.
             s.set_workspace_trusted(true);
             assert!(s.set_approve_all(true));
             // The marker writer is a grandchild; only a process-group kill
@@ -1569,6 +1583,49 @@ mod tests {
                 .background()
                 .get(id)
                 .is_some_and(|task| task.status == super::BackgroundTaskStatus::Cancelled));
+        }
+
+        /// A job started by a `background_run` call reaches the network
+        /// through a gateway labelled with that call's id, so its
+        /// connections appear in the audit trail correlated to the call.
+        #[tokio::test]
+        async fn a_background_jobs_egress_is_audited_under_its_call_id() {
+            if forge_tools::sandbox::availability().is_err() {
+                return; // a background shell always runs confined
+            }
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            s.adopt_egress_state(forge_tools::egress::EgressShared::new(
+                forge_tools::egress::EgressPolicy::new(),
+                Default::default(),
+            ))
+            .await;
+            if s.egress_grant().is_none() {
+                return; // this host cannot start the gateway
+            }
+            let call = ToolCall {
+                id: "call-bg".into(),
+                name: "background_run".into(),
+                arguments: serde_json::json!({
+                    "command": "curl -q -s -o /dev/null --max-time 5 \
+                                --proxy \"$HTTP_PROXY\" http://blocked.example/",
+                    "label": "fetch",
+                }),
+            };
+            s.dispatch_background_run(&call).await.unwrap();
+            let id = s.background().list().next().unwrap().id;
+            wait_terminal(&mut s, id).await;
+
+            let rows = s.audit_events().await.unwrap();
+            let egress = rows
+                .iter()
+                .find(|row| {
+                    row.kind == forge_durable::AuditKind::Egress
+                        && row.detail["host"] == "blocked.example"
+                })
+                .unwrap_or_else(|| panic!("the job's refusal must be audited: {rows:#?}"));
+            assert_eq!(egress.call_id.as_deref(), Some("call-bg"));
+            assert_eq!(egress.detail["outcome"], "denied");
         }
 
         #[tokio::test]

@@ -31,14 +31,16 @@
 //! per-platform routing and is deliberately not decided here — see
 //! `EgressProxy::addr`.
 
+use std::collections::VecDeque;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 /// Hosts a confined process may reach.
@@ -59,6 +61,92 @@ pub struct EgressPolicy {
 }
 
 pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
+
+/// Reason phrase when a permitted name resolves to a non-public address.
+///
+/// Distinct from [`SANDBOX_DENIED_REASON`] (which it extends, so output-based
+/// detection still classifies it as a sandbox refusal) because a host grant
+/// cannot fix it: the name was allowed, the address it resolved to was not.
+pub const PRIVATE_ADDRESS_DENIED_REASON: &str = "Forge Sandbox Denied: private address";
+
+/// How long the gateway waits for name resolution plus the upstream dial.
+pub const EGRESS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A tunnel that carries no bytes in either direction for this long is closed
+/// on both sides, so an abandoned connection cannot pin a socket forever.
+pub const EGRESS_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Connection records kept in memory before the oldest are dropped.
+pub const EGRESS_EVENT_CAPACITY: usize = 1024;
+
+/// Gateway behaviour that is not part of the host policy.
+#[derive(Debug, Clone, Copy)]
+pub struct EgressOptions {
+    pub connect_timeout: Duration,
+    pub idle_timeout: Duration,
+    /// Permit loopback/private/link-local destinations even when the allow
+    /// pattern does not name the host exactly. Off in production; exists for
+    /// hermetic tests whose upstream is a loopback listener behind a name.
+    pub allow_private_destinations: bool,
+}
+
+impl Default for EgressOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: EGRESS_CONNECT_TIMEOUT,
+            idle_timeout: EGRESS_IDLE_TIMEOUT,
+            allow_private_destinations: false,
+        }
+    }
+}
+
+/// What the gateway did with one CONNECT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressOutcome {
+    /// Tunnel established; the event closes when the tunnel does.
+    Allowed,
+    /// Refused before any upstream socket was opened.
+    Denied(EgressDenial),
+    /// Permitted, but resolution or the dial failed or timed out.
+    UpstreamFailed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressDenial {
+    /// The host policy does not permit the name.
+    Policy,
+    /// The name is permitted but resolved to a non-public address.
+    PrivateAddress,
+}
+
+/// One CONNECT decision and, when tunnelled, its traffic totals.
+#[derive(Debug, Clone)]
+pub struct EgressEvent {
+    /// Attribution supplied by the invocation (the tool call id), if any.
+    pub label: Option<String>,
+    pub host: String,
+    pub port: u16,
+    pub outcome: EgressOutcome,
+    /// The address actually dialled — the one that passed the address check.
+    pub upstream: Option<SocketAddr>,
+    /// Client to upstream.
+    pub bytes_up: u64,
+    /// Upstream to client.
+    pub bytes_down: u64,
+    pub duration: Duration,
+}
+
+impl EgressEvent {
+    pub fn allowed(&self) -> bool {
+        self.outcome == EgressOutcome::Allowed
+    }
+}
+
+#[derive(Debug, Default)]
+struct EgressEventLog {
+    events: VecDeque<EgressEvent>,
+    dropped: u64,
+}
 
 /// Explanation attached when the proxy refused a host, even if the client
 /// printed something else (HTTP 403, "token invalid", "Forbidden", …).
@@ -252,24 +340,158 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
 pub struct EgressShared {
     policy: Arc<RwLock<EgressPolicy>>,
     denied: Arc<Mutex<Vec<String>>>,
+    /// Hosts refused because they resolved to a non-public address. Kept
+    /// apart from `denied` because a host grant cannot fix these, so they
+    /// must never become a grant prompt.
+    private_denied: Arc<Mutex<Vec<String>>>,
+    /// Session-wide connection log, shared by every invocation.
+    events: Arc<Mutex<EgressEventLog>>,
+    options: EgressOptions,
+    label: Option<Arc<str>>,
+    /// Attribution that overrides `label` while it is set: a long-lived
+    /// endpoint (an MCP server's) names the tool call in flight, so its
+    /// connections correlate with that call rather than only the server.
+    call_label: Arc<Mutex<Option<Arc<str>>>>,
 }
 
 impl EgressShared {
-    fn new(policy: EgressPolicy) -> Self {
+    /// Fresh live state: `policy`, an empty refusal queue and an empty event
+    /// log. A caller that needs several listeners (the session proxy and the
+    /// MCP servers' endpoints) on one state builds it once and starts each
+    /// listener from it, so a grant reaches all of them at once.
+    pub fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),
+            private_denied: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::new(Mutex::new(EgressEventLog::default())),
+            options,
+            label: None,
+            call_label: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Share live policy updates while keeping refusal attribution local to
     /// one command. Session-global refusal storage lets a swallowed denial
-    /// poison whichever unrelated command happens to fail next.
-    fn for_invocation(&self) -> Self {
+    /// poison whichever unrelated command happens to fail next. The event log
+    /// stays shared: it is attributed by label, not by queue.
+    fn for_invocation(&self, label: Option<&str>) -> Self {
         Self {
             policy: Arc::clone(&self.policy),
             denied: Arc::new(Mutex::new(Vec::new())),
+            private_denied: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::clone(&self.events),
+            options: self.options,
+            label: label.map(Arc::from),
+            call_label: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// The attribution label connections through this endpoint carry when
+    /// no call label is set.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Attribute connections opened from now on to `label` (a tool call id)
+    /// instead of [`Self::label`]; `None` restores the endpoint's own label.
+    pub fn set_call_label(&self, label: Option<&str>) {
+        *self
+            .call_label
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = label.map(Arc::from);
+    }
+
+    /// The label a connection opened now is recorded under.
+    fn attribution(&self) -> Option<String> {
+        self.call_label
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_deref()
+            .or(self.label.as_deref())
+            .map(str::to_string)
+    }
+
+    /// Take every recorded connection event, oldest first.
+    pub fn drain_events(&self) -> Vec<EgressEvent> {
+        let mut log = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        log.events.drain(..).collect()
+    }
+
+    /// Events discarded because the log was full, over this log's life.
+    pub fn dropped_events(&self) -> u64 {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dropped
+    }
+
+    fn record_event(&self, event: EgressEvent) {
+        match &event.outcome {
+            EgressOutcome::Allowed => tracing::info!(
+                target: "forge::egress",
+                label = event.label.as_deref().unwrap_or(""),
+                host = %event.host,
+                port = event.port,
+                upstream = ?event.upstream,
+                bytes_up = event.bytes_up,
+                bytes_down = event.bytes_down,
+                duration_ms = event.duration.as_millis() as u64,
+                "egress tunnel closed"
+            ),
+            outcome => tracing::info!(
+                target: "forge::egress",
+                label = event.label.as_deref().unwrap_or(""),
+                host = %event.host,
+                port = event.port,
+                outcome = ?outcome,
+                duration_ms = event.duration.as_millis() as u64,
+                "egress connect refused"
+            ),
+        }
+        let mut log = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if log.events.len() >= EGRESS_EVENT_CAPACITY {
+            log.events.pop_front();
+            log.dropped += 1;
+        }
+        log.events.push_back(event);
+    }
+
+    /// Whether a non-public destination is acceptable for `host`.
+    ///
+    /// Only when an allow pattern names the host exactly (an IP literal,
+    /// `localhost`, or a hand-written exact name). A wildcard or `*` grant is
+    /// about a family of public names; letting it reach loopback would turn
+    /// any name that resolves to 127.0.0.1 or a metadata address into a way
+    /// onto the host's own services.
+    fn private_destination_permitted(&self, host: &str) -> bool {
+        if self.options.allow_private_destinations {
+            return true;
+        }
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow_patterns()
+            .iter()
+            .any(|pattern| pattern == &host)
+    }
+
+    /// Replace the host policy in place. Every listener on this state (and
+    /// every invocation endpoint derived from it) enforces the new policy on
+    /// its next CONNECT; grants made with [`Self::grant_host`] are discarded
+    /// with the old policy. The event log is kept.
+    pub fn replace_policy(&self, policy: EgressPolicy) {
+        *self
+            .policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
     }
 
     /// Permit `pattern` for the rest of this proxy's life.
@@ -290,6 +512,14 @@ impl EgressShared {
         host
     }
 
+    /// Every host refused since the last take, oldest first, left queued.
+    pub fn denied_hosts(&self) -> Vec<String> {
+        self.denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     pub fn permits_host(&self, host: &str) -> bool {
         self.permits(host)
     }
@@ -300,6 +530,25 @@ impl EgressShared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .allow_patterns()
             .to_vec()
+    }
+
+    /// The first host refused for resolving to a non-public address since
+    /// the last take, clearing the queue.
+    pub fn take_private_address_denial(&self) -> Option<String> {
+        let mut denied = self
+            .private_denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let host = denied.first().cloned();
+        denied.clear();
+        host
+    }
+
+    fn record_private_denied(&self, host: String) {
+        self.private_denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(host);
     }
 
     pub fn record_denied(&self, host: String) {
@@ -343,10 +592,20 @@ impl Drop for EgressProxy {
 impl EgressProxy {
     /// Bind to an ephemeral port on loopback and start serving.
     pub async fn start(policy: EgressPolicy) -> io::Result<Self> {
-        Self::start_with_shared(EgressShared::new(policy)).await
+        Self::start_with_options(policy, EgressOptions::default()).await
     }
 
-    async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
+    /// As [`Self::start`], with non-default timeouts or address rules.
+    pub async fn start_with_options(
+        policy: EgressPolicy,
+        options: EgressOptions,
+    ) -> io::Result<Self> {
+        Self::start_with_shared(EgressShared::new(policy, options)).await
+    }
+
+    /// Serve `shared` — an existing live state — on a new loopback listener.
+    /// Grants, refusals and events are those of `shared`, not a copy.
+    pub async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
         let addr = listener.local_addr()?;
 
@@ -426,6 +685,15 @@ impl EgressProxy {
         self.socket_path.as_deref()
     }
 
+    /// The loopback TCP listener (`127.0.0.1`, ephemeral port).
+    ///
+    /// Same listener as [`Self::addr`], named for in-process and host-side
+    /// callers that route through the gateway rather than the sandbox's
+    /// proxy port.
+    pub fn tcp_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
     /// Where the proxy is listening.
     ///
     /// Pointing a process at this address is *not* enforcement on its own — a
@@ -453,9 +721,17 @@ static NEXT_INVOCATION_SOCKET: AtomicU64 = AtomicU64::new(1);
 /// the retry. The listener and denied-host queue do not: concurrent commands
 /// cannot steal each other's refusal, and a command that masks its own exit
 /// status cannot leave a host behind for the next failure.
+///
+/// Two modes share the same listener and queue. A confined shell gets a
+/// sandbox mode endpoint ([`Self::start_labeled`]): loopback TCP plus a Unix
+/// socket, described by a [`crate::sandbox::EgressGrant`] the sandbox policy
+/// consumes. An in-process or host-side tool gets TCP mode
+/// ([`Self::start_tcp_labeled`]): loopback TCP only, with no socket file and no
+/// grant, because nothing confines the caller. Both stop listening on drop.
 pub struct EgressInvocation {
-    _proxy: EgressProxy,
-    grant: crate::sandbox::EgressGrant,
+    proxy: EgressProxy,
+    /// Present in sandbox mode only.
+    grant: Option<crate::sandbox::EgressGrant>,
 }
 
 impl EgressInvocation {
@@ -463,10 +739,27 @@ impl EgressInvocation {
     /// without live proxy control are test doubles and retain their original
     /// endpoint.
     pub async fn start(template: Option<&crate::sandbox::EgressGrant>) -> io::Result<Option<Self>> {
+        Self::start_labeled(template, None).await
+    }
+
+    /// As [`Self::start`], attributing every connection to `label` (the tool
+    /// call id) in the session's event log.
+    pub async fn start_labeled(
+        template: Option<&crate::sandbox::EgressGrant>,
+        label: Option<&str>,
+    ) -> io::Result<Option<Self>> {
         let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
             return Ok(None);
         };
-        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation()).await?;
+        Self::start_for_shared(shared, label).await.map(Some)
+    }
+
+    /// A sandbox mode endpoint (loopback TCP plus a Unix socket) on the live
+    /// state `shared`: its policy, grants and event log, with a refusal queue
+    /// of its own and every connection attributed to `label`. For a confined
+    /// process that is not a shell call, such as a long-lived MCP server.
+    pub async fn start_for_shared(shared: &EgressShared, label: Option<&str>) -> io::Result<Self> {
+        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket_path =
             std::path::Path::new("/tmp").join(format!("f{}-{sequence}.sock", std::process::id()));
@@ -476,22 +769,206 @@ impl EgressInvocation {
             socket_path,
             control: Some(proxy.shared().clone()),
         };
-        Ok(Some(Self {
-            _proxy: proxy,
-            grant,
-        }))
+        Ok(Self {
+            proxy,
+            grant: Some(grant),
+        })
     }
 
-    pub fn grant(&self) -> &crate::sandbox::EgressGrant {
-        &self.grant
+    /// A TCP-only endpoint (`127.0.0.1`, ephemeral port) for a caller that
+    /// is not confined: an in-process tool or a host process it spawns. Same
+    /// session policy, its own denied-host queue, connections attributed to
+    /// `label`. `None` when `template` has no live proxy behind it.
+    pub async fn start_tcp_labeled(
+        template: Option<&crate::sandbox::EgressGrant>,
+        label: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
+            return Ok(None);
+        };
+        let proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
+        Ok(Some(Self { proxy, grant: None }))
     }
 
+    /// The grant a sandbox policy consumes. `None` in TCP mode, which has no
+    /// socket for a sandbox to mount.
+    pub fn grant(&self) -> Option<&crate::sandbox::EgressGrant> {
+        self.grant.as_ref()
+    }
+
+    /// The loopback TCP listener, in either mode.
+    pub fn tcp_addr(&self) -> SocketAddr {
+        self.proxy.tcp_addr()
+    }
+
+    /// The first host this endpoint refused since the last take, clearing
+    /// the queue.
     pub fn take_denied_host(&self) -> Option<String> {
-        self.grant.take_denied_host()
+        self.proxy.shared().take_denied_host()
+    }
+
+    /// Every host this endpoint refused since the last take, oldest first,
+    /// without clearing the queue.
+    pub fn denied_hosts(&self) -> Vec<String> {
+        self.proxy.shared().denied_hosts()
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.proxy.shared().label()
+    }
+
+    /// Attribute this endpoint's connections to `label` until it is cleared
+    /// with `None`. See [`EgressShared::set_call_label`].
+    pub fn set_call_label(&self, label: Option<&str>) {
+        self.proxy.shared().set_call_label(label);
     }
 }
 
+/// The gateway endpoint for one in-process or host-side tool call.
+///
+/// Tools that open their own connections (`web_fetch`, host `git`) do not
+/// run inside the sandbox, so nothing forces their traffic anywhere. Routing
+/// them through this endpoint is what puts them under the same policy,
+/// address check, DNS pinning, timeouts and event log as a confined shell:
+/// point the client's proxy at [`Self::proxy_url`] (plain HTTP is forwarded,
+/// HTTPS is tunnelled with CONNECT), or for SSH use
+/// `ssh -o ProxyCommand="<forge exe> __egress-connect 127.0.0.1:PORT %h %p"`.
+///
+/// A gateway refusal is a 403 to the client. The refused host is queued here,
+/// so the tool can turn the failure into a host-grant prompt with
+/// [`Self::sandbox_denied`] rather than guessing a host from client output.
+///
+/// Works the same on macOS and Linux: it is a loopback listener in this
+/// process, with no sandbox involved. Dropping it stops listening.
+pub struct CallGateway {
+    invocation: EgressInvocation,
+}
+
+impl std::fmt::Debug for CallGateway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallGateway")
+            .field("addr", &self.addr())
+            .field("label", &self.label())
+            .finish()
+    }
+}
+
+impl CallGateway {
+    /// Start an endpoint sharing `grant`'s session policy, attributed to
+    /// `label` (the tool call id). `None` when there is no grant, or the
+    /// grant has no live proxy behind it: the caller keeps its direct path.
+    pub async fn start(
+        grant: Option<&crate::sandbox::EgressGrant>,
+        label: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        Ok(EgressInvocation::start_tcp_labeled(grant, label)
+            .await?
+            .map(|invocation| Self { invocation }))
+    }
+
+    /// The loopback listener (`127.0.0.1`, ephemeral port).
+    pub fn addr(&self) -> SocketAddr {
+        self.invocation.tcp_addr()
+    }
+
+    /// `http://127.0.0.1:PORT`, for `HTTP_PROXY`/`HTTPS_PROXY` or a client's
+    /// proxy setting.
+    pub fn proxy_url(&self) -> String {
+        format!("http://{}", self.addr())
+    }
+
+    pub fn label(&self) -> Option<&str> {
+        self.invocation.label()
+    }
+
+    /// Whether the live session policy currently permits `host`.
+    pub fn permits_host(&self, host: &str) -> bool {
+        self.invocation.proxy.shared().permits_host(host)
+    }
+
+    /// Hosts this call's endpoint refused, oldest first, without clearing.
+    pub fn denied_hosts(&self) -> Vec<String> {
+        self.invocation.denied_hosts()
+    }
+
+    /// The first refused host, clearing the queue.
+    pub fn take_denied_host(&self) -> Option<String> {
+        self.invocation.take_denied_host()
+    }
+
+    /// The first host this endpoint refused for resolving to a non-public
+    /// address, clearing that queue. Recorded by the gateway itself, so a
+    /// caller can tell this refusal from an upstream's own 403 without
+    /// trusting response content. Never a grant prompt: no grant fixes it.
+    pub fn take_private_address_denial(&self) -> Option<String> {
+        self.invocation.proxy.shared().take_private_address_denial()
+    }
+
+    /// When this endpoint refused a host, the structured denial that makes
+    /// forge-core prompt for a host grant and retry the call. `content` is
+    /// what the tool would otherwise have reported; the explanation is
+    /// appended. Consumes the queued host. `None` when nothing was refused,
+    /// so an ordinary upstream 403 stays an ordinary failure.
+    pub fn sandbox_denied(&self, content: &str) -> Option<crate::ToolError> {
+        let host = self.take_denied_host()?;
+        let reason = HOST_DENIED_EXPLANATION.to_string();
+        let mut reported = content.to_string();
+        if !reported.contains(&reason) {
+            if !reported.is_empty() {
+                reported.push('\n');
+            }
+            reported.push_str(&reason);
+        }
+        Some(crate::ToolError::SandboxDenied {
+            content: reported,
+            reason,
+            denied_host: Some(host),
+        })
+    }
+}
+
+/// Upper bound on a request or response head the gateway parses. Anything
+/// larger is refused rather than buffered without limit.
+const MAX_HEAD_BYTES: usize = 64 * 1024;
+
+/// What a client asked the gateway to do, once its head parsed.
+#[derive(Debug, PartialEq, Eq)]
+enum ProxyRequest {
+    /// `CONNECT host:port` — an opaque tunnel.
+    Connect { host: String, port: u16 },
+    /// An absolute-form plain-HTTP request (`GET http://host/path HTTP/1.1`),
+    /// rewritten to origin-form and forwarded.
+    Forward(ForwardRequest),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ForwardRequest {
+    method: String,
+    host: String,
+    port: u16,
+    /// Origin-form target (`/path?query`), never empty.
+    path: String,
+    version: String,
+}
+
 /// Handle one client, whatever transport it arrived on.
+///
+/// Two request shapes are served, and both meet the same gateway: the host
+/// policy, the address check with pinned resolution, the timeouts,
+/// attribution and the event log.
+///
+/// * `CONNECT host:port` opens a byte tunnel. This is how HTTPS (and SSH via
+///   `forge __egress-connect`) leaves; the gateway never sees the plaintext.
+/// * An absolute-form plain-HTTP request (`GET http://host[:port]/path`, any
+///   method) is forwarded: rewritten to origin-form with hop-by-hop and
+///   `Proxy-*` headers stripped, sent once to the pinned upstream with
+///   `Connection: close`, and the response streamed back. Plain HTTP is
+///   plaintext on the wire anyway, so forwarding it needs no interception.
+///   One request per client connection keeps the parser out of the response
+///   body. Confined shells already get `HTTP_PROXY` pointing here, so
+///   `curl http://…` from a sandbox works through this path too.
+///
+/// Anything else is a 400.
 ///
 /// The stream is split *before* buffering so the read half can be buffered
 /// while the write half stays usable. Wrapping the whole stream and later
@@ -500,57 +977,638 @@ async fn serve<S>(client: S, shared: EgressShared) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
 {
+    let started = Instant::now();
     let (read_half, mut write_half) = tokio::io::split(client);
     let mut reader = BufReader::new(read_half);
 
-    let mut request = String::new();
-    reader.read_line(&mut request).await?;
-
-    let Some(target) = parse_connect(&request) else {
-        return respond(&mut write_half, 400, "Bad Request", None).await;
+    let Some(head) = read_head(&mut reader).await? else {
+        return respond(&mut write_half, 400, "Bad Request", "").await;
+    };
+    let Some((request, headers)) = parse_request(&head) else {
+        return respond(&mut write_half, 400, "Bad Request", "").await;
+    };
+    let (host, port) = match &request {
+        ProxyRequest::Connect { host, port } => (host.clone(), *port),
+        ProxyRequest::Forward(forward) => (forward.host.clone(), forward.port),
+    };
+    let attempt = Attempt {
+        shared: &shared,
+        label: shared.attribution(),
+        host: &host,
+        port,
+        started,
     };
 
-    // Drain the remaining request headers before replying.
-    let mut header = String::new();
+    let Some((upstream, upstream_addr)) = attempt.open_upstream(&mut write_half).await? else {
+        return Ok(());
+    };
+    let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
+
+    match request {
+        ProxyRequest::Connect { .. } => {
+            if let Err(error) = write_half
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+            {
+                attempt.record(EgressOutcome::Allowed, Some(upstream_addr), 0, 0);
+                return Err(error);
+            }
+
+            // From here the proxy copies bytes and never sees the plaintext.
+            let (up, down) = relay(
+                reader,
+                write_half,
+                upstream_read,
+                upstream_write,
+                shared.options.idle_timeout,
+            )
+            .await;
+            attempt.record(EgressOutcome::Allowed, Some(upstream_addr), up, down);
+        }
+        ProxyRequest::Forward(forward) => {
+            let request_head = forward.head(headers);
+            if let Err(error) = upstream_write.write_all(request_head.as_bytes()).await {
+                attempt.record(
+                    EgressOutcome::UpstreamFailed(format!("write {upstream_addr}: {error}")),
+                    None,
+                    0,
+                    0,
+                );
+                return respond(&mut write_half, 502, "Bad Gateway", "").await;
+            }
+            // Whatever the client sends after its head (the body, framed by
+            // its own Content-Length or chunking) is copied verbatim, exactly
+            // as a tunnel would — only to the host the policy already passed.
+            let (up, down) = relay_forward(
+                reader,
+                write_half,
+                upstream_read,
+                upstream_write,
+                shared.options.idle_timeout,
+            )
+            .await;
+            attempt.record(
+                EgressOutcome::Allowed,
+                Some(upstream_addr),
+                request_head.len() as u64 + up,
+                down,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One destination decision, attributed and timed from the client's arrival.
+struct Attempt<'a> {
+    shared: &'a EgressShared,
+    /// Captured when the client arrives, so a tunnel that outlives a call
+    /// label is still recorded under the call that opened it.
+    label: Option<String>,
+    host: &'a str,
+    port: u16,
+    started: Instant,
+}
+
+impl Attempt<'_> {
+    fn record(&self, outcome: EgressOutcome, upstream: Option<SocketAddr>, up: u64, down: u64) {
+        self.shared.record_event(EgressEvent {
+            label: self.label.clone(),
+            host: self.host.to_string(),
+            port: self.port,
+            outcome,
+            upstream,
+            bytes_up: up,
+            bytes_down: down,
+            duration: self.started.elapsed(),
+        });
+    }
+
+    /// Apply the policy and the address check, then dial a checked address.
+    ///
+    /// On any refusal or failure the client has already been answered and the
+    /// event recorded, and `None` is returned. Both request shapes go through
+    /// here, so plain HTTP cannot be a way around a rule CONNECT obeys.
+    async fn open_upstream<W>(&self, client: &mut W) -> io::Result<Option<(TcpStream, SocketAddr)>>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let (shared, host, port) = (self.shared, self.host, self.port);
+        if !shared.permits(host) {
+            shared.record_denied(host.to_string());
+            self.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
+            let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
+            respond(client, 403, SANDBOX_DENIED_REASON, &body).await?;
+            return Ok(None);
+        }
+
+        // Resolve here, check every address, and dial only what was checked.
+        // A second resolution by the dialler is a rebinding window: the name
+        // could answer with a public address for the check and loopback for
+        // the dial.
+        let deadline = tokio::time::Instant::now() + shared.options.connect_timeout;
+        let addrs = match tokio::time::timeout_at(deadline, resolve(host, port)).await {
+            Ok(Ok(addrs)) => addrs,
+            Ok(Err(error)) => {
+                self.record(
+                    EgressOutcome::UpstreamFailed(format!("resolve: {error}")),
+                    None,
+                    0,
+                    0,
+                );
+                respond(client, 502, "Bad Gateway", "").await?;
+                return Ok(None);
+            }
+            Err(_) => {
+                self.record(
+                    EgressOutcome::UpstreamFailed("resolve timed out".into()),
+                    None,
+                    0,
+                    0,
+                );
+                respond(client, 504, "Gateway Timeout", "").await?;
+                return Ok(None);
+            }
+        };
+
+        if addrs.iter().any(|addr| !is_public_address(addr.ip()))
+            && !shared.private_destination_permitted(host)
+        {
+            // Not queued as a denied host: a host grant cannot fix this, so
+            // it must not turn into a grant prompt. It is queued separately
+            // so an in-process caller can report it as what it is.
+            shared.record_private_denied(host.to_string());
+            self.record(
+                EgressOutcome::Denied(EgressDenial::PrivateAddress),
+                None,
+                0,
+                0,
+            );
+            let body = format!(
+                "{PRIVATE_ADDRESS_DENIED_REASON}: host {host} resolves to a non-public address\n"
+            );
+            respond(client, 403, PRIVATE_ADDRESS_DENIED_REASON, &body).await?;
+            return Ok(None);
+        }
+
+        let mut failure = String::from("no address");
+        for addr in &addrs {
+            match tokio::time::timeout_at(deadline, TcpStream::connect(addr)).await {
+                Ok(Ok(stream)) => return Ok(Some((stream, *addr))),
+                Ok(Err(error)) => failure = format!("connect {addr}: {error}"),
+                Err(_) => {
+                    failure = format!("connect {addr}: timed out");
+                    break;
+                }
+            }
+        }
+        self.record(EgressOutcome::UpstreamFailed(failure), None, 0, 0);
+        respond(client, 502, "Bad Gateway", "").await?;
+        Ok(None)
+    }
+}
+
+/// Read a head up to and including its blank line, as lines without their
+/// line endings. `None` when it is larger than [`MAX_HEAD_BYTES`] or is not
+/// UTF-8. End of stream ends the head early, which leaves an incomplete
+/// request for the parser to reject.
+async fn read_head<R>(reader: &mut R) -> io::Result<Option<Vec<String>>>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let mut lines = Vec::new();
+    let mut total = 0usize;
     loop {
-        header.clear();
-        let read = reader.read_line(&mut header).await?;
-        if read == 0 || header.trim().is_empty() {
+        let mut line = Vec::new();
+        let limit = (MAX_HEAD_BYTES - total) as u64;
+        let read = (&mut *reader)
+            .take(limit)
+            .read_until(b'\n', &mut line)
+            .await?;
+        if read == 0 {
             break;
+        }
+        total += read;
+        let Ok(line) = String::from_utf8(line) else {
+            return Ok(None);
+        };
+        let line = line.strip_suffix('\n').unwrap_or(&line);
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if total >= MAX_HEAD_BYTES {
+            return Ok(None);
+        }
+        lines.push(line.to_string());
+    }
+    Ok(Some(lines))
+}
+
+/// Parse a request head into what to do and the header lines that follow
+/// the request line. `None` is a 400.
+fn parse_request(head: &[String]) -> Option<(ProxyRequest, &[String])> {
+    let (line, headers) = head.split_first()?;
+    if let Some(target) = parse_connect(line) {
+        // Parse once, then dial the parsed parts. Deriving a host for the
+        // policy check while dialling the original string lets the two
+        // disagree, and a target the policy never saw is a bypass however it
+        // is spelled — an earlier version approved `[crates.io]:443` as
+        // `crates.io` and then dialled the bracketed form.
+        let (host, port) = split_host_port(&target)?;
+        return Some((ProxyRequest::Connect { host, port }, headers));
+    }
+    let forward = parse_absolute_form(line)?;
+    // Validate the headers before the policy runs, so a malformed request is
+    // a 400 whatever its destination.
+    forward_headers(headers)?;
+    Some((ProxyRequest::Forward(forward), headers))
+}
+
+/// `METHOD http://host[:port][/path][?query] HTTP/1.x`.
+///
+/// Only the `http` scheme: an HTTPS client asks for a tunnel with CONNECT,
+/// and a proxy that fetched `https://` URLs itself would be terminating TLS
+/// on the client's behalf. Userinfo is refused rather than stripped, so the
+/// policy never has to decide which side of an `@` is the real host.
+fn parse_absolute_form(line: &str) -> Option<ForwardRequest> {
+    let mut parts = line.split(' ');
+    let (method, target, version) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    if method.is_empty()
+        || !method.bytes().all(is_token_byte)
+        || method.eq_ignore_ascii_case("CONNECT")
+        || !matches!(version, "HTTP/1.1" | "HTTP/1.0")
+    {
+        return None;
+    }
+    let scheme_len = "http://".len();
+    if target.len() < scheme_len || !target[..scheme_len].eq_ignore_ascii_case("http://") {
+        return None;
+    }
+    let rest = &target[scheme_len..];
+    let (authority, path) = match rest.find(['/', '?', '#']) {
+        Some(index) => rest.split_at(index),
+        None => (rest, ""),
+    };
+    if authority.is_empty()
+        || !authority.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b':' | b'[' | b']')
+        })
+    {
+        return None;
+    }
+    let has_port = if authority.starts_with('[') {
+        authority.contains("]:")
+    } else {
+        authority.contains(':')
+    };
+    let (host, port) = if has_port {
+        split_host_port(authority)?
+    } else {
+        split_host_port(&format!("{authority}:80"))?
+    };
+    // The fragment is never sent to a server.
+    let path = path.split('#').next().unwrap_or_default();
+    if path.bytes().any(|b| b <= 0x20 || b == 0x7f) {
+        return None;
+    }
+    let path = match path {
+        "" => "/".to_string(),
+        query if query.starts_with('?') => format!("/{query}"),
+        path => path.to_string(),
+    };
+    Some(ForwardRequest {
+        method: method.to_string(),
+        host,
+        port,
+        path,
+        version: version.to_string(),
+    })
+}
+
+/// RFC 9110 `tchar`, the characters of a method or header name.
+fn is_token_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b)
+}
+
+/// Headers that describe one connection rather than the message, and so
+/// must not cross the gateway.
+fn is_hop_by_hop(name: &str) -> bool {
+    matches!(
+        name,
+        "connection" | "keep-alive" | "te" | "trailer" | "upgrade"
+    ) || name.starts_with("proxy-")
+}
+
+/// Body framing: forwarded verbatim alongside the body bytes, so never
+/// removed even when a `Connection` header names it.
+fn is_framing(name: &str) -> bool {
+    matches!(name, "content-length" | "transfer-encoding")
+}
+
+/// Parse header lines and drop the hop-by-hop ones: the fixed set, every
+/// `Proxy-*`, and any header a `Connection` header names. `None` for a
+/// malformed line, including obsolete line folding.
+fn forward_headers(lines: &[String]) -> Option<Vec<(&str, &str)>> {
+    let mut headers = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line.starts_with([' ', '\t']) {
+            return None;
+        }
+        let (name, value) = line.split_once(':')?;
+        if name.is_empty() || !name.bytes().all(is_token_byte) {
+            return None;
+        }
+        headers.push((name, value.trim()));
+    }
+    let named: Vec<String> = headers
+        .iter()
+        .filter(|(name, _)| {
+            name.eq_ignore_ascii_case("connection") || name.eq_ignore_ascii_case("proxy-connection")
+        })
+        .flat_map(|(_, value)| value.split(','))
+        .map(|token| token.trim().to_ascii_lowercase())
+        .filter(|token| !token.is_empty() && !is_framing(token))
+        .collect();
+    Some(
+        headers
+            .into_iter()
+            .filter(|(name, _)| {
+                let name = name.to_ascii_lowercase();
+                !is_hop_by_hop(&name) && !named.contains(&name)
+            })
+            .collect(),
+    )
+}
+
+impl ForwardRequest {
+    /// The origin-form head sent upstream. The `Host` header is rebuilt
+    /// from the URI the policy checked, so a client cannot name one host in
+    /// the request line and another to the server.
+    fn head(&self, header_lines: &[String]) -> String {
+        let mut head = format!("{} {} {}\r\n", self.method, self.path, self.version);
+        for (name, value) in forward_headers(header_lines).unwrap_or_default() {
+            if name.eq_ignore_ascii_case("host") {
+                continue;
+            }
+            head.push_str(&format!("{name}: {value}\r\n"));
+        }
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        if self.port == 80 {
+            head.push_str(&format!("Host: {host}\r\n"));
+        } else {
+            head.push_str(&format!("Host: {host}:{}\r\n", self.port));
+        }
+        head.push_str("Connection: close\r\n\r\n");
+        head
+    }
+}
+
+/// Rewrite an upstream response head for the client: hop-by-hop headers
+/// dropped and `Connection: close` added, since the gateway closes after one
+/// exchange. An interim (1xx) head passes through unchanged. `None` when the
+/// upstream did not answer with HTTP.
+fn rewrite_response_head(lines: &[String]) -> Option<String> {
+    let (status, header_lines) = lines.split_first()?;
+    let mut parts = status.splitn(3, ' ');
+    let version = parts.next()?;
+    let code = parts.next()?;
+    if !version.starts_with("HTTP/1.")
+        || code.len() != 3
+        || !code.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    if code.starts_with('1') {
+        let mut head = lines.join("\r\n");
+        head.push_str("\r\n\r\n");
+        return Some(head);
+    }
+    let mut head = format!("{status}\r\n");
+    for (name, value) in forward_headers(header_lines)? {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    Some(head)
+}
+
+/// Every address `host` names, resolved once. An IP literal is its own
+/// answer and never touches the resolver.
+async fn resolve(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "name resolved to no addresses",
+        ));
+    }
+    Ok(addrs)
+}
+
+/// Whether `ip` is a globally routable unicast address.
+///
+/// Refused: unspecified, loopback, RFC 1918 private, CGNAT shared space,
+/// link-local (which includes cloud metadata at 169.254.169.254), multicast,
+/// broadcast and reserved IPv4; and for IPv6 the unspecified/loopback/
+/// IPv4-compatible block, unique-local, link-local, site-local and multicast,
+/// with IPv4-mapped addresses judged as the IPv4 address they carry.
+fn is_public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_v4(v4);
+            }
+            let segments = v6.segments();
+            let first = segments[0];
+            let compat_block = segments[..6].iter().all(|segment| *segment == 0);
+            !(compat_block
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfec0)
+        }
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    !(a == 0
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || (a == 100 && (b & 0xc0) == 64)
+        || a >= 240)
+}
+
+/// Last time either direction of a tunnel moved a byte, as nanoseconds since
+/// the tunnel opened.
+struct Activity {
+    opened: Instant,
+    last: AtomicU64,
+}
+
+impl Activity {
+    fn touch(&self) {
+        let now = self.opened.elapsed().as_nanos() as u64;
+        self.last.fetch_max(now, Ordering::Relaxed);
+    }
+
+    fn idle_for(&self) -> Duration {
+        let last = Duration::from_nanos(self.last.load(Ordering::Relaxed));
+        self.opened.elapsed().saturating_sub(last)
+    }
+}
+
+/// Copy both directions until both finish or the tunnel goes idle, returning
+/// `(bytes_up, bytes_down)`. Returning drops every half, which closes both
+/// sockets — that is what makes the idle timeout close the tunnel.
+async fn relay<CR, CW, UR, UW>(
+    client_read: CR,
+    client_write: CW,
+    upstream_read: UR,
+    upstream_write: UW,
+    idle_timeout: Duration,
+) -> (u64, u64)
+where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    UR: AsyncRead + Unpin,
+    UW: AsyncWrite + Unpin,
+{
+    let traffic = Traffic::new();
+    tokio::select! {
+        _ = async {
+            tokio::join!(
+                pump(client_read, upstream_write, &traffic.up, &traffic.activity),
+                pump(upstream_read, client_write, &traffic.down, &traffic.activity),
+            )
+        } => {}
+        () = traffic.idle(idle_timeout) => {}
+    }
+    traffic.totals()
+}
+
+/// Byte counters and activity clock shared by both directions of a relay.
+struct Traffic {
+    activity: Activity,
+    up: AtomicU64,
+    down: AtomicU64,
+}
+
+impl Traffic {
+    fn new() -> Self {
+        Self {
+            activity: Activity {
+                opened: Instant::now(),
+                last: AtomicU64::new(0),
+            },
+            up: AtomicU64::new(0),
+            down: AtomicU64::new(0),
         }
     }
 
-    // Parse once, then dial the parsed parts. Deriving a host for the policy
-    // check while dialling the original string lets the two disagree, and a
-    // target the policy never saw is a bypass however it is spelled — the
-    // earlier version approved `[crates.io]:443` as `crates.io` and then dialled
-    // the bracketed form.
-    let Some((host, port)) = split_host_port(&target) else {
-        return respond(&mut write_half, 400, "Bad Request", None).await;
-    };
-
-    if !shared.permits(&host) {
-        shared.record_denied(host.clone());
-        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, Some(&host)).await;
+    /// Completes once neither direction has moved a byte for `idle_timeout`.
+    async fn idle(&self, idle_timeout: Duration) {
+        loop {
+            let idle = self.activity.idle_for();
+            if idle >= idle_timeout {
+                return;
+            }
+            tokio::time::sleep(idle_timeout - idle).await;
+        }
     }
 
-    let upstream = match TcpStream::connect((host.as_str(), port)).await {
-        Ok(stream) => stream,
-        Err(_) => return respond(&mut write_half, 502, "Bad Gateway", None).await,
+    fn totals(&self) -> (u64, u64) {
+        (
+            self.up.load(Ordering::Relaxed),
+            self.down.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// Relay one forwarded plain-HTTP exchange, returning `(bytes_up,
+/// bytes_down)`; the request head written before this is not counted.
+///
+/// Unlike a tunnel, the response decides when it is over: the upstream was
+/// sent `Connection: close`, so its end of stream is the end of the exchange,
+/// even while the client (waiting for that answer) still has its side open.
+async fn relay_forward<CR, CW, UR, UW>(
+    client_read: CR,
+    mut client_write: CW,
+    upstream_read: UR,
+    upstream_write: UW,
+    idle_timeout: Duration,
+) -> (u64, u64)
+where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    UR: AsyncRead + Unpin,
+    UW: AsyncWrite + Unpin,
+{
+    let traffic = Traffic::new();
+    let t = &traffic;
+    let up = async move {
+        pump(client_read, upstream_write, &t.up, &t.activity).await;
+        std::future::pending::<()>().await
     };
+    let down = async move {
+        let mut upstream = BufReader::new(upstream_read);
+        let head = match read_head(&mut upstream).await {
+            Ok(Some(lines)) => rewrite_response_head(&lines),
+            _ => None,
+        };
+        t.activity.touch();
+        let Some(head) = head else {
+            let _ = respond(&mut client_write, 502, "Bad Gateway", "").await;
+            return;
+        };
+        if client_write.write_all(head.as_bytes()).await.is_err() {
+            return;
+        }
+        t.down.fetch_add(head.len() as u64, Ordering::Relaxed);
+        t.activity.touch();
+        pump(upstream, client_write, &t.down, &t.activity).await;
+    };
+    tokio::select! {
+        () = up => {}
+        () = down => {}
+        () = traffic.idle(idle_timeout) => {}
+    }
+    traffic.totals()
+}
 
-    write_half
-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await?;
-
-    // From here the proxy copies bytes and never sees the plaintext.
-    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
-    let client_to_upstream =
-        tokio::spawn(async move { tokio::io::copy(&mut reader, &mut upstream_write).await });
-    let upstream_to_client =
-        tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut write_half).await });
-    let _ = tokio::join!(client_to_upstream, upstream_to_client);
-    Ok(())
+async fn pump<R, W>(mut from: R, mut to: W, counter: &AtomicU64, activity: &Activity)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let read = match from.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        activity.touch();
+        if to.write_all(&buf[..read]).await.is_err() {
+            break;
+        }
+        counter.fetch_add(read as u64, Ordering::Relaxed);
+        activity.touch();
+    }
+    // Propagate the half-close so the far side sees end of stream.
+    let _ = to.shutdown().await;
 }
 
 async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> {
@@ -680,19 +1738,10 @@ fn parse_connect(line: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_string())
 }
 
-async fn respond<W>(
-    client: &mut W,
-    code: u16,
-    reason: &str,
-    denied_host: Option<&str>,
-) -> io::Result<()>
+async fn respond<W>(client: &mut W, code: u16, reason: &str, body: &str) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let body = match denied_host {
-        Some(host) => format!("{reason}: host {host} is not allowed\n"),
-        None => String::new(),
-    };
     let header = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -738,6 +1787,45 @@ mod tests {
                 None
             }
             Err(e) => panic!("egress proxy failed to start: {e}"),
+        }
+    }
+
+    #[test]
+    fn only_globally_routable_addresses_are_public() {
+        for public in ["1.1.1.1", "8.8.8.8", "151.101.1.1", "2606:4700::1111"] {
+            assert!(
+                is_public_address(public.parse().unwrap()),
+                "{public} is public"
+            );
+        }
+        for private in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "127.255.0.9",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "240.0.0.1",
+            "::",
+            "::1",
+            "::127.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+        ] {
+            assert!(
+                !is_public_address(private.parse().unwrap()),
+                "{private} must not be public"
+            );
         }
     }
 
@@ -1027,6 +2115,159 @@ mod tests {
     }
 
     #[test]
+    fn absolute_form_requests_parse_to_origin_form() {
+        let parsed = parse_absolute_form("GET http://Example.com/a/b?c=d#frag HTTP/1.1").unwrap();
+        assert_eq!(
+            parsed,
+            ForwardRequest {
+                method: "GET".into(),
+                host: "Example.com".into(),
+                port: 80,
+                path: "/a/b?c=d".into(),
+                version: "HTTP/1.1".into(),
+            }
+        );
+        let parsed = parse_absolute_form("POST HTTP://127.0.0.1:8080 HTTP/1.0").unwrap();
+        assert_eq!((parsed.port, parsed.path.as_str()), (8080, "/"));
+        let parsed = parse_absolute_form("GET http://[::1]:81?q HTTP/1.1").unwrap();
+        assert_eq!(
+            (parsed.host.as_str(), parsed.port, parsed.path.as_str()),
+            ("::1", 81, "/?q")
+        );
+        assert_eq!(
+            parse_absolute_form("GET http://[::1]/ HTTP/1.1")
+                .unwrap()
+                .port,
+            80
+        );
+    }
+
+    #[test]
+    fn malformed_or_unsupported_requests_do_not_parse() {
+        for line in [
+            "GET /origin-form HTTP/1.1",
+            "GET https://crates.io/ HTTP/1.1",
+            "GET http://user@crates.io/ HTTP/1.1",
+            "GET http://crates.io@evil.com/ HTTP/1.1",
+            "GET http:///path HTTP/1.1",
+            "GET http://crates.io:/ HTTP/1.1",
+            "GET http://crates.io:99999/ HTTP/1.1",
+            "GET http://[crates.io]/ HTTP/1.1",
+            "GET http://crates.io%2eevil.com/ HTTP/1.1",
+            "GET http://crates.io/ HTTP/2",
+            "GET http://crates.io/ HTTP/1.1 extra",
+            "GET  http://crates.io/ HTTP/1.1",
+            "G(T http://crates.io/ HTTP/1.1",
+            "CONNECT http://crates.io/ HTTP/1.1",
+            "",
+        ] {
+            assert_eq!(parse_absolute_form(line), None, "{line:?} must be a 400");
+        }
+    }
+
+    #[test]
+    fn forwarded_heads_drop_hop_by_hop_and_rebuild_host() {
+        let request = parse_absolute_form("GET http://crates.io:8080/x HTTP/1.1").unwrap();
+        let headers: Vec<String> = [
+            "Host: evil.com",
+            "Proxy-Authorization: Basic abc",
+            "Proxy-Connection: keep-alive",
+            "Connection: keep-alive, X-Secret",
+            "Keep-Alive: timeout=5",
+            "X-Secret: 1",
+            "Upgrade: websocket",
+            "TE: trailers",
+            "Content-Length: 4",
+            "X-Kept: yes",
+        ]
+        .map(String::from)
+        .to_vec();
+        let head = request.head(&headers);
+        assert_eq!(
+            head,
+            "GET /x HTTP/1.1\r\nContent-Length: 4\r\nX-Kept: yes\r\n\
+             Host: crates.io:8080\r\nConnection: close\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn a_connection_header_cannot_strip_body_framing() {
+        let headers = [
+            "Connection: content-length, transfer-encoding",
+            "Content-Length: 3",
+        ]
+        .map(String::from);
+        let kept = forward_headers(&headers).unwrap();
+        assert_eq!(kept, vec![("Content-Length", "3")]);
+    }
+
+    #[test]
+    fn folded_or_nameless_header_lines_are_malformed() {
+        for line in [
+            " continued",
+            "\tcontinued",
+            "no colon",
+            ": value",
+            "bad name: v",
+        ] {
+            assert!(
+                forward_headers(&[line.to_string()]).is_none(),
+                "{line:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn response_heads_are_rewritten_to_close() {
+        let lines = [
+            "HTTP/1.1 200 OK",
+            "Connection: keep-alive",
+            "Keep-Alive: timeout=5",
+            "Content-Length: 5",
+        ]
+        .map(String::from);
+        assert_eq!(
+            rewrite_response_head(&lines).unwrap(),
+            "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n"
+        );
+        let interim = ["HTTP/1.1 100 Continue".to_string()];
+        assert_eq!(
+            rewrite_response_head(&interim).unwrap(),
+            "HTTP/1.1 100 Continue\r\n\r\n"
+        );
+        assert!(rewrite_response_head(&["SSH-2.0-OpenSSH".to_string()]).is_none());
+        assert!(rewrite_response_head(&["HTTP/1.1 2000 OK".to_string()]).is_none());
+    }
+
+    #[tokio::test]
+    async fn an_oversized_head_is_refused() {
+        let mut head = b"GET http://crates.io/ HTTP/1.1\r\n".to_vec();
+        head.extend(std::iter::repeat_n(b'a', MAX_HEAD_BYTES));
+        head.extend_from_slice(b"\r\n\r\n");
+        let mut reader = BufReader::new(head.as_slice());
+        assert_eq!(read_head(&mut reader).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_call_gateway_needs_a_live_grant() {
+        assert!(CallGateway::start(None, Some("call"))
+            .await
+            .unwrap()
+            .is_none());
+        let double = crate::sandbox::EgressGrant {
+            proxy_port: 1,
+            socket_path: PathBuf::from("/nonexistent.sock"),
+            control: None,
+        };
+        assert!(CallGateway::start(Some(&double), Some("call"))
+            .await
+            .unwrap()
+            .is_none());
+        let ctx = crate::ToolContext::new(PathBuf::from("/tmp"));
+        assert!(ctx.gateway_for_call().await.unwrap().is_none());
+    }
+
+    #[test]
     fn host_and_port_are_split_strictly() {
         assert_eq!(
             split_host_port("crates.io:443"),
@@ -1275,9 +2516,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let first_socket = first.grant().socket_path.clone();
+        let first_socket = first.grant().unwrap().socket_path.clone();
 
-        let status = connect_status(first.grant().proxy_port, "blocked.example:443").await;
+        let status = connect_status(first.grant().unwrap().proxy_port, "blocked.example:443").await;
         assert!(
             status.contains("403"),
             "the host should be refused: {status}"
@@ -1287,8 +2528,8 @@ mod tests {
         assert_eq!(template.take_denied_host(), None);
 
         template.control.as_ref().unwrap().grant_host("**.example");
-        assert!(first.grant().permits_host("blocked.example"));
-        assert!(second.grant().permits_host("blocked.example"));
+        assert!(first.grant().unwrap().permits_host("blocked.example"));
+        assert!(second.grant().unwrap().permits_host("blocked.example"));
 
         drop(first);
         assert!(

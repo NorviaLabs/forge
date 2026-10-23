@@ -153,8 +153,18 @@ async fn open_session_with_model(
     let mut tools = ToolRegistry::new();
 
     let mut notices = cfg.refused_key_notices();
+    // One live egress state for the whole session, built before the MCP
+    // servers start (they start before the session exists) and adopted by
+    // the session gateway below. Sandboxed servers route through endpoints of
+    // their own on this state, so a host granted for the session — or
+    // persistently — reaches their traffic immediately, and their
+    // connections appear in the session event log as `mcp:<server>`.
+    let egress_state = forge_tools::egress::EgressShared::new(
+        forge_core::egress_policy_for_workspace(cfg.workspace_root()),
+        Default::default(),
+    );
     if !cfg.mcp.servers.is_empty() {
-        let mut mgr = McpManager::new();
+        let mut mgr = McpManager::new().with_egress_shared(egress_state.clone());
         let errors = mgr
             .connect_all_in_workspace(&cfg.mcp.servers, cfg.workspace_root())
             .await;
@@ -211,10 +221,10 @@ async fn open_session_with_model(
         parse_pattern_rules(&permissions.allow),
         parse_pattern_rules(&permissions.deny),
     ));
-    let egress = forge_core::egress_policy_for_workspace(cfg.workspace_root());
-    if !egress.is_empty() {
-        session.apply_egress_policy(egress).await;
-    }
+    // Serve the state the MCP servers share. It already holds the personal
+    // `host(...)` policy; later `apply_egress_policy` calls replace that
+    // policy in place, so the servers keep following it.
+    session.adopt_egress_state(egress_state).await;
 
     Ok(OpenedSession { session, notices })
 }

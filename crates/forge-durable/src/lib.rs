@@ -17,6 +17,10 @@ use sqlx::{Row, SqlitePool};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod audit;
+
+pub use audit::{AuditEntry, AuditKind, AuditRow};
+
 const REPLAY_CHECKPOINT_INTERVAL: u64 = 256;
 
 #[derive(Debug, Error)]
@@ -333,6 +337,7 @@ impl Journal {
         )
         .execute(&self.pool)
         .await?;
+        self.migrate_audit().await?;
         Ok(())
     }
 

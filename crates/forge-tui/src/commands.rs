@@ -90,8 +90,8 @@ pub enum SlashCommand {
         enabled: Option<bool>,
     },
     /// Toggle this session's approve-all mode. Enabling asks for confirmation;
-    /// disabling is immediate. Approve-all auto-approves HITL and turns the
-    /// shell sandbox off for the session.
+    /// disabling is immediate. Approve-all auto-approves HITL and host grants
+    /// for the session; the shell sandbox stays on and leaving it still asks.
     ApproveAll,
     /// Open (and focus) the terminal panel. The `Ctrl+\`` chord is the fast
     /// path, but it is an unusual key to guess and appears only in the help

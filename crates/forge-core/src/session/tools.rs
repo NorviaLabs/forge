@@ -35,6 +35,7 @@ pub(crate) struct PendingToolExecution {
 pub(crate) struct CompletedToolExecution {
     call: ToolCall,
     unconfined: bool,
+    duration_ms: u64,
     budget: ValidationBudget,
     pre_edit: Option<Vec<(String, Option<u64>)>>,
     pre_git: Option<GitPre>,
@@ -81,11 +82,13 @@ impl AgentSession {
         if self.approve_all && decision == PolicyDecision::Hitl {
             decision = PolicyDecision::Allow;
         }
+        let args_redacted = self.governance.redact_args(&call.arguments);
+        self.audit_authorize(call, decision, "default", &args_redacted);
         self.governance.record_audit(AuditEvent {
             session_id: self.session_id.to_string(),
             principal: self.governance.principal.id.clone(),
             tool: call.name.clone(),
-            args_redacted: self.governance.redact_args(&call.arguments),
+            args_redacted,
             decision,
             policy_id: "default".into(),
             result: format!("{decision:?}"),
@@ -113,6 +116,7 @@ impl AgentSession {
         call: &ToolCall,
         output: &ToolOutput,
     ) -> Result<(), LoopError> {
+        self.flush_audit().await?;
         self.journal
             .append_tool_result(self.session_id, call, output)
             .await?;
@@ -144,6 +148,7 @@ impl PendingToolExecution {
             mut budget,
             prepared,
         } = self;
+        let tool_ctx = tool_ctx.with_tool_call_id(call.id.as_str());
         let tool_name = call.name.clone();
         let unconfined = tool_ctx.unconfined_shell;
         let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
@@ -156,14 +161,12 @@ impl PendingToolExecution {
                 .await
         };
 
-        tracing::debug!(
-            tool = %tool_name,
-            duration_ms = started.elapsed().as_millis() as u64,
-            "tool call completed"
-        );
+        let duration_ms = started.elapsed().as_millis() as u64;
+        tracing::debug!(tool = %tool_name, duration_ms, "tool call completed");
         CompletedToolExecution {
             call,
             unconfined,
+            duration_ms,
             budget,
             pre_edit,
             pre_git,
@@ -444,6 +447,14 @@ impl AgentSession {
     ) -> Result<ModelResponseApplication, LoopError> {
         let mut pending = completed.remaining;
         let parallel = completed.executions.len() > 1;
+        for execution in &completed.executions {
+            self.audit_tool_result(
+                &execution.call,
+                &execution.result,
+                execution.duration_ms,
+                execution.unconfined,
+            );
+        }
         if parallel
             && completed
                 .executions
@@ -460,6 +471,7 @@ impl AgentSession {
                 }
                 prepared.push(Box::pin(self.prepare_successful_tool_result(execution)).await?);
             }
+            self.flush_audit().await?;
             self.journal
                 .append_tool_results(self.session_id, &prepared)
                 .await?;
@@ -492,6 +504,34 @@ impl AgentSession {
                     execution.result = Err(ToolError::Execution(format!(
                             "command still failed after an approved unconfined attempt; not requesting sandbox approval again: {content}"
                         )));
+                } else if let Some(host) = denied_host
+                    .as_deref()
+                    .filter(|_| self.approve_all && !parallel)
+                    .filter(|_| self.turn.take_host_auto_grant(&call.id))
+                {
+                    // Approve-all answers a host prompt the way "Allow for this
+                    // session" would: grant the host, then re-run the same call
+                    // still confined. Once per call, so a grant that does not
+                    // help falls through to an ordinary prompt below.
+                    let pattern = forge_tools::egress::suggest_host_pattern(host);
+                    self.grant_egress_host_for(&pattern, Some(&call.id), "approve_all");
+                    self.events.push(TurnEvent {
+                        kind: "egress_grant".into(),
+                        detail: pattern,
+                    });
+                    let budget = std::mem::take(&mut execution.budget);
+                    return Ok(ModelResponseApplication::Execute(Box::new(
+                        PendingToolApplication {
+                            executions: vec![PendingToolExecution {
+                                call,
+                                tools: self.tools.clone(),
+                                tool_ctx: self.tool_ctx.clone(),
+                                budget,
+                                prepared: None,
+                            }],
+                            remaining: pending,
+                        },
+                    )));
                 } else {
                     if !parallel {
                         pending.budget = execution.budget;
@@ -535,6 +575,7 @@ impl AgentSession {
         let CompletedToolExecution {
             call,
             unconfined: _,
+            duration_ms: _,
             budget: _,
             pre_edit,
             pre_git,
@@ -880,6 +921,9 @@ impl AgentSession {
             let decision = self.authorize_tool_call(&call, class);
             match decision {
                 PolicyDecision::Hitl => {
+                    self.turn
+                        .pending_hitl_calls
+                        .insert(call.id.clone(), call.clone());
                     let payload = HitlPayload {
                         call_id: call.id.clone(),
                         tool: call.name.clone(),
@@ -947,11 +991,9 @@ impl AgentSession {
             PendingToolExecution {
                 call: call.clone(),
                 tools: self.tools.clone(),
-                tool_ctx: if self.approve_all {
-                    self.tool_ctx.clone().with_unconfined_shell()
-                } else {
-                    self.tool_ctx.clone()
-                },
+                // Approve-all never widens the sandbox: shell stays confined,
+                // and leaving it is a separate per-command approval.
+                tool_ctx: self.tool_ctx.clone(),
                 budget: std::mem::take(budget),
                 prepared: validated
                     .then(|| self.tools.prepare_call(&call.name, call.arguments.clone()))
@@ -1027,11 +1069,18 @@ impl AgentSession {
             } else {
                 PolicyDecision::Deny
             };
+            let args_redacted = self.governance.redact_args(&original.arguments);
+            self.audit_authorize(
+                &original,
+                decision,
+                "explicit_unconfined_retry",
+                &args_redacted,
+            );
             self.governance.record_audit(AuditEvent {
                 session_id: self.session_id.to_string(),
                 principal: self.governance.principal.id.clone(),
                 tool: original.name.clone(),
-                args_redacted: self.governance.redact_args(&original.arguments),
+                args_redacted,
                 decision,
                 policy_id: "explicit_unconfined_retry".into(),
                 result: format!("{decision:?}"),
@@ -1236,6 +1285,7 @@ impl AgentSession {
         let CompletedToolExecution {
             call,
             unconfined: _,
+            duration_ms: _,
             budget,
             pre_edit,
             pre_git,
@@ -1415,11 +1465,31 @@ impl AgentSession {
         let CompletedToolExecution {
             call,
             unconfined,
+            duration_ms,
             budget: _,
             pre_edit,
             pre_git,
             result,
         } = completed.execution;
+        self.audit_tool_result(&call, &result, duration_ms, unconfined);
+        // An approved call (a gated MCP tool, or the retry after a host grant)
+        // that the gateway refused a host for asks for that host next, as the
+        // ungated path does: the approval covered running the call, not the
+        // host. The same call is kept to re-run once the host is granted.
+        if let Err(ToolError::SandboxDenied {
+            content,
+            reason,
+            denied_host: Some(host),
+        }) = &result
+        {
+            if !unconfined {
+                let failure = observed_failure(content, reason);
+                let (reason, host) = (reason.clone(), host.clone());
+                self.enter_sandbox_hitl(call, reason, failure, Some(host))
+                    .await?;
+                return Ok(());
+            }
+        }
         // The operator already approved and disposed of this call via the
         // approval flow. Drop it (and any identical re-issue) from the turn's
         // required set so its outcome — even a failing one — is treated as
@@ -1427,6 +1497,7 @@ impl AgentSession {
         // still verify succeeded.
         self.turn.retire_resolved_hitl_call(&call);
         self.turn.approved_retry_calls.remove(&call.id);
+        self.turn.pending_hitl_calls.remove(&call.id);
         let result_call = self
             .turn
             .retry_requests
@@ -1490,6 +1561,10 @@ impl AgentSession {
         if denied_host.is_none() {
             self.turn
                 .approved_retry_calls
+                .insert(call.id.clone(), call.clone());
+        } else {
+            self.turn
+                .pending_hitl_calls
                 .insert(call.id.clone(), call.clone());
         }
         let payload = HitlPayload {

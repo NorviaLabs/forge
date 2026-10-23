@@ -302,8 +302,8 @@ pub enum SessionConfirmKind {
     Cleanup,
     /// Explicit second confirmation to discard dirty worktree contents.
     CleanupDirty,
-    /// Enables approve-all: confirms that the sandbox goes off for the
-    /// session before the first auto-approval can happen.
+    /// Enables approve-all: confirms that prompts will be auto-approved for
+    /// the session before the first auto-approval can happen.
     ApproveAll,
 }
 
@@ -630,21 +630,14 @@ impl ApprovalOverlayState {
             })
             .filter(|value| !value.is_empty());
         let environment_delta = approval_environment_delta(&payload.args_redacted);
-        let redacted = contains_redacted_value(&payload.args_redacted);
         // A call is only eligible to be remembered if a rule exists that
         // would match it again. `suggest_pattern` returns `None` for a shell
         // command carrying unquoted control syntax (`cargo test | tail`,
         // `a && b`), which can never be pattern-matched — offering the row
         // anyway wrote a grant that silently never fired, and the operator
         // was re-prompted for the same command they had just allowed.
-        let pattern_allow_eligible = !redacted
-            && environment_delta != "[REDACTED]"
-            && forge_governance::suggest_pattern(&forge_types::ToolCall {
-                id: payload.call_id.clone(),
-                name: payload.tool.clone(),
-                arguments: payload.args_redacted.clone(),
-            })
-            .is_some();
+        let pattern_allow_eligible =
+            environment_delta != "[REDACTED]" && forge_core::pattern_grant_eligible(payload);
 
         Self {
             mode,
@@ -2836,15 +2829,6 @@ fn approval_working_directory(args: &serde_json::Value, fallback: String) -> Str
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .unwrap_or(fallback)
-}
-
-fn contains_redacted_value(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(value) => value == "[REDACTED]",
-        serde_json::Value::Array(values) => values.iter().any(contains_redacted_value),
-        serde_json::Value::Object(values) => values.values().any(contains_redacted_value),
-        _ => false,
-    }
 }
 
 fn parent_dir(path: &str) -> Option<String> {

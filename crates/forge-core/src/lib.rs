@@ -1,6 +1,7 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
 mod agent_coordinator;
+mod audit;
 mod background;
 mod completion;
 mod lifecycle;
@@ -48,6 +49,9 @@ pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::{
     compact_tokens, CompletedContextCompaction, PendingContextCompaction,
 };
+pub use session::grant::{
+    pattern_grant_eligible, validate_grant_decision, AppliedGrant, GrantOutcome, GrantRejection,
+};
 pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
@@ -67,9 +71,9 @@ use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, SharedMessages, StreamEventTx};
 use forge_tools::{ToolContext, ToolError, ToolRegistry, ValidationBudget};
 use forge_types::{
-    BackgroundTaskId, ExecutionOutcome, HitlDecision, HitlPayload, Message, MessageRole,
-    ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall,
-    ToolOutput, Usage, WaitReason,
+    ApprovalKind, BackgroundTaskId, ExecutionOutcome, GrantDecision, HitlDecision, HitlPayload,
+    Message, MessageRole, ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId,
+    TaskLifecycle, ToolCall, ToolOutput, Usage, WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -133,14 +137,17 @@ pub struct AgentSession {
     enable_context: bool,
     enable_gov: bool,
     /// Per-session "approve-all" mode. When on, every `Hitl` governance
-    /// decision is auto-approved and shell tools run unconfined (no
-    /// filesystem/network sandbox). Never persisted; defaults off.
+    /// decision is auto-approved and a sandbox-denied host is granted for the
+    /// session. Shell stays confined: running outside the sandbox is still a
+    /// per-command prompt. Never persisted; defaults off.
     approve_all: bool,
     /// Whether this session's workspace is trusted. The owner sets this from
     /// the trust store at assembly; `set_approve_all` refuses to enable
     /// approve-all unless it is true, so the trust gate is enforced below the
     /// TUI rather than only there.
     workspace_trusted: bool,
+    /// Durable audit rows waiting for the next journal write.
+    audit: audit::SessionAudit,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the
@@ -216,5 +223,7 @@ impl CtxTokensFingerprint {
 
 #[cfg(test)]
 mod compaction_tests;
+#[cfg(all(test, unix))]
+mod mcp_egress_tests;
 #[cfg(test)]
 mod tests;

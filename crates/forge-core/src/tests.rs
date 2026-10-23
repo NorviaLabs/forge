@@ -683,7 +683,12 @@ impl forge_tools::Tool for NetworkDeniedOnceTool {
     }
 
     fn input_schema(&self) -> serde_json::Value {
-        json!({"type": "object", "additionalProperties": false})
+        // `token` lets an audit test pass an argument governance redacts.
+        json!({
+            "type": "object",
+            "properties": {"token": {"type": "string"}},
+            "additionalProperties": false
+        })
     }
 
     fn side_effect_class(&self) -> SideEffectClass {
@@ -1316,6 +1321,360 @@ async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
         .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
         .expect("confined retry should record a tool result");
     assert_eq!(result.content, "retried confined after host grant");
+}
+
+/// A typed decision is checked against the pending payload before anything
+/// is granted: a rejected choice leaves the approval pending, and the host
+/// grant resolves it and reruns the call confined.
+#[tokio::test]
+async fn a_grant_decision_is_validated_then_grants_the_host_and_retries() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("open a pr").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+    assert!(session.pending_hitl().is_some());
+
+    for rejected in [
+        GrantDecision::AllowOnce,
+        GrantDecision::AllowPatternForSession,
+    ] {
+        let error = session.decide_hitl(rejected, "test").await.unwrap_err();
+        assert!(matches!(error, LoopError::Other(_)), "{error}");
+        assert!(
+            session.pending_hitl().is_some(),
+            "a rejected decision must leave the approval pending"
+        );
+    }
+
+    let outcome = session
+        .decide_hitl(GrantDecision::AllowHostForSession, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.grant,
+        AppliedGrant::Host {
+            pattern: "**.github.com".into()
+        }
+    );
+    assert!(outcome.persisted_rule.is_none());
+    assert!(session.pending_hitl().is_none());
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
+        .expect("confined retry should record a tool result");
+    assert_eq!(result.content, "retried confined after host grant");
+}
+
+/// A call refused by the egress proxy, granted at the prompt and retried
+/// leaves one ordered, durable trail correlated by its call id, and the
+/// trail survives a resume.
+#[tokio::test]
+async fn a_host_grant_and_retry_leave_an_ordered_durable_audit_trail() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.append_user_message("open a pr").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({"token": "s3cret"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+    session
+        .decide_hitl(GrantDecision::AllowHostForSession, "test")
+        .await
+        .unwrap();
+
+    let rows = session.audit_events().await.unwrap();
+    let trail: Vec<_> = rows
+        .iter()
+        .map(|row| (row.kind, row.call_id.as_deref()))
+        .collect();
+    use forge_durable::AuditKind;
+    assert_eq!(
+        trail,
+        [
+            (AuditKind::Authorize, Some("call-host")),
+            (AuditKind::ToolResult, Some("call-host")),
+            (AuditKind::HitlRequest, Some("call-host")),
+            (AuditKind::HostGrant, Some("call-host")),
+            (AuditKind::HitlResolution, Some("call-host")),
+            (AuditKind::ToolResult, Some("call-host")),
+        ],
+        "{rows:#?}"
+    );
+    assert_eq!(rows[0].detail["decision"], "Allow");
+    assert_eq!(rows[0].tool.as_deref(), Some("network_denied"));
+    assert_eq!(rows[1].detail["outcome"], "sandbox_denied");
+    assert_eq!(rows[1].detail["denied_host"], "api.github.com");
+    assert_eq!(rows[2].detail["kind"], "network_host");
+    assert_eq!(rows[3].detail["pattern"], "**.github.com");
+    assert_eq!(rows[3].detail["scope"], "session");
+    assert_eq!(rows[4].detail["decision"], "allow_host_for_session");
+    assert_eq!(rows[4].detail["actor"], "test");
+    assert_eq!(rows[5].detail["outcome"], "ok");
+    assert!(rows[5].detail["duration_ms"].is_u64());
+    // The call's arguments are only ever stored as governance redacted them.
+    let stored =
+        serde_json::to_string(&rows.iter().map(|row| &row.detail).collect::<Vec<_>>()).unwrap();
+    assert_eq!(
+        rows[0].detail["args_redacted"],
+        json!({"token": "[REDACTED]"})
+    );
+    assert!(!stored.contains("s3cret"), "{stored}");
+
+    let session_id = session.session_id;
+    drop(session);
+    let resumed = AgentSession::resume(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+        session_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.audit_events().await.unwrap(), rows);
+}
+
+/// The real `git` tool: a push to a host outside the session allowlist raises
+/// the host-grant prompt (not an unconfined escalation), and the approved retry
+/// re-runs git itself against the updated policy.
+#[tokio::test]
+async fn a_git_push_to_a_denied_host_prompts_and_the_grant_reruns_git() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let marker = root.join("ssh-was-run");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "forge@test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "ssh://git@git.denied.example/o/r.git",
+    ]);
+    // Records that git reached its transport, then fails: no real network.
+    git(&[
+        "config",
+        "core.sshCommand",
+        &format!("touch '{}'; false", marker.display()),
+    ]);
+
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(forge_tools::GitTool));
+    let mut session = AgentSession::create(no_gov_cfg(root), model, tools)
+        .await
+        .unwrap();
+    session
+        .apply_egress_policy(forge_tools::egress::EgressPolicy::new())
+        .await;
+    if session.tool_ctx.egress.is_none() {
+        eprintln!("egress proxy unavailable here; skipping");
+        return;
+    }
+    session.append_user_message("push it").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-git".into(),
+                name: "git".into(),
+                arguments: json!({"subcommand": "push", "args": ["origin", "HEAD:main"]}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("git should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(
+        matches!(
+            application,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "{:?}",
+        session.messages.last()
+    );
+    let payload = session.pending_hitl().expect("host denial should prompt");
+    assert_eq!(payload.tool, "git");
+    assert_eq!(payload.denied_host.as_deref(), Some("git.denied.example"));
+    assert!(!payload.sandbox_escalation);
+    assert!(!marker.exists(), "git must not run before the grant");
+
+    session.grant_egress_host("**.denied.example");
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should retry the git call");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    assert!(marker.exists(), "the granted retry must re-run git");
+    assert!(session
+        .messages
+        .iter()
+        .any(|message| message.tool_call_id.as_deref() == Some("call-git")));
+}
+
+/// `web_fetch` obeys the same host allowlist as a confined shell command: an
+/// unlisted host raises the host-grant prompt, and the approved retry runs
+/// `web_fetch` again (not only shell), through the session's egress gateway.
+/// `localhost` keeps this offline: once granted with a wildcard it passes
+/// the allowlist and is then refused by the gateway's private-address check,
+/// which can only happen if the fetch really re-ran through the gateway —
+/// and that refusal must not prompt again, since no grant can fix it.
+#[tokio::test]
+async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(forge_tools::web_fetch_tool());
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    if !session.has_network_egress() {
+        return; // no egress proxy on this host, so there is no policy to consult
+    }
+    session.append_user_message("read the page").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-fetch".into(),
+                name: "web_fetch".into(),
+                arguments: json!({"url": "http://localhost:9/page"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session.pending_hitl().expect("host denial should prompt");
+    assert_eq!(payload.tool, "web_fetch");
+    assert_eq!(payload.denied_host.as_deref(), Some("localhost"));
+    assert!(!payload.sandbox_escalation);
+
+    assert!(
+        session.drain_egress_events().is_empty(),
+        "the denied host is refused before it reaches the gateway"
+    );
+
+    session.grant_egress_host("**.localhost");
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should retry web_fetch");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    assert!(
+        session.pending_hitl().is_none(),
+        "the grant must not re-prompt"
+    );
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-fetch"))
+        .expect("the retry should record a web_fetch result");
+    assert!(
+        result
+            .content
+            .contains("web_fetch: refusing to fetch `localhost`"),
+        "{}",
+        result.content
+    );
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        events.extend(session.drain_egress_events());
+        if !events.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        events.iter().any(|event| event.host == "localhost"
+            && event.label.as_deref() == Some("call-fetch")
+            && event.outcome
+                == forge_tools::egress::EgressOutcome::Denied(
+                    forge_tools::egress::EgressDenial::PrivateAddress
+                )),
+        "the retry must have gone through the gateway as call-fetch: {events:?}"
+    );
 }
 
 #[async_trait]
@@ -3122,8 +3481,105 @@ impl forge_tools::Tool for SandboxProbeTool {
     }
 }
 
+/// Records the arguments it was executed with.
+struct ArgsProbeTool {
+    seen: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl forge_tools::Tool for ArgsProbeTool {
+    fn name(&self) -> &str {
+        "args_probe"
+    }
+
+    fn description(&self) -> &str {
+        "record the arguments it ran with"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        *self.seen.lock().unwrap() = Some(args);
+        Ok(ToolOutput::success("args probe ran"))
+    }
+}
+
+async fn session_paused_on_args_probe(
+    dir: &std::path::Path,
+    seen: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+) -> AgentSession {
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(ArgsProbeTool { seen }));
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "secret-call".into(),
+                name: "args_probe".into(),
+                arguments: json!({"api_key": "sk-live-123", "repo": "forge"}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir), model, tools)
+        .await
+        .unwrap();
+    s.set_governance(Governance::default().require_hitl_for_tool("args_probe"));
+    s.set_workspace_trusted(true);
+    s.run_user_message("go").await.unwrap();
+    let payload = s.pending_hitl().expect("policy HITL prompt");
+    assert_eq!(payload.args_redacted["api_key"], "[REDACTED]");
+    s
+}
+
 #[tokio::test]
-async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
+async fn approved_hitl_call_executes_the_original_unredacted_arguments() {
+    let dir = tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut s = session_paused_on_args_probe(dir.path(), seen.clone()).await;
+
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        Some(json!({"api_key": "sk-live-123", "repo": "forge"})),
+        "approval must execute the original call, not the redacted display copy"
+    );
+    assert!(s.turn.pending_hitl_calls.is_empty());
+}
+
+#[tokio::test]
+async fn approval_without_original_arguments_never_runs_the_redacted_copy() {
+    let dir = tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut s = session_paused_on_args_probe(dir.path(), seen.clone()).await;
+    s.turn.reset(); // Resume reconstructs turn-local state as empty.
+
+    assert!(s.prepare_approved_hitl("test").await.is_err());
+    assert!(seen.lock().unwrap().is_none());
+    s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
+    assert!(s.pending_hitl().is_none());
+}
+
+#[tokio::test]
+async fn approve_all_auto_approves_hitl_and_keeps_the_tool_confined() {
     let dir = tempdir().unwrap();
     let called = Arc::new(AtomicBool::new(false));
     let unconfined = Arc::new(AtomicBool::new(false));
@@ -3170,9 +3626,95 @@ async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
         "the probe tool must have run"
     );
     assert!(
-        unconfined.load(Ordering::SeqCst),
-        "approve-all execution context must be unconfined"
+        !unconfined.load(Ordering::SeqCst),
+        "approve-all must not take the shell out of the sandbox"
     );
+}
+
+/// Approve-all answers review prompts; leaving the sandbox is a different
+/// decision and still needs its own approval.
+#[tokio::test]
+async fn approve_all_still_prompts_before_running_outside_the_sandbox() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    session.set_workspace_trusted(true);
+    assert!(session.set_approve_all(true));
+
+    let application = run_sandbox_denied_call(&mut session).await;
+
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session
+        .pending_hitl()
+        .expect("a sandbox escalation must prompt under approve-all");
+    assert!(payload.sandbox_escalation);
+    assert!(
+        !session
+            .messages
+            .iter()
+            .any(|message| message.role == MessageRole::Tool
+                && message.content.contains("ran unconfined")),
+        "nothing may run unconfined before the operator approves"
+    );
+}
+
+/// Under approve-all a denied host is granted for the session and the same
+/// call re-runs, still confined, without a prompt.
+#[tokio::test]
+async fn approve_all_grants_a_denied_host_and_retries_confined() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.set_workspace_trusted(true);
+    assert!(session.set_approve_all(true));
+    session.append_user_message("open a pr").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let application = session
+        .finish_tool_application(pending.execute().await)
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(retry) = application else {
+        panic!("approve-all should re-run the call after granting the host");
+    };
+    assert!(session.pending_hitl().is_none());
+    session
+        .finish_tool_application(retry.execute().await)
+        .await
+        .unwrap();
+
+    assert!(session.pending_hitl().is_none());
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
+        .expect("the confined retry should record a result");
+    assert_eq!(result.content, "retried confined after host grant");
 }
 
 #[tokio::test]

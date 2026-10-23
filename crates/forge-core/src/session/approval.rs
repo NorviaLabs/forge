@@ -3,6 +3,7 @@
 //!
 //! Split out of `lib.rs`; methods are moved verbatim.
 
+use super::grant::contains_redaction_marker;
 use crate::*;
 
 impl AgentSession {
@@ -28,6 +29,24 @@ impl AgentSession {
                 .ok_or_else(|| LoopError::Other(
                     "original sandbox retry arguments are unavailable; deny this approval and run the command again".into(),
                 ));
+        }
+        // The payload's arguments are redacted for display. Execute the original
+        // call kept in memory when the prompt was raised.
+        if let Some(call) = self
+            .turn
+            .pending_hitl_calls
+            .get(&payload.call_id)
+            .filter(|call| call.name == payload.tool)
+        {
+            return Ok(call.clone());
+        }
+        // Original lost (e.g. after restart). The redacted copy is only safe to
+        // run when redaction changed nothing; never execute a "[REDACTED]"
+        // placeholder as a real argument.
+        if contains_redaction_marker(&payload.args_redacted) {
+            return Err(LoopError::Other(
+                "original approval arguments are unavailable; deny this approval and run the call again".into(),
+            ));
         }
         Ok(ToolCall {
             id: payload.call_id.clone(),
@@ -75,6 +94,9 @@ impl AgentSession {
         self.journal
             .append_hitl_resume(self.session_id, dec, actor)
             .await?;
+        let note = feedback.map(str::trim).filter(|note| !note.is_empty());
+        self.audit_hitl_resolution(&payload, dec, actor, if approved { None } else { note });
+        self.flush_audit().await?;
 
         if !approved {
             let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
@@ -83,6 +105,7 @@ impl AgentSession {
                 None => format!("HITL denied by {actor}"),
             });
             self.turn.approved_retry_calls.remove(&payload.call_id);
+            self.turn.pending_hitl_calls.remove(&payload.call_id);
             let call = self
                 .turn
                 .retry_requests
@@ -162,6 +185,8 @@ impl AgentSession {
         self.journal
             .append_hitl_resume(self.session_id, "approve", actor)
             .await?;
+        self.audit_hitl_resolution(&payload, "approve", actor, None);
+        self.flush_audit().await?;
         self.turn.reset_hitl_denials();
         let call = self.approval_execution_call(&payload)?;
         self.ensure_approved_tool_allowed(&call).await?;

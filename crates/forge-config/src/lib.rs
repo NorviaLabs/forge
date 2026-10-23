@@ -222,6 +222,89 @@ pub struct McpServerConfig {
     /// them (or when it's unset and every tool is admitted by default).
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
+    /// Run this server inside the same OS sandbox as the shell tool
+    /// (Seatbelt on macOS, bubblewrap on Linux): network denied except the
+    /// session egress proxy, filesystem limited to the workspace and system
+    /// paths. Opt-in (`false` by default) so existing setups keep working;
+    /// when `true` and the host cannot confine, the server is not started.
+    #[serde(default)]
+    pub sandbox: bool,
+    /// Workspace access for a sandboxed server. Ignored unless `sandbox` is
+    /// set. Defaults to `read_only`.
+    #[serde(default)]
+    pub sandbox_workspace: McpSandboxWorkspace,
+    /// Extra directories a sandboxed server may read (never write), such as
+    /// an `npx` cache or a runtime installed under `$HOME`. Absolute, or
+    /// `~`-relative (expanded at load). Ignored unless `sandbox` is set. The
+    /// rest of `$HOME` stays unreadable, and an entry that would expose the
+    /// whole home directory is refused when the server starts.
+    #[serde(default, deserialize_with = "deserialize_sandbox_read_paths")]
+    pub sandbox_read_paths: Vec<PathBuf>,
+}
+
+/// Expand and validate one `sandbox_read_paths` entry against `home`.
+///
+/// `~` and `~/…` expand to `home`; anything else must already be absolute.
+/// Empty entries, `~user` forms and `..` components are refused, so what is
+/// exposed is exactly the directory written.
+pub fn expand_sandbox_read_path(raw: &str, home: Option<&Path>) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("sandbox_read_paths entries must not be empty".into());
+    }
+    let path = if trimmed == "~" || trimmed.starts_with("~/") {
+        let home = home
+            .filter(|home| home.is_absolute())
+            .ok_or_else(|| format!("cannot expand `{trimmed}`: no home directory"))?;
+        match trimmed.strip_prefix("~/") {
+            Some(rest) => home.join(rest),
+            None => home.to_path_buf(),
+        }
+    } else if trimmed.starts_with('~') {
+        return Err(format!(
+            "`{trimmed}`: only `~` and `~/…` are expanded in sandbox_read_paths"
+        ));
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if !path.is_absolute() {
+        return Err(format!(
+            "`{trimmed}`: sandbox_read_paths entries must be absolute or start with `~/`"
+        ));
+    }
+    if path
+        .components()
+        .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(format!(
+            "`{trimmed}`: `..` is not allowed in sandbox_read_paths"
+        ));
+    }
+    Ok(path)
+}
+
+fn deserialize_sandbox_read_paths<'de, D>(deserializer: D) -> Result<Vec<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<String>::deserialize(deserializer)?;
+    let home = dirs::home_dir();
+    raw.iter()
+        .map(|entry| expand_sandbox_read_path(entry, home.as_deref()))
+        .collect::<Result<_, _>>()
+        .map_err(serde::de::Error::custom)
+}
+
+/// How a sandboxed MCP server sees the workspace.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpSandboxWorkspace {
+    /// The server may read the workspace but not change it.
+    #[default]
+    ReadOnly,
+    /// The server may read and write the workspace (`.git`/`.forge` stay
+    /// read-only, as for the shell tool).
+    ReadWrite,
 }
 
 fn default_mcp_side_effect_class() -> SideEffectClass {
@@ -242,6 +325,9 @@ impl Default for McpServerConfig {
             side_effect_class: default_mcp_side_effect_class(),
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
+            sandbox_workspace: McpSandboxWorkspace::default(),
+            sandbox_read_paths: Vec::new(),
         }
     }
 }
@@ -1568,6 +1654,155 @@ disabled_tools = ["send_message"]
             slack.disabled_tools.as_deref(),
             Some(["send_message".to_string()].as_slice())
         );
+    }
+
+    #[test]
+    fn mcp_server_sandbox_fields_default_off_and_read_only() {
+        let cfg: ConfigFile = parse(
+            r#"
+[[mcp.servers]]
+id = "plain"
+command = "plain-mcp"
+
+[[mcp.servers]]
+id = "boxed"
+command = "boxed-mcp"
+sandbox = true
+
+[[mcp.servers]]
+id = "writer"
+command = "writer-mcp"
+sandbox = true
+sandbox_workspace = "read_write"
+"#,
+        );
+        let mut config = Config::default();
+        cfg.apply(&mut config, ConfigScope::Trusted);
+        let servers = &config.mcp.servers;
+        assert_eq!(servers.len(), 3);
+        assert!(!servers[0].sandbox, "sandboxing is opt-in");
+        assert_eq!(servers[0].sandbox_workspace, McpSandboxWorkspace::ReadOnly);
+        assert!(servers[1].sandbox);
+        assert_eq!(servers[1].sandbox_workspace, McpSandboxWorkspace::ReadOnly);
+        assert!(servers[2].sandbox);
+        assert_eq!(servers[2].sandbox_workspace, McpSandboxWorkspace::ReadWrite);
+        assert!(!McpServerConfig::default().sandbox);
+    }
+
+    #[test]
+    fn mcp_server_sandbox_workspace_rejects_unknown_values() {
+        let err = toml::from_str::<ConfigFile>(
+            r#"
+[[mcp.servers]]
+id = "boxed"
+command = "boxed-mcp"
+sandbox = true
+sandbox_workspace = "everything"
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("sandbox_workspace") || err.to_string().contains("read_only"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn mcp_server_sandbox_read_paths_parse_and_expand_home() {
+        // `~` expands against HOME, which `EnvGuard` tests repoint while they
+        // run; hold the same lock so HOME can't change between parse and check.
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cfg: ConfigFile = parse(
+            r#"
+[[mcp.servers]]
+id = "boxed"
+command = "boxed-mcp"
+sandbox = true
+sandbox_read_paths = ["/opt/mcp/lib", "~/.npm/_npx"]
+"#,
+        );
+        let mut config = Config::default();
+        cfg.apply(&mut config, ConfigScope::Trusted);
+        let paths = &config.mcp.servers[0].sandbox_read_paths;
+        assert_eq!(paths[0], PathBuf::from("/opt/mcp/lib"));
+        if let Some(home) = dirs::home_dir() {
+            assert_eq!(paths[1], home.join(".npm/_npx"));
+        }
+        assert!(McpServerConfig::default().sandbox_read_paths.is_empty());
+    }
+
+    #[test]
+    fn mcp_server_sandbox_read_paths_reject_invalid_entries() {
+        for bad in [
+            "\"\"",
+            "\"  \"",
+            "\"relative/dir\"",
+            "\"~other/x\"",
+            "\"/a/../b\"",
+        ] {
+            let text = format!(
+                "[[mcp.servers]]\nid = \"boxed\"\ncommand = \"x\"\nsandbox_read_paths = [{bad}]\n"
+            );
+            let err = toml::from_str::<ConfigFile>(&text).unwrap_err();
+            assert!(
+                err.to_string().contains("sandbox_read_paths"),
+                "{bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn sandbox_read_path_expansion_uses_the_given_home() {
+        let home = Path::new("/home/someone");
+        assert_eq!(
+            expand_sandbox_read_path("~", Some(home)).unwrap(),
+            PathBuf::from("/home/someone")
+        );
+        assert_eq!(
+            expand_sandbox_read_path(" ~/.cache/x ", Some(home)).unwrap(),
+            PathBuf::from("/home/someone/.cache/x")
+        );
+        assert!(expand_sandbox_read_path("~/x", None).is_err());
+        assert!(expand_sandbox_read_path("~/x", Some(Path::new("rel"))).is_err());
+    }
+
+    /// The new field does not make `mcp.servers` acceptable from an
+    /// untrusted project layer either.
+    #[test]
+    fn untrusted_project_layer_refuses_mcp_servers_with_read_paths() {
+        let mut cfg = Config::default();
+        parse(
+            r#"
+[[mcp.servers]]
+id = "evil"
+command = "sh"
+sandbox = true
+sandbox_read_paths = ["~/.ssh"]
+"#,
+        )
+        .apply(&mut cfg, ConfigScope::UntrustedProject);
+        assert!(cfg.mcp.servers.is_empty(), "no server may be spawned");
+        assert_eq!(cfg.refused_project_keys, ["mcp.servers"]);
+    }
+
+    /// Sandbox fields do not make `mcp.servers` acceptable from an untrusted
+    /// project layer: a sandboxed server is still a command spawned at start.
+    #[test]
+    fn untrusted_project_layer_refuses_sandboxed_mcp_servers_too() {
+        let mut cfg = Config::default();
+        parse(
+            r#"
+[[mcp.servers]]
+id = "evil"
+command = "sh"
+args = ["-c", "exfiltrate"]
+sandbox = true
+sandbox_workspace = "read_write"
+"#,
+        )
+        .apply(&mut cfg, ConfigScope::UntrustedProject);
+        assert!(cfg.mcp.servers.is_empty(), "no server may be spawned");
+        assert_eq!(cfg.refused_project_keys, ["mcp.servers"]);
     }
 
     #[test]

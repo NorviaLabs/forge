@@ -96,6 +96,10 @@ pub struct ToolContext {
     pub session_tmp: Option<Arc<SessionTempDir>>,
     /// True only for an exact sandbox-denied invocation replayed after HITL.
     pub unconfined_shell: bool,
+    /// The model tool call this context is executing, when there is one.
+    /// Carried so the egress gateway can attribute connections to the call
+    /// that opened them.
+    pub tool_call_id: Option<Arc<str>>,
 }
 
 impl ToolContext {
@@ -110,7 +114,26 @@ impl ToolContext {
             egress: None,
             session_tmp: None,
             unconfined_shell: false,
+            tool_call_id: None,
         }
+    }
+
+    /// A per-call egress gateway for a tool that opens its own connections
+    /// (in-process, or a host process it spawns), attributed to this call.
+    ///
+    /// `Ok(None)` when the session has no egress grant: the caller keeps its
+    /// direct behaviour. An `Err` means a grant exists but its endpoint could
+    /// not be started; callers should fail the call rather than fall back to
+    /// a direct connection the policy never saw.
+    pub async fn gateway_for_call(&self) -> std::io::Result<Option<crate::egress::CallGateway>> {
+        crate::egress::CallGateway::start(self.egress.as_deref(), self.tool_call_id.as_deref())
+            .await
+    }
+
+    /// Attribute work done under this context to the tool call `id`.
+    pub fn with_tool_call_id(mut self, id: impl Into<Arc<str>>) -> Self {
+        self.tool_call_id = Some(id.into());
+        self
     }
 
     pub fn with_session_tmp(mut self, session_tmp: Arc<SessionTempDir>) -> Self {

@@ -6,7 +6,7 @@
 //! tool approval when no human is attached.
 
 use forge_core::AgentSession;
-use forge_types::{HitlDecision, HitlPayload, ModelResponse};
+use forge_types::{ApprovalKind, GrantDecision, HitlPayload, ModelResponse};
 
 /// What to do when a model-authored tool call reaches a human approval gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -16,8 +16,11 @@ pub enum ApprovalPolicy {
     Ask,
     /// Deny every request and let the model see the denial as a tool result.
     DenyAll,
-    /// Approve every request. Intended for an externally isolated evaluation
-    /// workspace, not for an ordinary repository checkout.
+    /// Approve policy prompts and grant sandbox-denied network hosts for the
+    /// session (the call re-runs still confined). Never approves running a
+    /// command outside the sandbox: with no operator attached, that request
+    /// is denied and the model sees why. Intended for an externally isolated
+    /// evaluation workspace, not for an ordinary repository checkout.
     ApproveAll,
 }
 
@@ -40,10 +43,22 @@ impl std::fmt::Display for ApprovalRequired {
 
 impl std::error::Error for ApprovalRequired {}
 
+/// Tool-result text the model sees when approve-all refuses an escalation.
+pub const UNCONFINED_REFUSED_UNDER_APPROVE_ALL: &str = "this command needed to run outside the sandbox, which approve-all never approves in headless mode; it was not run. Find a way to do this inside the workspace sandbox.";
+
 /// Run one user prompt through the normal session loop until it completes or
 /// the configured approval policy stops it.
 pub async fn run_headless(
     mut session: AgentSession,
+    prompt: &str,
+    policy: ApprovalPolicy,
+) -> anyhow::Result<ModelResponse> {
+    run_headless_in(&mut session, prompt, policy).await
+}
+
+/// [`run_headless`] on a borrowed session, so the caller can inspect it after.
+async fn run_headless_in(
+    session: &mut AgentSession,
     prompt: &str,
     policy: ApprovalPolicy,
 ) -> anyhow::Result<ModelResponse> {
@@ -56,22 +71,49 @@ pub async fn run_headless(
     // bounds denial loops, but approving an agent-authored loop needs a
     // separate backstop so an unattended benchmark cannot run forever.
     const MAX_APPROVAL_ROUNDS: usize = 64;
+    // Hosts approve-all already granted this turn. A grant that did not help
+    // is not repeated; the second denial of the same host is refused.
+    let mut granted_hosts = std::collections::HashSet::new();
+    let mut response = None;
     for _ in 0..MAX_APPROVAL_ROUNDS {
-        let response = session
-            .run_agent_turns(None)
-            .await
-            .map_err(|error| anyhow::anyhow!(error))?;
+        // An approved call can raise a follow-up approval itself (a host the
+        // gateway refused it); answer that one before running the turn on.
+        if response.is_none() || session.pending_hitl().is_none() {
+            response = Some(
+                session
+                    .run_agent_turns(None)
+                    .await
+                    .map_err(|error| anyhow::anyhow!(error))?,
+            );
+        }
         let Some(payload) = session.pending_hitl().cloned() else {
-            return Ok(response);
+            return Ok(response.expect("the turn ran this round"));
         };
 
         let decision = match policy {
             ApprovalPolicy::Ask => return Err(anyhow::Error::new(ApprovalRequired { payload })),
-            ApprovalPolicy::DenyAll => HitlDecision::Deny,
-            ApprovalPolicy::ApproveAll => HitlDecision::Approve,
+            ApprovalPolicy::DenyAll => GrantDecision::Deny,
+            ApprovalPolicy::ApproveAll => match payload.kind() {
+                // Escalation, including every command on a host that cannot
+                // confine: approve-all never takes a command out of the sandbox.
+                ApprovalKind::SandboxEscalation => {
+                    GrantDecision::DenyWithNote(UNCONFINED_REFUSED_UNDER_APPROVE_ALL.into())
+                }
+                ApprovalKind::NetworkHost => {
+                    let host = payload.denied_host.as_deref().unwrap_or_default();
+                    if granted_hosts.insert(forge_tools::egress::suggest_host_pattern(host)) {
+                        GrantDecision::AllowHostForSession
+                    } else {
+                        GrantDecision::DenyWithNote(
+                            "the network host is still blocked after a session grant".into(),
+                        )
+                    }
+                }
+                ApprovalKind::Governance => GrantDecision::AllowOnce,
+            },
         };
         session
-            .resolve_hitl(decision, "headless")
+            .decide_hitl(decision, "headless")
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
     }
@@ -86,9 +128,11 @@ mod tests {
     use forge_governance::Governance;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;
+    use forge_tools::{Tool, ToolContext, ToolError};
     use forge_types::{ModelResponse, ToolCall};
+    use forge_types::{SideEffectClass, ToolOutput};
     use serde_json::json;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Arc;
     use tempfile::{tempdir, TempDir};
 
@@ -132,6 +176,152 @@ mod tests {
         .unwrap();
         session.set_governance(Governance::default().require_hitl_for_tool("bash"));
         (session, dir)
+    }
+
+    /// Blocked by the sandbox once (network host or filesystem, per
+    /// `denied_host`); records whether any run was unconfined.
+    struct SandboxDeniedOnce {
+        denied_host: Option<&'static str>,
+        calls: AtomicU32,
+        ran_unconfined: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for SandboxDeniedOnce {
+        fn name(&self) -> &str {
+            "sandboxed"
+        }
+
+        fn description(&self) -> &str {
+            "blocked by the sandbox on its first confined run"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+
+        fn side_effect_class(&self) -> SideEffectClass {
+            SideEffectClass::Exec
+        }
+
+        async fn call(
+            &self,
+            ctx: &ToolContext,
+            _args: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            if ctx.unconfined_shell {
+                self.ran_unconfined.store(true, Ordering::SeqCst);
+                return Ok(ToolOutput::success("ran unconfined"));
+            }
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(ToolError::SandboxDenied {
+                    content: "Operation not permitted".into(),
+                    reason: "blocked by the sandbox".into(),
+                    denied_host: self.denied_host.map(Into::into),
+                });
+            }
+            Ok(ToolOutput::success("ran confined"))
+        }
+    }
+
+    async fn sandboxed_session(
+        denied_host: Option<&'static str>,
+        ran_unconfined: Arc<AtomicBool>,
+    ) -> (AgentSession, TempDir) {
+        let dir = tempdir().unwrap();
+        let cfg = LoopConfig {
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("journal"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(SandboxDeniedOnce {
+            denied_host,
+            calls: AtomicU32::new(0),
+            ran_unconfined,
+        }));
+        let script = vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "s1".into(),
+                    name: "sandboxed".into(),
+                    arguments: json!({}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text("done"),
+        ];
+        let session = AgentSession::create(cfg, Arc::new(MockModelClient::script(script)), tools)
+            .await
+            .unwrap();
+        (session, dir)
+    }
+
+    fn tool_result(session: &AgentSession) -> String {
+        session
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.tool_call_id.as_deref() == Some("s1"))
+            .expect("the call must have a tool result")
+            .content
+            .clone()
+    }
+
+    async fn run_approve_all(denied_host: Option<&'static str>) -> (String, bool, String) {
+        let ran_unconfined = Arc::new(AtomicBool::new(false));
+        let (mut session, _dir) = sandboxed_session(denied_host, ran_unconfined.clone()).await;
+        let response = run_headless_in(&mut session, "go", ApprovalPolicy::ApproveAll)
+            .await
+            .unwrap();
+        (
+            tool_result(&session),
+            ran_unconfined.load(Ordering::SeqCst),
+            response.text,
+        )
+    }
+
+    #[tokio::test]
+    async fn approve_all_grants_a_denied_host_and_retries_confined() {
+        let (result, ran_unconfined, final_text) = run_approve_all(Some("api.github.com")).await;
+        assert_eq!(result, "ran confined");
+        assert!(!ran_unconfined, "a host grant must keep the call sandboxed");
+        assert_eq!(final_text, "done");
+    }
+
+    /// A gated call approved once, then refused a host by the gateway, raises
+    /// the host prompt from inside the approval; approve-all answers it
+    /// without running the turn on in between, and the grant re-runs the call.
+    #[tokio::test]
+    async fn approve_all_answers_a_host_prompt_raised_by_an_approved_call() {
+        let ran_unconfined = Arc::new(AtomicBool::new(false));
+        let (mut session, _dir) =
+            sandboxed_session(Some("api.github.com"), ran_unconfined.clone()).await;
+        session.set_governance(Governance::default().require_hitl_for_tool("sandboxed"));
+        let response = run_headless_in(&mut session, "go", ApprovalPolicy::ApproveAll)
+            .await
+            .unwrap();
+        assert_eq!(tool_result(&session), "ran confined");
+        assert!(!ran_unconfined.load(Ordering::SeqCst));
+        assert_eq!(response.text, "done");
+    }
+
+    #[tokio::test]
+    async fn approve_all_refuses_to_run_outside_the_sandbox() {
+        let (result, ran_unconfined, final_text) = run_approve_all(None).await;
+        assert!(
+            !ran_unconfined,
+            "approve-all must never run a command unconfined"
+        );
+        assert!(
+            result.contains(UNCONFINED_REFUSED_UNDER_APPROVE_ALL),
+            "the model must see why the escalation was refused: {result}"
+        );
+        assert_eq!(final_text, "done");
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     name: Test and format
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
@@ -27,8 +27,14 @@ jobs:
       # stay green while testing nothing — which is the failure mode worth
       # spending an apt-get on. `sandbox_is_available_on_linux_in_ci` asserts
       # they are present, so removing this step breaks the build loudly.
+      # GitHub-hosted Ubuntu 24.04 restricts unprivileged user namespaces via
+      # AppArmor, which stops bubblewrap from creating the sandbox's network
+      # namespace ("bwrap: loopback: Failed RTM_NEWADDR"). Lift it on the
+      # runner so the real sandbox is exercised.
       - name: Install sandbox dependencies
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap socat
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # The installer is what puts bubblewrap and socat on a user's machine, so
       # a regression there costs every new Linux user the sandbox silently.
       - name: Test the installer
@@ -59,7 +65,7 @@ jobs:
   # deny.toml.
   deny:
     name: Dependency audit
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1

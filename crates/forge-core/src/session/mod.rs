@@ -11,6 +11,7 @@
 mod approval;
 pub(crate) mod compaction;
 mod create;
+pub(crate) mod grant;
 mod inspect;
 pub(crate) mod question;
 mod tasks;

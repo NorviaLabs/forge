@@ -394,6 +394,35 @@ async fn confirming_approve_all_resumes_an_existing_pending_approval() {
 }
 
 #[tokio::test]
+async fn confirming_approve_all_leaves_a_pending_sandbox_escalation_waiting() {
+    let (_fake_home, _home_guard) = fake_home_guard();
+    let (dir, mut app) = focus_test_app().await;
+    forge_config::grant_trust(dir.path()).unwrap();
+    set_pending_hitl(
+        &mut app,
+        HitlPayload {
+            call_id: "approve-all-escalation".into(),
+            tool: "bash".into(),
+            args_redacted: serde_json::json!({"command": "rm -rf ../outside"}),
+            reason: "blocked by the sandbox".into(),
+            failure: None,
+            sandbox_escalation: true,
+            denied_host: None,
+        },
+    );
+
+    app.apply_overlay_action(crate::overlays::OverlayAction::ApproveAll)
+        .await
+        .unwrap();
+
+    assert!(app.approve_all);
+    assert!(
+        !app.pending_interaction.has_hitl_decision(),
+        "approve-all must not approve a run outside the sandbox"
+    );
+}
+
+#[tokio::test]
 async fn edit_with_a_path_opens_the_file_without_the_explorer_visible() {
     let (dir, mut app) = focus_test_app().await;
     let src = dir.path().join("src");

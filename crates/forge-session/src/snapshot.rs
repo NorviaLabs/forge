@@ -39,7 +39,7 @@ pub struct SessionSnapshot {
     /// Authoritative task state. Frontends must render this rather than
     /// deriving their own from busy/streaming flags.
     pub lifecycle: TaskLifecycle,
-    /// Per-session approve-all mode: HITL auto-approved, shell unconfined.
+    /// Per-session approve-all mode: HITL auto-approved, shell still confined.
     pub approve_all: bool,
     /// The outstanding approval request, if the session is waiting on one.
     pub pending_hitl: Option<HitlPayload>,

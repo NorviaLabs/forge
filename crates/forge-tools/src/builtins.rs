@@ -27,12 +27,12 @@ pub(crate) fn schema_for<T: JsonSchema>() -> Value {
 /// descendant reachable. No-op off unix, where `kill_on_drop` stays the
 /// fallback.
 #[cfg(unix)]
-pub(crate) fn set_process_group(command: &mut Command) {
+pub fn set_process_group(command: &mut Command) {
     command.process_group(0);
 }
 
 #[cfg(not(unix))]
-pub(crate) fn set_process_group(_command: &mut Command) {}
+pub fn set_process_group(_command: &mut Command) {}
 
 /// Signal an entire process group with `SIGKILL`. `pgid` is the group leader's
 /// pid (`process_group(0)` and `setsid` both make the child's pid its pgid).
@@ -64,13 +64,13 @@ pub(crate) fn kill_process_group(_pgid: i32) {}
 /// future reaps grandchildren, not just the direct child. For a process whose
 /// lifetime is handed to a store that will kill it explicitly later, `disarm`
 /// transfers that responsibility.
-pub(crate) struct ProcessGroupGuard {
+pub struct ProcessGroupGuard {
     pgid: i32,
     armed: bool,
 }
 
 impl ProcessGroupGuard {
-    pub(crate) fn new(pgid: Option<i32>) -> Self {
+    pub fn new(pgid: Option<i32>) -> Self {
         Self {
             pgid: pgid.unwrap_or(0),
             armed: pgid.is_some_and(|pid| pid > 0),
@@ -78,7 +78,7 @@ impl ProcessGroupGuard {
     }
 
     /// Kill the group now and stop the drop from killing it again.
-    pub(crate) fn kill(&mut self) {
+    pub fn kill(&mut self) {
         if self.armed {
             self.armed = false;
             kill_process_group(self.pgid);
@@ -86,7 +86,7 @@ impl ProcessGroupGuard {
     }
 
     /// Hand the group to another owner; this guard no longer kills on drop.
-    pub(crate) fn disarm(&mut self) {
+    pub fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -386,7 +386,7 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, None, true, None).await
+    run_shell_command_inner(command, workspace_root, egress, None, true, None, None).await
 }
 
 pub async fn run_shell_command_with_egress_and_temp(
@@ -395,7 +395,16 @@ pub async fn run_shell_command_with_egress_and_temp(
     egress: Option<&crate::sandbox::EgressGrant>,
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, session_tmp, true, None).await
+    run_shell_command_inner(
+        command,
+        workspace_root,
+        egress,
+        session_tmp,
+        true,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Run `command` with no sandbox at all — filesystem and network unconfined.
@@ -406,7 +415,16 @@ pub async fn run_shell_command_unconfined(
     workspace_root: &Path,
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, None, session_tmp, false, None).await
+    run_shell_command_inner(
+        command,
+        workspace_root,
+        None,
+        session_tmp,
+        false,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Bounded execution evidence from the same readers that collect tool output.
@@ -458,6 +476,8 @@ impl ShellOutputCapture {
 }
 
 /// Observe a shell job without changing its sandbox, grant or completion path.
+/// `egress_label` (the tool call id that started the job, when there is one)
+/// attributes the job's connections in the session's egress event log.
 pub async fn run_shell_command_observed(
     command: &str,
     workspace_root: &Path,
@@ -465,6 +485,7 @@ pub async fn run_shell_command_observed(
     session_tmp: Option<&Path>,
     unconfined: bool,
     capture: Arc<ShellOutputCapture>,
+    egress_label: Option<&str>,
 ) -> Result<ToolOutput, ToolError> {
     run_shell_command_inner(
         command,
@@ -473,6 +494,7 @@ pub async fn run_shell_command_observed(
         session_tmp,
         !unconfined,
         Some(capture),
+        egress_label,
     )
     .await
 }
@@ -484,114 +506,28 @@ async fn run_shell_command_inner(
     session_tmp: Option<&Path>,
     confined: bool,
     capture: Option<Arc<ShellOutputCapture>>,
+    egress_label: Option<&str>,
 ) -> Result<ToolOutput, ToolError> {
-    // Do not use a login shell: `bash -l` sources profile files, which can
-    // re-export credentials after the explicit removals below.
-    //
-    // Confinement is applied here, at spawn, because that is the only moment
-    // it can be: a process that starts unconfined stays unconfined for its
-    // whole life. An unavailable sandbox is surfaced as an approval-required
-    // denial instead of silently downgrading this invocation.
-    if confined {
-        if let Err(unavailable) = crate::sandbox::availability() {
-            return Err(ToolError::SandboxDenied {
-                content: command.to_string(),
-                reason: unavailable.reason(),
-                denied_host: None,
-            });
-        }
-    }
-    let egress_invocation = if confined {
-        crate::egress::EgressInvocation::start(egress)
-            .await
-            .map_err(|error| {
-                ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
-            })?
-    } else {
-        None
-    };
-    let command_egress = egress_invocation
-        .as_ref()
-        .map(crate::egress::EgressInvocation::grant)
-        .or(egress);
-    let mut policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root)
-        .with_command_access(command)
-        .with_egress(command_egress);
-    if crate::credentials::needs_git_writes(command) {
-        policy = policy.with_git_writable();
-    }
-    if let Some(session_tmp) = session_tmp {
-        policy = policy.with_session_tmp(session_tmp);
-    }
-    let wrapped = confined
-        .then(|| crate::sandbox::wrap_shell_command("bash", command, &policy))
-        .flatten();
-
-    // `wrap_shell_command` returns `None` for two very different reasons.
-    // "This host has no sandbox" is a launch-time refusal in the supported
-    // CLI. "This host has a sandbox but this policy could not be built" is
-    // an anomaly — a workspace path that is not valid UTF-8, a root that
-    // cannot be canonicalised — and nothing upstream knows it happened, so
-    // falling back would drop confinement with no prompt and no message.
-    // Refuse instead.
-    if confined && wrapped.is_none() && crate::sandbox::availability().is_ok() {
-        return Err(ToolError::Execution(format!(
-            "refusing to run unconfined: this host can sandbox, but no sandbox \
-             could be built for workspace {}",
-            workspace_root.display()
-        )));
-    }
-
-    let confined_run = wrapped.is_some();
-    let mut shell = match wrapped {
-        Some((program, args)) => {
-            let mut confined = Command::new(program);
-            confined.args(args);
-            confined
-        }
-        None => {
-            let mut plain = Command::new("bash");
-            plain.arg("-c").arg(command);
-            plain
-        }
-    };
+    let mut spec =
+        crate::shell_spawn::ShellSpawnSpec::build(crate::shell_spawn::ShellSpawnRequest {
+            mode: crate::shell_spawn::ShellSpawnMode::Run,
+            shell: "bash",
+            command,
+            workspace_root,
+            egress,
+            session_tmp,
+            confined,
+            egress_label,
+        })
+        .await?;
+    let confined_run = spec.confined();
+    let egress_invocation = spec.take_egress_invocation();
+    let mut shell = spec.tokio_command();
     shell
-        .current_dir(workspace_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     set_process_group(&mut shell);
-    for name in PROVIDER_CREDENTIAL_ENV {
-        shell.env_remove(name);
-    }
-    // The proxy env points at the in-sandbox relay (Linux) or the filtered
-    // host proxy (macOS). An approved unconfined retry is supposed to use
-    // the real network — HTTPS clients fail if we leave them talking to a
-    // proxy that is either not listening or still deny-all.
-    if confined_run {
-        for name in crate::credentials::HOST_CREDENTIAL_ENV {
-            shell.env_remove(name);
-        }
-        for (name, value) in crate::sandbox::egress_env(&policy) {
-            shell.env(name, value);
-        }
-        let identity_dir = session_tmp
-            .map(|dir| dir.join("host-identity"))
-            .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
-        let _ = std::fs::create_dir_all(&identity_dir);
-        for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
-            shell.env(name, value);
-        }
-        for (name, value) in crate::credentials::host_identity_env(command_egress, &identity_dir) {
-            shell.env(name, value);
-        }
-        for (name, value) in policy.toolchain_env() {
-            shell.env(name, value);
-        }
-    }
-    for (name, value) in crate::sandbox::shell_env(&policy) {
-        shell.env(name, value);
-    }
 
     let mut child = shell
         .spawn()
@@ -752,6 +688,7 @@ itself, never to git hooks)."
             ctx.session_tmp.as_deref().map(|temp| temp.path()),
             !ctx.unconfined_shell,
             None,
+            ctx.tool_call_id.as_deref(),
         )
         .await
     }
@@ -1630,7 +1567,7 @@ fn validate_git_args(
     ctx: &ToolContext,
     subcommand: &str,
     args: &[String],
-) -> Result<(), ToolError> {
+) -> Result<ParsedGitArgs, ToolError> {
     let policy = git_policy(subcommand).ok_or_else(|| {
         ToolError::Execution(format!(
             "git: no argument policy for subcommand `{subcommand}`"
@@ -1638,6 +1575,7 @@ fn validate_git_args(
     })?;
 
     let mut operands: Vec<&str> = Vec::new();
+    let mut options: Vec<&str> = Vec::new();
     let mut index = 0;
     let mut options_ended = false;
 
@@ -1675,6 +1613,7 @@ fn validate_git_args(
                 "git: option `{name}` is not allowed for `{subcommand}`"
             )));
         }
+        options.push(name);
 
         // A single-dash token longer than two characters is either a valued
         // option carrying its value (`-U3`) or a cluster (`-am`). Clusters are
@@ -1729,7 +1668,20 @@ fn validate_git_args(
         }
     }
 
-    Ok(())
+    Ok(ParsedGitArgs {
+        operands: operands.into_iter().map(str::to_owned).collect(),
+        options: options.into_iter().map(str::to_owned).collect(),
+    })
+}
+
+/// What [`validate_git_args`] learned while checking a call, kept so the
+/// network check reads the same operands the validator approved rather than
+/// re-parsing the arguments its own way.
+pub(crate) struct ParsedGitArgs {
+    /// Non-option tokens, in order (the repository, refspecs, paths, …).
+    pub(crate) operands: Vec<String>,
+    /// Names of the options present (`--all`, `--depth`, …), values excluded.
+    pub(crate) options: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -1774,19 +1726,58 @@ Not a free-form shell. Prefer this over `bash(git …)`."
                 GIT_ALLOWED_SUBCOMMANDS.join(", ")
             )));
         }
-        validate_git_args(ctx, &sub, &a.args)?;
+        let parsed = validate_git_args(ctx, &sub, &a.args)?;
+        // Fast path: refuse a remote the policy does not permit before git
+        // runs, so the host-grant prompt names it without a failed attempt.
+        crate::git_network::check_git_network(ctx, &sub, &parsed.operands, &parsed.options).await?;
+
+        // Enforcement: a network subcommand's traffic goes through this
+        // call's gateway, which refuses any host the pre-check could not see.
+        // No grant (no live proxy) keeps the direct path; a grant whose
+        // gateway cannot start fails the call rather than going direct.
+        let gateway = if crate::git_network::is_network_invocation(&sub, &parsed.operands) {
+            ctx.gateway_for_call().await.map_err(|e| {
+                ToolError::Execution(format!(
+                    "git {sub}: could not start the egress gateway: {e}; refusing to contact the remote"
+                ))
+            })?
+        } else {
+            None
+        };
+        let routed = match &gateway {
+            Some(gateway) => {
+                Some(crate::git_network::route_through_gateway(ctx, &sub, gateway).await?)
+            }
+            None => None,
+        };
 
         let mut cmd = Command::new("git");
+        if let Some(routed) = &routed {
+            routed.apply(&mut cmd);
+        }
         cmd.arg(&sub)
             .args(&a.args)
             .current_dir(&ctx.workspace_root)
             .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let out = cmd
-            .output()
-            .await
-            .map_err(|e| ToolError::Execution(format!("failed to run git: {e}")))?;
+        let timeout = crate::git_network::git_timeout(&sub, &a.args);
+        let out = match crate::git_network::run_git_bounded(cmd, timeout).await? {
+            crate::git_network::GitRun::Finished(out) => out,
+            crate::git_network::GitRun::TimedOut => {
+                return Ok(ToolOutput {
+                    outcome: Some(ExecutionOutcome::TimedOut),
+                    content: format!(
+                        "git {sub}: timed out after {}s; the git process and its children were killed",
+                        timeout.as_secs()
+                    ),
+                    is_error: true,
+                    exit_code: None,
+                    attachments: Vec::new(),
+                });
+            }
+        };
 
         let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
         let err = String::from_utf8_lossy(&out.stderr);
@@ -1798,6 +1789,14 @@ Not a free-form shell. Prefer this over `bash(git …)`."
         }
         if content.trim().is_empty() && out.status.success() {
             content = format!("git {sub}: ok");
+        }
+        // A host the gateway refused (a redirect, a submodule, an ssh alias)
+        // becomes the same host-grant prompt as a pre-check denial, instead of
+        // git's raw "403" or "connection closed".
+        if !out.status.success() {
+            if let Some(denied) = gateway.as_ref().and_then(|g| g.sandbox_denied(&content)) {
+                return Err(denied);
+            }
         }
         Ok(ToolOutput {
             outcome: Default::default(),
@@ -1869,6 +1868,7 @@ mod tests {
             None,
             true,
             capture.clone(),
+            None,
         )
         .await
         .unwrap();
@@ -2541,7 +2541,7 @@ mod tests {
         let (_dir, ctx) = git_ctx();
         let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
         match validate_git_args(&ctx, subcommand, &owned) {
-            Ok(()) => panic!("expected `git {subcommand} {args:?}` to be refused"),
+            Ok(_) => panic!("expected `git {subcommand} {args:?}` to be refused"),
             Err(error) => error.to_string(),
         }
     }
@@ -2860,6 +2860,320 @@ mod tests {
             err.to_string().contains("allowlisted") || err.to_string().contains("daemon"),
             "{err}"
         );
+    }
+
+    fn sh_git(dir: &Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repository with one commit and `origin` at `url`. Its
+    /// `core.sshCommand` records that git reached the transport (and fails, so
+    /// nothing touches the network), which is how these tests tell whether the
+    /// network subcommand itself was spawned.
+    fn repo_with_origin(url: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let marker = root.join("ssh-was-run");
+        sh_git(root, &["init", "-q"]);
+        sh_git(root, &["config", "user.email", "forge@test"]);
+        sh_git(root, &["config", "user.name", "Forge Test"]);
+        sh_git(root, &["commit", "-q", "--allow-empty", "-m", "init"]);
+        sh_git(root, &["remote", "add", "origin", url]);
+        sh_git(
+            root,
+            &[
+                "config",
+                "core.sshCommand",
+                &format!("touch '{}'; false", marker.display()),
+            ],
+        );
+        (dir, marker)
+    }
+
+    async fn ctx_with_hosts(
+        root: &Path,
+        allow: &[&str],
+    ) -> (crate::egress::EgressProxy, ToolContext) {
+        let mut policy = crate::egress::EgressPolicy::new();
+        for pattern in allow {
+            policy.allow(*pattern);
+        }
+        let proxy = crate::egress::EgressProxy::start(policy).await.unwrap();
+        let mut ctx = ToolContext::new(root.to_path_buf());
+        ctx.egress = Some(Arc::new(crate::sandbox::EgressGrant {
+            proxy_port: proxy.addr().port(),
+            socket_path: std::path::PathBuf::new(),
+            control: Some(proxy.shared().clone()),
+        }));
+        (proxy, ctx)
+    }
+
+    #[tokio::test]
+    async fn git_push_to_an_unpermitted_host_is_denied_before_git_runs() {
+        let (dir, marker) = repo_with_origin("ssh://git@denied.example:2222/o/r.git");
+        let (_proxy, ctx) = ctx_with_hosts(dir.path(), &["github.com"]).await;
+
+        let error = GitTool
+            .call(
+                &ctx,
+                json!({"subcommand": "push", "args": ["origin", "HEAD:main"]}),
+            )
+            .await
+            .unwrap_err();
+        match error {
+            ToolError::SandboxDenied { denied_host, .. } => {
+                assert_eq!(denied_host.as_deref(), Some("denied.example"));
+            }
+            other => panic!("expected a host denial, got {other:?}"),
+        }
+        assert!(!marker.exists(), "push must not reach the transport");
+    }
+
+    #[tokio::test]
+    async fn git_fetch_of_the_default_remote_names_its_scp_host() {
+        let (dir, marker) = repo_with_origin("git@denied.example:o/r.git");
+        let (_proxy, ctx) = ctx_with_hosts(dir.path(), &[]).await;
+
+        let error = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": []}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ToolError::SandboxDenied { denied_host: Some(h), .. } if h == "denied.example"),
+            "{error:?}"
+        );
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn git_clone_source_host_is_checked() {
+        let dir = tempdir().unwrap();
+        let (_proxy, ctx) = ctx_with_hosts(dir.path(), &["github.com"]).await;
+        let error = GitTool
+            .call(
+                &ctx,
+                json!({"subcommand": "clone", "args": ["https://tok@denied.example/o/r.git", "r"]}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ToolError::SandboxDenied { denied_host: Some(h), content, .. }
+                if h == "denied.example" && !content.contains("tok@")),
+            "{error:?}"
+        );
+        assert!(!dir.path().join("r").exists());
+    }
+
+    /// After the host is granted, the same call is allowed through and git
+    /// actually runs (here, reaching the recording `core.sshCommand`).
+    #[tokio::test]
+    async fn git_push_proceeds_once_the_host_is_granted() {
+        let (dir, marker) = repo_with_origin("ssh://git@denied.example/o/r.git");
+        let (proxy, ctx) = ctx_with_hosts(dir.path(), &[]).await;
+        let args = json!({"subcommand": "push", "args": ["origin", "HEAD:main"]});
+        assert!(matches!(
+            GitTool.call(&ctx, args.clone()).await,
+            Err(ToolError::SandboxDenied { .. })
+        ));
+
+        proxy.shared().grant_host("denied.example");
+        let out = GitTool.call(&ctx, args).await.unwrap();
+        assert!(out.is_error, "the fake transport fails: {}", out.content);
+        assert!(marker.exists(), "the granted retry must run git");
+    }
+
+    #[tokio::test]
+    async fn git_fetch_from_a_local_file_remote_needs_no_host() {
+        let upstream = tempdir().unwrap();
+        sh_git(upstream.path(), &["init", "-q", "--bare"]);
+        let url = format!("file://{}", upstream.path().display());
+        let (dir, _marker) = repo_with_origin(&url);
+        sh_git(dir.path(), &["push", "-q", "origin", "HEAD:main"]);
+        // Deny-all policy: a local remote must still work.
+        let (_proxy, ctx) = ctx_with_hosts(dir.path(), &[]).await;
+
+        let out = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn git_refuses_a_remote_whose_transport_it_cannot_read() {
+        let (dir, _marker) = repo_with_origin("ext::sh -c touch% /tmp/forge-ext");
+        let (_proxy, ctx) = ctx_with_hosts(dir.path(), &["*"]).await;
+        let error = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ToolError::Execution(message) if message.contains("remote helpers")),
+            "{error:?}"
+        );
+    }
+
+    /// Without an egress grant there is no host policy to apply; git keeps its
+    /// previous behaviour and runs.
+    #[tokio::test]
+    async fn git_without_an_egress_policy_is_unchanged() {
+        let (dir, marker) = repo_with_origin("ssh://git@denied.example/o/r.git");
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        let out = GitTool
+            .call(
+                &ctx,
+                json!({"subcommand": "push", "args": ["origin", "HEAD:main"]}),
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(marker.exists());
+    }
+
+    /// An HTTP origin that redirects every request to `location`, counting
+    /// the requests it answers.
+    async fn redirecting_origin(location: &'static str) -> (u16, Arc<Mutex<usize>>) {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let served = Arc::new(Mutex::new(0));
+        let counter = Arc::clone(&served);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let counter = Arc::clone(&counter);
+                tokio::spawn(async move {
+                    let mut reader = BufReader::new(stream);
+                    let mut line = String::new();
+                    while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                        if line == "\r\n" {
+                            break;
+                        }
+                        line.clear();
+                    }
+                    *counter.lock().unwrap() += 1;
+                    let response = format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\n\
+                         Content-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = reader.get_mut().write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (port, served)
+    }
+
+    /// The pre-check only sees the permitted origin; the redirect to another
+    /// host is refused by the gateway, and that refusal becomes the
+    /// host-grant prompt rather than git's raw HTTP error. Per-URL and
+    /// per-remote proxies pointing at a dead port prove the user's own proxy
+    /// settings cannot route around the gateway.
+    #[tokio::test]
+    async fn git_fetch_redirected_to_an_unpermitted_host_is_denied_by_the_gateway() {
+        let (port, served) =
+            redirecting_origin("http://blocked.example/r.git/info/refs?service=git-upload-pack")
+                .await;
+        let origin = format!("http://127.0.0.1:{port}/r.git");
+        let (dir, _marker) = repo_with_origin(&origin);
+        let root = dir.path();
+        sh_git(
+            root,
+            &[
+                "config",
+                &format!("http.{origin}.proxy"),
+                "http://127.0.0.1:1",
+            ],
+        );
+        sh_git(
+            root,
+            &["config", "remote.origin.proxy", "http://127.0.0.1:1"],
+        );
+        let (_proxy, ctx) = ctx_with_hosts(root, &["127.0.0.1"]).await;
+
+        let error = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))
+            .await
+            .unwrap_err();
+        match error {
+            ToolError::SandboxDenied {
+                denied_host,
+                content,
+                ..
+            } => {
+                assert_eq!(denied_host.as_deref(), Some("blocked.example"));
+                assert!(content.contains("git"), "{content}");
+            }
+            other => panic!("expected a gateway host denial, got {other:?}"),
+        }
+        assert!(*served.lock().unwrap() >= 1, "the origin was reached");
+    }
+
+    /// SSH leaves through the gateway: the user's `core.sshCommand` is kept,
+    /// with the connect helper appended as its ProxyCommand.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_ssh_keeps_the_users_command_and_adds_the_gateway_proxy() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, _marker) = repo_with_origin("ssh://git@allowed.example/o/r.git");
+        let root = dir.path();
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let argv = root.join("ssh-argv");
+        let ssh = bin.join("ssh");
+        std::fs::write(
+            &ssh,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 1\n",
+                argv.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+        sh_git(
+            root,
+            &[
+                "config",
+                "core.sshCommand",
+                &format!("'{}' -i ~/.ssh/work_key", ssh.display()),
+            ],
+        );
+        let (_proxy, ctx) = ctx_with_hosts(root, &["allowed.example"]).await;
+
+        let out = GitTool
+            .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))
+            .await
+            .unwrap();
+        assert!(out.is_error, "the fake ssh fails: {}", out.content);
+        let recorded = std::fs::read_to_string(&argv).unwrap();
+        let args: Vec<&str> = recorded.lines().collect();
+        let exe = std::env::current_exe().unwrap();
+        let proxy = args
+            .iter()
+            .find_map(|arg| arg.strip_prefix("ProxyCommand="))
+            .unwrap_or_else(|| panic!("no ProxyCommand in {args:?}"));
+        let expected_prefix = format!(
+            "'{}' __egress-connect 127.0.0.1:",
+            exe.display().to_string().replace('%', "%%")
+        );
+        assert!(proxy.starts_with(&expected_prefix), "{proxy}");
+        assert!(proxy.ends_with(" %h %p"), "{proxy}");
+        assert_eq!(
+            &args[..2],
+            [
+                "-i",
+                &format!("{}/.ssh/work_key", std::env::var("HOME").unwrap())
+            ]
+        );
+        assert!(args.contains(&"ControlPath=none"), "{args:?}");
+        assert!(args.contains(&"git@allowed.example"), "{args:?}");
     }
 
     #[tokio::test]

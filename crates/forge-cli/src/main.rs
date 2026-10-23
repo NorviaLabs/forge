@@ -1,5 +1,7 @@
 //! Forge CLI — launches the full-screen TUI by default.
 
+mod egress_connect;
+
 use std::{io::Read, path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
@@ -70,8 +72,9 @@ struct BenchArgs {
     #[arg(long, default_value = "max", value_name = "EFFORT")]
     effort: String,
 
-    /// Approve every tool request. Use only with an isolated evaluation
-    /// workspace.
+    /// Approve tool prompts and grant blocked network hosts for the session.
+    /// Commands stay sandboxed: a request to run outside the sandbox is
+    /// refused. Use only with an isolated evaluation workspace.
     #[arg(long)]
     approve_all: bool,
 }
@@ -83,6 +86,17 @@ enum Command {
 }
 
 fn main() {
+    // Internal helpers run before clap so they stay out of `--help` and
+    // skip the logging and runtime setup the TUI needs.
+    let mut args = std::env::args_os().skip(1);
+    if args
+        .next()
+        .is_some_and(|arg| arg == egress_connect::SUBCOMMAND)
+    {
+        let rest: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(egress_connect::run(&rest));
+    }
+
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
@@ -202,19 +216,19 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
             let Some(approval) = error.downcast_ref::<ApprovalRequired>() else {
                 return Err(error);
             };
-            let kind = if approval.payload.denied_host.is_some() {
-                "network_host_denial"
-            } else if approval.payload.sandbox_escalation {
-                "sandbox_filesystem_denial"
-            } else {
-                "governance_approval"
-            };
-            let retry_scope = if approval.payload.denied_host.is_some() {
-                "host_grant_stays_filesystem_sandboxed"
-            } else if approval.payload.sandbox_escalation {
-                "approved_command_retries_unconfined"
-            } else {
-                "tool_call_requires_operator_approval"
+            let (kind, retry_scope) = match approval.payload.kind() {
+                forge_types::ApprovalKind::NetworkHost => (
+                    "network_host_denial",
+                    "host_grant_stays_filesystem_sandboxed",
+                ),
+                forge_types::ApprovalKind::SandboxEscalation => (
+                    "sandbox_filesystem_denial",
+                    "approved_command_retries_unconfined",
+                ),
+                forge_types::ApprovalKind::Governance => (
+                    "governance_approval",
+                    "tool_call_requires_operator_approval",
+                ),
             };
             println!(
                 "{}",

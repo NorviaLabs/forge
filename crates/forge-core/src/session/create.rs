@@ -235,6 +235,7 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             approve_all: false,
             workspace_trusted: false,
+            audit: crate::audit::SessionAudit::default(),
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage: SessionTokenUsage::default(),
@@ -332,6 +333,7 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             approve_all: false,
             workspace_trusted: false,
+            audit: crate::audit::SessionAudit::default(),
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage,
@@ -458,6 +460,22 @@ impl AgentSession {
         self.egress.is_some()
     }
 
+    /// The egress gateway's loopback TCP address, when the session has one.
+    pub fn egress_tcp_addr(&self) -> Option<std::net::SocketAddr> {
+        self.egress.as_ref().map(|runtime| runtime.tcp_addr())
+    }
+
+    /// Take the egress connection events recorded so far this session,
+    /// including those of MCP servers sharing the session's egress state.
+    /// Events from before an [`Self::adopt_egress_state`] are discarded with
+    /// the state that recorded them.
+    pub fn drain_egress_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
+        self.egress
+            .as_ref()
+            .map(|runtime| runtime.drain_events())
+            .unwrap_or_default()
+    }
+
     /// The hosts this session may reach, for display.
     pub fn egress_grant(&self) -> Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>> {
         self.egress.as_ref().map(|runtime| runtime.grant())
@@ -477,24 +495,53 @@ impl AgentSession {
         self.governance = g;
     }
 
-    /// Replace the session proxy with one that enforces `policy`.
+    /// Enforce `policy` on the session gateway.
     ///
-    /// The previous runtime is dropped first so the session-id socket is
-    /// free before the new listener binds. Called from session open after
-    /// personal `host(...)` rules are loaded.
+    /// The policy is replaced in place on the live state, so the socket, the
+    /// event log and every endpoint sharing the state — notably sandboxed MCP
+    /// servers started before the session — follow it from their next
+    /// CONNECT. Hosts granted at a prompt are discarded with the old policy.
+    /// Only when no gateway is running is a new one started. Called from
+    /// session open after personal `host(...)` rules are loaded.
     pub async fn apply_egress_policy(&mut self, policy: forge_tools::egress::EgressPolicy) {
-        self.egress = None;
-        self.tool_ctx.egress = None;
+        if let Some(runtime) = &self.egress {
+            runtime.replace_policy(policy);
+            return;
+        }
         let runtime = crate::permission::start_egress(self.session_id, policy).await;
         self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
         self.egress = runtime;
     }
 
+    /// Serve `shared` — live egress state built before the session, which
+    /// MCP servers already route through — as this session's gateway, so a
+    /// host granted for the session reaches those servers too and their
+    /// connections land in this session's event log.
+    ///
+    /// The previous gateway is dropped first so the session-id socket is
+    /// free before the new listener binds; its events are discarded. When
+    /// the new gateway cannot start the session has no network, and the
+    /// MCP servers keep their own endpoints on `shared`.
+    pub async fn adopt_egress_state(&mut self, shared: forge_tools::egress::EgressShared) {
+        self.egress = None;
+        self.tool_ctx.egress = None;
+        let runtime = crate::permission::start_egress_with_shared(self.session_id, shared).await;
+        self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
+        self.egress = runtime;
+    }
+
     /// Permit `pattern` on the live proxy without replacing the socket.
+    /// Audited against the pending approval's call, when there is one.
     pub fn grant_egress_host(&self, pattern: &str) {
+        let call_id = self.pending_hitl().map(|payload| payload.call_id.clone());
+        self.grant_egress_host_for(pattern, call_id.as_deref(), "operator");
+    }
+
+    pub(crate) fn grant_egress_host_for(&self, pattern: &str, call_id: Option<&str>, source: &str) {
         if let Some(runtime) = &self.egress {
             runtime.grant_host(pattern);
         }
+        self.audit_host_grant(call_id, pattern, None, source);
     }
 
     /// Remember the suggested pattern for `call` for the rest of this session.
@@ -504,7 +551,9 @@ impl AgentSession {
         &mut self,
         call: &forge_types::ToolCall,
     ) -> Option<String> {
-        self.governance.allow_suggested_pattern_for_session(call)
+        let pattern = self.governance.allow_suggested_pattern_for_session(call)?;
+        self.audit_pattern_grant(Some(&call.id), Some(&call.name), &pattern, None);
+        Some(pattern)
     }
 
     pub fn clear_session_pattern_allows(&mut self) {

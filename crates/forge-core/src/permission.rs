@@ -32,6 +32,30 @@ impl EgressRuntime {
     pub fn grant_host(&self, pattern: &str) {
         self.shared.grant_host(pattern);
     }
+
+    /// Replace the host policy in place: same listener, socket and event
+    /// log, and every endpoint sharing this state (shell invocations, MCP
+    /// servers) enforces the new policy from its next CONNECT.
+    pub fn replace_policy(&self, policy: forge_tools::egress::EgressPolicy) {
+        self.shared.replace_policy(policy);
+    }
+
+    /// The live state this runtime serves.
+    pub fn shared(&self) -> &forge_tools::egress::EgressShared {
+        &self.shared
+    }
+
+    /// The gateway's loopback TCP listener (`127.0.0.1`, ephemeral port), for
+    /// in-process and host-side callers that route through the gateway.
+    pub fn tcp_addr(&self) -> std::net::SocketAddr {
+        self._proxy.tcp_addr()
+    }
+
+    /// Take every connection event recorded for this session, oldest first,
+    /// including those made through per-invocation endpoints.
+    pub fn drain_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
+        self.shared.drain_events()
+    }
 }
 
 /// Hosts this workspace may reach, taken from the merged permission files.
@@ -62,16 +86,29 @@ pub async fn start_egress(
     session_id: uuid::Uuid,
     policy: forge_tools::egress::EgressPolicy,
 ) -> Option<EgressRuntime> {
+    start_egress_with_shared(
+        session_id,
+        forge_tools::egress::EgressShared::new(policy, Default::default()),
+    )
+    .await
+}
+
+/// As [`start_egress`], serving an existing live state — one that other
+/// endpoints (MCP servers started before the session) already share.
+pub async fn start_egress_with_shared(
+    session_id: uuid::Uuid,
+    shared: forge_tools::egress::EgressShared,
+) -> Option<EgressRuntime> {
     use forge_tools::egress::EgressProxy;
 
-    let mut proxy = EgressProxy::start(policy.clone()).await.ok()?;
+    let mut proxy = EgressProxy::start_with_shared(shared).await.ok()?;
 
     // The socket lives outside the workspace: inside it, the agent could
     // delete or replace the thing carrying its own traffic, and `.forge` is
     // read-only in the sandbox anyway.
     let socket_path = std::env::temp_dir().join(format!("forge-egress-{session_id}.sock"));
     proxy
-        .serve_on_unix_socket(&socket_path, policy)
+        .serve_on_unix_socket(&socket_path, forge_tools::egress::EgressPolicy::new())
         .await
         .ok()?;
 
@@ -115,6 +152,40 @@ mod egress_runtime_tests {
                 .await
                 .is_ok(),
             "the proxy must accept connections"
+        );
+    }
+
+    /// The gateway's loopback TCP listener is exposed on the runtime and its
+    /// decisions land in the session event log.
+    #[tokio::test]
+    async fn the_runtime_exposes_the_tcp_listener_and_its_events() {
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
+        )
+        .await
+        else {
+            return;
+        };
+        let addr = runtime.tcp_addr();
+        assert!(addr.ip().is_loopback(), "{addr}");
+        assert_eq!(addr.port(), runtime.grant().proxy_port);
+        let status = connect_status(addr.port(), "crates.io:443").await;
+        assert!(status.contains("403"), "{status}");
+        let mut events = Vec::new();
+        for _ in 0..50 {
+            events.extend(runtime.drain_events());
+            if !events.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].host, "crates.io");
+        assert!(!events[0].allowed());
+        assert!(
+            runtime.drain_events().is_empty(),
+            "draining empties the log"
         );
     }
 
@@ -368,6 +439,58 @@ mod session_egress_tests {
         assert!(
             !status.contains("403"),
             "host(*) must replace the deny-all proxy, got {status:?}"
+        );
+    }
+
+    /// A session that adopts egress state built before it (the state MCP
+    /// servers route through) serves that state: session grants and policy
+    /// replacements land on it, and its event log is the session's.
+    #[tokio::test]
+    async fn an_adopted_egress_state_receives_grants_and_policy_replacements() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = std::sync::Arc::new(forge_model::MockModelClient::script(vec![]));
+        let mut session = AgentSession::create(
+            LoopConfig {
+                workspace: dir.path().to_path_buf(),
+                journal_dir: dir.path().join("j"),
+                ..Default::default()
+            },
+            model,
+            forge_tools::ToolRegistry::new(),
+        )
+        .await
+        .unwrap();
+        let shared = forge_tools::egress::EgressShared::new(
+            forge_tools::egress::EgressPolicy::new(),
+            Default::default(),
+        );
+        session.adopt_egress_state(shared.clone()).await;
+        let Some(grant) = session.egress_grant() else {
+            return;
+        };
+
+        session.grant_egress_host("granted.example");
+        assert!(shared.permits_host("granted.example"));
+
+        let mut policy = forge_tools::egress::EgressPolicy::new();
+        policy.allow("applied.example");
+        session.apply_egress_policy(policy).await;
+        assert!(shared.permits_host("applied.example"));
+        assert!(!shared.permits_host("granted.example"));
+        assert_eq!(
+            session.egress_grant().unwrap().proxy_port,
+            grant.proxy_port,
+            "applying a policy must not replace the gateway"
+        );
+
+        let status = connect_status(grant.proxy_port, "refused.example:443").await;
+        assert!(status.contains("403"), "{status:?}");
+        assert!(
+            shared
+                .drain_events()
+                .iter()
+                .any(|event| event.host == "refused.example"),
+            "the session gateway must record into the adopted state"
         );
     }
 

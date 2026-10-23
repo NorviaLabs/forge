@@ -340,8 +340,9 @@ impl AgentSession {
     }
 
     /// Turn this session's approve-all mode on or off. While on, `Hitl`
-    /// decisions are auto-approved and shell tools run unconfined. Session
-    /// scoped; never persisted.
+    /// decisions are auto-approved and sandbox-denied hosts are granted for the
+    /// session; shell stays confined and an unconfined retry still prompts.
+    /// Session scoped; never persisted.
     ///
     /// Enabling is refused unless the workspace is trusted (see
     /// [`Self::set_workspace_trusted`]); disabling always applies. Returns

@@ -36,7 +36,7 @@ pub fn default_palette_items() -> Vec<PaletteItem> {
         ("/effort", "Set model effort"),
         (
             "/approve-all",
-            "Toggle approve-all for this session (disables sandbox; asks first)",
+            "Toggle approve-all for this session (sandbox stays on; asks first)",
         ),
         ("/thinking", "Toggle model thinking"),
         ("/compact", "Continue in a fresh context"),

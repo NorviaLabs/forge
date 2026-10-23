@@ -1402,6 +1402,8 @@ pub(crate) enum ApprovalGrant {
     Once,
     Session,
     Always,
+    /// Turn on session approve-all, then approve this call.
+    ApproveAll,
 }
 
 /// A drain consumes its pending flag before doing async work so the same

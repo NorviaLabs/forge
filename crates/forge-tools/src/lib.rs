@@ -7,11 +7,15 @@ mod credentials;
 mod edit;
 pub mod egress;
 mod fast_file_tools;
+mod git_network;
+#[doc(hidden)]
+pub use git_network::set_egress_connect_exe;
 mod invocation;
 mod orchestration;
 mod output_filters;
 mod registry;
 pub mod sandbox;
+pub mod shell_spawn;
 mod skills;
 mod unified_exec;
 mod validation;
@@ -27,6 +31,7 @@ pub use builtins::{
     ReadFileTool, ShellOutputCapture, ShellOutputSnapshot, UpdatePlanTool, WriteFileTool,
     PROVIDER_CREDENTIAL_ENV,
 };
+pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
 pub use orchestration::{
