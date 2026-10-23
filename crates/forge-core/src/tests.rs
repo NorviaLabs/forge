@@ -1318,6 +1318,72 @@ async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
     assert_eq!(result.content, "retried confined after host grant");
 }
 
+/// A typed decision is checked against the pending payload before anything
+/// is granted: a rejected choice leaves the approval pending, and the host
+/// grant resolves it and reruns the call confined.
+#[tokio::test]
+async fn a_grant_decision_is_validated_then_grants_the_host_and_retries() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("open a pr").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+    assert!(session.pending_hitl().is_some());
+
+    for rejected in [
+        GrantDecision::AllowOnce,
+        GrantDecision::AllowPatternForSession,
+    ] {
+        let error = session.decide_hitl(rejected, "test").await.unwrap_err();
+        assert!(matches!(error, LoopError::Other(_)), "{error}");
+        assert!(
+            session.pending_hitl().is_some(),
+            "a rejected decision must leave the approval pending"
+        );
+    }
+
+    let outcome = session
+        .decide_hitl(GrantDecision::AllowHostForSession, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.grant,
+        AppliedGrant::Host {
+            pattern: "**.github.com".into()
+        }
+    );
+    assert!(outcome.persisted_rule.is_none());
+    assert!(session.pending_hitl().is_none());
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
+        .expect("confined retry should record a tool result");
+    assert_eq!(result.content, "retried confined after host grant");
+}
+
 /// The real `git` tool: a push to a host outside the session allowlist raises
 /// the host-grant prompt (not an unconfined escalation), and the approved retry
 /// re-runs git itself against the updated policy.

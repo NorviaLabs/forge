@@ -3,17 +3,8 @@
 //!
 //! Split out of `lib.rs`; methods are moved verbatim.
 
+use super::grant::contains_redaction_marker;
 use crate::*;
-
-/// Whether `value` carries the governance redaction placeholder anywhere.
-fn contains_redaction_marker(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(s) => s == "[REDACTED]",
-        serde_json::Value::Array(items) => items.iter().any(contains_redaction_marker),
-        serde_json::Value::Object(map) => map.values().any(contains_redaction_marker),
-        _ => false,
-    }
-}
 
 impl AgentSession {
     fn approval_execution_call(&self, payload: &HitlPayload) -> Result<ToolCall, LoopError> {

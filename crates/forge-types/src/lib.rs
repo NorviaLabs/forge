@@ -1091,6 +1091,81 @@ pub struct HitlPayload {
     pub denied_host: Option<String>,
 }
 
+/// What a pending approval is asking for, which decides the choices a
+/// frontend may offer for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalKind {
+    /// The egress proxy refused a host; a grant reruns the call still confined.
+    NetworkHost,
+    /// The filesystem sandbox refused; approval reruns the call unconfined.
+    SandboxEscalation,
+    /// A governance rule asked for operator review of the call.
+    Governance,
+}
+
+impl HitlPayload {
+    /// The kind of request. A denied host wins over the escalation flag, the
+    /// same precedence every frontend used.
+    pub fn kind(&self) -> ApprovalKind {
+        if self.denied_host.is_some() {
+            ApprovalKind::NetworkHost
+        } else if self.sandbox_escalation {
+            ApprovalKind::SandboxEscalation
+        } else {
+            ApprovalKind::Governance
+        }
+    }
+}
+
+/// An operator's answer to a pending approval, including the grant it
+/// carries. Validated against the pending payload by the session before
+/// anything is granted or run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantDecision {
+    /// Refuse the call.
+    Deny,
+    /// Refuse the call; the note reaches the agent as the tool result. An
+    /// empty note is an ordinary refusal.
+    DenyWithNote(String),
+    /// Run this call once. Not offered for a denied host.
+    AllowOnce,
+    /// Remember the call's suggested pattern for the rest of the session.
+    AllowPatternForSession,
+    /// Remember the call's suggested pattern for the session and write it to
+    /// the personal permissions file.
+    AllowPatternAlways,
+    /// Permit the denied host on the session proxy and rerun confined.
+    AllowHostForSession,
+    /// As [`Self::AllowHostForSession`], and write `host(...)` to the personal
+    /// permissions file.
+    AllowHostAlways,
+    /// Turn on session approve-all, then approve this call (granting a denied
+    /// host for the session). Never offered for a sandbox escalation.
+    ApproveAll,
+}
+
+impl GrantDecision {
+    pub fn is_approval(&self) -> bool {
+        !matches!(self, Self::Deny | Self::DenyWithNote(_))
+    }
+
+    /// Stable lower-case name, for journals and audit rows.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::DenyWithNote(_) => "deny_with_note",
+            Self::AllowOnce => "allow_once",
+            Self::AllowPatternForSession => "allow_pattern_for_session",
+            Self::AllowPatternAlways => "allow_pattern_always",
+            Self::AllowHostForSession => "allow_host_for_session",
+            Self::AllowHostAlways => "allow_host_always",
+            Self::ApproveAll => "approve_all",
+        }
+    }
+}
+
 /// Identifies one user-requested unit of work within a session. A new task
 /// (not a resumed one) is created either by direct dispatch or by queue
 /// promotion — both paths go through the same counter.

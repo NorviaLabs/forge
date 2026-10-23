@@ -6,7 +6,7 @@
 //! tool approval when no human is attached.
 
 use forge_core::AgentSession;
-use forge_types::{HitlDecision, HitlPayload, ModelResponse};
+use forge_types::{ApprovalKind, GrantDecision, HitlPayload, ModelResponse};
 
 /// What to do when a model-authored tool call reaches a human approval gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -83,33 +83,30 @@ async fn run_headless_in(
             return Ok(response);
         };
 
-        let (decision, feedback) = match policy {
+        let decision = match policy {
             ApprovalPolicy::Ask => return Err(anyhow::Error::new(ApprovalRequired { payload })),
-            ApprovalPolicy::DenyAll => (HitlDecision::Deny, None),
-            // Escalation, including every command on a host that cannot
-            // confine: approve-all never takes a command out of the sandbox.
-            ApprovalPolicy::ApproveAll if payload.sandbox_escalation => (
-                HitlDecision::Deny,
-                Some(UNCONFINED_REFUSED_UNDER_APPROVE_ALL),
-            ),
-            ApprovalPolicy::ApproveAll => match payload.denied_host.as_deref() {
-                Some(host) => {
-                    let pattern = forge_tools::egress::suggest_host_pattern(host);
-                    if granted_hosts.insert(pattern.clone()) {
-                        session.grant_egress_host(&pattern);
-                        (HitlDecision::Approve, None)
+            ApprovalPolicy::DenyAll => GrantDecision::Deny,
+            ApprovalPolicy::ApproveAll => match payload.kind() {
+                // Escalation, including every command on a host that cannot
+                // confine: approve-all never takes a command out of the sandbox.
+                ApprovalKind::SandboxEscalation => {
+                    GrantDecision::DenyWithNote(UNCONFINED_REFUSED_UNDER_APPROVE_ALL.into())
+                }
+                ApprovalKind::NetworkHost => {
+                    let host = payload.denied_host.as_deref().unwrap_or_default();
+                    if granted_hosts.insert(forge_tools::egress::suggest_host_pattern(host)) {
+                        GrantDecision::AllowHostForSession
                     } else {
-                        (
-                            HitlDecision::Deny,
-                            Some("the network host is still blocked after a session grant"),
+                        GrantDecision::DenyWithNote(
+                            "the network host is still blocked after a session grant".into(),
                         )
                     }
                 }
-                None => (HitlDecision::Approve, None),
+                ApprovalKind::Governance => GrantDecision::AllowOnce,
             },
         };
         session
-            .resolve_hitl_with_feedback(decision, "headless", feedback)
+            .decide_hitl(decision, "headless")
             .await
             .map_err(|error| anyhow::anyhow!(error))?;
     }

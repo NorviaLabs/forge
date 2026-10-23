@@ -216,19 +216,19 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
             let Some(approval) = error.downcast_ref::<ApprovalRequired>() else {
                 return Err(error);
             };
-            let kind = if approval.payload.denied_host.is_some() {
-                "network_host_denial"
-            } else if approval.payload.sandbox_escalation {
-                "sandbox_filesystem_denial"
-            } else {
-                "governance_approval"
-            };
-            let retry_scope = if approval.payload.denied_host.is_some() {
-                "host_grant_stays_filesystem_sandboxed"
-            } else if approval.payload.sandbox_escalation {
-                "approved_command_retries_unconfined"
-            } else {
-                "tool_call_requires_operator_approval"
+            let (kind, retry_scope) = match approval.payload.kind() {
+                forge_types::ApprovalKind::NetworkHost => (
+                    "network_host_denial",
+                    "host_grant_stays_filesystem_sandboxed",
+                ),
+                forge_types::ApprovalKind::SandboxEscalation => (
+                    "sandbox_filesystem_denial",
+                    "approved_command_retries_unconfined",
+                ),
+                forge_types::ApprovalKind::Governance => (
+                    "governance_approval",
+                    "tool_call_requires_operator_approval",
+                ),
             };
             println!(
                 "{}",

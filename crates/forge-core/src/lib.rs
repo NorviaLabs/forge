@@ -48,6 +48,9 @@ pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::{
     compact_tokens, CompletedContextCompaction, PendingContextCompaction,
 };
+pub use session::grant::{
+    pattern_grant_eligible, validate_grant_decision, AppliedGrant, GrantOutcome, GrantRejection,
+};
 pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
@@ -67,9 +70,9 @@ use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, SharedMessages, StreamEventTx};
 use forge_tools::{ToolContext, ToolError, ToolRegistry, ValidationBudget};
 use forge_types::{
-    BackgroundTaskId, ExecutionOutcome, HitlDecision, HitlPayload, Message, MessageRole,
-    ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall,
-    ToolOutput, Usage, WaitReason,
+    ApprovalKind, BackgroundTaskId, ExecutionOutcome, GrantDecision, HitlDecision, HitlPayload,
+    Message, MessageRole, ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId,
+    TaskLifecycle, ToolCall, ToolOutput, Usage, WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
