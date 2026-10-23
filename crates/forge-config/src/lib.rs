@@ -1709,6 +1709,9 @@ sandbox_workspace = "everything"
 
     #[test]
     fn mcp_server_sandbox_read_paths_parse_and_expand_home() {
+        // `~` expands against HOME, which `EnvGuard` tests repoint while they
+        // run; hold the same lock so HOME can't change between parse and check.
+        let _lock = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let cfg: ConfigFile = parse(
             r#"
 [[mcp.servers]]

@@ -240,7 +240,12 @@ async fn git_protocol_cannot_bypass_the_gateway_address_check() {
         "the gateway's reason reaches git's output: {}",
         out.content
     );
-    let events = proxy.shared().drain_events();
+    let all = proxy.shared().drain_events();
+    // A CI runner can carry its own git setup (e.g. a credential helper or
+    // cache proxy) whose connections also reach this gateway. Every one of
+    // them must be refused; exactly one is git's own connection to the server.
+    assert!(all.iter().all(|e| !e.allowed()), "{all:?}");
+    let events: Vec<_> = all.into_iter().filter(|e| e.host == "127.0.0.1").collect();
     assert_eq!(events.len(), 1, "{events:?}");
     assert_eq!(
         events[0].outcome,
@@ -398,7 +403,12 @@ async fn ssh_alias_to_an_unpermitted_host_is_refused_by_the_gateway() {
         std::fs::read_to_string(log).is_ok(),
         "git must have reached ssh"
     );
-    let events = proxy.shared().drain_events();
+    let all = proxy.shared().drain_events();
+    // A CI runner can carry its own git setup (e.g. a credential helper or
+    // cache proxy) whose connections also reach this gateway. Every one of
+    // them must be refused; exactly one is git's own connection to the server.
+    assert!(all.iter().all(|e| !e.allowed()), "{all:?}");
+    let events: Vec<_> = all.into_iter().filter(|e| e.host == "127.0.0.1").collect();
     assert_eq!(events.len(), 1, "{events:?}");
     assert!(!events[0].allowed());
     assert_eq!(events[0].host, "127.0.0.1");
