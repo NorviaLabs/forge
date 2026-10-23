@@ -458,6 +458,11 @@ impl AgentSession {
         self.egress.is_some()
     }
 
+    /// The egress gateway's loopback TCP address, when the session has one.
+    pub fn egress_tcp_addr(&self) -> Option<std::net::SocketAddr> {
+        self.egress.as_ref().map(|runtime| runtime.tcp_addr())
+    }
+
     /// Take the egress connection events recorded so far this session.
     /// Events from before an `apply_egress_policy` replacement are discarded
     /// with the runtime that recorded them.

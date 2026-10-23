@@ -271,8 +271,8 @@ async fn started_proxy_with(policy: EgressPolicy, options: EgressOptions) -> Opt
     }
 }
 
-/// An upstream that greets, then echoes the byte count it read before EOF
-/// by simply reading to the end and closing. Counts accepted connections.
+/// An upstream that greets, then reads to end of stream before closing.
+/// Counts accepted connections.
 async fn counting_upstream() -> Option<(u16, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)> {
     let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
         Ok(listener) => listener,
@@ -370,7 +370,7 @@ async fn the_dialled_address_is_the_checked_one() {
     let Some(proxy) = started_proxy_with(policy, options).await else {
         return;
     };
-    let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
+    let mut stream = TcpStream::connect(proxy.tcp_addr()).await.unwrap();
     stream
         .write_all(format!("CONNECT localhost:{port} HTTP/1.1\r\n\r\n").as_bytes())
         .await
@@ -525,4 +525,29 @@ async fn connect_status_on(port: u16, target: &str) -> String {
     let mut status = String::new();
     reader.read_line(&mut status).await.unwrap();
     status
+}
+
+/// The loopback TCP listener is a first-class gateway entry point.
+#[tokio::test]
+async fn the_tcp_listener_is_loopback_and_tunnels() {
+    let Some((addr, _up)) = upstream().await else {
+        return;
+    };
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let Some(proxy) = started_proxy(policy).await else {
+        return;
+    };
+    let tcp = proxy.tcp_addr();
+    assert!(tcp.ip().is_loopback(), "{tcp}");
+    assert_ne!(tcp.port(), 0);
+    let mut stream = TcpStream::connect(tcp).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {addr} HTTP/1.1\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    assert!(status.contains("200"), "{status}");
 }

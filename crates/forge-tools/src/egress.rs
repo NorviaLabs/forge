@@ -609,6 +609,15 @@ impl EgressProxy {
         self.socket_path.as_deref()
     }
 
+    /// The loopback TCP listener (`127.0.0.1`, ephemeral port).
+    ///
+    /// Same listener as [`Self::addr`], named for in-process and host-side
+    /// callers that route through the gateway rather than the sandbox's
+    /// proxy port.
+    pub fn tcp_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
     /// Where the proxy is listening.
     ///
     /// Pointing a process at this address is *not* enforcement on its own — a
