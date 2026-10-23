@@ -321,7 +321,10 @@ async fn a_confined_repo_discovery_works_inside_a_linked_worktree_readonly() {
         out.status.success(),
         "read-only repository discovery must succeed in linked worktree; stdout={stdout:?}, stderr={stderr:?}"
     );
-    assert_eq!(stdout.trim(), worktree.to_string_lossy());
+    // Git prints the resolved path. Temp dirs can sit behind a symlink
+    // (macOS `/var` -> `/private/var`), so compare against the real path.
+    let real_worktree = worktree.canonicalize().unwrap();
+    assert_eq!(stdout.trim(), real_worktree.to_string_lossy());
 
     let common_config = repo.path().join(".git/config");
     let write = format!(
@@ -594,10 +597,14 @@ async fn installed_cargo_can_use_the_session_toolchain_surface() {
     .unwrap();
     std::fs::write(dependency.join("src/lib.rs"), "pub fn dependency() {}\n").unwrap();
 
+    // The spawn inherits this process's env, and a developer or CI job may
+    // export CARGO_TARGET_DIR pointing outside the fixture workspace. The
+    // sandbox rightly denies that write, so pin the target dir inside the
+    // workspace (it also outranks CARGO_BUILD_TARGET_DIR).
     for command in [
-        "cargo build --offline",
-        "cargo test --offline",
-        "cargo package --offline",
+        "CARGO_TARGET_DIR=target cargo build --offline",
+        "CARGO_TARGET_DIR=target cargo test --offline",
+        "CARGO_TARGET_DIR=target cargo package --offline",
         "cargo add --help",
     ] {
         let out = forge_tools::run_shell_command_with_egress_and_temp(
