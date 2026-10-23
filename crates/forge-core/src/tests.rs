@@ -1418,7 +1418,6 @@ async fn a_git_push_to_a_denied_host_prompts_and_the_grant_reruns_git() {
         .any(|message| message.tool_call_id.as_deref() == Some("call-git")));
 }
 
-
 /// `web_fetch` obeys the same host allowlist as a confined shell command: an
 /// unlisted host raises the host-grant prompt, and the approved retry runs
 /// `web_fetch` again (not only shell). `localhost` keeps this offline: once
