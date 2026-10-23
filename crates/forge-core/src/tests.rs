@@ -1420,9 +1420,11 @@ async fn a_git_push_to_a_denied_host_prompts_and_the_grant_reruns_git() {
 
 /// `web_fetch` obeys the same host allowlist as a confined shell command: an
 /// unlisted host raises the host-grant prompt, and the approved retry runs
-/// `web_fetch` again (not only shell). `localhost` keeps this offline: once
-/// granted it passes the allowlist and is then refused by the SSRF guard,
-/// which can only happen if the fetch really re-ran.
+/// `web_fetch` again (not only shell), through the session's egress gateway.
+/// `localhost` keeps this offline: once granted with a wildcard it passes
+/// the allowlist and is then refused by the gateway's private-address check,
+/// which can only happen if the fetch really re-ran through the gateway —
+/// and that refusal must not prompt again, since no grant can fix it.
 #[tokio::test]
 async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
     let dir = tempdir().unwrap();
@@ -1464,7 +1466,12 @@ async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
     assert_eq!(payload.denied_host.as_deref(), Some("localhost"));
     assert!(!payload.sandbox_escalation);
 
-    session.grant_egress_host("localhost");
+    assert!(
+        session.drain_egress_events().is_empty(),
+        "the denied host is refused before it reaches the gateway"
+    );
+
+    session.grant_egress_host("**.localhost");
     let pending = session
         .prepare_approved_hitl("test")
         .await
@@ -1489,6 +1496,23 @@ async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
             .contains("web_fetch: refusing to fetch `localhost`"),
         "{}",
         result.content
+    );
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        events.extend(session.drain_egress_events());
+        if !events.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        events.iter().any(|event| event.host == "localhost"
+            && event.label.as_deref() == Some("call-fetch")
+            && event.outcome
+                == forge_tools::egress::EgressOutcome::Denied(
+                    forge_tools::egress::EgressDenial::PrivateAddress
+                )),
+        "the retry must have gone through the gateway as call-fetch: {events:?}"
     );
 }
 
