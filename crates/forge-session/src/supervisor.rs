@@ -1534,7 +1534,27 @@ async fn resolve_approval(
                 .lock()
                 .expect("turn cancel lock poisoned") = None;
             match completed {
-                Ok(completed) => session.finish_hitl_execution(completed).await?,
+                Ok(completed) => {
+                    session.finish_hitl_execution(completed).await?;
+                    if session.pending_hitl().is_some() {
+                        // The approved call raised a follow-up approval (a
+                        // host the gateway refused it). The turn waits on it
+                        // instead of continuing.
+                        state
+                            .control
+                            .set_turn_state(session_id, SupervisorTurnState::Waiting)
+                            .await?;
+                        refresh_actor(&state, &task_actor, &session).await?;
+                        drop(session);
+                        drop(approval_driver);
+                        let _ = state.events.send(SupervisorEvent::Attention {
+                            session_id,
+                            state: SupervisorTurnState::Waiting,
+                            message: "Session needs input".into(),
+                        });
+                        return Ok(());
+                    }
+                }
                 Err(LoopError::Cancelled) => {
                     session.mark_cancelled().await?;
                     state

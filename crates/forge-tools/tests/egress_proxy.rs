@@ -540,6 +540,38 @@ async fn connections_are_recorded_with_label_and_byte_counts() {
     assert_eq!(refused.outcome, EgressOutcome::Denied(EgressDenial::Policy));
 }
 
+/// A call label set on a long-lived endpoint (an MCP server's) attributes
+/// the connections opened while it is set to that call, and clearing it
+/// restores the endpoint's own label.
+#[tokio::test]
+async fn a_call_label_overrides_the_endpoint_label_while_set() {
+    let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+        return;
+    };
+    let invocation = EgressInvocation::start_for_shared(proxy.shared(), Some("mcp:fixture"))
+        .await
+        .unwrap();
+    let port = invocation.tcp_addr().port();
+
+    invocation.set_call_label(Some("call-9"));
+    let during = connect_status_on(port, "during.example:443").await;
+    assert!(during.contains("403"), "{during}");
+    invocation.set_call_label(None);
+    let after = connect_status_on(port, "after.example:443").await;
+    assert!(after.contains("403"), "{after}");
+
+    let events = wait_for_events(&proxy, 2).await;
+    let label_of = |host: &str| {
+        events
+            .iter()
+            .find(|e| e.host == host)
+            .and_then(|e| e.label.clone())
+    };
+    assert_eq!(label_of("during.example").as_deref(), Some("call-9"));
+    assert_eq!(label_of("after.example").as_deref(), Some("mcp:fixture"));
+    assert_eq!(invocation.label(), Some("mcp:fixture"));
+}
+
 async fn connect_status_on(port: u16, target: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream

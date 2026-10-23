@@ -223,5 +223,7 @@ impl CtxTokensFingerprint {
 
 #[cfg(test)]
 mod compaction_tests;
+#[cfg(all(test, unix))]
+mod mcp_egress_tests;
 #[cfg(test)]
 mod tests;

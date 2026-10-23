@@ -476,6 +476,8 @@ impl ShellOutputCapture {
 }
 
 /// Observe a shell job without changing its sandbox, grant or completion path.
+/// `egress_label` (the tool call id that started the job, when there is one)
+/// attributes the job's connections in the session's egress event log.
 pub async fn run_shell_command_observed(
     command: &str,
     workspace_root: &Path,
@@ -483,6 +485,7 @@ pub async fn run_shell_command_observed(
     session_tmp: Option<&Path>,
     unconfined: bool,
     capture: Arc<ShellOutputCapture>,
+    egress_label: Option<&str>,
 ) -> Result<ToolOutput, ToolError> {
     run_shell_command_inner(
         command,
@@ -491,7 +494,7 @@ pub async fn run_shell_command_observed(
         session_tmp,
         !unconfined,
         Some(capture),
-        None,
+        egress_label,
     )
     .await
 }
@@ -1865,6 +1868,7 @@ mod tests {
             None,
             true,
             capture.clone(),
+            None,
         )
         .await
         .unwrap();

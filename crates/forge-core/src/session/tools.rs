@@ -1472,6 +1472,24 @@ impl AgentSession {
             result,
         } = completed.execution;
         self.audit_tool_result(&call, &result, duration_ms, unconfined);
+        // An approved call (a gated MCP tool, or the retry after a host grant)
+        // that the gateway refused a host for asks for that host next, as the
+        // ungated path does: the approval covered running the call, not the
+        // host. The same call is kept to re-run once the host is granted.
+        if let Err(ToolError::SandboxDenied {
+            content,
+            reason,
+            denied_host: Some(host),
+        }) = &result
+        {
+            if !unconfined {
+                let failure = observed_failure(content, reason);
+                let (reason, host) = (reason.clone(), host.clone());
+                self.enter_sandbox_hitl(call, reason, failure, Some(host))
+                    .await?;
+                return Ok(());
+            }
+        }
         // The operator already approved and disposed of this call via the
         // approval flow. Drop it (and any identical re-issue) from the turn's
         // required set so its outcome — even a failing one — is treated as
