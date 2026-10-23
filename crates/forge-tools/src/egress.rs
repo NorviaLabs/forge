@@ -340,6 +340,10 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
 pub struct EgressShared {
     policy: Arc<RwLock<EgressPolicy>>,
     denied: Arc<Mutex<Vec<String>>>,
+    /// Hosts refused because they resolved to a non-public address. Kept
+    /// apart from `denied` because a host grant cannot fix these, so they
+    /// must never become a grant prompt.
+    private_denied: Arc<Mutex<Vec<String>>>,
     /// Session-wide connection log, shared by every invocation.
     events: Arc<Mutex<EgressEventLog>>,
     options: EgressOptions,
@@ -351,6 +355,7 @@ impl EgressShared {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),
+            private_denied: Arc::new(Mutex::new(Vec::new())),
             events: Arc::new(Mutex::new(EgressEventLog::default())),
             options,
             label: None,
@@ -365,6 +370,7 @@ impl EgressShared {
         Self {
             policy: Arc::clone(&self.policy),
             denied: Arc::new(Mutex::new(Vec::new())),
+            private_denied: Arc::new(Mutex::new(Vec::new())),
             events: Arc::clone(&self.events),
             options: self.options,
             label: label.map(Arc::from),
@@ -483,6 +489,25 @@ impl EgressShared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .allow_patterns()
             .to_vec()
+    }
+
+    /// The first host refused for resolving to a non-public address since
+    /// the last take, clearing the queue.
+    pub fn take_private_address_denial(&self) -> Option<String> {
+        let mut denied = self
+            .private_denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let host = denied.first().cloned();
+        denied.clear();
+        host
+    }
+
+    fn record_private_denied(&self, host: String) {
+        self.private_denied
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(host);
     }
 
     pub fn record_denied(&self, host: String) {
@@ -814,6 +839,14 @@ impl CallGateway {
         self.invocation.take_denied_host()
     }
 
+    /// The first host this endpoint refused for resolving to a non-public
+    /// address, clearing that queue. Recorded by the gateway itself, so a
+    /// caller can tell this refusal from an upstream's own 403 without
+    /// trusting response content. Never a grant prompt: no grant fixes it.
+    pub fn take_private_address_denial(&self) -> Option<String> {
+        self.invocation.proxy.shared().take_private_address_denial()
+    }
+
     /// When this endpoint refused a host, the structured denial that makes
     /// forge-core prompt for a host grant and retry the call. `content` is
     /// what the tool would otherwise have reported; the explanation is
@@ -1040,7 +1073,9 @@ impl Attempt<'_> {
             && !shared.private_destination_permitted(host)
         {
             // Not queued as a denied host: a host grant cannot fix this, so
-            // it must not turn into a grant prompt.
+            // it must not turn into a grant prompt. It is queued separately
+            // so an in-process caller can report it as what it is.
+            shared.record_private_denied(host.to_string());
             self.record(
                 EgressOutcome::Denied(EgressDenial::PrivateAddress),
                 None,
