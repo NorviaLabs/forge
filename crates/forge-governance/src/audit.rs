@@ -1,7 +1,7 @@
 use forge_types::PolicyDecision;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
@@ -16,18 +16,12 @@ pub struct AuditEvent {
     pub trace_id: Option<String>,
 }
 
-#[derive(Debug, Default)]
+/// Append-only audit trail. Clones share one underlying log, so an event
+/// recorded through any copy (a forked session, a subagent's governance) is
+/// visible from every other copy.
+#[derive(Debug, Default, Clone)]
 pub struct AuditLog {
-    events: Mutex<Vec<AuditEvent>>,
-}
-
-impl Clone for AuditLog {
-    fn clone(&self) -> Self {
-        let events = self.events.lock().unwrap().clone();
-        Self {
-            events: Mutex::new(events),
-        }
-    }
+    events: Arc<Mutex<Vec<AuditEvent>>>,
 }
 
 impl AuditLog {
@@ -86,5 +80,16 @@ mod tests {
         let cloned = log.clone();
         assert_eq!(cloned.len(), 1);
         assert_eq!(cloned.snapshot()[0].tool, "write_file");
+    }
+
+    #[test]
+    fn audit_log_clones_share_one_log() {
+        let log = AuditLog::default();
+        let cloned = log.clone();
+        cloned.push(event("run_shell"));
+        assert_eq!(log.len(), 1);
+        assert_eq!(log.snapshot()[0].tool, "run_shell");
+        log.push(event("read_file"));
+        assert_eq!(cloned.len(), 2);
     }
 }
