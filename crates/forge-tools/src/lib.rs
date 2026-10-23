@@ -7,6 +7,7 @@ mod credentials;
 mod edit;
 pub mod egress;
 mod fast_file_tools;
+mod git_network;
 mod invocation;
 mod orchestration;
 mod output_filters;
