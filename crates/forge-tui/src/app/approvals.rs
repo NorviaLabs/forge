@@ -174,6 +174,88 @@ fn readable_remember_subject(call: &forge_types::ToolCall) -> String {
     }
 }
 
+/// The typed decision a queued menu choice stands for on `payload`.
+///
+/// A denied host is granted, never run once: an approval that does not open
+/// the host would only rerun into the same denial, so the host rows (and an
+/// auto-approval of a host prompt) all grant it for the session at least.
+fn grant_decision_for(
+    payload: &HitlPayload,
+    decision: &HitlDecision,
+    grant: ApprovalGrant,
+) -> forge_types::GrantDecision {
+    use forge_types::{ApprovalKind, GrantDecision};
+    // `HitlDecision` is `#[non_exhaustive]`; anything that is not an explicit
+    // approval refuses, so an unrecognised variant can never reach a grant.
+    if !matches!(decision, HitlDecision::Approve) {
+        return GrantDecision::Deny;
+    }
+    match (payload.kind(), grant) {
+        (_, ApprovalGrant::ApproveAll) => GrantDecision::ApproveAll,
+        (ApprovalKind::NetworkHost, ApprovalGrant::Always) => GrantDecision::AllowHostAlways,
+        (ApprovalKind::NetworkHost, _) => GrantDecision::AllowHostForSession,
+        (_, ApprovalGrant::Once) => GrantDecision::AllowOnce,
+        (_, ApprovalGrant::Session) => GrantDecision::AllowPatternForSession,
+        (_, ApprovalGrant::Always) => GrantDecision::AllowPatternAlways,
+    }
+}
+
+/// The grant `decision` will apply to `payload`, for a supervised session
+/// whose session applies it out of reach of the toast.
+fn predicted_grant(
+    payload: &HitlPayload,
+    decision: &forge_types::GrantDecision,
+) -> forge_core::AppliedGrant {
+    use forge_core::AppliedGrant;
+    use forge_types::GrantDecision;
+    match decision {
+        GrantDecision::AllowHostForSession
+        | GrantDecision::AllowHostAlways
+        | GrantDecision::ApproveAll => match payload.denied_host.as_deref() {
+            Some(host) => AppliedGrant::Host {
+                pattern: forge_tools::egress::suggest_host_pattern(host),
+            },
+            None => AppliedGrant::None,
+        },
+        GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways => {
+            match forge_governance::suggest_pattern(&tool_call_for_payload(payload)) {
+                Some(pattern) => AppliedGrant::Pattern { pattern },
+                None => AppliedGrant::None,
+            }
+        }
+        _ => AppliedGrant::None,
+    }
+}
+
+/// The toast that reports what a decision did.
+fn grant_toast(
+    decision: &forge_types::GrantDecision,
+    grant: &forge_core::AppliedGrant,
+    persist_failed: bool,
+) -> String {
+    use forge_core::AppliedGrant;
+    use forge_types::GrantDecision;
+    if !decision.is_approval() {
+        return "denied".into();
+    }
+    let always = matches!(
+        decision,
+        GrantDecision::AllowHostAlways | GrantDecision::AllowPatternAlways
+    );
+    match grant {
+        AppliedGrant::None => "approved once".into(),
+        // A failed host write still leaves the toast naming the scope asked
+        // for; the warning beside it says the rule was not written.
+        AppliedGrant::Host { pattern } if always => format!("always allowed {pattern}"),
+        AppliedGrant::Host { pattern } => format!("allowed {pattern} for the session"),
+        AppliedGrant::Pattern { pattern } if always && persist_failed => {
+            format!("allowed {pattern} for the session only")
+        }
+        AppliedGrant::Pattern { pattern } if always => format!("always allowed {pattern}"),
+        AppliedGrant::Pattern { pattern } => format!("allowed {pattern} for the session"),
+    }
+}
+
 impl TuiApp {
     /// A focused request uses the conversation's space, with details scrolling
     /// independently above the always-reachable decision controls.
@@ -729,8 +811,8 @@ impl TuiApp {
                     .await
             }
             ApprovalMenuKind::ApproveAll => {
-                self.set_approve_all(true);
-                self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::Once)
+                self.prepare_approve_all_from_prompt();
+                self.resolve_hitl_overlay(HitlDecision::Approve, ApprovalGrant::ApproveAll)
                     .await
             }
             ApprovalMenuKind::AllowPattern => {
@@ -772,10 +854,10 @@ impl TuiApp {
                     );
                     return;
                 }
-                self.set_approve_all(true);
+                self.prepare_approve_all_from_prompt();
                 self.pending_interaction.request_hitl_decision(
                     HitlDecision::Approve,
-                    ApprovalGrant::Once,
+                    ApprovalGrant::ApproveAll,
                     self.selected_session_id,
                     payload.call_id.clone(),
                 );
@@ -784,20 +866,16 @@ impl TuiApp {
                 let Some(payload) = self.selected_pending_hitl().cloned() else {
                     return;
                 };
-                if payload.denied_host.is_none()
-                    && self.session_pattern_call_for_payload(&payload).is_none()
-                {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        "this call has no session pattern to remember; use Run once or Don't run",
-                    );
-                    return;
-                }
                 let grant = if action == ApprovalMenuKind::AllowPatternAlways {
                     ApprovalGrant::Always
                 } else {
                     ApprovalGrant::Session
                 };
+                let decision = grant_decision_for(&payload, &HitlDecision::Approve, grant);
+                if let Err(rejection) = forge_core::validate_grant_decision(&payload, &decision) {
+                    self.set_feedback(FeedbackSeverity::Warn, rejection.to_string());
+                    return;
+                }
                 self.pending_interaction.request_hitl_decision(
                     HitlDecision::Approve,
                     grant,
@@ -882,19 +960,19 @@ impl TuiApp {
         }
         let note = note.trim();
         let feedback = (!note.is_empty()).then_some(note);
+        let decision = forge_types::GrantDecision::DenyWithNote(note.to_string());
         match self.selected_runtime() {
             SelectedRuntime::Direct => {
                 self.session_runtime
-                    .resolve_hitl_with_feedback(HitlDecision::Deny, "tui", feedback)
+                    .prepare_hitl_decision(decision, "tui")
                     .await?;
             }
             SelectedRuntime::Supervised(session_id) => {
-                self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
+                self.try_session_command(forge_session::SupervisorCommand::DecideApproval {
                     session_id,
                     expected_call_id,
-                    decision: HitlDecision::Deny,
+                    decision,
                     actor: "tui".into(),
-                    feedback: feedback.map(str::to_string),
                 });
             }
         }
@@ -956,190 +1034,74 @@ impl TuiApp {
         self.apply_hitl_decision(decision, grant, None).await
     }
 
+    /// Hand the operator's choice to the session as a typed decision. The
+    /// session validates it, applies the grant it carries and resolves the
+    /// approval; this only reports what happened.
     async fn apply_hitl_decision(
         &mut self,
         decision: HitlDecision,
         grant: ApprovalGrant,
         terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
     ) -> Result<(), TuiError> {
+        let Some(payload) = self.selected_pending_hitl().cloned() else {
+            return Ok(());
+        };
+        let decision = grant_decision_for(&payload, &decision, grant);
+        if let Err(rejection) = forge_core::validate_grant_decision(&payload, &decision) {
+            self.set_feedback(FeedbackSeverity::Warn, rejection.to_string());
+            return Ok(());
+        }
+
         if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
-            let Some(payload) = self.selected_pending_hitl().cloned() else {
-                return Ok(());
-            };
-            let approved = matches!(decision, HitlDecision::Approve);
-            if approved {
-                if let Some(host) = payload.denied_host.as_deref() {
-                    let pattern = forge_tools::egress::suggest_host_pattern(host);
-                    if grant == ApprovalGrant::Always {
-                        if let Err(error) = forge_config::append_user_allow_rule(
-                            &forge_tools::egress::host_allow_rule(host),
-                        ) {
-                            self.set_feedback(
-                                FeedbackSeverity::Warn,
-                                format!("could not write personal permissions: {error}"),
-                            );
-                        }
-                    }
-                    self.try_session_command(forge_session::SupervisorCommand::GrantEgressHost {
-                        session_id,
-                        pattern: pattern.clone(),
-                    });
-                    self.push_toast(if grant == ApprovalGrant::Always {
-                        format!("always allowed {pattern}")
-                    } else {
-                        format!("allowed {pattern} for the session")
-                    });
-                } else if grant != ApprovalGrant::Once {
-                    let Some(call) = self.session_pattern_call_for_payload(&payload) else {
-                        self.set_feedback(
-                            FeedbackSeverity::Warn,
-                            "this call has no session pattern to remember; use Run once or Don't run",
-                        );
-                        return Ok(());
-                    };
-                    let Some(pattern) = forge_governance::suggest_pattern(&call) else {
-                        self.set_feedback(
-                            FeedbackSeverity::Warn,
-                            "this call has no session pattern to remember; use Run once or Don't run",
-                        );
-                        return Ok(());
-                    };
-                    self.try_session_command(
-                        forge_session::SupervisorCommand::AllowSessionPattern { session_id, call },
-                    );
-                    if grant == ApprovalGrant::Always {
-                        if let Err(error) = forge_config::append_user_allow_rule(&pattern) {
-                            self.set_feedback(
-                                FeedbackSeverity::Warn,
-                                format!("could not write personal permissions: {error}"),
-                            );
-                        }
-                    }
-                    self.push_toast(match grant {
-                        ApprovalGrant::Always => format!("always allowed {pattern}"),
-                        _ => format!("allowed {pattern} for the session"),
-                    });
-                } else {
-                    self.push_toast("approved once");
-                }
-            } else {
-                self.push_toast("denied");
-            }
-            self.try_session_command(forge_session::SupervisorCommand::ResolveApproval {
+            // The supervisor's session applies the grant; a failed personal
+            // permissions write comes back as a supervisor error event.
+            let toast = grant_toast(&decision, &predicted_grant(&payload, &decision), false);
+            self.push_toast(toast);
+            self.try_session_command(forge_session::SupervisorCommand::DecideApproval {
                 session_id,
                 expected_call_id: Some(payload.call_id.clone()),
                 decision,
                 actor: "tui".into(),
-                feedback: None,
             });
             self.enter_chat_composer();
             return Ok(());
         }
 
-        let Some(payload) = self.selected_pending_hitl().cloned() else {
-            return Ok(());
-        };
-
-        // Refusal is settled before anything else looks at the payload.
-        //
-        // The network branch below used to sit first and key only on
-        // `denied_host`, never reading `decision` — so "Don't run" and Esc on
-        // a network prompt granted the host for the session and ran the
-        // command, while the status line said "Action denied". `HitlDecision`
-        // is `#[non_exhaustive]`; anything that is not an explicit approval
-        // refuses, so an unrecognised variant can never reach a grant.
-        if !matches!(decision, HitlDecision::Approve) {
-            self.session_runtime.resolve_hitl(decision, "tui").await?;
-            self.push_toast("denied");
+        let (outcome, pending) = self
+            .session_runtime
+            .prepare_hitl_decision(decision, "tui")
+            .await?;
+        if let Some(error) = outcome.persist_error.as_deref() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("could not write personal permissions: {error}"),
+            );
+        }
+        if outcome.approved() {
+            self.run_approved_hitl(pending, terminal);
+        } else {
             self.resume_turn_after_hitl();
             self.enter_chat_composer();
-            return Ok(());
         }
-
-        if let Some(host) = payload.denied_host.clone() {
-            let pattern = forge_tools::egress::suggest_host_pattern(&host);
-            if grant == ApprovalGrant::Always {
-                if let Err(error) = forge_config::append_user_allow_rule(
-                    &forge_tools::egress::host_allow_rule(&host),
-                ) {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        format!("could not write personal permissions: {error}"),
-                    );
-                }
-            }
-            self.session_runtime.grant_egress_host(&pattern);
-            self.apply_approved_hitl(terminal).await?;
-            self.push_toast(if grant == ApprovalGrant::Always {
-                format!("always allowed {pattern}")
-            } else {
-                format!("allowed {pattern} for the session")
-            });
-            return Ok(());
-        }
-
-        if grant != ApprovalGrant::Once {
-            let Some(call) = self.session_pattern_call_for_payload(&payload) else {
-                self.set_feedback(
-                    FeedbackSeverity::Warn,
-                    "this call has no session pattern to remember; use Run once or Don't run",
-                );
-                return Ok(());
-            };
-            // `session_pattern_call_for_payload` already established the call
-            // is pattern-eligible, which now includes "a pattern exists that
-            // would match it again", so this is `Some`. Refuse rather than
-            // record an unusable grant if that ever stops holding.
-            let Some(pattern) = self
-                .session_runtime
-                .allow_suggested_pattern_for_session(&call)
-            else {
-                self.set_feedback(
-                    FeedbackSeverity::Warn,
-                    "this call has no session pattern to remember; use Run once or Don't run",
-                );
-                return Ok(());
-            };
-            // The session grant is applied either way: a rule written to the
-            // permissions file is not reloaded mid-session, so without it an
-            // "always" grant would still prompt again for the next matching
-            // call in this very session.
-            if grant == ApprovalGrant::Always {
-                if let Err(error) = forge_config::append_user_allow_rule(&pattern) {
-                    self.set_feedback(
-                        FeedbackSeverity::Warn,
-                        format!("could not write personal permissions: {error}"),
-                    );
-                    self.apply_approved_hitl(terminal).await?;
-                    self.push_toast(format!("allowed {pattern} for the session only"));
-                    return Ok(());
-                }
-            }
-            self.apply_approved_hitl(terminal).await?;
-            self.push_toast(match grant {
-                ApprovalGrant::Always => format!("always allowed {pattern}"),
-                _ => format!("allowed {pattern} for the session"),
-            });
-            return Ok(());
-        }
-        // Every refusal returned above, so this is an approval for one call.
-        self.apply_approved_hitl(terminal).await?;
-        self.push_toast("approved once");
+        self.push_toast(grant_toast(
+            &outcome.decision,
+            &outcome.grant,
+            outcome.persist_error.is_some(),
+        ));
         Ok(())
     }
 
-    async fn apply_approved_hitl(
+    fn run_approved_hitl(
         &mut self,
+        pending: Option<PendingHitlExecution>,
         _terminal: Option<&mut Terminal<CrosstermBackend<io::Stdout>>>,
-    ) -> Result<(), TuiError> {
-        let pending = self.session_runtime.prepare_approved_hitl("tui").await?;
+    ) {
         if let Some(pending) = pending {
             self.start_approved_hitl(pending);
-            return Ok(());
+            return;
         }
         self.resume_turn_after_hitl();
         self.enter_chat_composer();
-        Ok(())
     }
 
     fn start_approved_hitl(&mut self, pending: PendingHitlExecution) {

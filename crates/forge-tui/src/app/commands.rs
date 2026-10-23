@@ -965,6 +965,19 @@ impl TuiApp {
         self.approve_all = on;
     }
 
+    /// The menu's "trust all commands" row: the decision itself turns
+    /// approve-all on in the session and approves the pending call, so only
+    /// the frontend's half is done here — refreshing trust for a directly
+    /// owned session (the session gates approve-all on it) and the warning
+    /// strip.
+    pub(super) fn prepare_approve_all_from_prompt(&mut self) {
+        if !self.selected_is_supervised() {
+            let trusted = forge_config::is_trusted(self.session_view.workspace_root());
+            self.session_runtime.set_workspace_trusted(trusted);
+        }
+        self.approve_all = true;
+    }
+
     /// `/approve-all`: enabling is destructive enough to confirm first;
     /// disabling is immediate and unconfirmed.
     pub(super) fn handle_approve_all_command(&mut self) {

@@ -1,6 +1,7 @@
 //! Agent loop — Phase 1 base + Phase 2 hooks (context, HITL, governance).
 
 mod agent_coordinator;
+mod audit;
 mod background;
 mod completion;
 mod lifecycle;
@@ -48,6 +49,9 @@ pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::{
     compact_tokens, CompletedContextCompaction, PendingContextCompaction,
 };
+pub use session::grant::{
+    pattern_grant_eligible, validate_grant_decision, AppliedGrant, GrantOutcome, GrantRejection,
+};
 pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
@@ -67,9 +71,9 @@ use forge_governance::{AuditEvent, Governance};
 use forge_model::{ModelClient, ModelRequest, SharedMessages, StreamEventTx};
 use forge_tools::{ToolContext, ToolError, ToolRegistry, ValidationBudget};
 use forge_types::{
-    BackgroundTaskId, ExecutionOutcome, HitlDecision, HitlPayload, Message, MessageRole,
-    ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId, TaskLifecycle, ToolCall,
-    ToolOutput, Usage, WaitReason,
+    ApprovalKind, BackgroundTaskId, ExecutionOutcome, GrantDecision, HitlDecision, HitlPayload,
+    Message, MessageRole, ModelResponse, PolicyDecision, SessionId, SideEffectClass, TaskId,
+    TaskLifecycle, ToolCall, ToolOutput, Usage, WaitReason,
 };
 use serde_json::json;
 use thiserror::Error;
@@ -142,6 +146,8 @@ pub struct AgentSession {
     /// approve-all unless it is true, so the trust gate is enforced below the
     /// TUI rather than only there.
     workspace_trusted: bool,
+    /// Durable audit rows waiting for the next journal write.
+    audit: audit::SessionAudit,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the

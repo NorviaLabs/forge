@@ -3,17 +3,8 @@
 //!
 //! Split out of `lib.rs`; methods are moved verbatim.
 
+use super::grant::contains_redaction_marker;
 use crate::*;
-
-/// Whether `value` carries the governance redaction placeholder anywhere.
-fn contains_redaction_marker(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::String(s) => s == "[REDACTED]",
-        serde_json::Value::Array(items) => items.iter().any(contains_redaction_marker),
-        serde_json::Value::Object(map) => map.values().any(contains_redaction_marker),
-        _ => false,
-    }
-}
 
 impl AgentSession {
     fn approval_execution_call(&self, payload: &HitlPayload) -> Result<ToolCall, LoopError> {
@@ -103,6 +94,9 @@ impl AgentSession {
         self.journal
             .append_hitl_resume(self.session_id, dec, actor)
             .await?;
+        let note = feedback.map(str::trim).filter(|note| !note.is_empty());
+        self.audit_hitl_resolution(&payload, dec, actor, if approved { None } else { note });
+        self.flush_audit().await?;
 
         if !approved {
             let feedback = feedback.map(str::trim).filter(|f| !f.is_empty());
@@ -191,6 +185,8 @@ impl AgentSession {
         self.journal
             .append_hitl_resume(self.session_id, "approve", actor)
             .await?;
+        self.audit_hitl_resolution(&payload, "approve", actor, None);
+        self.flush_audit().await?;
         self.turn.reset_hitl_denials();
         let call = self.approval_execution_call(&payload)?;
         self.ensure_approved_tool_allowed(&call).await?;

@@ -60,6 +60,12 @@ impl AgentSession {
             return Err(LoopError::from(err));
         }
         self.journal.append_status(self.session_id, to).await?;
+        if matches!(
+            to,
+            TaskLifecycle::Completed | TaskLifecycle::Failed | TaskLifecycle::Cancelled
+        ) {
+            self.flush_audit_at_boundary().await?;
+        }
         tracing::debug!(
             from = ?from,
             to = ?to,
@@ -78,6 +84,10 @@ impl AgentSession {
         reason: TransitionReason,
     ) -> Result<(), LoopError> {
         let from = self.active_task.lifecycle;
+        let approval = match &wait {
+            WaitReason::Approval { payload, .. } => Some(payload.clone()),
+            _ => None,
+        };
         if let Err(err) = self.active_task.enter_waiting(wait) {
             tracing::warn!(
                 from = ?from,
@@ -91,6 +101,10 @@ impl AgentSession {
         self.journal
             .append_status(self.session_id, TaskLifecycle::Waiting)
             .await?;
+        if let Some(payload) = approval {
+            self.audit_hitl_request(&payload);
+            self.flush_audit_at_boundary().await?;
+        }
         tracing::debug!(
             from = ?from,
             to = ?TaskLifecycle::Waiting,

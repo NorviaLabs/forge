@@ -10,8 +10,8 @@ use forge_core::{AgentSession, IsolatedTask, LoopError};
 use forge_model::{client_from_config, ModelClient};
 use forge_storage::{RepositoryRuntimeStorage, RuntimeDataKind, RuntimeStorage};
 use forge_types::{
-    AskUserQuestionResult, BackgroundTaskId, HitlDecision, Message, MessageRole, ModelStreamEvent,
-    SessionId, TaskLifecycle, ToolCall,
+    AskUserQuestionResult, BackgroundTaskId, GrantDecision, HitlDecision, Message, MessageRole,
+    ModelStreamEvent, SessionId, TaskLifecycle, ToolCall,
 };
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -301,6 +301,18 @@ pub enum SupervisorCommand {
         decision: HitlDecision,
         actor: String,
         feedback: Option<String>,
+    },
+    /// Answer the pending approval with a typed decision. The session checks
+    /// it against the pending payload, applies the grant it carries (host or
+    /// pattern, session or persistent) and resolves the approval; a failed
+    /// personal-permissions write is reported as an [`SupervisorEvent::Error`]
+    /// without failing the approval.
+    DecideApproval {
+        session_id: SessionId,
+        /// As for [`SupervisorCommand::ResolveApproval`].
+        expected_call_id: Option<String>,
+        decision: GrantDecision,
+        actor: String,
     },
     ResolveQuestion {
         session_id: SessionId,
@@ -1311,6 +1323,9 @@ fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
             decision: HitlDecision::Approve,
             ..
         }
+    ) || matches!(
+        command,
+        SupervisorCommand::DecideApproval { decision, .. } if decision.is_approval()
     )
 }
 
@@ -1330,6 +1345,7 @@ fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
         | SupervisorCommand::CompactContext { session_id }
         | SupervisorCommand::CloseSession { session_id }
         | SupervisorCommand::ResolveApproval { session_id, .. }
+        | SupervisorCommand::DecideApproval { session_id, .. }
         | SupervisorCommand::SetGoal { session_id, .. }
         | SupervisorCommand::ClearGoal { session_id }
         | SupervisorCommand::PauseGoal { session_id }
@@ -1417,6 +1433,145 @@ fn validate_issue_session(
         return Err(RepositorySupervisorError::Command(
             "GitHub issue actions require an active Forge-managed issue session".into(),
         ));
+    }
+    Ok(())
+}
+
+/// An approval answer as a frontend sent it: a bare decision (the legacy
+/// command, applied as-is) or a typed grant decision the session validates.
+enum ApprovalAnswer {
+    Raw {
+        decision: HitlDecision,
+        feedback: Option<String>,
+    },
+    Typed(GrantDecision),
+}
+
+impl ApprovalAnswer {
+    fn is_approval(&self) -> bool {
+        match self {
+            Self::Raw { decision, .. } => matches!(decision, HitlDecision::Approve),
+            Self::Typed(decision) => decision.is_approval(),
+        }
+    }
+}
+
+/// A personal-permissions write that failed still leaves the session grant in
+/// place; the operator is told the rule will not outlive the session.
+fn report_persist_error(
+    state: &SupervisorState,
+    session_id: SessionId,
+    outcome: &forge_core::GrantOutcome,
+) {
+    if let Some(error) = outcome.persist_error.as_deref() {
+        let _ = state.events.send(SupervisorEvent::Error {
+            session_id: Some(session_id),
+            message: format!("could not write personal permissions: {error}"),
+        });
+    }
+}
+
+async fn resolve_approval(
+    state: Arc<SupervisorState>,
+    session_id: SessionId,
+    expected_call_id: Option<String>,
+    answer: ApprovalAnswer,
+    decision_actor: String,
+) -> Result<(), RepositorySupervisorError> {
+    let task_actor = actor(&state, session_id).await?;
+    let approval_driver = if answer.is_approval() {
+        Some(
+            task_actor
+                .try_claim_driver()
+                .ok_or(RepositorySupervisorError::Contention)?,
+        )
+    } else {
+        None
+    };
+    let mut session = try_session(&task_actor)?;
+    if expected_call_id.as_deref().is_some_and(|call_id| {
+        session
+            .pending_hitl()
+            .is_none_or(|payload| payload.call_id != call_id)
+    }) {
+        return Err(LoopError::Other(
+            "approval request changed; review the current request".into(),
+        )
+        .into());
+    }
+    if answer.is_approval() {
+        let pending = match answer {
+            ApprovalAnswer::Raw { .. } => session.prepare_approved_hitl(&decision_actor).await?,
+            ApprovalAnswer::Typed(decision) => {
+                let (outcome, pending) = session
+                    .prepare_hitl_decision(decision, &decision_actor)
+                    .await?;
+                report_persist_error(&state, session_id, &outcome);
+                pending
+            }
+        };
+        state
+            .control
+            .set_turn_state(session_id, SupervisorTurnState::Running)
+            .await?;
+        refresh_actor(&state, &task_actor, &session).await?;
+
+        if let Some(pending) = pending {
+            let cancel = session.begin_turn_cancellation_scope();
+            *task_actor
+                .running_cancel
+                .lock()
+                .expect("turn cancel lock poisoned") = Some(cancel.clone());
+            let execution = IsolatedTask::spawn(pending.execute());
+            let completed = tokio::select! {
+                joined = execution.join() => joined
+                    .map_err(|error| LoopError::Other(format!("tool task join: {error}")))
+                    .and_then(|completed| completed.ok_or(LoopError::Cancelled)),
+                _ = cancel.cancelled() => Err(LoopError::Cancelled),
+            };
+            *task_actor
+                .running_cancel
+                .lock()
+                .expect("turn cancel lock poisoned") = None;
+            match completed {
+                Ok(completed) => session.finish_hitl_execution(completed).await?,
+                Err(LoopError::Cancelled) => {
+                    session.mark_cancelled().await?;
+                    state
+                        .control
+                        .set_turn_state(session_id, SupervisorTurnState::Cancelled)
+                        .await?;
+                    refresh_actor(&state, &task_actor, &session).await?;
+                    return Ok(());
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    } else {
+        match answer {
+            ApprovalAnswer::Raw { decision, feedback } => {
+                session
+                    .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
+                    .await?;
+            }
+            ApprovalAnswer::Typed(decision) => {
+                session.decide_hitl(decision, &decision_actor).await?;
+            }
+        }
+    }
+    refresh_actor(&state, &task_actor, &session).await?;
+    drop(session);
+    if let Some(claim) = approval_driver {
+        // Queue the continuation before releasing the approval's driver
+        // claim. If another driver wins the release race, it observes
+        // this pending continuation and drains it first.
+        let _ = task_actor.request_continuation();
+        drop(claim);
+        if task_actor.try_start_driver() {
+            tokio::spawn(run_driver(state, task_actor.clone(), session_id));
+        }
+    } else {
+        start_continue_driver(state, session_id).await?;
     }
     Ok(())
 }
@@ -2397,85 +2552,29 @@ async fn execute_command(
             actor: decision_actor,
             feedback,
         } => {
-            let task_actor = actor(&state, session_id).await?;
-            let approval_driver = if matches!(decision, HitlDecision::Approve) {
-                Some(
-                    task_actor
-                        .try_claim_driver()
-                        .ok_or(RepositorySupervisorError::Contention)?,
-                )
-            } else {
-                None
-            };
-            let mut session = try_session(&task_actor)?;
-            if expected_call_id.as_deref().is_some_and(|call_id| {
-                session
-                    .pending_hitl()
-                    .is_none_or(|payload| payload.call_id != call_id)
-            }) {
-                return Err(LoopError::Other(
-                    "approval request changed; review the current request".into(),
-                )
-                .into());
-            }
-            if matches!(decision, HitlDecision::Approve) {
-                let pending = session.prepare_approved_hitl(&decision_actor).await?;
-                state
-                    .control
-                    .set_turn_state(session_id, SupervisorTurnState::Running)
-                    .await?;
-                refresh_actor(&state, &task_actor, &session).await?;
-
-                if let Some(pending) = pending {
-                    let cancel = session.begin_turn_cancellation_scope();
-                    *task_actor
-                        .running_cancel
-                        .lock()
-                        .expect("turn cancel lock poisoned") = Some(cancel.clone());
-                    let execution = IsolatedTask::spawn(pending.execute());
-                    let completed = tokio::select! {
-                        joined = execution.join() => joined
-                            .map_err(|error| LoopError::Other(format!("tool task join: {error}")))
-                            .and_then(|completed| completed.ok_or(LoopError::Cancelled)),
-                        _ = cancel.cancelled() => Err(LoopError::Cancelled),
-                    };
-                    *task_actor
-                        .running_cancel
-                        .lock()
-                        .expect("turn cancel lock poisoned") = None;
-                    match completed {
-                        Ok(completed) => session.finish_hitl_execution(completed).await?,
-                        Err(LoopError::Cancelled) => {
-                            session.mark_cancelled().await?;
-                            state
-                                .control
-                                .set_turn_state(session_id, SupervisorTurnState::Cancelled)
-                                .await?;
-                            refresh_actor(&state, &task_actor, &session).await?;
-                            return Ok(());
-                        }
-                        Err(error) => return Err(error.into()),
-                    }
-                }
-            } else {
-                session
-                    .resolve_hitl_with_feedback(decision, &decision_actor, feedback.as_deref())
-                    .await?;
-            }
-            refresh_actor(&state, &task_actor, &session).await?;
-            drop(session);
-            if let Some(claim) = approval_driver {
-                // Queue the continuation before releasing the approval's driver
-                // claim. If another driver wins the release race, it observes
-                // this pending continuation and drains it first.
-                let _ = task_actor.request_continuation();
-                drop(claim);
-                if task_actor.try_start_driver() {
-                    tokio::spawn(run_driver(state, task_actor.clone(), session_id));
-                }
-            } else {
-                start_continue_driver(state, session_id).await?;
-            }
+            resolve_approval(
+                state,
+                session_id,
+                expected_call_id,
+                ApprovalAnswer::Raw { decision, feedback },
+                decision_actor,
+            )
+            .await?;
+        }
+        SupervisorCommand::DecideApproval {
+            session_id,
+            expected_call_id,
+            decision,
+            actor: decision_actor,
+        } => {
+            resolve_approval(
+                state,
+                session_id,
+                expected_call_id,
+                ApprovalAnswer::Typed(decision),
+                decision_actor,
+            )
+            .await?;
         }
         SupervisorCommand::ResolveQuestion {
             session_id,
@@ -5106,6 +5205,129 @@ mod tests {
                 decision: HitlDecision::Approve,
                 actor: "test".into(),
                 feedback: None,
+            })
+            .await
+            .unwrap();
+
+        let done = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                || snapshot.task.turn_state == SupervisorTurnState::Failed
+        })
+        .await;
+        assert_eq!(
+            done.task.turn_state,
+            SupervisorTurnState::Completed,
+            "approved escalation must resume the turn, not fail it: {:?}",
+            done.task.turn_state
+        );
+        assert!(done.transcript.messages().iter().any(|message| message
+            .content
+            .contains("finished after approved escalation")));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_typed_decision_is_validated_by_the_session_before_it_resumes_the_turn() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let session = escalation_session(
+            &cfg,
+            vec![
+                ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "escalate-1".into(),
+                        name: "escalating_sandbox_denied".into(),
+                        arguments: json!({}),
+                    }],
+                    usage: None,
+                    thinking: None,
+                },
+                ModelResponse {
+                    text: "finished after approved escalation".into(),
+                    tool_calls: vec![],
+                    usage: None,
+                    thinking: None,
+                },
+            ],
+        )
+        .await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "escalate", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    route_id: task.route_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "exercise escalation".into(),
+            })
+            .await
+            .unwrap();
+        let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+        assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+        let payload = waiting.session.pending_hitl.as_ref().unwrap();
+        assert!(
+            payload.sandbox_escalation,
+            "the sandbox denial must be flagged as an escalation"
+        );
+
+        let call_id = payload.call_id.clone();
+        // Approve-all never covers leaving the sandbox: the session refuses it
+        // and the approval stays pending for an answer it does accept.
+        let refused = handle
+            .command(SupervisorCommand::DecideApproval {
+                session_id,
+                expected_call_id: Some(call_id.clone()),
+                decision: GrantDecision::ApproveAll,
+                actor: "test".into(),
+            })
+            .await;
+        assert!(refused.is_err(), "{refused:?}");
+        let still = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+        assert!(!still.session.approve_all);
+
+        handle
+            .command(SupervisorCommand::DecideApproval {
+                session_id,
+                expected_call_id: Some(call_id),
+                decision: GrantDecision::AllowOnce,
+                actor: "test".into(),
             })
             .await
             .unwrap();

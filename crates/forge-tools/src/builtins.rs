@@ -505,113 +505,26 @@ async fn run_shell_command_inner(
     capture: Option<Arc<ShellOutputCapture>>,
     egress_label: Option<&str>,
 ) -> Result<ToolOutput, ToolError> {
-    // Do not use a login shell: `bash -l` sources profile files, which can
-    // re-export credentials after the explicit removals below.
-    //
-    // Confinement is applied here, at spawn, because that is the only moment
-    // it can be: a process that starts unconfined stays unconfined for its
-    // whole life. An unavailable sandbox is surfaced as an approval-required
-    // denial instead of silently downgrading this invocation.
-    if confined {
-        if let Err(unavailable) = crate::sandbox::availability() {
-            return Err(ToolError::SandboxDenied {
-                content: command.to_string(),
-                reason: unavailable.reason(),
-                denied_host: None,
-            });
-        }
-    }
-    let egress_invocation = if confined {
-        crate::egress::EgressInvocation::start_labeled(egress, egress_label)
-            .await
-            .map_err(|error| {
-                ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
-            })?
-    } else {
-        None
-    };
-    let command_egress = egress_invocation
-        .as_ref()
-        .and_then(crate::egress::EgressInvocation::grant)
-        .or(egress);
-    let mut policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root)
-        .with_command_access(command)
-        .with_egress(command_egress);
-    if crate::credentials::needs_git_writes(command) {
-        policy = policy.with_git_writable();
-    }
-    if let Some(session_tmp) = session_tmp {
-        policy = policy.with_session_tmp(session_tmp);
-    }
-    let wrapped = confined
-        .then(|| crate::sandbox::wrap_shell_command("bash", command, &policy))
-        .flatten();
-
-    // `wrap_shell_command` returns `None` for two very different reasons.
-    // "This host has no sandbox" is a launch-time refusal in the supported
-    // CLI. "This host has a sandbox but this policy could not be built" is
-    // an anomaly — a workspace path that is not valid UTF-8, a root that
-    // cannot be canonicalised — and nothing upstream knows it happened, so
-    // falling back would drop confinement with no prompt and no message.
-    // Refuse instead.
-    if confined && wrapped.is_none() && crate::sandbox::availability().is_ok() {
-        return Err(ToolError::Execution(format!(
-            "refusing to run unconfined: this host can sandbox, but no sandbox \
-             could be built for workspace {}",
-            workspace_root.display()
-        )));
-    }
-
-    let confined_run = wrapped.is_some();
-    let mut shell = match wrapped {
-        Some((program, args)) => {
-            let mut confined = Command::new(program);
-            confined.args(args);
-            confined
-        }
-        None => {
-            let mut plain = Command::new("bash");
-            plain.arg("-c").arg(command);
-            plain
-        }
-    };
+    let mut spec =
+        crate::shell_spawn::ShellSpawnSpec::build(crate::shell_spawn::ShellSpawnRequest {
+            mode: crate::shell_spawn::ShellSpawnMode::Run,
+            shell: "bash",
+            command,
+            workspace_root,
+            egress,
+            session_tmp,
+            confined,
+            egress_label,
+        })
+        .await?;
+    let confined_run = spec.confined();
+    let egress_invocation = spec.take_egress_invocation();
+    let mut shell = spec.tokio_command();
     shell
-        .current_dir(workspace_root)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
     set_process_group(&mut shell);
-    for name in PROVIDER_CREDENTIAL_ENV {
-        shell.env_remove(name);
-    }
-    // The proxy env points at the in-sandbox relay (Linux) or the filtered
-    // host proxy (macOS). An approved unconfined retry is supposed to use
-    // the real network — HTTPS clients fail if we leave them talking to a
-    // proxy that is either not listening or still deny-all.
-    if confined_run {
-        for name in crate::credentials::HOST_CREDENTIAL_ENV {
-            shell.env_remove(name);
-        }
-        for (name, value) in crate::sandbox::egress_env(&policy) {
-            shell.env(name, value);
-        }
-        let identity_dir = session_tmp
-            .map(|dir| dir.join("host-identity"))
-            .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
-        let _ = std::fs::create_dir_all(&identity_dir);
-        for (name, value) in crate::credentials::isolated_config_env(&identity_dir) {
-            shell.env(name, value);
-        }
-        for (name, value) in crate::credentials::host_identity_env(command_egress, &identity_dir) {
-            shell.env(name, value);
-        }
-        for (name, value) in policy.toolchain_env() {
-            shell.env(name, value);
-        }
-    }
-    for (name, value) in crate::sandbox::shell_env(&policy) {
-        shell.env(name, value);
-    }
 
     let mut child = shell
         .spawn()

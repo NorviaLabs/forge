@@ -13,6 +13,7 @@ mod orchestration;
 mod output_filters;
 mod registry;
 pub mod sandbox;
+pub mod shell_spawn;
 mod skills;
 mod unified_exec;
 mod validation;
