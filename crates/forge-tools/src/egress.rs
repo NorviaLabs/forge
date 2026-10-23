@@ -347,7 +347,7 @@ pub struct EgressShared {
 }
 
 impl EgressShared {
-    fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
+    pub(crate) fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),

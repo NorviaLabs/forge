@@ -1318,6 +1318,80 @@ async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
     assert_eq!(result.content, "retried confined after host grant");
 }
 
+/// `web_fetch` obeys the same host allowlist as a confined shell command: an
+/// unlisted host raises the host-grant prompt, and the approved retry runs
+/// `web_fetch` again (not only shell). `localhost` keeps this offline: once
+/// granted it passes the allowlist and is then refused by the SSRF guard,
+/// which can only happen if the fetch really re-ran.
+#[tokio::test]
+async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(forge_tools::web_fetch_tool());
+    let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    if !session.has_network_egress() {
+        return; // no egress proxy on this host, so there is no policy to consult
+    }
+    session.append_user_message("read the page").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-fetch".into(),
+                name: "web_fetch".into(),
+                arguments: json!({"url": "http://localhost:9/page"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session.pending_hitl().expect("host denial should prompt");
+    assert_eq!(payload.tool, "web_fetch");
+    assert_eq!(payload.denied_host.as_deref(), Some("localhost"));
+    assert!(!payload.sandbox_escalation);
+
+    session.grant_egress_host("localhost");
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should retry web_fetch");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    assert!(
+        session.pending_hitl().is_none(),
+        "the grant must not re-prompt"
+    );
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-fetch"))
+        .expect("the retry should record a web_fetch result");
+    assert!(
+        result
+            .content
+            .contains("web_fetch: refusing to fetch `localhost`"),
+        "{}",
+        result.content
+    );
+}
+
 #[async_trait]
 impl forge_model::ModelClient for BurstStreamingModel {
     async fn complete(
