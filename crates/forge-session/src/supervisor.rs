@@ -321,8 +321,9 @@ pub enum SupervisorCommand {
         enabled: bool,
     },
     /// Toggle per-session approve-all mode. While on, HITL prompts are
-    /// auto-approved and shell tools run unconfined. Session scoped and never
-    /// persisted.
+    /// auto-approved (sandbox-denied hosts granted for the session); shell
+    /// stays confined and an unconfined retry still prompts. Session scoped
+    /// and never persisted.
     SetApproveAll {
         session_id: SessionId,
         on: bool,

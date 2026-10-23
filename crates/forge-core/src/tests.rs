@@ -3122,8 +3122,105 @@ impl forge_tools::Tool for SandboxProbeTool {
     }
 }
 
+/// Records the arguments it was executed with.
+struct ArgsProbeTool {
+    seen: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+}
+
+#[async_trait]
+impl forge_tools::Tool for ArgsProbeTool {
+    fn name(&self) -> &str {
+        "args_probe"
+    }
+
+    fn description(&self) -> &str {
+        "record the arguments it ran with"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        *self.seen.lock().unwrap() = Some(args);
+        Ok(ToolOutput::success("args probe ran"))
+    }
+}
+
+async fn session_paused_on_args_probe(
+    dir: &std::path::Path,
+    seen: Arc<std::sync::Mutex<Option<serde_json::Value>>>,
+) -> AgentSession {
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(ArgsProbeTool { seen }));
+    let model = Arc::new(MockModelClient::script(vec![
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "secret-call".into(),
+                name: "args_probe".into(),
+                arguments: json!({"api_key": "sk-live-123", "repo": "forge"}),
+            }],
+            usage: None,
+            thinking: None,
+        },
+        ModelResponse {
+            text: "done".into(),
+            tool_calls: vec![],
+            usage: None,
+            thinking: None,
+        },
+    ]));
+    let mut s = AgentSession::create(base_cfg(dir), model, tools)
+        .await
+        .unwrap();
+    s.set_governance(Governance::default().require_hitl_for_tool("args_probe"));
+    s.set_workspace_trusted(true);
+    s.run_user_message("go").await.unwrap();
+    let payload = s.pending_hitl().expect("policy HITL prompt");
+    assert_eq!(payload.args_redacted["api_key"], "[REDACTED]");
+    s
+}
+
 #[tokio::test]
-async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
+async fn approved_hitl_call_executes_the_original_unredacted_arguments() {
+    let dir = tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut s = session_paused_on_args_probe(dir.path(), seen.clone()).await;
+
+    s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
+
+    assert_eq!(
+        seen.lock().unwrap().clone(),
+        Some(json!({"api_key": "sk-live-123", "repo": "forge"})),
+        "approval must execute the original call, not the redacted display copy"
+    );
+    assert!(s.turn.pending_hitl_calls.is_empty());
+}
+
+#[tokio::test]
+async fn approval_without_original_arguments_never_runs_the_redacted_copy() {
+    let dir = tempdir().unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let mut s = session_paused_on_args_probe(dir.path(), seen.clone()).await;
+    s.turn.reset(); // Resume reconstructs turn-local state as empty.
+
+    assert!(s.prepare_approved_hitl("test").await.is_err());
+    assert!(seen.lock().unwrap().is_none());
+    s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
+    assert!(s.pending_hitl().is_none());
+}
+
+#[tokio::test]
+async fn approve_all_auto_approves_hitl_and_keeps_the_tool_confined() {
     let dir = tempdir().unwrap();
     let called = Arc::new(AtomicBool::new(false));
     let unconfined = Arc::new(AtomicBool::new(false));
@@ -3170,9 +3267,95 @@ async fn approve_all_auto_approves_hitl_and_runs_the_tool_unconfined() {
         "the probe tool must have run"
     );
     assert!(
-        unconfined.load(Ordering::SeqCst),
-        "approve-all execution context must be unconfined"
+        !unconfined.load(Ordering::SeqCst),
+        "approve-all must not take the shell out of the sandbox"
     );
+}
+
+/// Approve-all answers review prompts; leaving the sandbox is a different
+/// decision and still needs its own approval.
+#[tokio::test]
+async fn approve_all_still_prompts_before_running_outside_the_sandbox() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    session.set_workspace_trusted(true);
+    assert!(session.set_approve_all(true));
+
+    let application = run_sandbox_denied_call(&mut session).await;
+
+    assert!(matches!(
+        application,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session
+        .pending_hitl()
+        .expect("a sandbox escalation must prompt under approve-all");
+    assert!(payload.sandbox_escalation);
+    assert!(
+        !session
+            .messages
+            .iter()
+            .any(|message| message.role == MessageRole::Tool
+                && message.content.contains("ran unconfined")),
+        "nothing may run unconfined before the operator approves"
+    );
+}
+
+/// Under approve-all a denied host is granted for the session and the same
+/// call re-runs, still confined, without a prompt.
+#[tokio::test]
+async fn approve_all_grants_a_denied_host_and_retries_confined() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.set_workspace_trusted(true);
+    assert!(session.set_approve_all(true));
+    session.append_user_message("open a pr").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-host".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let application = session
+        .finish_tool_application(pending.execute().await)
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(retry) = application else {
+        panic!("approve-all should re-run the call after granting the host");
+    };
+    assert!(session.pending_hitl().is_none());
+    session
+        .finish_tool_application(retry.execute().await)
+        .await
+        .unwrap();
+
+    assert!(session.pending_hitl().is_none());
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
+        .expect("the confined retry should record a result");
+    assert_eq!(result.content, "retried confined after host grant");
 }
 
 #[tokio::test]

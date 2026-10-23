@@ -915,7 +915,7 @@ async fn sandbox_filesystem_approval_explains_the_unconfined_retry() {
     payload.sandbox_escalation = true;
     set_pending_approval(&mut app, payload);
 
-    assert_eq!(app.approval_menu_shortcuts(), vec!["n", "y", "t", "N"]);
+    assert_eq!(app.approval_menu_shortcuts(), vec!["n", "y", "N"]);
     let rendered = render_app_text(&mut app, 100, 30);
     assert!(rendered.contains("Approve command"), "{rendered}");
     assert!(
@@ -1052,7 +1052,8 @@ async fn sandbox_retry_cannot_be_auto_approved_by_a_command_grant() {
     app.drain_auto_hitl().await.unwrap();
     assert!(app.session_runtime.pending_hitl().is_some());
     assert!(!app.pending_interaction.has_hitl_decision());
-    assert_eq!(app.approval_menu_shortcuts(), vec!["n", "y", "t", "N"]);
+    // Approve-all does not cover leaving the sandbox, so it is not offered.
+    assert_eq!(app.approval_menu_shortcuts(), vec!["n", "y", "N"]);
 }
 
 /// A leading env assignment is stripped when matching, so the suggested rule

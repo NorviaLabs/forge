@@ -523,8 +523,8 @@ impl TuiApp {
                 self.set_approve_all(true);
                 if self.approve_all {
                     self.set_feedback(
-                        FeedbackSeverity::Error,
-                        "approve-all on · sandbox off for this session",
+                        FeedbackSeverity::Warn,
+                        "approve-all on for this session · sandbox stays on",
                     );
                 }
             }

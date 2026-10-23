@@ -70,8 +70,9 @@ struct BenchArgs {
     #[arg(long, default_value = "max", value_name = "EFFORT")]
     effort: String,
 
-    /// Approve every tool request. Use only with an isolated evaluation
-    /// workspace.
+    /// Approve tool prompts and grant blocked network hosts for the session.
+    /// Commands stay sandboxed: a request to run outside the sandbox is
+    /// refused. Use only with an isolated evaluation workspace.
     #[arg(long)]
     approve_all: bool,
 }

@@ -666,7 +666,6 @@ async fn run_shell_job(
     workspace_root: std::path::PathBuf,
     egress: Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>>,
     session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
-    unconfined: bool,
     capture: Arc<forge_tools::ShellOutputCapture>,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
@@ -675,16 +674,15 @@ async fn run_shell_job(
     // difference with no reason behind it, and one that would have surfaced as
     // a mysteriously failing build rather than as a permission decision.
     //
-    // Under approve-all the foreground runs unconfined; the background job must
-    // match, or a sandbox denial here would raise an approval prompt the mode
-    // is meant to remove.
+    // Always confined, approve-all included: approve-all answers prompts, it
+    // does not take the sandbox away.
     let tmp = session_tmp.as_deref().map(|temp| temp.path());
     let result = forge_tools::run_shell_command_observed(
         &command,
         &workspace_root,
         egress.as_deref(),
         tmp,
-        unconfined,
+        false,
         capture,
     )
     .await;
@@ -825,10 +823,9 @@ impl AgentSession {
         });
         let egress = self.tool_ctx.egress.clone();
         let session_tmp = self.tool_ctx.session_tmp.clone();
-        let unconfined = self.approve_all;
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(command, workspace_root, egress, session_tmp, unconfined, capture) => outcome,
+                outcome = run_shell_job(command, workspace_root, egress, session_tmp, capture) => outcome,
                 // Dropping the job future on cancel drops the shell spawn's
                 // process-group guard, which kills the whole tree — not just
                 // the direct child — so no side effect runs after cancel.
@@ -1528,8 +1525,6 @@ mod tests {
             let dir = tempdir().unwrap();
             let marker = dir.path().join("bg-marker");
             let mut s = session(dir.path()).await;
-            // Approve-all runs the background job unconfined so the test never
-            // depends on a sandbox being installed on the host.
             s.set_workspace_trusted(true);
             assert!(s.set_approve_all(true));
             // The marker writer is a grandchild; only a process-group kill
