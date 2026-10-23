@@ -96,6 +96,10 @@ pub struct ToolContext {
     pub session_tmp: Option<Arc<SessionTempDir>>,
     /// True only for an exact sandbox-denied invocation replayed after HITL.
     pub unconfined_shell: bool,
+    /// The model tool call this context is executing, when there is one.
+    /// Carried so the egress gateway can attribute connections to the call
+    /// that opened them.
+    pub tool_call_id: Option<Arc<str>>,
 }
 
 impl ToolContext {
@@ -110,7 +114,14 @@ impl ToolContext {
             egress: None,
             session_tmp: None,
             unconfined_shell: false,
+            tool_call_id: None,
         }
+    }
+
+    /// Attribute work done under this context to the tool call `id`.
+    pub fn with_tool_call_id(mut self, id: impl Into<Arc<str>>) -> Self {
+        self.tool_call_id = Some(id.into());
+        self
     }
 
     pub fn with_session_tmp(mut self, session_tmp: Arc<SessionTempDir>) -> Self {

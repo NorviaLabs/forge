@@ -254,7 +254,9 @@ async fn a_stale_socket_file_does_not_block_binding() {
 // The gateway: address checks, pinning, idle timeout, attribution.
 // ---------------------------------------------------------------------------
 
-use forge_tools::egress::{EgressOptions, PRIVATE_ADDRESS_DENIED_REASON};
+use forge_tools::egress::{
+    EgressDenial, EgressInvocation, EgressOptions, EgressOutcome, PRIVATE_ADDRESS_DENIED_REASON,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -291,6 +293,21 @@ async fn counting_upstream() -> Option<(u16, Arc<AtomicUsize>, tokio::task::Join
         }
     });
     Some((port, accepted, task))
+}
+
+async fn wait_for_events(
+    proxy: &EgressProxy,
+    want: usize,
+) -> Vec<forge_tools::egress::EgressEvent> {
+    let mut events = Vec::new();
+    for _ in 0..100 {
+        events.extend(proxy.shared().drain_events());
+        if events.len() >= want {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    events
 }
 
 /// A broad grant must not reach loopback: `host(*)` is about public names,
@@ -330,6 +347,54 @@ async fn a_wildcard_grant_does_not_reach_a_private_address() {
         None,
         "an address refusal is not a host a grant could fix"
     );
+    let events = wait_for_events(&proxy, 5).await;
+    assert_eq!(events.len(), 5);
+    assert!(events
+        .iter()
+        .all(|e| e.outcome == EgressOutcome::Denied(EgressDenial::PrivateAddress)));
+}
+
+/// Dialling uses the address that was checked: the event names the resolved
+/// address the tunnel actually went to, and it is one the name resolved to.
+#[tokio::test]
+async fn the_dialled_address_is_the_checked_one() {
+    let Some((port, accepted, _up)) = counting_upstream().await else {
+        return;
+    };
+    let mut policy = EgressPolicy::new();
+    policy.allow("*");
+    let options = EgressOptions {
+        allow_private_destinations: true,
+        ..EgressOptions::default()
+    };
+    let Some(proxy) = started_proxy_with(policy, options).await else {
+        return;
+    };
+    let mut stream = TcpStream::connect(proxy.addr()).await.unwrap();
+    stream
+        .write_all(format!("CONNECT localhost:{port} HTTP/1.1\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    assert!(status.contains("200"), "{status}");
+    drop(reader);
+
+    let events = wait_for_events(&proxy, 1).await;
+    let upstream = events[0]
+        .upstream
+        .expect("an allowed tunnel names its upstream");
+    let resolved: Vec<_> = tokio::net::lookup_host(("localhost", port))
+        .await
+        .unwrap()
+        .collect();
+    assert!(
+        resolved.contains(&upstream),
+        "{upstream} not in {resolved:?}"
+    );
+    assert_eq!(upstream.port(), port);
+    assert_eq!(accepted.load(Ordering::SeqCst), 1);
 }
 
 /// A tunnel that carries nothing is closed on both sides after the idle
@@ -381,4 +446,83 @@ async fn an_idle_tunnel_is_closed() {
         .await
         .expect("an idle tunnel must be closed on the upstream side")
         .unwrap();
+}
+
+/// Each CONNECT through an invocation endpoint is recorded with the
+/// invocation's label and the bytes carried each way, in the session-wide
+/// log rather than the invocation's own denial queue.
+#[tokio::test]
+async fn connections_are_recorded_with_label_and_byte_counts() {
+    let Some((port, _accepted, _up)) = counting_upstream().await else {
+        return;
+    };
+    let mut policy = EgressPolicy::new();
+    policy.allow("127.0.0.1");
+    let Some(proxy) = started_proxy(policy).await else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let template = forge_tools::sandbox::EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path: dir.path().join("session.sock"),
+        control: Some(proxy.shared().clone()),
+    };
+    let invocation = EgressInvocation::start_labeled(Some(&template), Some("call-123"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(invocation.label(), Some("call-123"));
+    let invocation_port = invocation.grant().proxy_port;
+
+    let mut stream = TcpStream::connect(("127.0.0.1", invocation_port))
+        .await
+        .unwrap();
+    stream
+        .write_all(format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n\r\nping").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    assert!(status.contains("200"), "{status}");
+    let mut blank = String::new();
+    reader.read_line(&mut blank).await.unwrap();
+    let mut greeting = [0u8; 11];
+    reader.read_exact(&mut greeting).await.unwrap();
+    reader.get_mut().shutdown().await.unwrap();
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), reader.read_to_end(&mut rest))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let denied = connect_status_on(invocation_port, "blocked.example:443").await;
+    assert!(denied.contains("403"), "{denied}");
+
+    let events = wait_for_events(&proxy, 2).await;
+    let allowed = events.iter().find(|e| e.allowed()).expect("tunnel event");
+    assert_eq!(allowed.label.as_deref(), Some("call-123"));
+    assert_eq!(allowed.host, "127.0.0.1");
+    assert_eq!(allowed.port, port);
+    assert_eq!(
+        allowed.bytes_up, 4,
+        "the pipelined `ping` counts as upstream bytes"
+    );
+    assert_eq!(allowed.bytes_down, 11);
+    let refused = events.iter().find(|e| !e.allowed()).expect("denial event");
+    assert_eq!(refused.label.as_deref(), Some("call-123"));
+    assert_eq!(refused.host, "blocked.example");
+    assert_eq!(refused.outcome, EgressOutcome::Denied(EgressDenial::Policy));
+}
+
+async fn connect_status_on(port: u16, target: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    stream
+        .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status = String::new();
+    reader.read_line(&mut status).await.unwrap();
+    status
 }

@@ -386,7 +386,7 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, None, true, None).await
+    run_shell_command_inner(command, workspace_root, egress, None, true, None, None).await
 }
 
 pub async fn run_shell_command_with_egress_and_temp(
@@ -395,7 +395,16 @@ pub async fn run_shell_command_with_egress_and_temp(
     egress: Option<&crate::sandbox::EgressGrant>,
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, session_tmp, true, None).await
+    run_shell_command_inner(
+        command,
+        workspace_root,
+        egress,
+        session_tmp,
+        true,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Run `command` with no sandbox at all — filesystem and network unconfined.
@@ -406,7 +415,16 @@ pub async fn run_shell_command_unconfined(
     workspace_root: &Path,
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, None, session_tmp, false, None).await
+    run_shell_command_inner(
+        command,
+        workspace_root,
+        None,
+        session_tmp,
+        false,
+        None,
+        None,
+    )
+    .await
 }
 
 /// Bounded execution evidence from the same readers that collect tool output.
@@ -473,6 +491,7 @@ pub async fn run_shell_command_observed(
         session_tmp,
         !unconfined,
         Some(capture),
+        None,
     )
     .await
 }
@@ -484,6 +503,7 @@ async fn run_shell_command_inner(
     session_tmp: Option<&Path>,
     confined: bool,
     capture: Option<Arc<ShellOutputCapture>>,
+    egress_label: Option<&str>,
 ) -> Result<ToolOutput, ToolError> {
     // Do not use a login shell: `bash -l` sources profile files, which can
     // re-export credentials after the explicit removals below.
@@ -502,7 +522,7 @@ async fn run_shell_command_inner(
         }
     }
     let egress_invocation = if confined {
-        crate::egress::EgressInvocation::start(egress)
+        crate::egress::EgressInvocation::start_labeled(egress, egress_label)
             .await
             .map_err(|error| {
                 ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
@@ -752,6 +772,7 @@ itself, never to git hooks)."
             ctx.session_tmp.as_deref().map(|temp| temp.path()),
             !ctx.unconfined_shell,
             None,
+            ctx.tool_call_id.as_deref(),
         )
         .await
     }

@@ -32,6 +32,12 @@ impl EgressRuntime {
     pub fn grant_host(&self, pattern: &str) {
         self.shared.grant_host(pattern);
     }
+
+    /// Take every connection event recorded for this session, oldest first,
+    /// including those made through per-invocation endpoints.
+    pub fn drain_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
+        self.shared.drain_events()
+    }
 }
 
 /// Hosts this workspace may reach, taken from the merged permission files.

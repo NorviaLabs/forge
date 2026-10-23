@@ -31,6 +31,7 @@
 //! per-platform routing and is deliberately not decided here — see
 //! `EgressProxy::addr`.
 
+use std::collections::VecDeque;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -75,6 +76,9 @@ pub const EGRESS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// on both sides, so an abandoned connection cannot pin a socket forever.
 pub const EGRESS_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+/// Connection records kept in memory before the oldest are dropped.
+pub const EGRESS_EVENT_CAPACITY: usize = 1024;
+
 /// Gateway behaviour that is not part of the host policy.
 #[derive(Debug, Clone, Copy)]
 pub struct EgressOptions {
@@ -94,6 +98,54 @@ impl Default for EgressOptions {
             allow_private_destinations: false,
         }
     }
+}
+
+/// What the gateway did with one CONNECT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressOutcome {
+    /// Tunnel established; the event closes when the tunnel does.
+    Allowed,
+    /// Refused before any upstream socket was opened.
+    Denied(EgressDenial),
+    /// Permitted, but resolution or the dial failed or timed out.
+    UpstreamFailed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressDenial {
+    /// The host policy does not permit the name.
+    Policy,
+    /// The name is permitted but resolved to a non-public address.
+    PrivateAddress,
+}
+
+/// One CONNECT decision and, when tunnelled, its traffic totals.
+#[derive(Debug, Clone)]
+pub struct EgressEvent {
+    /// Attribution supplied by the invocation (the tool call id), if any.
+    pub label: Option<String>,
+    pub host: String,
+    pub port: u16,
+    pub outcome: EgressOutcome,
+    /// The address actually dialled — the one that passed the address check.
+    pub upstream: Option<SocketAddr>,
+    /// Client to upstream.
+    pub bytes_up: u64,
+    /// Upstream to client.
+    pub bytes_down: u64,
+    pub duration: Duration,
+}
+
+impl EgressEvent {
+    pub fn allowed(&self) -> bool {
+        self.outcome == EgressOutcome::Allowed
+    }
+}
+
+#[derive(Debug, Default)]
+struct EgressEventLog {
+    events: VecDeque<EgressEvent>,
+    dropped: u64,
 }
 
 /// Explanation attached when the proxy refused a host, even if the client
@@ -288,7 +340,10 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
 pub struct EgressShared {
     policy: Arc<RwLock<EgressPolicy>>,
     denied: Arc<Mutex<Vec<String>>>,
+    /// Session-wide connection log, shared by every invocation.
+    events: Arc<Mutex<EgressEventLog>>,
     options: EgressOptions,
+    label: Option<Arc<str>>,
 }
 
 impl EgressShared {
@@ -296,19 +351,80 @@ impl EgressShared {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::new(Mutex::new(EgressEventLog::default())),
             options,
+            label: None,
         }
     }
 
     /// Share live policy updates while keeping refusal attribution local to
     /// one command. Session-global refusal storage lets a swallowed denial
-    /// poison whichever unrelated command happens to fail next.
-    fn for_invocation(&self) -> Self {
+    /// poison whichever unrelated command happens to fail next. The event log
+    /// stays shared: it is attributed by label, not by queue.
+    fn for_invocation(&self, label: Option<&str>) -> Self {
         Self {
             policy: Arc::clone(&self.policy),
             denied: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::clone(&self.events),
             options: self.options,
+            label: label.map(Arc::from),
         }
+    }
+
+    /// The attribution label connections through this endpoint carry.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Take every recorded connection event, oldest first.
+    pub fn drain_events(&self) -> Vec<EgressEvent> {
+        let mut log = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        log.events.drain(..).collect()
+    }
+
+    /// Events discarded because the log was full, over this log's life.
+    pub fn dropped_events(&self) -> u64 {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dropped
+    }
+
+    fn record_event(&self, event: EgressEvent) {
+        match &event.outcome {
+            EgressOutcome::Allowed => tracing::info!(
+                target: "forge::egress",
+                label = event.label.as_deref().unwrap_or(""),
+                host = %event.host,
+                port = event.port,
+                upstream = ?event.upstream,
+                bytes_up = event.bytes_up,
+                bytes_down = event.bytes_down,
+                duration_ms = event.duration.as_millis() as u64,
+                "egress tunnel closed"
+            ),
+            outcome => tracing::info!(
+                target: "forge::egress",
+                label = event.label.as_deref().unwrap_or(""),
+                host = %event.host,
+                port = event.port,
+                outcome = ?outcome,
+                duration_ms = event.duration.as_millis() as u64,
+                "egress connect refused"
+            ),
+        }
+        let mut log = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if log.events.len() >= EGRESS_EVENT_CAPACITY {
+            log.events.pop_front();
+            log.dropped += 1;
+        }
+        log.events.push_back(event);
     }
 
     /// Whether a non-public destination is acceptable for `host`.
@@ -530,10 +646,19 @@ impl EgressInvocation {
     /// without live proxy control are test doubles and retain their original
     /// endpoint.
     pub async fn start(template: Option<&crate::sandbox::EgressGrant>) -> io::Result<Option<Self>> {
+        Self::start_labeled(template, None).await
+    }
+
+    /// As [`Self::start`], attributing every connection to `label` (the tool
+    /// call id) in the session's event log.
+    pub async fn start_labeled(
+        template: Option<&crate::sandbox::EgressGrant>,
+        label: Option<&str>,
+    ) -> io::Result<Option<Self>> {
         let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
             return Ok(None);
         };
-        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation()).await?;
+        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket_path =
             std::path::Path::new("/tmp").join(format!("f{}-{sequence}.sock", std::process::id()));
@@ -556,6 +681,10 @@ impl EgressInvocation {
     pub fn take_denied_host(&self) -> Option<String> {
         self.grant.take_denied_host()
     }
+
+    pub fn label(&self) -> Option<&str> {
+        self._proxy.shared().label()
+    }
 }
 
 /// Handle one client, whatever transport it arrived on.
@@ -567,6 +696,7 @@ async fn serve<S>(client: S, shared: EgressShared) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
 {
+    let started = Instant::now();
     let (read_half, mut write_half) = tokio::io::split(client);
     let mut reader = BufReader::new(read_half);
 
@@ -596,8 +726,26 @@ where
         return respond(&mut write_half, 400, "Bad Request", "").await;
     };
 
+    let event =
+        |outcome: EgressOutcome, upstream: Option<SocketAddr>, up: u64, down: u64| EgressEvent {
+            label: shared.label().map(str::to_string),
+            host: host.clone(),
+            port,
+            outcome,
+            upstream,
+            bytes_up: up,
+            bytes_down: down,
+            duration: started.elapsed(),
+        };
+
     if !shared.permits(&host) {
         shared.record_denied(host.clone());
+        shared.record_event(event(
+            EgressOutcome::Denied(EgressDenial::Policy),
+            None,
+            0,
+            0,
+        ));
         let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
         return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, &body).await;
     }
@@ -608,8 +756,24 @@ where
     let deadline = tokio::time::Instant::now() + shared.options.connect_timeout;
     let addrs = match tokio::time::timeout_at(deadline, resolve(&host, port)).await {
         Ok(Ok(addrs)) => addrs,
-        Ok(Err(_)) => return respond(&mut write_half, 502, "Bad Gateway", "").await,
-        Err(_) => return respond(&mut write_half, 504, "Gateway Timeout", "").await,
+        Ok(Err(error)) => {
+            shared.record_event(event(
+                EgressOutcome::UpstreamFailed(format!("resolve: {error}")),
+                None,
+                0,
+                0,
+            ));
+            return respond(&mut write_half, 502, "Bad Gateway", "").await;
+        }
+        Err(_) => {
+            shared.record_event(event(
+                EgressOutcome::UpstreamFailed("resolve timed out".into()),
+                None,
+                0,
+                0,
+            ));
+            return respond(&mut write_half, 504, "Gateway Timeout", "").await;
+        }
     };
 
     if addrs.iter().any(|addr| !is_public_address(addr.ip()))
@@ -617,6 +781,12 @@ where
     {
         // Not queued as a denied host: a host grant cannot fix this, so it
         // must not turn into a grant prompt.
+        shared.record_event(event(
+            EgressOutcome::Denied(EgressDenial::PrivateAddress),
+            None,
+            0,
+            0,
+        ));
         let body = format!(
             "{PRIVATE_ADDRESS_DENIED_REASON}: host {host} resolves to a non-public address\n"
         );
@@ -624,27 +794,36 @@ where
     }
 
     let mut dialled = None;
+    let mut failure = String::from("no address");
     for addr in &addrs {
         match tokio::time::timeout_at(deadline, TcpStream::connect(addr)).await {
             Ok(Ok(stream)) => {
-                dialled = Some(stream);
+                dialled = Some((stream, *addr));
                 break;
             }
-            Ok(Err(_)) => {}
-            Err(_) => break,
+            Ok(Err(error)) => failure = format!("connect {addr}: {error}"),
+            Err(_) => {
+                failure = format!("connect {addr}: timed out");
+                break;
+            }
         }
     }
-    let Some(upstream) = dialled else {
+    let Some((upstream, upstream_addr)) = dialled else {
+        shared.record_event(event(EgressOutcome::UpstreamFailed(failure), None, 0, 0));
         return respond(&mut write_half, 502, "Bad Gateway", "").await;
     };
 
-    write_half
+    if let Err(error) = write_half
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await?;
+        .await
+    {
+        shared.record_event(event(EgressOutcome::Allowed, Some(upstream_addr), 0, 0));
+        return Err(error);
+    }
 
     // From here the proxy copies bytes and never sees the plaintext.
     let (upstream_read, upstream_write) = tokio::io::split(upstream);
-    relay(
+    let (up, down) = relay(
         reader,
         write_half,
         upstream_read,
@@ -652,6 +831,7 @@ where
         shared.options.idle_timeout,
     )
     .await;
+    shared.record_event(event(EgressOutcome::Allowed, Some(upstream_addr), up, down));
     Ok(())
 }
 
@@ -728,16 +908,17 @@ impl Activity {
     }
 }
 
-/// Copy both directions until both finish or the tunnel goes idle. Returning
-/// drops every half, which closes both sockets — that is what makes the idle
-/// timeout close the tunnel.
+/// Copy both directions until both finish or the tunnel goes idle, returning
+/// `(bytes_up, bytes_down)`. Returning drops every half, which closes both
+/// sockets — that is what makes the idle timeout close the tunnel.
 async fn relay<CR, CW, UR, UW>(
     client_read: CR,
     client_write: CW,
     upstream_read: UR,
     upstream_write: UW,
     idle_timeout: Duration,
-) where
+) -> (u64, u64)
+where
     CR: AsyncRead + Unpin,
     CW: AsyncWrite + Unpin,
     UR: AsyncRead + Unpin,
@@ -747,6 +928,8 @@ async fn relay<CR, CW, UR, UW>(
         opened: Instant::now(),
         last: AtomicU64::new(0),
     };
+    let up = AtomicU64::new(0);
+    let down = AtomicU64::new(0);
     let watchdog = async {
         loop {
             let idle = activity.idle_for();
@@ -759,15 +942,16 @@ async fn relay<CR, CW, UR, UW>(
     tokio::select! {
         _ = async {
             tokio::join!(
-                pump(client_read, upstream_write, &activity),
-                pump(upstream_read, client_write, &activity),
+                pump(client_read, upstream_write, &up, &activity),
+                pump(upstream_read, client_write, &down, &activity),
             )
         } => {}
         () = watchdog => {}
     }
+    (up.load(Ordering::Relaxed), down.load(Ordering::Relaxed))
 }
 
-async fn pump<R, W>(mut from: R, mut to: W, activity: &Activity)
+async fn pump<R, W>(mut from: R, mut to: W, counter: &AtomicU64, activity: &Activity)
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -782,6 +966,7 @@ where
         if to.write_all(&buf[..read]).await.is_err() {
             break;
         }
+        counter.fetch_add(read as u64, Ordering::Relaxed);
         activity.touch();
     }
     // Propagate the half-close so the far side sees end of stream.

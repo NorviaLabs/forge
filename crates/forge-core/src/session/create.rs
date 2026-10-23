@@ -458,6 +458,16 @@ impl AgentSession {
         self.egress.is_some()
     }
 
+    /// Take the egress connection events recorded so far this session.
+    /// Events from before an `apply_egress_policy` replacement are discarded
+    /// with the runtime that recorded them.
+    pub fn drain_egress_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
+        self.egress
+            .as_ref()
+            .map(|runtime| runtime.drain_events())
+            .unwrap_or_default()
+    }
+
     /// The hosts this session may reach, for display.
     pub fn egress_grant(&self) -> Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>> {
         self.egress.as_ref().map(|runtime| runtime.grant())

@@ -144,6 +144,7 @@ impl PendingToolExecution {
             mut budget,
             prepared,
         } = self;
+        let tool_ctx = tool_ctx.with_tool_call_id(call.id.as_str());
         let tool_name = call.name.clone();
         let unconfined = tool_ctx.unconfined_shell;
         let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
