@@ -1318,6 +1318,107 @@ async fn a_denied_host_prompts_for_a_grant_and_retries_confined() {
     assert_eq!(result.content, "retried confined after host grant");
 }
 
+/// The real `git` tool: a push to a host outside the session allowlist raises
+/// the host-grant prompt (not an unconfined escalation), and the approved retry
+/// re-runs git itself against the updated policy.
+#[tokio::test]
+async fn a_git_push_to_a_denied_host_prompts_and_the_grant_reruns_git() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let marker = root.join("ssh-was-run");
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "forge@test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&[
+        "remote",
+        "add",
+        "origin",
+        "ssh://git@git.denied.example/o/r.git",
+    ]);
+    // Records that git reached its transport, then fails: no real network.
+    git(&[
+        "config",
+        "core.sshCommand",
+        &format!("touch '{}'; false", marker.display()),
+    ]);
+
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(forge_tools::GitTool));
+    let mut session = AgentSession::create(no_gov_cfg(root), model, tools)
+        .await
+        .unwrap();
+    session
+        .apply_egress_policy(forge_tools::egress::EgressPolicy::new())
+        .await;
+    if session.tool_ctx.egress.is_none() {
+        eprintln!("egress proxy unavailable here; skipping");
+        return;
+    }
+    session.append_user_message("push it").await.unwrap();
+
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-git".into(),
+                name: "git".into(),
+                arguments: json!({"subcommand": "push", "args": ["origin", "HEAD:main"]}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("git should begin execution");
+    };
+    let completed = pending.execute().await;
+    let application = session.finish_tool_application(completed).await.unwrap();
+    assert!(
+        matches!(
+            application,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "{:?}",
+        session.messages.last()
+    );
+    let payload = session.pending_hitl().expect("host denial should prompt");
+    assert_eq!(payload.tool, "git");
+    assert_eq!(payload.denied_host.as_deref(), Some("git.denied.example"));
+    assert!(!payload.sandbox_escalation);
+    assert!(!marker.exists(), "git must not run before the grant");
+
+    session.grant_egress_host("**.denied.example");
+    let pending = session
+        .prepare_approved_hitl("test")
+        .await
+        .unwrap()
+        .expect("approval should retry the git call");
+    let completed = pending.execute().await;
+    session.finish_hitl_execution(completed).await.unwrap();
+
+    assert!(marker.exists(), "the granted retry must re-run git");
+    assert!(session
+        .messages
+        .iter()
+        .any(|message| message.tool_call_id.as_deref() == Some("call-git")));
+}
+
+
 /// `web_fetch` obeys the same host allowlist as a confined shell command: an
 /// unlisted host raises the host-grant prompt, and the approved retry runs
 /// `web_fetch` again (not only shell). `localhost` keeps this offline: once
