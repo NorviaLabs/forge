@@ -249,3 +249,74 @@ async fn a_stale_socket_file_does_not_block_binding() {
         .await
         .expect("a stale path must be replaced, not fatal");
 }
+
+// ---------------------------------------------------------------------------
+// The gateway: address checks, pinning, idle timeout, attribution.
+// ---------------------------------------------------------------------------
+
+use forge_tools::egress::PRIVATE_ADDRESS_DENIED_REASON;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
+/// An upstream that greets, then echoes the byte count it read before EOF
+/// by simply reading to the end and closing. Counts accepted connections.
+async fn counting_upstream() -> Option<(u16, Arc<AtomicUsize>, tokio::task::JoinHandle<()>)> {
+    let listener = match TcpListener::bind(("127.0.0.1", 0)).await {
+        Ok(listener) => listener,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
+        Err(e) => panic!("bind upstream listener: {e}"),
+    };
+    let port = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&accepted);
+    let task = tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            seen.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let _ = sock.write_all(b"UPSTREAM-OK").await;
+                let mut sink = Vec::new();
+                let _ = sock.read_to_end(&mut sink).await;
+            });
+        }
+    });
+    Some((port, accepted, task))
+}
+
+/// A broad grant must not reach loopback: `host(*)` is about public names,
+/// and a name that resolves to 127.0.0.1 would otherwise be a way onto the
+/// host's own services. No upstream socket may be opened.
+#[tokio::test]
+async fn a_wildcard_grant_does_not_reach_a_private_address() {
+    let Some((port, accepted, _up)) = counting_upstream().await else {
+        return;
+    };
+    let mut policy = EgressPolicy::new();
+    policy.allow("*");
+    let Some(proxy) = started_proxy(policy).await else {
+        return;
+    };
+    for target in [
+        format!("127.0.0.1:{port}"),
+        format!("localhost:{port}"),
+        format!("[::1]:{port}"),
+        "169.254.169.254:80".to_string(),
+        "10.0.0.1:443".to_string(),
+    ] {
+        let status = connect_through(&proxy, &target).await;
+        assert_eq!(
+            status,
+            format!("HTTP/1.1 403 {PRIVATE_ADDRESS_DENIED_REASON}\r\n"),
+            "{target} must be refused for its address"
+        );
+    }
+    assert_eq!(
+        accepted.load(Ordering::SeqCst),
+        0,
+        "no upstream dial may happen"
+    );
+    assert_eq!(
+        proxy.shared().take_denied_host(),
+        None,
+        "an address refusal is not a host a grant could fix"
+    );
+}

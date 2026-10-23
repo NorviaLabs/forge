@@ -32,7 +32,7 @@
 //! `EgressProxy::addr`.
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -59,6 +59,22 @@ pub struct EgressPolicy {
 }
 
 pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
+
+/// Reason phrase when a permitted name resolves to a non-public address.
+///
+/// Distinct from [`SANDBOX_DENIED_REASON`] (which it extends, so output-based
+/// detection still classifies it as a sandbox refusal) because a host grant
+/// cannot fix it: the name was allowed, the address it resolved to was not.
+pub const PRIVATE_ADDRESS_DENIED_REASON: &str = "Forge Sandbox Denied: private address";
+
+/// Gateway behaviour that is not part of the host policy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EgressOptions {
+    /// Permit loopback/private/link-local destinations even when the allow
+    /// pattern does not name the host exactly. Off in production; exists for
+    /// hermetic tests whose upstream is a loopback listener behind a name.
+    pub allow_private_destinations: bool,
+}
 
 /// Explanation attached when the proxy refused a host, even if the client
 /// printed something else (HTTP 403, "token invalid", "Forbidden", …).
@@ -252,13 +268,15 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
 pub struct EgressShared {
     policy: Arc<RwLock<EgressPolicy>>,
     denied: Arc<Mutex<Vec<String>>>,
+    options: EgressOptions,
 }
 
 impl EgressShared {
-    fn new(policy: EgressPolicy) -> Self {
+    fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),
+            options,
         }
     }
 
@@ -269,7 +287,28 @@ impl EgressShared {
         Self {
             policy: Arc::clone(&self.policy),
             denied: Arc::new(Mutex::new(Vec::new())),
+            options: self.options,
         }
+    }
+
+    /// Whether a non-public destination is acceptable for `host`.
+    ///
+    /// Only when an allow pattern names the host exactly (an IP literal,
+    /// `localhost`, or a hand-written exact name). A wildcard or `*` grant is
+    /// about a family of public names; letting it reach loopback would turn
+    /// any name that resolves to 127.0.0.1 or a metadata address into a way
+    /// onto the host's own services.
+    fn private_destination_permitted(&self, host: &str) -> bool {
+        if self.options.allow_private_destinations {
+            return true;
+        }
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow_patterns()
+            .iter()
+            .any(|pattern| pattern == &host)
     }
 
     /// Permit `pattern` for the rest of this proxy's life.
@@ -343,7 +382,15 @@ impl Drop for EgressProxy {
 impl EgressProxy {
     /// Bind to an ephemeral port on loopback and start serving.
     pub async fn start(policy: EgressPolicy) -> io::Result<Self> {
-        Self::start_with_shared(EgressShared::new(policy)).await
+        Self::start_with_options(policy, EgressOptions::default()).await
+    }
+
+    /// As [`Self::start`], with non-default timeouts or address rules.
+    pub async fn start_with_options(
+        policy: EgressPolicy,
+        options: EgressOptions,
+    ) -> io::Result<Self> {
+        Self::start_with_shared(EgressShared::new(policy, options)).await
     }
 
     async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
@@ -507,7 +554,7 @@ where
     reader.read_line(&mut request).await?;
 
     let Some(target) = parse_connect(&request) else {
-        return respond(&mut write_half, 400, "Bad Request", None).await;
+        return respond(&mut write_half, 400, "Bad Request", "").await;
     };
 
     // Drain the remaining request headers before replying.
@@ -526,17 +573,42 @@ where
     // earlier version approved `[crates.io]:443` as `crates.io` and then dialled
     // the bracketed form.
     let Some((host, port)) = split_host_port(&target) else {
-        return respond(&mut write_half, 400, "Bad Request", None).await;
+        return respond(&mut write_half, 400, "Bad Request", "").await;
     };
 
     if !shared.permits(&host) {
         shared.record_denied(host.clone());
-        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, Some(&host)).await;
+        let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
+        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, &body).await;
     }
 
-    let upstream = match TcpStream::connect((host.as_str(), port)).await {
-        Ok(stream) => stream,
-        Err(_) => return respond(&mut write_half, 502, "Bad Gateway", None).await,
+    // Resolve here, check every address, and dial only what was checked. A
+    // second resolution by the dialler is a rebinding window: the name could
+    // answer with a public address for the check and loopback for the dial.
+    let Ok(addrs) = resolve(&host, port).await else {
+        return respond(&mut write_half, 502, "Bad Gateway", "").await;
+    };
+
+    if addrs.iter().any(|addr| !is_public_address(addr.ip()))
+        && !shared.private_destination_permitted(&host)
+    {
+        // Not queued as a denied host: a host grant cannot fix this, so it
+        // must not turn into a grant prompt.
+        let body = format!(
+            "{PRIVATE_ADDRESS_DENIED_REASON}: host {host} resolves to a non-public address\n"
+        );
+        return respond(&mut write_half, 403, PRIVATE_ADDRESS_DENIED_REASON, &body).await;
+    }
+
+    let mut dialled = None;
+    for addr in &addrs {
+        if let Ok(stream) = TcpStream::connect(addr).await {
+            dialled = Some(stream);
+            break;
+        }
+    }
+    let Some(upstream) = dialled else {
+        return respond(&mut write_half, 502, "Bad Gateway", "").await;
     };
 
     write_half
@@ -551,6 +623,60 @@ where
         tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut write_half).await });
     let _ = tokio::join!(client_to_upstream, upstream_to_client);
     Ok(())
+}
+
+/// Every address `host` names, resolved once. An IP literal is its own
+/// answer and never touches the resolver.
+async fn resolve(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "name resolved to no addresses",
+        ));
+    }
+    Ok(addrs)
+}
+
+/// Whether `ip` is a globally routable unicast address.
+///
+/// Refused: unspecified, loopback, RFC 1918 private, CGNAT shared space,
+/// link-local (which includes cloud metadata at 169.254.169.254), multicast,
+/// broadcast and reserved IPv4; and for IPv6 the unspecified/loopback/
+/// IPv4-compatible block, unique-local, link-local, site-local and multicast,
+/// with IPv4-mapped addresses judged as the IPv4 address they carry.
+fn is_public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_v4(v4);
+            }
+            let segments = v6.segments();
+            let first = segments[0];
+            let compat_block = segments[..6].iter().all(|segment| *segment == 0);
+            !(compat_block
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfec0)
+        }
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    !(a == 0
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || (a == 100 && (b & 0xc0) == 64)
+        || a >= 240)
 }
 
 async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> {
@@ -680,19 +806,10 @@ fn parse_connect(line: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_string())
 }
 
-async fn respond<W>(
-    client: &mut W,
-    code: u16,
-    reason: &str,
-    denied_host: Option<&str>,
-) -> io::Result<()>
+async fn respond<W>(client: &mut W, code: u16, reason: &str, body: &str) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let body = match denied_host {
-        Some(host) => format!("{reason}: host {host} is not allowed\n"),
-        None => String::new(),
-    };
     let header = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -738,6 +855,45 @@ mod tests {
                 None
             }
             Err(e) => panic!("egress proxy failed to start: {e}"),
+        }
+    }
+
+    #[test]
+    fn only_globally_routable_addresses_are_public() {
+        for public in ["1.1.1.1", "8.8.8.8", "151.101.1.1", "2606:4700::1111"] {
+            assert!(
+                is_public_address(public.parse().unwrap()),
+                "{public} is public"
+            );
+        }
+        for private in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "127.255.0.9",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "240.0.0.1",
+            "::",
+            "::1",
+            "::127.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+        ] {
+            assert!(
+                !is_public_address(private.parse().unwrap()),
+                "{private} must not be public"
+            );
         }
     }
 
