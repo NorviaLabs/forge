@@ -31,14 +31,16 @@
 //! per-platform routing and is deliberately not decided here — see
 //! `EgressProxy::addr`.
 
+use std::collections::VecDeque;
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 
 /// Hosts a confined process may reach.
@@ -59,6 +61,92 @@ pub struct EgressPolicy {
 }
 
 pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
+
+/// Reason phrase when a permitted name resolves to a non-public address.
+///
+/// Distinct from [`SANDBOX_DENIED_REASON`] (which it extends, so output-based
+/// detection still classifies it as a sandbox refusal) because a host grant
+/// cannot fix it: the name was allowed, the address it resolved to was not.
+pub const PRIVATE_ADDRESS_DENIED_REASON: &str = "Forge Sandbox Denied: private address";
+
+/// How long the gateway waits for name resolution plus the upstream dial.
+pub const EGRESS_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A tunnel that carries no bytes in either direction for this long is closed
+/// on both sides, so an abandoned connection cannot pin a socket forever.
+pub const EGRESS_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// Connection records kept in memory before the oldest are dropped.
+pub const EGRESS_EVENT_CAPACITY: usize = 1024;
+
+/// Gateway behaviour that is not part of the host policy.
+#[derive(Debug, Clone, Copy)]
+pub struct EgressOptions {
+    pub connect_timeout: Duration,
+    pub idle_timeout: Duration,
+    /// Permit loopback/private/link-local destinations even when the allow
+    /// pattern does not name the host exactly. Off in production; exists for
+    /// hermetic tests whose upstream is a loopback listener behind a name.
+    pub allow_private_destinations: bool,
+}
+
+impl Default for EgressOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout: EGRESS_CONNECT_TIMEOUT,
+            idle_timeout: EGRESS_IDLE_TIMEOUT,
+            allow_private_destinations: false,
+        }
+    }
+}
+
+/// What the gateway did with one CONNECT.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressOutcome {
+    /// Tunnel established; the event closes when the tunnel does.
+    Allowed,
+    /// Refused before any upstream socket was opened.
+    Denied(EgressDenial),
+    /// Permitted, but resolution or the dial failed or timed out.
+    UpstreamFailed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EgressDenial {
+    /// The host policy does not permit the name.
+    Policy,
+    /// The name is permitted but resolved to a non-public address.
+    PrivateAddress,
+}
+
+/// One CONNECT decision and, when tunnelled, its traffic totals.
+#[derive(Debug, Clone)]
+pub struct EgressEvent {
+    /// Attribution supplied by the invocation (the tool call id), if any.
+    pub label: Option<String>,
+    pub host: String,
+    pub port: u16,
+    pub outcome: EgressOutcome,
+    /// The address actually dialled — the one that passed the address check.
+    pub upstream: Option<SocketAddr>,
+    /// Client to upstream.
+    pub bytes_up: u64,
+    /// Upstream to client.
+    pub bytes_down: u64,
+    pub duration: Duration,
+}
+
+impl EgressEvent {
+    pub fn allowed(&self) -> bool {
+        self.outcome == EgressOutcome::Allowed
+    }
+}
+
+#[derive(Debug, Default)]
+struct EgressEventLog {
+    events: VecDeque<EgressEvent>,
+    dropped: u64,
+}
 
 /// Explanation attached when the proxy refused a host, even if the client
 /// printed something else (HTTP 403, "token invalid", "Forbidden", …).
@@ -252,24 +340,111 @@ fn matches_pattern(pattern: &str, host: &str) -> bool {
 pub struct EgressShared {
     policy: Arc<RwLock<EgressPolicy>>,
     denied: Arc<Mutex<Vec<String>>>,
+    /// Session-wide connection log, shared by every invocation.
+    events: Arc<Mutex<EgressEventLog>>,
+    options: EgressOptions,
+    label: Option<Arc<str>>,
 }
 
 impl EgressShared {
-    fn new(policy: EgressPolicy) -> Self {
+    fn new(policy: EgressPolicy, options: EgressOptions) -> Self {
         Self {
             policy: Arc::new(RwLock::new(policy)),
             denied: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::new(Mutex::new(EgressEventLog::default())),
+            options,
+            label: None,
         }
     }
 
     /// Share live policy updates while keeping refusal attribution local to
     /// one command. Session-global refusal storage lets a swallowed denial
-    /// poison whichever unrelated command happens to fail next.
-    fn for_invocation(&self) -> Self {
+    /// poison whichever unrelated command happens to fail next. The event log
+    /// stays shared: it is attributed by label, not by queue.
+    fn for_invocation(&self, label: Option<&str>) -> Self {
         Self {
             policy: Arc::clone(&self.policy),
             denied: Arc::new(Mutex::new(Vec::new())),
+            events: Arc::clone(&self.events),
+            options: self.options,
+            label: label.map(Arc::from),
         }
+    }
+
+    /// The attribution label connections through this endpoint carry.
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Take every recorded connection event, oldest first.
+    pub fn drain_events(&self) -> Vec<EgressEvent> {
+        let mut log = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        log.events.drain(..).collect()
+    }
+
+    /// Events discarded because the log was full, over this log's life.
+    pub fn dropped_events(&self) -> u64 {
+        self.events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .dropped
+    }
+
+    fn record_event(&self, event: EgressEvent) {
+        match &event.outcome {
+            EgressOutcome::Allowed => tracing::info!(
+                target: "forge::egress",
+                label = event.label.as_deref().unwrap_or(""),
+                host = %event.host,
+                port = event.port,
+                upstream = ?event.upstream,
+                bytes_up = event.bytes_up,
+                bytes_down = event.bytes_down,
+                duration_ms = event.duration.as_millis() as u64,
+                "egress tunnel closed"
+            ),
+            outcome => tracing::info!(
+                target: "forge::egress",
+                label = event.label.as_deref().unwrap_or(""),
+                host = %event.host,
+                port = event.port,
+                outcome = ?outcome,
+                duration_ms = event.duration.as_millis() as u64,
+                "egress connect refused"
+            ),
+        }
+        let mut log = self
+            .events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if log.events.len() >= EGRESS_EVENT_CAPACITY {
+            log.events.pop_front();
+            log.dropped += 1;
+        }
+        log.events.push_back(event);
+    }
+
+    /// Whether a non-public destination is acceptable for `host`.
+    ///
+    /// Only when an allow pattern names the host exactly (an IP literal,
+    /// `localhost`, or a hand-written exact name). A wildcard or `*` grant is
+    /// about a family of public names; letting it reach loopback would turn
+    /// any name that resolves to 127.0.0.1 or a metadata address into a way
+    /// onto the host's own services.
+    fn private_destination_permitted(&self, host: &str) -> bool {
+        if self.options.allow_private_destinations {
+            return true;
+        }
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow_patterns()
+            .iter()
+            .any(|pattern| pattern == &host)
     }
 
     /// Permit `pattern` for the rest of this proxy's life.
@@ -343,7 +518,15 @@ impl Drop for EgressProxy {
 impl EgressProxy {
     /// Bind to an ephemeral port on loopback and start serving.
     pub async fn start(policy: EgressPolicy) -> io::Result<Self> {
-        Self::start_with_shared(EgressShared::new(policy)).await
+        Self::start_with_options(policy, EgressOptions::default()).await
+    }
+
+    /// As [`Self::start`], with non-default timeouts or address rules.
+    pub async fn start_with_options(
+        policy: EgressPolicy,
+        options: EgressOptions,
+    ) -> io::Result<Self> {
+        Self::start_with_shared(EgressShared::new(policy, options)).await
     }
 
     async fn start_with_shared(shared: EgressShared) -> io::Result<Self> {
@@ -426,6 +609,15 @@ impl EgressProxy {
         self.socket_path.as_deref()
     }
 
+    /// The loopback TCP listener (`127.0.0.1`, ephemeral port).
+    ///
+    /// Same listener as [`Self::addr`], named for in-process and host-side
+    /// callers that route through the gateway rather than the sandbox's
+    /// proxy port.
+    pub fn tcp_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
     /// Where the proxy is listening.
     ///
     /// Pointing a process at this address is *not* enforcement on its own — a
@@ -463,10 +655,19 @@ impl EgressInvocation {
     /// without live proxy control are test doubles and retain their original
     /// endpoint.
     pub async fn start(template: Option<&crate::sandbox::EgressGrant>) -> io::Result<Option<Self>> {
+        Self::start_labeled(template, None).await
+    }
+
+    /// As [`Self::start`], attributing every connection to `label` (the tool
+    /// call id) in the session's event log.
+    pub async fn start_labeled(
+        template: Option<&crate::sandbox::EgressGrant>,
+        label: Option<&str>,
+    ) -> io::Result<Option<Self>> {
         let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
             return Ok(None);
         };
-        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation()).await?;
+        let mut proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket_path =
             std::path::Path::new("/tmp").join(format!("f{}-{sequence}.sock", std::process::id()));
@@ -489,6 +690,10 @@ impl EgressInvocation {
     pub fn take_denied_host(&self) -> Option<String> {
         self.grant.take_denied_host()
     }
+
+    pub fn label(&self) -> Option<&str> {
+        self._proxy.shared().label()
+    }
 }
 
 /// Handle one client, whatever transport it arrived on.
@@ -500,6 +705,7 @@ async fn serve<S>(client: S, shared: EgressShared) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
 {
+    let started = Instant::now();
     let (read_half, mut write_half) = tokio::io::split(client);
     let mut reader = BufReader::new(read_half);
 
@@ -507,7 +713,7 @@ where
     reader.read_line(&mut request).await?;
 
     let Some(target) = parse_connect(&request) else {
-        return respond(&mut write_half, 400, "Bad Request", None).await;
+        return respond(&mut write_half, 400, "Bad Request", "").await;
     };
 
     // Drain the remaining request headers before replying.
@@ -526,31 +732,254 @@ where
     // earlier version approved `[crates.io]:443` as `crates.io` and then dialled
     // the bracketed form.
     let Some((host, port)) = split_host_port(&target) else {
-        return respond(&mut write_half, 400, "Bad Request", None).await;
+        return respond(&mut write_half, 400, "Bad Request", "").await;
     };
+
+    let event =
+        |outcome: EgressOutcome, upstream: Option<SocketAddr>, up: u64, down: u64| EgressEvent {
+            label: shared.label().map(str::to_string),
+            host: host.clone(),
+            port,
+            outcome,
+            upstream,
+            bytes_up: up,
+            bytes_down: down,
+            duration: started.elapsed(),
+        };
 
     if !shared.permits(&host) {
         shared.record_denied(host.clone());
-        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, Some(&host)).await;
+        shared.record_event(event(
+            EgressOutcome::Denied(EgressDenial::Policy),
+            None,
+            0,
+            0,
+        ));
+        let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
+        return respond(&mut write_half, 403, SANDBOX_DENIED_REASON, &body).await;
     }
 
-    let upstream = match TcpStream::connect((host.as_str(), port)).await {
-        Ok(stream) => stream,
-        Err(_) => return respond(&mut write_half, 502, "Bad Gateway", None).await,
+    // Resolve here, check every address, and dial only what was checked. A
+    // second resolution by the dialler is a rebinding window: the name could
+    // answer with a public address for the check and loopback for the dial.
+    let deadline = tokio::time::Instant::now() + shared.options.connect_timeout;
+    let addrs = match tokio::time::timeout_at(deadline, resolve(&host, port)).await {
+        Ok(Ok(addrs)) => addrs,
+        Ok(Err(error)) => {
+            shared.record_event(event(
+                EgressOutcome::UpstreamFailed(format!("resolve: {error}")),
+                None,
+                0,
+                0,
+            ));
+            return respond(&mut write_half, 502, "Bad Gateway", "").await;
+        }
+        Err(_) => {
+            shared.record_event(event(
+                EgressOutcome::UpstreamFailed("resolve timed out".into()),
+                None,
+                0,
+                0,
+            ));
+            return respond(&mut write_half, 504, "Gateway Timeout", "").await;
+        }
     };
 
-    write_half
+    if addrs.iter().any(|addr| !is_public_address(addr.ip()))
+        && !shared.private_destination_permitted(&host)
+    {
+        // Not queued as a denied host: a host grant cannot fix this, so it
+        // must not turn into a grant prompt.
+        shared.record_event(event(
+            EgressOutcome::Denied(EgressDenial::PrivateAddress),
+            None,
+            0,
+            0,
+        ));
+        let body = format!(
+            "{PRIVATE_ADDRESS_DENIED_REASON}: host {host} resolves to a non-public address\n"
+        );
+        return respond(&mut write_half, 403, PRIVATE_ADDRESS_DENIED_REASON, &body).await;
+    }
+
+    let mut dialled = None;
+    let mut failure = String::from("no address");
+    for addr in &addrs {
+        match tokio::time::timeout_at(deadline, TcpStream::connect(addr)).await {
+            Ok(Ok(stream)) => {
+                dialled = Some((stream, *addr));
+                break;
+            }
+            Ok(Err(error)) => failure = format!("connect {addr}: {error}"),
+            Err(_) => {
+                failure = format!("connect {addr}: timed out");
+                break;
+            }
+        }
+    }
+    let Some((upstream, upstream_addr)) = dialled else {
+        shared.record_event(event(EgressOutcome::UpstreamFailed(failure), None, 0, 0));
+        return respond(&mut write_half, 502, "Bad Gateway", "").await;
+    };
+
+    if let Err(error) = write_half
         .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await?;
+        .await
+    {
+        shared.record_event(event(EgressOutcome::Allowed, Some(upstream_addr), 0, 0));
+        return Err(error);
+    }
 
     // From here the proxy copies bytes and never sees the plaintext.
-    let (mut upstream_read, mut upstream_write) = tokio::io::split(upstream);
-    let client_to_upstream =
-        tokio::spawn(async move { tokio::io::copy(&mut reader, &mut upstream_write).await });
-    let upstream_to_client =
-        tokio::spawn(async move { tokio::io::copy(&mut upstream_read, &mut write_half).await });
-    let _ = tokio::join!(client_to_upstream, upstream_to_client);
+    let (upstream_read, upstream_write) = tokio::io::split(upstream);
+    let (up, down) = relay(
+        reader,
+        write_half,
+        upstream_read,
+        upstream_write,
+        shared.options.idle_timeout,
+    )
+    .await;
+    shared.record_event(event(EgressOutcome::Allowed, Some(upstream_addr), up, down));
     Ok(())
+}
+
+/// Every address `host` names, resolved once. An IP literal is its own
+/// answer and never touches the resolver.
+async fn resolve(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok(vec![SocketAddr::new(ip, port)]);
+    }
+    let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "name resolved to no addresses",
+        ));
+    }
+    Ok(addrs)
+}
+
+/// Whether `ip` is a globally routable unicast address.
+///
+/// Refused: unspecified, loopback, RFC 1918 private, CGNAT shared space,
+/// link-local (which includes cloud metadata at 169.254.169.254), multicast,
+/// broadcast and reserved IPv4; and for IPv6 the unspecified/loopback/
+/// IPv4-compatible block, unique-local, link-local, site-local and multicast,
+/// with IPv4-mapped addresses judged as the IPv4 address they carry.
+fn is_public_address(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_public_v4(v4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_v4(v4);
+            }
+            let segments = v6.segments();
+            let first = segments[0];
+            let compat_block = segments[..6].iter().all(|segment| *segment == 0);
+            !(compat_block
+                || v6.is_multicast()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || (first & 0xffc0) == 0xfec0)
+        }
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    !(a == 0
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || (a == 100 && (b & 0xc0) == 64)
+        || a >= 240)
+}
+
+/// Last time either direction of a tunnel moved a byte, as nanoseconds since
+/// the tunnel opened.
+struct Activity {
+    opened: Instant,
+    last: AtomicU64,
+}
+
+impl Activity {
+    fn touch(&self) {
+        let now = self.opened.elapsed().as_nanos() as u64;
+        self.last.fetch_max(now, Ordering::Relaxed);
+    }
+
+    fn idle_for(&self) -> Duration {
+        let last = Duration::from_nanos(self.last.load(Ordering::Relaxed));
+        self.opened.elapsed().saturating_sub(last)
+    }
+}
+
+/// Copy both directions until both finish or the tunnel goes idle, returning
+/// `(bytes_up, bytes_down)`. Returning drops every half, which closes both
+/// sockets — that is what makes the idle timeout close the tunnel.
+async fn relay<CR, CW, UR, UW>(
+    client_read: CR,
+    client_write: CW,
+    upstream_read: UR,
+    upstream_write: UW,
+    idle_timeout: Duration,
+) -> (u64, u64)
+where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    UR: AsyncRead + Unpin,
+    UW: AsyncWrite + Unpin,
+{
+    let activity = Activity {
+        opened: Instant::now(),
+        last: AtomicU64::new(0),
+    };
+    let up = AtomicU64::new(0);
+    let down = AtomicU64::new(0);
+    let watchdog = async {
+        loop {
+            let idle = activity.idle_for();
+            if idle >= idle_timeout {
+                return;
+            }
+            tokio::time::sleep(idle_timeout - idle).await;
+        }
+    };
+    tokio::select! {
+        _ = async {
+            tokio::join!(
+                pump(client_read, upstream_write, &up, &activity),
+                pump(upstream_read, client_write, &down, &activity),
+            )
+        } => {}
+        () = watchdog => {}
+    }
+    (up.load(Ordering::Relaxed), down.load(Ordering::Relaxed))
+}
+
+async fn pump<R, W>(mut from: R, mut to: W, counter: &AtomicU64, activity: &Activity)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let read = match from.read(&mut buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(read) => read,
+        };
+        activity.touch();
+        if to.write_all(&buf[..read]).await.is_err() {
+            break;
+        }
+        counter.fetch_add(read as u64, Ordering::Relaxed);
+        activity.touch();
+    }
+    // Propagate the half-close so the far side sees end of stream.
+    let _ = to.shutdown().await;
 }
 
 async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> {
@@ -680,19 +1109,10 @@ fn parse_connect(line: &str) -> Option<String> {
     (!target.is_empty()).then(|| target.to_string())
 }
 
-async fn respond<W>(
-    client: &mut W,
-    code: u16,
-    reason: &str,
-    denied_host: Option<&str>,
-) -> io::Result<()>
+async fn respond<W>(client: &mut W, code: u16, reason: &str, body: &str) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let body = match denied_host {
-        Some(host) => format!("{reason}: host {host} is not allowed\n"),
-        None => String::new(),
-    };
     let header = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
@@ -738,6 +1158,45 @@ mod tests {
                 None
             }
             Err(e) => panic!("egress proxy failed to start: {e}"),
+        }
+    }
+
+    #[test]
+    fn only_globally_routable_addresses_are_public() {
+        for public in ["1.1.1.1", "8.8.8.8", "151.101.1.1", "2606:4700::1111"] {
+            assert!(
+                is_public_address(public.parse().unwrap()),
+                "{public} is public"
+            );
+        }
+        for private in [
+            "0.0.0.0",
+            "127.0.0.1",
+            "127.255.0.9",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "240.0.0.1",
+            "::",
+            "::1",
+            "::127.0.0.1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "fc00::1",
+            "fd12:3456::1",
+            "fe80::1",
+            "fec0::1",
+            "ff02::1",
+        ] {
+            assert!(
+                !is_public_address(private.parse().unwrap()),
+                "{private} must not be public"
+            );
         }
     }
 

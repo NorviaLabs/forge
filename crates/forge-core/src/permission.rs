@@ -32,6 +32,18 @@ impl EgressRuntime {
     pub fn grant_host(&self, pattern: &str) {
         self.shared.grant_host(pattern);
     }
+
+    /// The gateway's loopback TCP listener (`127.0.0.1`, ephemeral port), for
+    /// in-process and host-side callers that route through the gateway.
+    pub fn tcp_addr(&self) -> std::net::SocketAddr {
+        self._proxy.tcp_addr()
+    }
+
+    /// Take every connection event recorded for this session, oldest first,
+    /// including those made through per-invocation endpoints.
+    pub fn drain_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
+        self.shared.drain_events()
+    }
 }
 
 /// Hosts this workspace may reach, taken from the merged permission files.
@@ -115,6 +127,40 @@ mod egress_runtime_tests {
                 .await
                 .is_ok(),
             "the proxy must accept connections"
+        );
+    }
+
+    /// The gateway's loopback TCP listener is exposed on the runtime and its
+    /// decisions land in the session event log.
+    #[tokio::test]
+    async fn the_runtime_exposes_the_tcp_listener_and_its_events() {
+        let Some(runtime) = start_egress(
+            uuid::Uuid::new_v4(),
+            forge_tools::egress::EgressPolicy::new(),
+        )
+        .await
+        else {
+            return;
+        };
+        let addr = runtime.tcp_addr();
+        assert!(addr.ip().is_loopback(), "{addr}");
+        assert_eq!(addr.port(), runtime.grant().proxy_port);
+        let status = connect_status(addr.port(), "crates.io:443").await;
+        assert!(status.contains("403"), "{status}");
+        let mut events = Vec::new();
+        for _ in 0..50 {
+            events.extend(runtime.drain_events());
+            if !events.is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].host, "crates.io");
+        assert!(!events[0].allowed());
+        assert!(
+            runtime.drain_events().is_empty(),
+            "draining empties the log"
         );
     }
 

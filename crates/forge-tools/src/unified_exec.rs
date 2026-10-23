@@ -528,11 +528,14 @@ async fn start(
         }
     }
     let egress_invocation = if requested_confined {
-        crate::egress::EgressInvocation::start(ctx.egress.as_deref())
-            .await
-            .map_err(|error| {
-                ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
-            })?
+        crate::egress::EgressInvocation::start_labeled(
+            ctx.egress.as_deref(),
+            ctx.tool_call_id.as_deref(),
+        )
+        .await
+        .map_err(|error| {
+            ToolError::Execution(format!("failed to start invocation egress proxy: {error}"))
+        })?
     } else {
         None
     };
