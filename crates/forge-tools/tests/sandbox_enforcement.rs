@@ -188,6 +188,109 @@ fn a_publish_policy_still_cannot_write_git_hooks() {
     assert!(!ws.path().join(".git/hooks/post-checkout").exists());
 }
 
+/// Run `command` confined with git writes allowed, the way the tool layer runs
+/// a git command: against a spawn-local global config inside the sandbox.
+fn run_git_writable(root: &Path, command: &str) -> (bool, String) {
+    let policy = SandboxPolicy::for_workspace(root).with_git_writable();
+    let (program, args) = wrap_shell_command("sh", command, &policy).unwrap();
+    let config = root.join(".forge-host-identity").join("gitconfig");
+    std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+    std::fs::write(&config, "").unwrap();
+    let out = Command::new(program)
+        .args(args)
+        .current_dir(root)
+        .env("GIT_CONFIG_GLOBAL", &config)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.success(), text)
+}
+
+/// A repository with one commit, made on the host.
+fn committed_repo() -> tempfile::TempDir {
+    let repo = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(repo.path())
+            .output()
+            .expect("run git");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "forge@test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    std::fs::write(repo.path().join("file.txt"), "hi").unwrap();
+    git(&["add", "file.txt"]);
+    git(&["commit", "-q", "-m", "init", "--no-verify"]);
+    repo
+}
+
+/// Git config is code as much as a hook is: `core.hooksPath`,
+/// `core.fsmonitor`, filter and merge drivers all name programs that git runs.
+/// A git spawn that could rewrite it could point the next host-side git (the
+/// git tool, or the user's own) at a script in the workspace, and that script
+/// would run unconfined. So a git-writable spawn may move refs and objects,
+/// but not the config.
+#[test]
+fn a_git_spawn_cannot_rewrite_the_repository_config() {
+    require_sandbox!();
+    let repo = committed_repo();
+    let before = std::fs::read_to_string(repo.path().join(".git/config")).unwrap();
+
+    let (ok, text) = run_git_writable(repo.path(), "git config core.hooksPath h");
+    assert!(!ok, "a confined git spawn rewrote .git/config: {text}");
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".git/config")).unwrap(),
+        before
+    );
+
+    // Everything a commit needs still works.
+    std::fs::write(repo.path().join("file.txt"), "changed").unwrap();
+    let (ok, text) = run_git_writable(repo.path(), "git commit -qam change");
+    assert!(ok, "a confined commit failed: {text}");
+}
+
+/// The same for a managed session's linked worktree, whose config lives in
+/// the shared git dir outside the workspace.
+#[test]
+fn a_git_spawn_cannot_rewrite_a_linked_worktrees_config() {
+    require_sandbox!();
+    let repo = committed_repo();
+    let base = tempfile::tempdir().unwrap();
+    let worktree = base.path().join("session-1");
+    let added = Command::new("git")
+        .args([
+            "worktree",
+            "add",
+            "-q",
+            worktree.to_str().unwrap(),
+            "-b",
+            "s1",
+        ])
+        .current_dir(repo.path())
+        .output()
+        .unwrap();
+    assert!(added.status.success(), "{added:?}");
+    let before = std::fs::read_to_string(repo.path().join(".git/config")).unwrap();
+
+    let (ok, text) = run_git_writable(&worktree, "git config core.hooksPath h");
+    assert!(
+        !ok,
+        "a confined git spawn rewrote the shared config: {text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".git/config")).unwrap(),
+        before
+    );
+
+    std::fs::write(worktree.join("file.txt"), "changed").unwrap();
+    let (ok, text) = run_git_writable(&worktree, "git commit -qam change");
+    assert!(ok, "a confined commit in a linked worktree failed: {text}");
+}
+
 /// A managed session lives in a git *linked worktree*: its `.git` file points
 /// at a gitdir outside the sandbox root, where the object database and refs
 /// actually live. Before the linked metadata was reached by the policy, even

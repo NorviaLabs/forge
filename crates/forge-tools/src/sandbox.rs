@@ -714,21 +714,22 @@ impl SandboxPolicy {
     fn readonly_subpaths_of(root: &Path, git_writable: bool) -> Vec<PathBuf> {
         let mut paths = Vec::new();
         if git_writable {
-            // Refs, objects and config have to move for a push to happen.
-            // Hooks do not, and they are the one part of `.git` that is
-            // executed rather than read: a hook written here runs with the
-            // user's full privileges the next time they use git *outside*
-            // the sandbox. Publishing never needs to write one, so the
-            // carve-out stops short of them.
+            // Refs and objects have to move for a push to happen. Hooks and
+            // config do not, and they are the parts of `.git` that decide
+            // what git *executes*: a hook, or a config key naming a program
+            // (`core.hooksPath`, `core.fsmonitor`, filter and merge drivers),
+            // runs with the user's full privileges the next time git runs
+            // *outside* the sandbox. Publishing never needs to write either,
+            // so the carve-out stops short of them.
             //
             // A linked worktree's `.git` is a gitdir pointer *file*, not a
             // directory, so `.git/hooks` cannot exist there and must not be
-            // bound (bwrap would refuse the ENOTDIR). Its real hooks live in
-            // the common git dir, which the linked-gitdirs handling already
-            // carves back read-only.
+            // bound (bwrap would refuse the ENOTDIR). Its real hooks and
+            // config live in the common git dir, which the linked-gitdirs
+            // handling already carves back read-only.
             let git = root.join(".git");
             if git.is_dir() {
-                paths.push(git.join("hooks"));
+                paths.extend(GIT_EXECUTABLE_METADATA.iter().map(|name| git.join(name)));
             }
         } else {
             paths.push(root.join(".git"));
@@ -745,6 +746,11 @@ impl SandboxPolicy {
         Self::readonly_subpaths_of(&self.workspace_root, self.git_writable)
     }
 }
+
+/// The parts of a git dir that decide what git executes: hooks, and the config
+/// whose keys can name programs. A confined git spawn may write the rest of
+/// the git dir, but never these.
+const GIT_EXECUTABLE_METADATA: &[&str] = &["hooks", "config"];
 
 /// Resolve the git administrative directories of a workspace whose `.git` is a
 /// link file pointing elsewhere — a linked worktree, the shape a managed
@@ -1088,13 +1094,15 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         profile.push_str(&format!("(deny file-write* (subpath \"{literal}\"))\n"));
     }
 
-    // Hooks for linked-worktree metadata get the same deny as the in-workspace
-    // `.git/hooks` carve-out: git executes them, so a confined git spawn must
-    // never be able to install one, even though the rest of the gitdir is
-    // writable. Emitted after the writable allow, so the deny wins.
+    // Hooks and config for linked-worktree metadata get the same deny as the
+    // in-workspace carve-out: they decide what git executes, so a confined git
+    // spawn must never be able to write them, even though the rest of the
+    // gitdir is writable. Emitted after the writable allow, so the deny wins.
     for dir in &policy.linked_git_dirs {
-        let hooks = sbpl_literal(&dir.join("hooks"))?;
-        profile.push_str(&format!("(deny file-write* (subpath \"{hooks}\"))\n"));
+        for name in GIT_EXECUTABLE_METADATA {
+            let path = sbpl_literal(&dir.join(name))?;
+            profile.push_str(&format!("(deny file-write* (subpath \"{path}\"))\n"));
+        }
     }
 
     Some(profile)
@@ -1375,12 +1383,13 @@ fn bubblewrap_invocation_for(
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
     }
 
-    // The same last-match-wins rule for the linked metadata's hooks: emitted
-    // after the writable bind, or the hooks bind would be overridden.
+    // The same last-match-wins rule for the linked metadata's hooks and config:
+    // emitted after the writable bind, or these binds would be overridden.
     for dir in &policy.linked_git_dirs {
-        let hooks = dir.join("hooks");
-        let hooks = hooks.to_str()?.to_string();
-        args.extend(["--ro-bind-try".into(), hooks.clone(), hooks]);
+        for name in GIT_EXECUTABLE_METADATA {
+            let path = dir.join(name).to_str()?.to_string();
+            args.extend(["--ro-bind-try".into(), path.clone(), path]);
+        }
     }
 
     // A long-lived argv payload (an MCP server) must not outlive Forge: if
@@ -1620,13 +1629,17 @@ mod tests {
             p.readonly_subpaths(),
             vec![ws.path().join(".git"), ws.path().join(".forge")]
         );
-        // A real `.git` directory gets its hooks carved read-only.
+        // A real `.git` directory gets its hooks and config carved read-only.
         let gitdir = ws.path().join(".git");
         std::fs::create_dir_all(&gitdir).unwrap();
         assert_eq!(
             p.clone().with_git_writable().readonly_subpaths(),
-            vec![gitdir.join("hooks"), ws.path().join(".forge")],
-            "a publish spawn must be able to update refs, but never install a hook"
+            vec![
+                gitdir.join("hooks"),
+                gitdir.join("config"),
+                ws.path().join(".forge")
+            ],
+            "a publish spawn must be able to update refs, but never install a hook or rewrite config"
         );
         // A linked worktree's `.git` is a gitdir pointer file; it has no hooks
         // directory to carve, and the common git dir is handled separately.
