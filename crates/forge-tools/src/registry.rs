@@ -198,19 +198,23 @@ impl ToolContext {
             return Err(self.escapes_allowed(rel));
         }
 
-        // Judge the `.git` denial on the portion below the workspace root, so a
-        // workspace that itself lives inside a `.git` directory is not
-        // misjudged. Falls back to the whole path when it is not below the
-        // root, which fails closed.
+        // Judge the `.git` and `.forge` denials on the portion below the
+        // workspace root, so a workspace that itself lives inside one (a
+        // managed session's worktree sits under `.forge/local/worktrees`) is
+        // not misjudged. Falls back to the whole path when it is not below the
+        // root, which fails closed. These match the sandbox's read-only
+        // carve-outs: `.forge` holds the repo's rules and the session journals.
         if access == PathAccess::Write {
             let below_root = full.strip_prefix(&self.workspace_root).unwrap_or(&full);
-            if below_root
-                .components()
-                .any(|c| matches!(c, Component::Normal(name) if name == ".git"))
-            {
-                return Err(ToolError::Execution(format!(
-                    "refusing to write `{rel}`: paths under `.git` are not writable by tools"
-                )));
+            for dir in [".git", ".forge"] {
+                if below_root
+                    .components()
+                    .any(|c| matches!(c, Component::Normal(name) if name == dir))
+                {
+                    return Err(ToolError::Execution(format!(
+                        "refusing to write `{rel}`: paths under `{dir}` are not writable by tools"
+                    )));
+                }
             }
         }
 
@@ -837,6 +841,40 @@ mod tests {
         // Reads are deliberately unaffected: the risk is writing configuration
         // that Git later executes, not inspecting it.
         assert!(ctx.resolve_path(".git/config").is_ok());
+    }
+
+    #[test]
+    fn resolve_write_path_refuses_forge_directory() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".forge/local/sessions")).unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        for rel in [
+            ".forge/permissions.toml",
+            ".forge/local/sessions/s.db",
+            "nested/.forge/permissions.toml",
+        ] {
+            let err = ctx.resolve_write_path(rel).unwrap_err();
+            assert!(
+                matches!(err, ToolError::Execution(message) if message.contains(".forge")),
+                "expected `{rel}` to be refused for writing"
+            );
+        }
+        // Reading the rules stays allowed.
+        std::fs::write(dir.path().join(".forge/permissions.toml"), "").unwrap();
+        assert!(ctx.resolve_path(".forge/permissions.toml").is_ok());
+    }
+
+    /// A managed session's worktree lives under `.forge/local/worktrees`; the
+    /// denial is judged below the workspace root, so its own files stay
+    /// writable.
+    #[test]
+    fn resolve_write_path_allows_a_workspace_inside_forge() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join(".forge/local/worktrees/session-1");
+        std::fs::create_dir_all(&root).unwrap();
+        let ctx = ToolContext::new(root.canonicalize().unwrap());
+        assert!(ctx.resolve_write_path("src/main.rs").is_ok());
     }
 
     #[test]

@@ -577,8 +577,8 @@ retried still confined. A host grant also **projects HTTPS identity**
 for that host into the confined spawn: credentials are filled on the
 host (`git credential`), SSH remotes (`git@host:`) are rewritten to
 HTTPS (SSH cannot use the CONNECT proxy), git-dir writes are allowed
-only for spawns that run `git` itself — and never for `.git/hooks`,
-which would otherwise run on the host — and HTTPS CLIs
+only for spawns that run `git` itself — and never for `.git/hooks` or
+`.git/config`, which decide what git executes on the host — and HTTPS CLIs
 that read a `{label}_TOKEN`
 environment variable receive one derived from the granted host. Ordinary
 commands still cannot write `.git`. The sandbox cannot open the OS
