@@ -150,13 +150,14 @@ printf '%s\n' 'Inspect the repository and summarize it.' | \
   forge bench \
     --workspace /path/to/repository \
     --journal /tmp/forge-journal \
-    --model openai-codex/gpt-5.6-luna \
-    --route-id openai-chatgpt \
+    --model openai_codex/gpt-5.6-luna \
     --effort max \
     --approve-all
 ```
 
-The command emits one JSON response on stdout and keeps logs on stderr.
+`--model` is required and names the provider by its prefix
+(`<provider>/<model>`). The command emits one JSON response on stdout and
+keeps logs on stderr.
 `--approve-all` is intended only for an isolated evaluation checkout; without
 it, a tool request that needs human approval stops with an error.
 
@@ -167,21 +168,33 @@ Forge includes native routes for:
 - OpenAI API (`openai/*`)
 - Anthropic API (`anthropic/*`)
 - xAI Grok through OAuth (`xai/*`)
-- OpenAI Codex subscriptions through device login (`openai-codex/*`)
-- OpenCode Go (`opencode-go/*`)
-- OpenCode Zen (`opencode-zen/*`)
+- OpenAI Codex subscriptions through device login (`openai_codex/*`)
+- OpenCode Go (`opencode_go/*`)
+- OpenCode Zen (`opencode_zen/*`)
 - Ollama running locally (`ollama/*`)
 
-The simplest setup is to export a provider key and model, then launch Forge:
+A model id's prefix is its provider id. Ids saved with an older prefix
+(`openai-codex/`, `opencode-go/`, `opencode-zen/`) are converted when Forge
+reads them; typing one gives an error naming the current prefix.
+
+The simplest setup is to export a provider key, launch Forge, and pick a
+model with `/model`:
 
 ```sh
 export OPENAI_API_KEY="..."
-export FORGE_MODEL_ID="openai/gpt-4.1-mini"
 forge
 ```
 
-Other API-key environment variables include `ANTHROPIC_API_KEY`,
-`OPENCODE_API_KEY`, `OPENCODE_GO_API_KEY`, and `OPENCODE_ZEN_API_KEY`.
+Forge remembers the last model you chose and starts new sessions on it;
+resumed sessions keep their own model.
+
+Each key provider reads `FORGE_<ID>_API_KEY` first (for example
+`FORGE_OPENAI_API_KEY` or `FORGE_OPENCODE_GO_API_KEY`), then its usual
+variables such as `ANTHROPIC_API_KEY`, `OPENCODE_API_KEY`,
+`OPENCODE_GO_API_KEY`, and `OPENCODE_ZEN_API_KEY`. `FORGE_<ID>_BASE_URL`
+overrides the endpoint. An environment key wins over a key saved with
+`/connect`, and `/disconnect` cannot remove it: unset the variable instead.
+For xAI, an `XAI_API_KEY` in the environment is used instead of the login.
 
 For OAuth providers, use `/connect` inside Forge. For Ollama, start the local
 Ollama service first, then choose the Ollama route and a locally available
@@ -189,9 +202,15 @@ model.
 
 OpenCode Go serves its models on more than one protocol. Forge routes each
 model to the endpoint OpenCode publishes for it — Chat Completions, Responses,
-or the Anthropic Messages API — so models such as `opencode-go/union-alpha`
+or the Anthropic Messages API — so models such as `opencode_go/union-alpha`
 work without extra configuration. Union Alpha on OpenCode Zen
-(`opencode-zen/union-alpha`) also uses the Messages API.
+(`opencode_zen/union-alpha`) also uses the Messages API.
+
+Custom OpenAI- or Anthropic-compatible providers are added with
+`/connect` → **+ Add custom provider**, which saves them to
+`forge/providers.toml` in the platform config directory. Keys stay in the
+separate `credentials.toml`. Provider entries saved by this version use the
+current field names, which older Forge builds cannot read.
 
 On Chat Completions routes (including OpenCode Go's DeepSeek models), a
 provider output limit or a stream that ends without a completion signal is
@@ -344,9 +363,6 @@ file configuration.
 A minimal project `forge.toml` can look like this:
 
 ```toml
-[model]
-model = "openai/gpt-4.1-mini"
-
 [tui]
 theme = "forge-dark"
 file_icons = "unicode"
@@ -362,6 +378,10 @@ min_wait_ms = 100
 default_wait_ms = 10000
 max_wait_ms = 120000
 ```
+
+`forge.toml` does not choose the provider or model: `[model] provider`,
+`model`, `base_url`, and `api_key` are ignored with a startup notice. Use
+`/connect` and `/model` instead. `[model] request_timeout_secs` still applies.
 
 Agent orchestration is enabled by default. The model can use `spawn_agent`,
 `send_message`, `followup_task`, `wait_agent`, `list_agents`, and
@@ -404,9 +424,6 @@ Drop custom `.toml` theme files into `.forge/themes/` in your workspace or
 Common environment variables are:
 
 ```text
-FORGE_MODEL_ID
-FORGE_MODEL_PROVIDER
-FORGE_API_KEY
 FORGE_WORKSPACE
 FORGE_JOURNAL_PATH
 FORGE_MODEL_REQUEST_TIMEOUT_SECS
