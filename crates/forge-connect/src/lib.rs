@@ -1,6 +1,7 @@
 //! Phase 6 / 6.1 connect profiles: OAuth (xAI) + API-key providers + Ollama.
 
 mod anthropic;
+mod atomic;
 mod auth;
 mod catalog;
 mod cost;
@@ -66,7 +67,9 @@ pub use profile::{
     CatalogMode, ConnectOutcome, ConnectProfile, ConnectStatus, KeySource, ProviderSpec,
     ProviderTransport, SpecOrigin,
 };
-pub use registry::{builtin_registry, loaded_registry, ConnectRegistry};
+pub use registry::{
+    builtin_registry, credential_env_names, loaded_registry, loaded_registry_from, ConnectRegistry,
+};
 pub use route::{
     group_routes, normalize_model_id, route_id_for_profile, route_model_id, ModelPickerEntry,
     ModelRoute,

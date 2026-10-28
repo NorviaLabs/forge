@@ -49,6 +49,8 @@ pub fn verify_reachable(base_url: &str) -> Result<(), VerifyError> {
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .timeout_per_call(Some(std::time::Duration::from_secs(3)))
         .build()
         .call()
@@ -68,6 +70,8 @@ pub fn verify_reachable(base_url: &str) -> Result<(), VerifyError> {
                     &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
                 )
                 .config()
+                // Never follow redirects: a hop could forward the credential.
+                .max_redirects(0)
                 .timeout_per_call(Some(std::time::Duration::from_secs(3)))
                 .build()
                 .call()

@@ -2926,6 +2926,23 @@ async fn fork_creates_a_new_session_with_context_and_leaves_source_unchanged() {
 }
 
 #[tokio::test]
+async fn credential_env_names_follow_the_session_into_forks() {
+    let dir = tempdir().unwrap();
+    let mut source = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        ToolRegistry::new(),
+    )
+    .await
+    .unwrap();
+    source.set_credential_env_names(vec!["GROQ_API_KEY".to_string()]);
+    assert_eq!(&*source.tool_ctx.credential_env_names, ["GROQ_API_KEY"]);
+
+    let fork = source.fork().await.unwrap();
+    assert_eq!(&*fork.tool_ctx.credential_env_names, ["GROQ_API_KEY"]);
+}
+
+#[tokio::test]
 async fn resuming_unknown_session_fails_instead_of_creating_empty_state() {
     let dir = tempdir().unwrap();
     let missing = SessionId::new_v4();

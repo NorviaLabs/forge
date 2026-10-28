@@ -135,8 +135,12 @@ pub struct NativeModelClient {
 impl NativeModelClient {
     pub fn from_config(cfg: &Config) -> Result<Self, ModelError> {
         let timeout = Duration::from_secs(cfg.model.request_timeout_secs.max(1));
+        // Never follow redirects: reqwest strips `Authorization` on a cross-host
+        // hop but forwards `x-api-key`, `chatgpt-account-id` and, on 307/308,
+        // the prompt body. A redirect surfaces as an error naming its target.
         let http = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ModelError::Http(error.to_string()))?;
         Ok(Self {
@@ -326,6 +330,60 @@ fn canonical_model_for_route(route_id: Option<&str>, model: &str) -> String {
         .map(|(_, value)| value)
         .unwrap_or(model);
     format!("{}/{bare}", spec.model_provider_prefix)
+}
+
+/// Turn a non-success provider response into a [`ModelError`], the same way on
+/// every transport:
+///
+/// - a 3xx is refused (the client follows no redirects) and names its target
+///   host;
+/// - a 401 is a credential failure ([`ModelError::ProviderAuth`]);
+/// - a 403 is a refusal of this request for `model`, not proof the credential
+///   is bad, so it stays a [`ModelError::ProviderStatus`];
+/// - anything else carries the provider's body as detail.
+pub(super) async fn status_error(response: reqwest::Response, model: &str) -> ModelError {
+    let status = response.status();
+    let code = status.as_u16();
+    if status.is_redirection() {
+        let target = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .map(|location| {
+                reqwest::Url::parse(location)
+                    .ok()
+                    .and_then(|url| url.host_str().map(str::to_string))
+                    .unwrap_or_else(|| location.to_string())
+            })
+            .unwrap_or_else(|| "an unspecified location".to_string());
+        return ModelError::ProviderStatus {
+            status: code,
+            detail: format!(
+                "redirect to {target} refused; Forge does not follow provider redirects"
+            ),
+        };
+    }
+    let detail = response.text().await.unwrap_or_default();
+    let detail = detail.trim();
+    let suffix = if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    };
+    match code {
+        401 => ModelError::ProviderAuth {
+            status: code,
+            message: format!("HTTP 401: authentication failed; run /connect{suffix}"),
+        },
+        403 => ModelError::ProviderStatus {
+            status: code,
+            detail: format!("the provider refused this request for `{model}`{suffix}"),
+        },
+        _ => ModelError::ProviderStatus {
+            status: code,
+            detail: detail.to_string(),
+        },
+    }
 }
 
 #[cfg(test)]

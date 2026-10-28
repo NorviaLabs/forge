@@ -74,9 +74,8 @@ pub(super) async fn complete(
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let detail = response.text().await.unwrap_or_default();
-        if status == reqwest::StatusCode::UNAUTHORIZED.as_u16() {
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            let status = response.status().as_u16();
             // Bespoke guidance, unchanged, but tagged with the status so callers can
             // see this is an auth failure without matching on the wording.
             return Err(ModelError::ProviderAuth {
@@ -84,7 +83,7 @@ pub(super) async fn complete(
                 message: "Forge's Codex login expired. Run `/connect openai_codex` again.".into(),
             });
         }
-        return Err(ModelError::ProviderStatus { status, detail });
+        return Err(crate::native::status_error(response, model).await);
     }
 
     let reverse_aliases: BTreeMap<String, String> = aliases
@@ -110,6 +109,7 @@ pub(super) async fn complete(
             Ok(())
         })?;
     }
+    parsed.finish()?;
     if let Some(tx) = tx {
         if let Some(ref usage) = parsed.usage {
             let _ = tx.send(ModelStreamEvent::Usage {
@@ -295,9 +295,22 @@ pub(super) struct CodexStream {
     pub(super) tool_calls: Vec<ToolCall>,
     pub(super) usage: Option<Usage>,
     last_reasoning_part: Option<(String, String, u64)>,
+    completed: bool,
 }
 
 impl CodexStream {
+    /// A Responses stream is complete only after `response.completed`. A
+    /// stream that ends earlier is truncated, not a short success.
+    pub(super) fn finish(&self) -> Result<(), ModelError> {
+        if self.completed {
+            Ok(())
+        } else {
+            Err(ModelError::Transport(
+                "Response stream ended before completion; the turn is incomplete. Continue to resume the task.".into(),
+            ))
+        }
+    }
+
     pub(super) fn consume(
         &mut self,
         event: &Value,
@@ -361,6 +374,7 @@ impl CodexStream {
                 self.tool_calls.push(call);
             }
             "response.completed" => {
+                self.completed = true;
                 let raw_usage = event.pointer("/response/usage").unwrap_or(&Value::Null);
                 self.usage = Some(usage_from_provider(
                     raw_usage,
@@ -377,6 +391,11 @@ impl CodexStream {
             }
             "error" | "response.failed" => {
                 return Err(ModelError::Provider(event.to_string()));
+            }
+            "response.incomplete" => {
+                return Err(ModelError::Provider(
+                    "Response was cut off at the provider's output limit; the turn is incomplete. Continue to resume the task.".into(),
+                ));
             }
             _ => {}
         }
@@ -852,6 +871,72 @@ mod tests {
         let response = client.complete(request).await.unwrap();
         assert_eq!(response.text, "hello");
         assert_eq!(response.usage.unwrap().completion_tokens, 2);
+    }
+
+    fn codex_request() -> ModelRequest {
+        ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
+            model: "openai-codex/gpt-test".into(),
+            route_id: Some("openai-chatgpt".into()),
+            session_id: None,
+            messages: vec![Message::new(MessageRole::User, "hello")].into(),
+            tools: vec![],
+            reasoning_effort: None,
+            thinking_enabled: true,
+            prompt_cache: true,
+        }
+    }
+
+    fn codex_client(base: String) -> NativeModelClient {
+        use crate::ModelClient;
+        let mut config = Config::default();
+        config.model.base_url = Some(base);
+        let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[
+            ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
+            ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
+        ]);
+        client
+    }
+
+    #[tokio::test]
+    async fn a_responses_stream_without_completion_is_truncated() {
+        use crate::ModelClient;
+        let sse = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n";
+        let Some(base) = forge_test_support::mock_http(vec![(
+            200,
+            sse,
+            vec![("content-type", "text/event-stream")],
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        let error = codex_client(base)
+            .complete(codex_request())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ModelError::Transport(_)), "{error}");
+    }
+
+    /// A redirect is refused, not followed: following it would forward the
+    /// account header and the prompt body to whatever host it names.
+    #[tokio::test]
+    async fn provider_redirects_are_refused_and_name_the_target() {
+        use crate::ModelClient;
+        let Some(base) = forge_test_support::mock_http(vec![(
+            307,
+            "",
+            vec![("location", "https://attacker.example/steal")],
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        let error = codex_client(base)
+            .complete(codex_request())
+            .await
+            .unwrap_err();
+        assert_eq!(error.status(), Some(307), "{error}");
+        assert!(error.to_string().contains("attacker.example"), "{error}");
     }
 
     #[tokio::test]

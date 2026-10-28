@@ -44,7 +44,7 @@ pub enum StoreError {
 pub const CREDENTIALS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-struct CredentialsFile {
+pub(crate) struct CredentialsFile {
     /// On-disk schema version. Declared first because TOML requires scalar keys
     /// to precede tables, and `keys`/`oauth` below serialise as tables.
     /// Absent in files written before versioning; `save` always writes it.
@@ -129,12 +129,13 @@ impl CredentialStore {
     }
 
     pub fn set_api_key(&self, profile_id: &str, key: &str) -> Result<(), StoreError> {
-        let mut file = self.load()?;
-        file.keys
-            .insert(profile_id.to_string(), key.trim().to_string());
-        // Connecting via API key clears oauth for that profile
-        file.oauth.remove(profile_id);
-        self.save(&file)
+        self.update(|file| {
+            file.keys
+                .insert(profile_id.to_string(), key.trim().to_string());
+            // Connecting via API key clears oauth for that profile
+            file.oauth.remove(profile_id);
+            ((), true)
+        })
     }
 
     pub fn get_oauth(&self, profile_id: &str) -> Result<Option<OauthTokens>, StoreError> {
@@ -142,33 +143,30 @@ impl CredentialStore {
     }
 
     pub fn set_oauth(&self, profile_id: &str, tokens: OauthTokens) -> Result<(), StoreError> {
-        let mut file = self.load()?;
-        file.oauth.insert(profile_id.to_string(), tokens);
-        // OAuth supersedes stored API key for this profile
-        file.keys.remove(profile_id);
-        self.save(&file)
+        self.update(|file| {
+            file.oauth.insert(profile_id.to_string(), tokens);
+            // OAuth supersedes stored API key for this profile
+            file.keys.remove(profile_id);
+            ((), true)
+        })
     }
 
     pub fn clear(&self, profile_id: &str) -> Result<bool, StoreError> {
-        let mut file = self.load()?;
-        let removed_key = file.keys.remove(profile_id).is_some();
-        let removed_oauth = file.oauth.remove(profile_id).is_some();
-        let removed = removed_key || removed_oauth;
-        if removed {
-            self.save(&file)?;
-        }
-        Ok(removed)
+        self.update(|file| {
+            let removed_key = file.keys.remove(profile_id).is_some();
+            let removed_oauth = file.oauth.remove(profile_id).is_some();
+            let removed = removed_key || removed_oauth;
+            (removed, removed)
+        })
     }
 
     pub fn clear_all(&self) -> Result<bool, StoreError> {
-        let mut file = self.load()?;
-        let removed = !file.keys.is_empty() || !file.oauth.is_empty();
-        if removed {
+        self.update(|file| {
+            let removed = !file.keys.is_empty() || !file.oauth.is_empty();
             file.keys.clear();
             file.oauth.clear();
-            self.save(&file)?;
-        }
-        Ok(removed)
+            (removed, removed)
+        })
     }
 
     pub fn is_connected(&self, profile_id: &str) -> Result<bool, StoreError> {
@@ -270,23 +268,37 @@ impl CredentialStore {
         self.with_file(Clone::clone)
     }
 
+    /// The single read-modify-write path. Writers in this process are
+    /// serialized by one mutex, and each one re-reads the file under it, so
+    /// two writers (a key save and an OAuth refresh, say) cannot drop each
+    /// other's change. `change` returns its result and whether it modified
+    /// the file; an unchanged file is not rewritten.
+    pub(crate) fn update<R>(
+        &self,
+        change: impl FnOnce(&mut CredentialsFile) -> (R, bool),
+    ) -> Result<R, StoreError> {
+        static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = WRITE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut file = self.load()?;
+        let (result, changed) = change(&mut file);
+        if changed {
+            self.save(&file)?;
+        }
+        Ok(result)
+    }
+
     fn save(&self, file: &CredentialsFile) -> Result<(), StoreError> {
         // Stamp the current version on every write so a future build can tell
         // what layout it is reading instead of guessing.
         let mut file = file.clone();
         file.version = Some(CREDENTIALS_SCHEMA_VERSION);
         let file = &file;
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
         let text = toml::to_string_pretty(file)?;
-        fs::write(&self.path, text)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&self.path, perms)?;
-        }
+        // A new file is created 0600 before any secret is written, and the
+        // replacement is atomic.
+        crate::atomic::write_atomic(&self.path, text.as_bytes(), Some(0o600))?;
         // Re-stamp from the file just written. Dropping the entry instead would
         // also be correct, but this keeps the next read a cache hit, and it
         // closes the window where a write landing in the same timestamp tick as
@@ -362,6 +374,46 @@ pub fn resolve_connected(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// Unrelated writes from one process never drop each other's change.
+    #[test]
+    fn concurrent_writers_keep_every_update() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    CredentialStore::new(path)
+                        .set_api_key(&format!("p{i}"), "k")
+                        .unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let store = CredentialStore::new(path);
+        for i in 0..8 {
+            assert!(
+                store.get_api_key(&format!("p{i}")).unwrap().is_some(),
+                "p{i}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_credentials_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        CredentialStore::new(path.clone())
+            .set_api_key("p", "k")
+            .unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
 
     #[test]
     fn set_get_clear_roundtrip() {

@@ -365,9 +365,49 @@ pub const PROVIDER_CREDENTIAL_ENV: &[&str] = &[
     "OPENCODE_GO_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "XAI_API_KEY",
+    "GROK_CODE_XAI_API_KEY",
     "FORGE_CODEX_ACCESS_TOKEN",
     "FORGE_CODEX_ACCOUNT_ID",
 ];
+
+/// Whether `name` holds a provider credential that a model-triggered child
+/// process must not inherit: a built-in vendor alias, a name in `extra` (the
+/// session's loaded profiles, including custom `api_key_env` names), or any
+/// generated `FORGE_*_API_KEY` override.
+pub fn is_provider_credential_env(name: &str, extra: &[String]) -> bool {
+    PROVIDER_CREDENTIAL_ENV.contains(&name)
+        || extra.iter().any(|candidate| candidate == name)
+        || (name.starts_with("FORGE_") && name.ends_with("_API_KEY"))
+}
+
+/// Every variable to remove from a child's environment: the fixed vendor
+/// aliases and `extra`, plus any variable in the current process environment
+/// that [`is_provider_credential_env`] matches. Removal works by exact name,
+/// so pattern matches are resolved against the environment here.
+pub fn provider_credential_env_names(extra: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = PROVIDER_CREDENTIAL_ENV
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    names.extend(extra.iter().cloned());
+    for (key, _) in std::env::vars_os() {
+        if let Some(key) = key.to_str() {
+            if is_provider_credential_env(key, extra) {
+                names.push(key.to_string());
+            }
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    names.retain(|name| seen.insert(name.clone()));
+    names
+}
+
+/// Strip provider credentials from a child command's environment.
+pub fn strip_credentials(command: &mut std::process::Command, extra: &[String]) {
+    for name in provider_credential_env_names(extra) {
+        command.env_remove(name);
+    }
+}
 
 pub async fn run_shell_command(
     command: &str,
@@ -386,7 +426,7 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, None, true, None, None).await
+    run_shell_command_inner(command, workspace_root, egress, None, true, None, None, &[]).await
 }
 
 pub async fn run_shell_command_with_egress_and_temp(
@@ -403,6 +443,7 @@ pub async fn run_shell_command_with_egress_and_temp(
         true,
         None,
         None,
+        &[],
     )
     .await
 }
@@ -423,6 +464,7 @@ pub async fn run_shell_command_unconfined(
         false,
         None,
         None,
+        &[],
     )
     .await
 }
@@ -478,6 +520,7 @@ impl ShellOutputCapture {
 /// Observe a shell job without changing its sandbox, grant or completion path.
 /// `egress_label` (the tool call id that started the job, when there is one)
 /// attributes the job's connections in the session's egress event log.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_shell_command_observed(
     command: &str,
     workspace_root: &Path,
@@ -486,6 +529,7 @@ pub async fn run_shell_command_observed(
     unconfined: bool,
     capture: Arc<ShellOutputCapture>,
     egress_label: Option<&str>,
+    credential_env_names: &[String],
 ) -> Result<ToolOutput, ToolError> {
     run_shell_command_inner(
         command,
@@ -495,10 +539,12 @@ pub async fn run_shell_command_observed(
         !unconfined,
         Some(capture),
         egress_label,
+        credential_env_names,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_shell_command_inner(
     command: &str,
     workspace_root: &Path,
@@ -507,6 +553,7 @@ async fn run_shell_command_inner(
     confined: bool,
     capture: Option<Arc<ShellOutputCapture>>,
     egress_label: Option<&str>,
+    credential_env_names: &[String],
 ) -> Result<ToolOutput, ToolError> {
     let mut spec =
         crate::shell_spawn::ShellSpawnSpec::build(crate::shell_spawn::ShellSpawnRequest {
@@ -518,6 +565,7 @@ async fn run_shell_command_inner(
             session_tmp,
             confined,
             egress_label,
+            credential_env_names,
         })
         .await?;
     let confined_run = spec.confined();
@@ -689,6 +737,7 @@ itself, never to git hooks)."
             !ctx.unconfined_shell,
             None,
             ctx.tool_call_id.as_deref(),
+            &ctx.credential_env_names,
         )
         .await
     }
@@ -1752,6 +1801,7 @@ Not a free-form shell. Prefer this over `bash(git …)`."
         };
 
         let mut cmd = Command::new("git");
+        strip_credentials(cmd.as_std_mut(), &ctx.credential_env_names);
         if let Some(routed) = &routed {
             routed.apply(&mut cmd);
         }
@@ -1869,6 +1919,7 @@ mod tests {
             true,
             capture.clone(),
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -3216,6 +3267,69 @@ mod tests {
             .await
             .unwrap();
         assert!(log.content.contains("add b"), "{}", log.content);
+    }
+
+    #[test]
+    fn provider_credential_matching_covers_aliases_extras_and_generated_names() {
+        assert!(is_provider_credential_env("OPENAI_API_KEY", &[]));
+        assert!(is_provider_credential_env("GROK_CODE_XAI_API_KEY", &[]));
+        assert!(is_provider_credential_env("FORGE_MY_LLM_API_KEY", &[]));
+        assert!(is_provider_credential_env(
+            "GROQ_API_KEY",
+            &["GROQ_API_KEY".to_string()]
+        ));
+        assert!(!is_provider_credential_env("GROQ_API_KEY", &[]));
+        assert!(!is_provider_credential_env("PATH", &[]));
+        assert!(!is_provider_credential_env("FORGE_MODEL_ID", &[]));
+    }
+
+    /// A repository's own hooks run whenever the model commits through the
+    /// `git` tool. They must not see provider keys, built-in or custom.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_tool_hooks_do_not_see_provider_keys() {
+        use std::os::unix::fs::PermissionsExt;
+        const CUSTOM: &str = "FORGE_TEST_HOOK_CUSTOM_KEY_7F3A";
+        const GENERATED: &str = "FORGE_TEST_HOOK_7F3A_API_KEY";
+        // Unique names, so no other test reads or writes them.
+        std::env::set_var(CUSTOM, "custom-secret");
+        std::env::set_var(GENERATED, "generated-secret");
+
+        let dir = tempdir().unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "forge@test"],
+            vec!["config", "user.name", "Forge Test"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+        }
+        let seen = dir.path().join("hook-env");
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\nenv > '{}'\n", seen.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+
+        let ctx = ToolContext::new(dir.path().to_path_buf())
+            .with_credential_env_names(std::sync::Arc::from(vec![CUSTOM.to_string()]));
+        GitTool
+            .call(&ctx, json!({"subcommand": "add", "args": ["a.txt"]}))
+            .await
+            .unwrap();
+        let out = GitTool
+            .call(&ctx, json!({"subcommand": "commit", "args": ["-m", "x"]}))
+            .await
+            .unwrap();
+        std::env::remove_var(CUSTOM);
+        std::env::remove_var(GENERATED);
+        assert!(!out.is_error, "{}", out.content);
+
+        let env = std::fs::read_to_string(&seen).expect("pre-commit hook ran");
+        assert!(!env.contains(CUSTOM), "custom key reached the hook");
+        assert!(!env.contains(GENERATED), "generated key reached the hook");
     }
 
     #[test]

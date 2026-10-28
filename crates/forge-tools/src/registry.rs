@@ -100,6 +100,10 @@ pub struct ToolContext {
     /// Carried so the egress gateway can attribute connections to the call
     /// that opened them.
     pub tool_call_id: Option<Arc<str>>,
+    /// Credential env names from the session's loaded provider profiles,
+    /// stripped from every model-triggered child process in addition to the
+    /// built-in vendor aliases and any `FORGE_*_API_KEY` override.
+    pub credential_env_names: Arc<[String]>,
 }
 
 impl ToolContext {
@@ -115,6 +119,7 @@ impl ToolContext {
             session_tmp: None,
             unconfined_shell: false,
             tool_call_id: None,
+            credential_env_names: Arc::from(Vec::<String>::new()),
         }
     }
 
@@ -128,6 +133,11 @@ impl ToolContext {
     pub async fn gateway_for_call(&self) -> std::io::Result<Option<crate::egress::CallGateway>> {
         crate::egress::CallGateway::start(self.egress.as_deref(), self.tool_call_id.as_deref())
             .await
+    }
+
+    pub fn with_credential_env_names(mut self, names: Arc<[String]>) -> Self {
+        self.credential_env_names = names;
+        self
     }
 
     /// Attribute work done under this context to the tool call `id`.

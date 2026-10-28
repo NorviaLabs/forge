@@ -72,6 +72,8 @@ impl OpenAiCodexOauthClient {
                 &format!("forge/{}", env!("CARGO_PKG_VERSION")),
             )
             .config()
+            // Never follow redirects: a hop could forward the credential.
+            .max_redirects(0)
             // The OAuth error body carries `error`/`error_description`, which
             // callers parse. ureq 3 drops the body when it raises a status as
             // an error, so take every status as a response instead.
@@ -92,6 +94,8 @@ impl OpenAiCodexOauthClient {
                 &format!("forge/{}", env!("CARGO_PKG_VERSION")),
             )
             .config()
+            // Never follow redirects: a hop could forward the credential.
+            .max_redirects(0)
             .http_status_as_error(false)
             .timeout_per_call(Some(std::time::Duration::from_secs(30)))
             .build();

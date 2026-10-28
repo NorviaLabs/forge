@@ -369,6 +369,13 @@ impl AgentSession {
         self.workspace_trusted
     }
 
+    /// Credential env names from the loaded provider profiles. They are
+    /// stripped, with the built-in vendor aliases, from every child process
+    /// the model triggers (shell, background jobs, git).
+    pub fn set_credential_env_names(&mut self, names: Vec<String>) {
+        self.tool_ctx.credential_env_names = std::sync::Arc::from(names);
+    }
+
     /// Push provider credentials into the model client (OAuth tokens → worker env).
     pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
         self.model.apply_provider_env(pairs);

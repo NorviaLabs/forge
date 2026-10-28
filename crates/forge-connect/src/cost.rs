@@ -125,6 +125,8 @@ fn fetch_models_dev_cost(provider: &str, model: &str) -> Result<Option<ModelCost
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .timeout_per_call(Some(std::time::Duration::from_secs(10)))
         .build()
         .call()
@@ -176,6 +178,8 @@ fn codex_cost_report(store: &CredentialStore) -> Result<Vec<String>, String> {
             &format!("forge/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .timeout_per_call(Some(std::time::Duration::from_secs(15)))
         .build()
         .call()

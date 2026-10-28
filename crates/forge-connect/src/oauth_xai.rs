@@ -103,6 +103,9 @@ impl XaiOauthClient {
     fn agent() -> ureq::Agent {
         ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(30)))
+            // Never follow redirects: a hop could forward the device code or
+            // token to another host.
+            .max_redirects(0)
             .user_agent(format!("forge-connect/{}", env!("CARGO_PKG_VERSION")))
             // The OAuth error body carries `error`/`error_description`, which
             // callers parse. ureq 3 drops the body when it raises a status as

@@ -112,7 +112,7 @@ pub(super) async fn complete(
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        return Err(response_error(response).await);
+        return Err(crate::native::status_error(response, model).await);
     }
 
     let mut stream = response.bytes_stream();
@@ -268,7 +268,7 @@ async fn complete_responses(
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        return Err(response_error(response).await);
+        return Err(crate::native::status_error(response, &req.model).await);
     }
 
     let reverse_aliases = aliases
@@ -294,6 +294,7 @@ async fn complete_responses(
             Ok(())
         })?;
     }
+    parsed.finish()?;
     if let Some(tx) = tx {
         if let Some(ref usage) = parsed.usage {
             let _ = tx.send(ModelStreamEvent::Usage {
@@ -691,12 +692,6 @@ fn catalog_supports_openai_effort(model: &str) -> Option<bool> {
     forge_connect::ModelCatalogCache::user_default()
         .model_effort_options(model)
         .map(|options| !options.is_empty())
-}
-
-async fn response_error(response: reqwest::Response) -> ModelError {
-    let status = response.status().as_u16();
-    let detail = response.text().await.unwrap_or_default();
-    ModelError::ProviderStatus { status, detail }
 }
 
 #[cfg(test)]
@@ -1324,7 +1319,8 @@ mod tests {
         let sse = concat!(
             "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":3}}}\n\n",
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
-            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n"
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
         );
         for (prefix, base_env, key_env, path) in [
             (

@@ -233,7 +233,7 @@ impl ModelCatalogCache {
             fs::create_dir_all(parent)?;
         }
         let text = toml::to_string_pretty(file)?;
-        fs::write(&self.path, text)?;
+        crate::atomic::write_atomic(&self.path, text.as_bytes(), None)?;
         *self.file.borrow_mut() = file.clone();
         Ok(())
     }
@@ -403,6 +403,8 @@ pub fn refresh_models_dev_registry(
     let body: serde_json::Value = ureq::get(&models_dev_url)
         .header("User-Agent", &ua)
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .timeout_per_call(Some(std::time::Duration::from_secs(10)))
         .build()
         .call()
@@ -995,6 +997,8 @@ fn http_get_ollama_names(url: &str, ua: &str) -> Result<Vec<String>, CatalogErro
     let mut resp = ureq::get(url)
         .header("User-Agent", ua)
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         // The status check below reports the tag endpoint's own failure, so
         // it has to see the response rather than a transport error.
         .http_status_as_error(false)

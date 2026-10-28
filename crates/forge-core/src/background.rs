@@ -668,6 +668,7 @@ async fn run_shell_job(
     session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
     capture: Arc<forge_tools::ShellOutputCapture>,
     call_id: Option<String>,
+    credential_env_names: Arc<[String]>,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
     // calling the grantless variant, so a background `cargo build` was confined
@@ -686,6 +687,7 @@ async fn run_shell_job(
         false,
         capture,
         call_id.as_deref(),
+        &credential_env_names,
     )
     .await;
     match result {
@@ -838,9 +840,18 @@ impl AgentSession {
         });
         let egress = self.tool_ctx.egress.clone();
         let session_tmp = self.tool_ctx.session_tmp.clone();
+        let credential_env_names = Arc::clone(&self.tool_ctx.credential_env_names);
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(command, workspace_root, egress, session_tmp, capture, call_id) => outcome,
+                outcome = run_shell_job(
+                    command,
+                    workspace_root,
+                    egress,
+                    session_tmp,
+                    capture,
+                    call_id,
+                    credential_env_names,
+                ) => outcome,
                 // Dropping the job future on cancel drops the shell spawn's
                 // process-group guard, which kills the whole tree — not just
                 // the direct child — so no side effect runs after cancel.

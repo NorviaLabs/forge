@@ -25,11 +25,12 @@ pub mod web_search;
 
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
-    default_builtins, default_builtins_with_web_search, run_shell_command,
-    run_shell_command_observed, run_shell_command_unconfined, run_shell_command_with_egress,
-    run_shell_command_with_egress_and_temp, AskUserQuestionTool, BashTool, GitTool, LsTool,
-    ReadFileTool, ShellOutputCapture, ShellOutputSnapshot, UpdatePlanTool, WriteFileTool,
-    PROVIDER_CREDENTIAL_ENV,
+    default_builtins, default_builtins_with_web_search, is_provider_credential_env,
+    provider_credential_env_names, run_shell_command, run_shell_command_observed,
+    run_shell_command_unconfined, run_shell_command_with_egress,
+    run_shell_command_with_egress_and_temp, strip_credentials, AskUserQuestionTool, BashTool,
+    GitTool, LsTool, ReadFileTool, ShellOutputCapture, ShellOutputSnapshot, UpdatePlanTool,
+    WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};

@@ -134,9 +134,7 @@ pub(super) async fn complete_messages(
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let detail = response.text().await.unwrap_or_default();
-        return Err(ModelError::ProviderStatus { status, detail });
+        return Err(crate::native::status_error(response, model).await);
     }
 
     let mut stream = response.bytes_stream();
@@ -148,6 +146,7 @@ pub(super) async fn complete_messages(
     let mut prompt_cache_read_tokens = 0_u32;
     let mut prompt_cache_write_tokens = 0_u32;
     let mut completion_tokens = 0_u32;
+    let mut stopped = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
         pending.push_str(&String::from_utf8_lossy(&chunk));
@@ -160,6 +159,18 @@ pub(super) async fn complete_messages(
             }
             let event: Value = serde_json::from_str(data)
                 .map_err(|error| ModelError::Protocol(format!("invalid SSE JSON: {error}")))?;
+            match event.get("type").and_then(Value::as_str) {
+                Some("message_stop") => stopped = true,
+                Some("message_delta")
+                    if event.pointer("/delta/stop_reason").and_then(Value::as_str)
+                        == Some("max_tokens") =>
+                {
+                    return Err(ModelError::Provider(
+                        "Response was cut off at the provider's output limit; the turn is incomplete. Continue to resume the task.".into(),
+                    ));
+                }
+                _ => {}
+            }
             consume_event(
                 &event,
                 &mut text,
@@ -173,6 +184,12 @@ pub(super) async fn complete_messages(
             )?;
             Ok(())
         })?;
+    }
+    // Messages streams end with `message_stop`; ending earlier is truncation.
+    if !stopped {
+        return Err(ModelError::Transport(
+            "Response stream ended before completion; the turn is incomplete. Continue to resume the task.".into(),
+        ));
     }
 
     let tool_calls = finalize_tool_uses(tool_uses)?;
@@ -722,7 +739,8 @@ mod tests {
             "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer\"}}\n\n",
             "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"bash\"}}\n\n",
             "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\":\\\"ls\\\"}\"}}\n\n",
-            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n"
+            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":7}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
         );
         let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
         else {
@@ -874,5 +892,93 @@ mod tests {
         let calls = finalize_tool_uses(empty).unwrap();
         assert_eq!(calls[0].id, "tool_2");
         assert_eq!(calls[0].arguments, json!({}));
+    }
+
+    async fn complete_anthropic_sse(
+        sse: &'static str,
+    ) -> Option<Result<ModelResponse, ModelError>> {
+        let (base_url, _request_rx) = serve_once("200 OK", "text/event-stream", sse).await?;
+        let mut config = Config::default();
+        config.model.base_url = Some(base_url);
+        config.model.api_key = Some("anthropic-secret".into());
+        let client = NativeModelClient::from_config(&config).unwrap();
+        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
+        let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
+            model: "anthropic/claude-sonnet-4-6".into(),
+            route_id: Some("anthropic-api".into()),
+            session_id: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+            messages: vec![Message::new(MessageRole::User, "hello")].into(),
+            tools: vec![],
+            prompt_cache: false,
+        };
+        Some(client.complete(request).await)
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_stream_without_message_stop_is_truncated() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"
+        );
+        let Some(result) = complete_anthropic_sse(sse).await else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let error = result.unwrap_err();
+        assert!(matches!(error, ModelError::Transport(_)), "{error}");
+        assert!(error.to_string().contains("incomplete"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_max_tokens_stop_is_truncated() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"max_tokens\"},\"usage\":{\"output_tokens\":9}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let Some(result) = complete_anthropic_sse(sse).await else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("output limit"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_403_is_a_request_refusal_and_a_401_is_an_auth_failure() {
+        for (status, auth) in [("401 Unauthorized", true), ("403 Forbidden", false)] {
+            let Some((base_url, _rx)) = serve_once(status, "application/json", "{}").await else {
+                eprintln!("skipping: this host denies binding a mock listener");
+                return;
+            };
+            let mut config = Config::default();
+            config.model.base_url = Some(base_url);
+            config.model.api_key = Some("anthropic-secret".into());
+            let client = NativeModelClient::from_config(&config).unwrap();
+            client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
+            let request = ModelRequest {
+                workspace_root: std::path::PathBuf::new(),
+                model: "anthropic/claude-sonnet-4-6".into(),
+                route_id: Some("anthropic-api".into()),
+                session_id: None,
+                reasoning_effort: None,
+                thinking_enabled: false,
+                messages: vec![Message::new(MessageRole::User, "hello")].into(),
+                tools: vec![],
+                prompt_cache: false,
+            };
+            let error = client.complete(request).await.unwrap_err();
+            assert_eq!(error.is_auth_failure(), auth, "{status}: {error}");
+            if !auth {
+                assert!(
+                    error.to_string().contains("anthropic/claude-sonnet-4-6"),
+                    "{error}"
+                );
+            }
+        }
     }
 }

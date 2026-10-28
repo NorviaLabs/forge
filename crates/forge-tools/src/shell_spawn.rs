@@ -44,6 +44,9 @@ pub struct ShellSpawnRequest<'a> {
     pub confined: bool,
     /// Label for the per-call egress gateway's events (the tool call id).
     pub egress_label: Option<&'a str>,
+    /// Credential env names from the session's loaded profiles, stripped in
+    /// addition to the built-in vendor aliases and `FORGE_*_API_KEY`.
+    pub credential_env_names: &'a [String],
 }
 
 /// The spawn decisions for one shell command.
@@ -52,7 +55,7 @@ pub struct ShellSpawnSpec {
     args: Vec<String>,
     cwd: PathBuf,
     confined: bool,
-    env_remove: Vec<&'static str>,
+    env_remove: Vec<String>,
     env_set: Vec<(String, OsString)>,
     egress_invocation: Option<EgressInvocation>,
 }
@@ -74,6 +77,7 @@ impl ShellSpawnSpec {
             session_tmp,
             confined: requested_confined,
             egress_label,
+            credential_env_names,
         } = request;
         if requested_confined {
             if let Err(unavailable) = crate::sandbox::availability() {
@@ -139,14 +143,18 @@ impl ShellSpawnSpec {
 
         // Do not use a login shell: `bash -l` sources profile files, which can
         // re-export credentials after the explicit removals below.
-        let mut env_remove: Vec<&'static str> = crate::builtins::PROVIDER_CREDENTIAL_ENV.to_vec();
+        let mut env_remove = crate::builtins::provider_credential_env_names(credential_env_names);
         let mut env_set: Vec<(String, OsString)> = crate::sandbox::shell_env(&policy);
         // The proxy env points at the in-sandbox relay (Linux) or the filtered
         // host proxy (macOS). An approved unconfined retry is supposed to use
         // the real network — HTTPS clients fail if we leave them talking to a
         // proxy that is either not listening or still deny-all.
         if confined {
-            env_remove.extend_from_slice(crate::credentials::HOST_CREDENTIAL_ENV);
+            env_remove.extend(
+                crate::credentials::HOST_CREDENTIAL_ENV
+                    .iter()
+                    .map(|name| (*name).to_string()),
+            );
             let identity_dir = session_tmp
                 .map(|dir| dir.join("host-identity"))
                 .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
@@ -187,7 +195,7 @@ impl ShellSpawnSpec {
     }
 
     /// Variables removed from the inherited environment.
-    pub fn env_remove(&self) -> &[&'static str] {
+    pub fn env_remove(&self) -> &[String] {
         &self.env_remove
     }
 
@@ -254,12 +262,13 @@ mod tests {
             session_tmp: Some(tmp),
             confined,
             egress_label: Some("call-1"),
+            credential_env_names: &[],
         }
     }
 
     /// Everything a mode's spawn depends on, minus the gateway's socket
     /// paths, which are fresh per invocation.
-    fn decisions(spec: &ShellSpawnSpec) -> (bool, Vec<&'static str>, Vec<String>) {
+    fn decisions(spec: &ShellSpawnSpec) -> (bool, Vec<String>, Vec<String>) {
         let names = spec
             .env_set()
             .iter()
@@ -288,7 +297,10 @@ mod tests {
                         .iter()
                         .chain(crate::credentials::HOST_CREDENTIAL_ENV)
                     {
-                        assert!(spec.env_remove().contains(name), "{mode:?}: {name}");
+                        assert!(
+                            spec.env_remove().iter().any(|removed| removed == name),
+                            "{mode:?}: {name}"
+                        );
                     }
                     let (_, _, names) = decisions(&spec);
                     for name in [
@@ -371,7 +383,15 @@ mod tests {
             // Provider keys never reach a shell; host credentials and the
             // proxy env are left alone so the approved run uses the real
             // network and the operator's identity.
-            assert_eq!(spec.env_remove(), crate::builtins::PROVIDER_CREDENTIAL_ENV);
+            let fixed: Vec<String> = crate::builtins::PROVIDER_CREDENTIAL_ENV
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect();
+            assert_eq!(&spec.env_remove()[..fixed.len()], fixed.as_slice());
+            assert!(spec
+                .env_remove()
+                .iter()
+                .all(|name| crate::builtins::is_provider_credential_env(name, &[])));
             let (_, _, names) = decisions(&spec);
             assert!(!names
                 .iter()

@@ -95,9 +95,11 @@ impl AgentSession {
             detail: format!("seq={}", state.last_seq),
         }];
         self.journal = SessionPersistence::new(journal);
+        let credential_env_names = std::sync::Arc::clone(&self.tool_ctx.credential_env_names);
         self.tool_ctx = ToolContext::new(active_root)
             .with_session_id(session_id)
-            .with_session_tmp(session_tmp);
+            .with_session_tmp(session_tmp)
+            .with_credential_env_names(credential_env_names);
         self.tool_ctx.egress = self.egress.as_ref().map(|runtime| runtime.grant());
         self.context = context;
         self.token_usage = token_usage;
@@ -391,6 +393,8 @@ impl AgentSession {
         fork.compaction_policy = self.compaction_policy;
         fork.tool_ctx.image_input = self.tool_ctx.image_input;
         fork.tool_ctx.active_model = self.tool_ctx.active_model.clone();
+        fork.tool_ctx.credential_env_names =
+            std::sync::Arc::clone(&self.tool_ctx.credential_env_names);
 
         let mut messages: Vec<Message> = self.messages.iter().cloned().collect();
         let session_tmp = fork

@@ -151,6 +151,7 @@ impl AgentSession {
                     .with_session_id(session_id)
                     .with_session_tmp(session_tmp);
                 ctx.egress = self.tool_ctx.egress.clone();
+                ctx.credential_env_names = Arc::clone(&self.tool_ctx.credential_env_names);
                 ctx
             },
             egress: None,
@@ -263,6 +264,7 @@ impl AgentSession {
                     .with_session_id(session_id)
                     .with_session_tmp(session_tmp);
                 ctx.egress = self.tool_ctx.egress.clone();
+                ctx.credential_env_names = Arc::clone(&self.tool_ctx.credential_env_names);
                 ctx
             },
             egress: None,

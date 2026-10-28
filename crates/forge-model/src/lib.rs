@@ -91,7 +91,9 @@ impl ModelError {
     pub fn is_auth_failure(&self) -> bool {
         match self {
             Self::MissingApiKey | Self::ProviderAuth { .. } => true,
-            Self::ProviderStatus { status, .. } => *status == 401 || *status == 403,
+            // A 403 refuses this request (a model the key cannot use, a policy
+            // or region block); it is not evidence the credential is bad.
+            Self::ProviderStatus { status, .. } => *status == 401,
             _ => false,
         }
     }

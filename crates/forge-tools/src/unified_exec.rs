@@ -467,6 +467,7 @@ async fn start(
             session_tmp: ctx.session_tmp.as_ref().map(|dir| dir.path()),
             confined: !ctx.unconfined_shell,
             egress_label: ctx.tool_call_id.as_deref(),
+            credential_env_names: &ctx.credential_env_names,
         })
         .await?;
     let confined = spec.confined();

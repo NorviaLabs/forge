@@ -707,6 +707,7 @@ struct LocalRepo<'a> {
 impl LocalRepo<'_> {
     async fn git(&self, args: &[&str]) -> Result<Output, ToolError> {
         let mut cmd = Command::new("git");
+        crate::builtins::strip_credentials(cmd.as_std_mut(), &[]);
         cmd.args(args)
             .current_dir(self.root)
             .env("GIT_TERMINAL_PROMPT", "0")

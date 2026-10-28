@@ -52,6 +52,8 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .timeout_per_call(Some(std::time::Duration::from_secs(15)))
         .build()
         .call()
@@ -143,5 +145,25 @@ mod tests {
             .to_string();
         assert!(err.contains("HTTP 500"), "{err}");
         assert!(!err.contains("sk-valid"));
+    }
+
+    /// The key goes only to the configured host: a redirect is reported,
+    /// never followed. (Following it here would reach a closed port and show
+    /// up as `Unreachable`.)
+    #[test]
+    fn verify_does_not_follow_a_redirect() {
+        let Some(base) = forge_test_support::mock_http(vec![(
+            302,
+            "",
+            vec![("Location", "http://127.0.0.1:9/models")],
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        let error = verify_api_key("sk-0123456789abcdef0123", &base).unwrap_err();
+        assert!(
+            matches!(error, VerifyError::Status { status: 302, .. }),
+            "{error:?}"
+        );
     }
 }

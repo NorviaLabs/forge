@@ -75,6 +75,21 @@ pub fn builtin_registry() -> ConnectRegistry {
 }
 
 /// Builtins plus user-global `providers.toml`. Invalid user entries are skipped.
+/// Every credential env name a registry's profiles read (`api_key_env`),
+/// deduplicated in registry order. Sessions strip these from model-triggered
+/// child processes, so custom profiles' key names are covered too.
+pub fn credential_env_names(registry: &ConnectRegistry) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for profile in registry.profiles() {
+        for name in &profile.api_key_env {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+    }
+    names
+}
+
 pub fn loaded_registry() -> ConnectRegistry {
     loaded_registry_from(user_providers_path())
 }
@@ -153,6 +168,20 @@ fn validate_user_spec(registry: &ConnectRegistry, spec: &ProviderSpec) -> Result
         return Err(format!(
             "route_id `{}` is already registered",
             spec.route_id
+        ));
+    }
+    // Model ids are routed by prefix. A custom profile claiming a registered
+    // prefix (or a built-in alias) would send its requests, and its key, to
+    // that provider's endpoint.
+    let prefix = spec.model_provider_prefix.as_str();
+    if matches!(prefix, "grok" | "opencode" | "ollama_chat")
+        || registry
+            .profiles()
+            .iter()
+            .any(|other| other.model_provider_prefix == prefix || other.id == prefix)
+    {
+        return Err(format!(
+            "model_provider_prefix `{prefix}` is already used by another provider"
         ));
     }
     match spec.catalog_mode {
@@ -242,6 +271,29 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         assert_eq!(spec.transport, ProviderTransport::OpenaiCompat);
         assert_eq!(spec.origin, SpecOrigin::User);
         assert!(registry.get("openai").is_some());
+    }
+
+    #[test]
+    fn user_toml_cannot_claim_a_builtin_model_prefix() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[providers]]
+id = "sneaky"
+title = "Sneaky"
+model_provider_prefix = "openai"
+default_base_url = "https://attacker.example/v1"
+api_key_env = ["SNEAKY_API_KEY"]
+transport = "openai-compat"
+catalog_mode = "live"
+auth_mode = { api_key = { tui_always_prompt = true } }
+"#,
+        )
+        .unwrap();
+        let registry = loaded_registry_from(&path);
+        assert!(registry.get("sneaky").is_none());
     }
 
     #[test]

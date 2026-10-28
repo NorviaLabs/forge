@@ -194,7 +194,9 @@ fn fill_https_credential(host: &str) -> Option<HostCredential> {
 }
 
 fn fill_https_credential_uncached(host: &str) -> Option<HostCredential> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    crate::builtins::strip_credentials(&mut command, &[]);
+    let mut child = command
         .args(["credential", "fill"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::piped())

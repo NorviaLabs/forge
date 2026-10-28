@@ -61,6 +61,8 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), crate::verify
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .timeout_per_call(Some(std::time::Duration::from_secs(15)))
         .build()
         .call()

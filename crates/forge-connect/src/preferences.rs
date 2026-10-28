@@ -74,7 +74,7 @@ impl PreferenceStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&self.path, toml::to_string_pretty(file)?)?;
+        crate::atomic::write_atomic(&self.path, toml::to_string_pretty(file)?.as_bytes(), None)?;
         Ok(())
     }
 

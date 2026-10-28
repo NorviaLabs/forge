@@ -215,6 +215,13 @@ async fn open_session_with_model(
         }
     }
 
+    // Provider keys never reach model-triggered child processes. The built-in
+    // vendor aliases are stripped by forge-tools; this adds every key name the
+    // loaded profiles read, which covers custom profiles' `api_key_env`.
+    session.set_credential_env_names(forge_connect::credential_env_names(
+        &forge_connect::loaded_registry(),
+    ));
+
     let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
     notices.extend(permission_notices);
     session.set_governance(Governance::default().with_pattern_rules(
@@ -301,6 +308,43 @@ mod tests {
                 "`{name}` is exported for an OAuth provider but would not be stripped"
             );
         }
+    }
+
+    /// Custom profiles declare their own key names. Those cannot be in the
+    /// fixed list, so the session hands them to the tool layer instead.
+    #[test]
+    fn custom_profile_key_names_are_stripped_from_child_processes() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            r#"[[providers]]
+id = "groq"
+title = "Groq"
+description = "Groq gateway"
+route_id = "groq"
+model_provider_prefix = "groq"
+default_base_url = "https://api.groq.com/openai/v1"
+api_key_env = ["GROQ_API_KEY"]
+transport = "openai-compat"
+catalog_mode = "live"
+auth_mode = { api_key = { tui_always_prompt = true } }
+"#,
+        )
+        .unwrap();
+        let registry = forge_connect::loaded_registry_from(&path);
+        assert!(registry.get("groq").is_some(), "fixture must load");
+        let names = forge_connect::credential_env_names(&registry);
+        assert!(names.iter().any(|name| name == "GROQ_API_KEY"));
+        assert!(!forge_tools::PROVIDER_CREDENTIAL_ENV.contains(&"GROQ_API_KEY"));
+        assert!(forge_tools::is_provider_credential_env(
+            "GROQ_API_KEY",
+            &names
+        ));
+        assert!(forge_tools::is_provider_credential_env(
+            "FORGE_GROQ_API_KEY",
+            &[]
+        ));
     }
 
     /// `init_repo` git-initializes a tempdir so the journal-dir resolver

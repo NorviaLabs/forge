@@ -56,6 +56,8 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         // Verification branches on the status itself, so a non-2xx is data
         // rather than a transport failure. ureq 3 would otherwise turn every
         // 401/404/500 into `Err` and leave the status arms below unreachable.
@@ -107,6 +109,8 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
             &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
         )
         .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
         .http_status_as_error(false)
         .timeout_per_call(Some(std::time::Duration::from_secs(15)))
         .build()
