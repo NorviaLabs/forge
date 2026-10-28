@@ -40,7 +40,9 @@ This file is the EGM contract index. The human-maintained
   re-runs only idempotent incomplete intents.
 - `ActiveTaskState` is the single source of truth for task lifecycle. A task
   completes only on runtime evidence.
-- Each repository has at most one owner, enforced by an exclusive lease.
+- Each repository has at most one interactive owner, enforced by an exclusive
+  lease on the repository control DB. Headless `forge bench` takes no lease:
+  it writes only a session journal, never the control DB.
   Runtime data lives under `.forge/local/` (git-excluded) or the platform
   app-data directory.
 - Secrets live only in the 0600 credential store and are never displayed or

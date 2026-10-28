@@ -99,7 +99,15 @@ from the crate root and can therefore reach them.
   enabling on an untrusted workspace.
 - Tool authorization goes through the private `authorize_tool_call` policy
   point, which audits every decision; approve-all upgrades only `Hitl` to
-  `Allow` and never overrides a `Deny`.
+  `Allow` and never overrides a `Deny`. The explicit unconfined retry audits
+  its own decision (`explicit_unconfined_retry`). Two unaudited
+  `governance.authorize` calls only narrow: the parallel-read pre-check
+  (the call is still authorized and audited when it starts) and the
+  re-check after a HITL approval (fail-closed on a changed policy).
+- `resume` and in-place `resume_session` both close out the replayed
+  session's unfinished background tasks (`reconcile_orphaned_background_tasks`):
+  nothing runs them after a restart or a session switch, so they are marked
+  cancelled, or interrupted and retained for a subagent, never dropped.
 
 ## Side Effects
 

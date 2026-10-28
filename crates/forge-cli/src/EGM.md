@@ -42,7 +42,7 @@ session assembly is delegated to `forge-session`; all rendering to `forge-tui`.
 
 - Reads stdin (`bench` prompt; `__egress-connect` tunnel bytes) and writes stdout (JSON results, tunnel bytes) and stderr (logs, errors, usage).
 - Initializes global tracing, a Tokio runtime, and TUI-global preference installs (`forge_tui::notify::install`, `forge_tui::git_prefs::install`).
-- Acquires the repository-group lease file and opens/creates the control SQLite database via `RepositoryBootstrap`; rolls back interrupted managed creations.
+- The TUI path acquires the repository-group lease file and opens/creates the control SQLite database via `RepositoryBootstrap`, and rolls back interrupted managed creations. `bench` takes no lease and writes only its session journal.
 - Creates, resumes, or forks durable sessions and journals, and may create/remove git worktrees through `forge-session`.
 - Opens TCP connections to the egress proxy and copies bytes bidirectionally; spawns one thread for stdin → socket.
 - Calls `std::process::exit`, so no destructors run past that point.

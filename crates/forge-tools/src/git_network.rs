@@ -202,6 +202,7 @@ pub(crate) async fn check_git_network(
     }
     let repo = LocalRepo {
         root: &ctx.workspace_root,
+        credential_env_names: &ctx.credential_env_names,
     };
     let targets = remote_targets(&repo, subcommand, operands, options).await?;
     for target in targets {
@@ -496,6 +497,7 @@ pub(crate) async fn route_through_gateway(
     };
     let repo = LocalRepo {
         root: &ctx.workspace_root,
+        credential_env_names: &ctx.credential_env_names,
     };
     // Clone reads no repository config, so the workspace's own settings
     // neither feed nor change its ssh command.
@@ -702,12 +704,14 @@ async fn remote_targets(
 /// Local, network-free reads of the workspace repository's configuration.
 struct LocalRepo<'a> {
     root: &'a Path,
+    /// The session's custom key env names, stripped like the fixed ones.
+    credential_env_names: &'a [String],
 }
 
 impl LocalRepo<'_> {
     async fn git(&self, args: &[&str]) -> Result<Output, ToolError> {
         let mut cmd = Command::new("git");
-        crate::builtins::strip_credentials(cmd.as_std_mut(), &[]);
+        crate::builtins::strip_credentials(cmd.as_std_mut(), self.credential_env_names);
         cmd.args(args)
             .current_dir(self.root)
             .env("GIT_TERMINAL_PROMPT", "0")

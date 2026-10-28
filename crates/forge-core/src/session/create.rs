@@ -114,6 +114,11 @@ impl AgentSession {
         self.canonical_user_messages = user_messages;
         self.restore_context_state(context_state.as_ref());
         self.reconcile_incomplete_intents(&incomplete).await?;
+        // The task registry above is fresh, so nothing runs the replayed
+        // session's unfinished tasks: close them out as `resume` does rather
+        // than letting them vanish.
+        self.reconcile_orphaned_background_tasks(&background_tasks, &subagent_workspaces)
+            .await?;
         self.restore_background_children(&background_tasks, &subagent_workspaces)
             .await?;
         // Stale Working without a live executor is Interrupted, not eternal Working.

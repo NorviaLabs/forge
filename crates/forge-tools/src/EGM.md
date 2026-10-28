@@ -122,9 +122,12 @@ Subdirectories:
   name programs a later unconfined git would execute.
 - Model-triggered child processes never inherit provider credentials: the
   shell family (bash, background jobs, `exec_command`), the `git` tool, network
-  git (`LocalRepo::git`), and `git credential fill` all strip
-  `PROVIDER_CREDENTIAL_ENV`, the session's `credential_env_names` (custom
-  `api_key_env` names), and any `FORGE_*_API_KEY`. Confined shells also strip
+  git (`LocalRepo::git`) all strip `PROVIDER_CREDENTIAL_ENV`, the session's
+  `credential_env_names` (custom `api_key_env` names), and any
+  `FORGE_*_API_KEY`. Host-side `git credential fill` (the user's own
+  credential helper, cached per host) strips the fixed names and
+  `FORGE_*_API_KEY` but not the session's custom names, which do not reach
+  that path. Confined shells also strip
   host credentials; login shells are not used.
 - `background_run`, `ask_user_question`, `request_unconfined_retry`, and agent
   orchestration tools are intercepted by the agent loop before `call`; their

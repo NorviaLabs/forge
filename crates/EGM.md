@@ -14,8 +14,8 @@ Application boundary:
 
 - forge-cli: [./forge-cli/EGM.md](./forge-cli/EGM.md) - The `forge` binary.
   Handles clap argv, resume/continue/fork, headless `bench`, and the hidden
-  `__egress-connect` helper. It acquires the repository lease before opening
-  the primary session.
+  `__egress-connect` helper. The TUI acquires the repository lease before
+  opening the primary session; `bench` writes only a journal and takes none.
 - forge-tui: [./forge-tui/EGM.md](./forge-tui/EGM.md) - The full-screen
   ratatui UI: `TuiApp`, the event loop, overlays, connect/model picker, editor,
   explorer, and widgets. `ExitCode` 0..4 is a process contract.

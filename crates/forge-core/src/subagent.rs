@@ -1495,6 +1495,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resuming_in_place_also_closes_out_an_orphaned_subagent() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path()).await;
+        let cfg = cfg(dir.path());
+        let parent_session_id = {
+            let mut s = AgentSession::create(
+                cfg.clone(),
+                Arc::new(HangingModelClient),
+                ToolRegistry::new(),
+            )
+            .await
+            .unwrap();
+            s.spawn_subagent(SubagentSpec {
+                role: "interrupted".into(),
+                prompt: "do the thing".into(),
+                mode: AgentMode::Writer,
+                tool_allowlist: None,
+            })
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            s.session_id
+        };
+
+        // The TUI's `/resume` swaps the conversation of a live session in
+        // place (`resume_session`) instead of building a new one.
+        let model = Arc::new(MockModelClient::script(vec![text_response(
+            "must not run on resume",
+        )]));
+        let mut current = AgentSession::create(cfg, model.clone(), ToolRegistry::new())
+            .await
+            .unwrap();
+        current.resume_session(parent_session_id).await.unwrap();
+
+        assert!(model.last_request().is_none());
+        assert_eq!(current.background().list().count(), 1);
+        let task = current.background().list().next().unwrap();
+        assert!(
+            task.status.is_terminal(),
+            "an orphaned subagent must not vanish or stay running: {:?}",
+            task.status
+        );
+        let child = task.child_session_id.expect("subagent has a child session");
+        assert!(current.tasks.retained_subagents.contains_key(&child));
+    }
+
+    #[tokio::test]
     async fn resuming_the_parent_does_not_silently_run_an_orphaned_subagent() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path()).await;
