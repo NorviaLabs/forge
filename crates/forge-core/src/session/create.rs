@@ -223,7 +223,7 @@ impl AgentSession {
             active_task: ActiveTaskState::new(session_id),
             tasks: TaskRuntime::new(),
             active_model: String::new(),
-            active_route_id: String::new(),
+            active_profile_id: String::new(),
             reasoning_effort: None,
             thinking_enabled: true,
             journal: SessionPersistence::new(journal),
@@ -321,7 +321,7 @@ impl AgentSession {
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
             tasks: TaskRuntime::with_queue(queue),
             active_model: String::new(),
-            active_route_id: String::new(),
+            active_profile_id: String::new(),
             reasoning_effort: None,
             thinking_enabled: true,
             journal: SessionPersistence::new(journal),
@@ -384,7 +384,7 @@ impl AgentSession {
         };
         let mut fork = Self::create(loop_cfg, self.model.clone(), (*self.tools).clone()).await?;
         fork.active_model = self.active_model.clone();
-        fork.active_route_id = self.active_route_id.clone();
+        fork.active_profile_id = self.active_profile_id.clone();
         fork.reasoning_effort = self.reasoning_effort.clone();
         fork.thinking_enabled = self.thinking_enabled;
         fork.governance = self.governance.clone();

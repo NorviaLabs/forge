@@ -142,7 +142,7 @@ pub struct RepositorySession {
     pub turn_state: SupervisorTurnState,
     pub slot: Option<u8>,
     pub model_id: String,
-    pub route_id: String,
+    pub profile_id: String,
     pub reasoning_effort: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -163,7 +163,7 @@ pub struct NewRepositorySession {
     pub ownership: WorktreeOwnership,
     pub slot: Option<u8>,
     pub model_id: String,
-    pub route_id: String,
+    pub profile_id: String,
     pub reasoning_effort: Option<String>,
 }
 
@@ -823,7 +823,7 @@ impl RepositoryControl {
         .bind(previous_record.ownership.as_str())
         .bind(previous_record.slot.map(i64::from))
         .bind(&previous_record.model_id)
-        .bind(&previous_record.route_id)
+        .bind(&previous_record.profile_id)
         .bind(&previous_record.reasoning_effort)
         .bind(&now)
         .bind(&now)
@@ -1278,7 +1278,7 @@ impl RepositoryControl {
         .bind(session.ownership.as_str())
         .bind(session.slot.map(i64::from))
         .bind(session.model_id)
-        .bind(session.route_id)
+        .bind(session.profile_id)
         .bind(session.reasoning_effort)
         .bind(&now)
         .bind(&now)
@@ -1558,7 +1558,7 @@ impl RepositoryControl {
         &self,
         session_id: SessionId,
         model_id: &str,
-        route_id: &str,
+        profile_id: &str,
         reasoning_effort: Option<&str>,
     ) -> Result<(), RepositorySessionError> {
         let result = sqlx::query(
@@ -1566,7 +1566,7 @@ impl RepositoryControl {
              WHERE session_id = ? AND lifecycle <> 'archived'",
         )
         .bind(model_id)
-        .bind(route_id)
+        .bind(profile_id)
         .bind(reasoning_effort)
         .bind(Utc::now().to_rfc3339())
         .bind(session_id.to_string())
@@ -1686,6 +1686,15 @@ fn parse_session_id(value: String) -> Result<SessionId, RepositorySessionError> 
     SessionId::parse_str(&value).map_err(|_| RepositorySessionError::InvalidSessionId(value))
 }
 
+/// The profile id a stored `route_id` column names. Built-in route ids map
+/// to their profile; the old `native` placeholder means none was picked.
+fn stored_profile_id(route: &str) -> String {
+    match route.trim() {
+        "native" => String::new(),
+        route => forge_connect::profile_id_for_stored_route(route).to_string(),
+    }
+}
+
 fn parse_timestamp(value: String) -> Result<DateTime<Utc>, RepositorySessionError> {
     DateTime::parse_from_rfc3339(&value)
         .map(|value| value.with_timezone(&Utc))
@@ -1710,8 +1719,10 @@ fn parse_session(
         slot: row
             .get::<Option<i64>, _>("slot")
             .and_then(|value| u8::try_from(value).ok()),
-        model_id: row.get("model_id"),
-        route_id: row.get("route_id"),
+        // Rows written before the profile id became the only identity hold
+        // an old model prefix and route id; read both in the current form.
+        model_id: forge_connect::normalize_saved_model_id(&row.get::<String, _>("model_id")),
+        profile_id: stored_profile_id(&row.get::<String, _>("route_id")),
         reasoning_effort: row.get("reasoning_effort"),
         created_at: parse_timestamp(row.get("created_at"))?,
         updated_at: parse_timestamp(row.get("updated_at"))?,
@@ -1743,7 +1754,7 @@ mod tests {
             ownership: WorktreeOwnership::Managed,
             slot,
             model_id: "mock".into(),
-            route_id: "native".into(),
+            profile_id: String::new(),
             reasoning_effort: Some("high".into()),
         }
     }
@@ -2489,7 +2500,7 @@ mod tests {
             .unwrap();
         let stored = control.session(session_id).await.unwrap();
         assert_eq!(stored.model_id, "claude-sonnet-4-6");
-        assert_eq!(stored.route_id, "native-v2");
+        assert_eq!(stored.profile_id, "native-v2");
         assert_eq!(stored.reasoning_effort.as_deref(), Some("high"));
 
         control
@@ -2498,7 +2509,8 @@ mod tests {
             .unwrap();
         let stored = control.session(session_id).await.unwrap();
         assert_eq!(stored.model_id, "mock");
-        assert_eq!(stored.route_id, "native");
+        // The old `native` placeholder reads as no profile.
+        assert_eq!(stored.profile_id, "");
         assert_eq!(stored.reasoning_effort, None);
     }
 

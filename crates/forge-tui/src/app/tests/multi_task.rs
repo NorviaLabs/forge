@@ -1141,7 +1141,7 @@ async fn unchanged_transcript_update_reuses_cached_conversation_lines() {
         .command(forge_session::SupervisorCommand::SetModel {
             session_id: app.selected_session_id,
             model_id: "mock-v2".into(),
-            route_id: "native-v2".into(),
+            profile_id: "native-v2".into(),
             reasoning_effort: None,
         })
         .await
@@ -1220,7 +1220,7 @@ async fn lagged_supervisor_events_resync_the_selected_snapshot() {
                 } else {
                     format!("mock-after-lag-{index}")
                 },
-                route_id: "native".into(),
+                profile_id: "native".into(),
                 reasoning_effort: None,
             })
             .await
@@ -1489,7 +1489,7 @@ async fn app_with_supervisor_and_model(
                 ownership: forge_session::WorktreeOwnership::Primary,
                 slot: Some(1),
                 model_id: "mock".into(),
-                route_id: "native".into(),
+                profile_id: "native".into(),
                 reasoning_effort: None,
             },
             None,
@@ -2845,7 +2845,7 @@ async fn tracked_command_applies_after_a_busy_turn_without_blocking_input() {
         forge_session::SupervisorCommand::SetModel {
             session_id,
             model_id: "queued-model".into(),
-            route_id: String::new(),
+            profile_id: String::new(),
             reasoning_effort: None,
         },
         CommandFollowUp::Toast("model applied".into()),

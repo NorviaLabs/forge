@@ -58,8 +58,8 @@ impl TuiApp {
         &self,
     ) -> (String, Option<String>, Option<String>, Option<String>) {
         if self.selected_session_model().is_some() {
-            let route_id = self.selected_active_route_id();
-            if let Some(profile) = self.connect.registry.get_by_route(&route_id) {
+            let profile_id = self.selected_active_profile_id();
+            if let Some(profile) = self.connect.registry.get(&profile_id) {
                 let route_label = (!profile.label.is_empty()).then(|| profile.label.clone());
                 return (
                     profile.id.clone(),
@@ -130,7 +130,7 @@ impl TuiApp {
             self.try_session_command(forge_session::SupervisorCommand::SetModel {
                 session_id: self.selected_session_id,
                 model_id: model,
-                route_id: self.selected_active_route_id(),
+                profile_id: self.selected_active_profile_id(),
                 reasoning_effort: self
                     .selected_details()
                     .and_then(|details| details.reasoning_effort.clone()),
@@ -331,16 +331,16 @@ impl TuiApp {
         }
     }
 
-    pub(crate) fn selected_active_route_id(&self) -> String {
+    pub(crate) fn selected_active_profile_id(&self) -> String {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
                 .session_runtime
                 .as_ref()
-                .map(|session| session.active_route_id.clone())
+                .map(|session| session.active_profile_id.clone())
                 .unwrap_or_default(),
             SelectedRuntime::Supervised(_) => self
                 .selected_details()
-                .map(|details| details.active_route_id.clone())
+                .map(|details| details.active_profile_id.clone())
                 .unwrap_or_default(),
         }
     }

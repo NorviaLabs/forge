@@ -562,8 +562,7 @@ mod tests {
                 side_effect_class: SideEffectClass::Read,
                 idempotent: true,
             }],
-            model: "openai-codex/gpt-test".into(),
-            route_id: Some("openai-chatgpt".into()),
+            model: "openai_codex/gpt-test".into(),
             session_id: None,
             reasoning_effort: None,
             thinking_enabled: true,
@@ -601,7 +600,7 @@ mod tests {
     #[test]
     fn unsupported_thinking_off_omits_provider_setting() {
         let mut request = request_with_tool("read_file");
-        request.model = "openai-codex/unknown-thinking-toggle-test-model".into();
+        request.model = "openai_codex/unknown-thinking-toggle-test-model".into();
         request.reasoning_effort = Some("high".into());
         request.thinking_enabled = false;
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
@@ -902,8 +901,7 @@ mod tests {
         );
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
-            model: "openai-codex/gpt-test".into(),
-            route_id: Some("openai-chatgpt".into()),
+            model: "openai_codex/gpt-test".into(),
             session_id: None,
             messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
@@ -919,8 +917,7 @@ mod tests {
     fn codex_request() -> ModelRequest {
         ModelRequest {
             workspace_root: std::path::PathBuf::new(),
-            model: "openai-codex/gpt-test".into(),
-            route_id: Some("openai-chatgpt".into()),
+            model: "openai_codex/gpt-test".into(),
             session_id: None,
             messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
@@ -994,8 +991,7 @@ mod tests {
         );
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
-            model: "openai-codex/gpt-test".into(),
-            route_id: Some("openai-chatgpt".into()),
+            model: "openai_codex/gpt-test".into(),
             session_id: None,
             messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],

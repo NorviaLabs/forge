@@ -60,13 +60,10 @@ struct BenchArgs {
     #[arg(long, value_name = "PATH")]
     journal: Option<PathBuf>,
 
-    /// Canonical model id, including its provider prefix when required.
+    /// Model id as `<provider>/<model>`, e.g. `openai_codex/gpt-5.6-luna`.
+    /// The prefix is the provider profile.
     #[arg(long, value_name = "MODEL")]
     model: String,
-
-    /// Stable provider route. If omitted, infer it from the model prefix.
-    #[arg(long, value_name = "ROUTE")]
-    route_id: Option<String>,
 
     /// Wire-level reasoning effort sent to the provider.
     #[arg(long, default_value = "max", value_name = "EFFORT")]
@@ -190,14 +187,12 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
     // Config files intentionally do not select the active model. The bench
     // command takes that selection explicitly so a run is reproducible.
     cfg.model.model = args.model.clone();
-    let route_id = resolve_route_id(&args.model, args.route_id.as_deref())?;
+    let profile_id = resolve_profile_id(&args.model)?;
 
     let opened = open_session(&cfg, SessionTarget::New).await?;
     let notices = opened.notices;
     let mut session = opened.session;
-    if let Some(route_id) = route_id.as_deref() {
-        session.set_active_route_id(route_id);
-    }
+    session.set_active_profile_id(profile_id.clone());
     session.set_reasoning_effort(Some(args.effort.clone()));
 
     let response = match run_headless(
@@ -255,7 +250,7 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
         "{}",
         serde_json::to_string(&serde_json::json!({
             "model": args.model,
-            "route_id": route_id,
+            "profile_id": profile_id,
             "effort": args.effort,
             "response": response,
             "notices": notices,
@@ -264,33 +259,22 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::Success)
 }
 
-fn resolve_route_id(model: &str, explicit: Option<&str>) -> anyhow::Result<Option<String>> {
-    let registry = forge_connect::loaded_registry();
-    if let Some(route_id) = explicit {
-        if registry.get_by_route(route_id).is_none() {
-            anyhow::bail!("unknown Forge route id `{route_id}`");
-        }
-        return Ok(Some(route_id.to_string()));
+/// The provider profile a `<provider>/<model>` id names. An old prefix
+/// (`openai-codex/…`) is refused with the id to use instead.
+fn resolve_profile_id(model: &str) -> anyhow::Result<String> {
+    if let Some(current) = forge_connect::old_prefix_hint(model) {
+        anyhow::bail!("model `{model}` uses an old provider prefix; use `{current}`");
     }
-
-    let prefix = model
-        .split_once('/')
-        .map(|(prefix, _)| prefix)
-        .unwrap_or(model);
-    // The profile id is the prefix; old prefixes and aliases still resolve.
-    let mut matches = registry
-        .profile_for_model(&format!("{prefix}/"))
-        .map(|profile| profile.route_id().to_string())
-        .into_iter()
-        .collect::<Vec<_>>();
-    matches.sort_unstable();
-    matches.dedup();
-    match matches.as_slice() {
-        [] => Ok(None),
-        [route_id] => Ok(Some(route_id.clone())),
-        _ => {
-            anyhow::bail!("model prefix `{prefix}` maps to multiple Forge routes; pass --route-id")
-        }
+    let Some((prefix, _)) = model.split_once('/') else {
+        anyhow::bail!("model `{model}` needs a provider prefix: `<provider>/<model>`");
+    };
+    let registry = forge_connect::loaded_registry();
+    match registry.get(prefix) {
+        Some(profile) => Ok(profile.id.clone()),
+        None => anyhow::bail!(
+            "no provider `{prefix}`; known providers: {}",
+            registry.ids().join(", ")
+        ),
     }
 }
 
@@ -512,9 +496,7 @@ mod tests {
             "--journal",
             "/tmp/journal",
             "--model",
-            "openai-codex/gpt-5.6-luna",
-            "--route-id",
-            "openai-chatgpt",
+            "openai_codex/gpt-5.6-luna",
             "--effort",
             "max",
             "--approve-all",
@@ -525,18 +507,24 @@ mod tests {
         };
         assert_eq!(args.workspace, PathBuf::from("/tmp/repo"));
         assert_eq!(args.journal, Some(PathBuf::from("/tmp/journal")));
-        assert_eq!(args.model, "openai-codex/gpt-5.6-luna");
-        assert_eq!(args.route_id.as_deref(), Some("openai-chatgpt"));
+        assert_eq!(args.model, "openai_codex/gpt-5.6-luna");
         assert_eq!(args.effort, "max");
         assert!(args.approve_all);
     }
 
     #[test]
-    fn bench_infers_the_codex_subscription_route_from_the_model_prefix() {
+    fn bench_takes_the_profile_from_the_model_prefix() {
         assert_eq!(
-            resolve_route_id("openai-codex/gpt-5.6-luna", None).unwrap(),
-            Some("openai-chatgpt".into())
+            resolve_profile_id("openai_codex/gpt-5.6-luna").unwrap(),
+            "openai_codex"
         );
+        let old = resolve_profile_id("openai-codex/gpt-5.6-luna").unwrap_err();
+        assert!(
+            old.to_string().contains("openai_codex/gpt-5.6-luna"),
+            "{old}"
+        );
+        assert!(resolve_profile_id("gpt-5").is_err());
+        assert!(resolve_profile_id("nobody/model").is_err());
     }
 
     /// An explicit session id needs no journal lookup, so this maps straight

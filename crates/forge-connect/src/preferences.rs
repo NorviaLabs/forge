@@ -125,7 +125,6 @@ impl PreferenceStore {
         };
         let effort = self.last_effort()?.unwrap_or_default();
         Ok(Some(ModelSelection {
-            route_id: spec.route_id.clone(),
             provider: "native".into(),
             model,
             profile_id: Some(spec.id.clone()),
@@ -330,7 +329,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
-        assert_eq!(selection.route_id, "opencode-go");
         assert_eq!(selection.model, "opencode_go/deepseek-v4.1-flash");
     }
 
@@ -347,7 +345,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
-        assert_eq!(selection.route_id, "opencode-go");
     }
 
     #[test]
@@ -383,7 +380,6 @@ mod tests {
                 .last_selection_struct(&crate::builtin_registry())
                 .unwrap(),
             Some(ModelSelection {
-                route_id: "openai-chatgpt".into(),
                 provider: "native".into(),
                 model: "openai_codex/gpt-5.6-luna".into(),
                 profile_id: Some("openai_codex".into()),

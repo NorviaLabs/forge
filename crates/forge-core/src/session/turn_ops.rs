@@ -86,7 +86,6 @@ impl AgentSession {
             tools,
             model: selection.model,
             workspace_root: self.tool_ctx.workspace_root.clone(),
-            route_id: (!selection.route_id.is_empty()).then_some(selection.route_id),
             session_id: Some(self.session_id.to_string()),
             reasoning_effort: selection.reasoning_effort,
             thinking_enabled: selection.thinking_enabled,

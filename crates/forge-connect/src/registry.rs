@@ -181,13 +181,6 @@ impl ConnectRegistry {
         self.profiles.iter().find(|p| p.id.eq_ignore_ascii_case(id))
     }
 
-    pub fn get_by_route(&self, route_id: &str) -> Option<&ProviderSpec> {
-        let route_id = route_id.trim();
-        self.profiles
-            .iter()
-            .find(|p| p.route_id.eq_ignore_ascii_case(route_id))
-    }
-
     /// The profile that owns `model`, matched by the provider prefix the model
     /// id is namespaced with (`opencode-go/...` -> the `opencode_go` profile).
     ///
@@ -317,7 +310,6 @@ fn save_custom_provider_to(
         model_provider_prefix: id.into(),
         provider: id.into(),
         provider_label: id.into(),
-        route_id: id.into(),
         catalog_mode: CatalogMode::Live,
         origin: SpecOrigin::User,
         ..ProviderSpec::blank()
@@ -335,9 +327,7 @@ fn save_custom_provider_to(
         .into_iter()
         .flatten()
     {
-        if value.get("id").and_then(toml::Value::as_str) == Some(id)
-            || value.get("route_id").and_then(toml::Value::as_str) == Some(id)
-        {
+        if value.get("id").and_then(toml::Value::as_str) == Some(id) {
             return Err(format!("id `{id}` is already registered"));
         }
     }
@@ -667,9 +657,6 @@ fn normalize_spec(mut spec: ProviderSpec) -> ProviderSpec {
     if spec.provider_label.is_empty() {
         spec.provider_label = spec.title.clone();
     }
-    if spec.route_id.is_empty() {
-        spec.route_id = spec.id.clone();
-    }
     // The id is the model prefix from now on; an older custom prefix stays
     // only as an alias that saved ids normalize from.
     if !spec.model_provider_prefix.is_empty() && spec.model_provider_prefix != spec.id {
@@ -779,12 +766,6 @@ fn validate_user_spec(registry: &ConnectRegistry, spec: &ProviderSpec) -> Result
                 "api_key_env `{name}` is reserved by a built-in provider"
             ));
         }
-    }
-    if registry.get_by_route(&spec.route_id).is_some() {
-        return Err(format!(
-            "route_id `{}` is already registered",
-            spec.route_id
-        ));
     }
     // Model ids are routed by prefix. A custom profile claiming a registered
     // prefix (or a built-in alias) would send its requests, and its key, to
@@ -1016,22 +997,18 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         .unwrap();
         let original = format!(
             "# My providers\n{}# Keep this trailing comment",
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .replace("route_id = \"existing\"", "route_id = \"reserved\"")
+            std::fs::read_to_string(&path).unwrap()
         );
         std::fs::write(&path, &original).unwrap();
-        for id in ["existing", "reserved"] {
-            assert!(save_custom_provider_to(
-                &path,
-                id,
-                "https://example.com",
-                "m",
-                crate::WireKind::ChatCompletions
-            )
-            .is_err());
-            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-        }
+        assert!(save_custom_provider_to(
+            &path,
+            "existing",
+            "https://example.com",
+            "m",
+            crate::WireKind::ChatCompletions
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         save_custom_provider_to(
             &path,
             "new",
@@ -1344,7 +1321,6 @@ base_url = "https://gone.example/v1"
         ));
         assert_eq!(r.get("DEMO").unwrap().title, "demo");
         assert_eq!(r.ids(), vec!["demo"]);
-        assert_eq!(r.get_by_route("demo").unwrap().id, "demo");
     }
 
     fn profile(id: &str, title: &str) -> ProviderSpec {
@@ -1392,7 +1368,6 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         .unwrap();
         let registry = loaded_registry_from(&path);
         let spec = registry.get("groq").expect("user spec loaded");
-        assert_eq!(spec.route_id(), "groq");
         assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
         assert_eq!(spec.origin, SpecOrigin::User);
         assert!(registry.get("openai").is_some());
@@ -1450,7 +1425,6 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         .unwrap();
         let registry = loaded_registry_from(&path);
         assert_eq!(registry.get("openai").unwrap().title, "OpenAI");
-        assert!(registry.get_by_route("evil-openai").is_none());
         assert_eq!(registry.load_warnings().len(), 1);
         assert!(registry.load_warnings()[0].contains("already registered"));
     }

@@ -580,7 +580,7 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
     app.persist_selection();
-    let expected_route = app.session_runtime.active_route_id.clone();
+    let expected_route = app.session_runtime.active_profile_id.clone();
     assert!(
         !expected_route.is_empty(),
         "the picker must set a route, or this test proves nothing"
@@ -615,14 +615,9 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     let restarted = restarted.restore_saved_auth();
 
     assert_eq!(
-        restarted.session_runtime.active_route_id, expected_route,
+        restarted.session_runtime.active_profile_id, expected_route,
         "restart must restore the route; without it transport_for_route falls \
          back to OpenAI-compat and every call goes over the wrong wire"
-    );
-    assert_eq!(
-        restarted.session_runtime.build_model_request().route_id,
-        Some(expected_route),
-        "the restored route must reach the request that is actually sent"
     );
 }
 
@@ -672,7 +667,7 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
         Some(OPENCODE_GO_PROFILE_ID)
     );
     assert_eq!(
-        restored.session_runtime.active_route_id, "opencode-go",
+        restored.session_runtime.active_profile_id, "opencode_go",
         "route must follow the model, not the stale saved profile"
     );
     // The saved `opencode-go/` id is read in its current form.
@@ -682,7 +677,6 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
     );
     let request = restored.session_runtime.build_model_request();
     assert_eq!(request.model, "opencode_go/deepseek-v4.1-flash");
-    assert_eq!(request.route_id.as_deref(), Some("opencode-go"));
 }
 
 #[tokio::test]
@@ -1753,7 +1747,6 @@ async fn model_capability_and_effort_fallback_paths_keep_session_state_in_sync()
     app.apply_selection(&ModelSelection {
         provider: String::new(),
         model: "openai/gpt-4.1-mini".into(),
-        route_id: "openai-api".into(),
         profile_id: Some(OPENAI_PROFILE_ID.into()),
         effort: "high".into(),
     });

@@ -471,7 +471,6 @@ mod tests {
                 idempotent: false,
             }],
             model: model.into(),
-            route_id: None,
             session_id: None,
             reasoning_effort: None,
             thinking_enabled: true,
@@ -511,7 +510,6 @@ mod tests {
     async fn a_custom_profile_sends_to_its_endpoint_with_its_key() {
         let mut profile = forge_connect::openai_profile();
         profile.id = "custom-test".into();
-        profile.route_id = "custom-test".into();
         profile.model_provider_prefix = "custom-test".into();
         let client = crate::native::tests::test_client(
             profile,
@@ -519,10 +517,7 @@ mod tests {
             crate::native::tests::key("custom-key"),
         );
         let (target, _) = client
-            .target_for(&crate::native::tests::request(
-                "custom-test/org/model-a",
-                None,
-            ))
+            .target_for(&crate::native::tests::request("custom-test/org/model-a"))
             .await
             .unwrap();
         assert_eq!(target.base_url, "https://custom.example/v1");
@@ -917,7 +912,7 @@ mod tests {
             );
             let (tx, rx) = std::sync::mpsc::channel();
             let error = client
-                .complete_with_stream(request("opencode-go/deepseek-test"), Some(tx))
+                .complete_with_stream(request("opencode_go/deepseek-test"), Some(tx))
                 .await
                 .unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
@@ -952,7 +947,7 @@ mod tests {
                 key("test-key"),
             );
             let response = client
-                .complete(request("opencode-go/deepseek-test"))
+                .complete(request("opencode_go/deepseek-test"))
                 .await
                 .unwrap();
             assert_eq!(response.usage.unwrap().completion_tokens, 4);
@@ -987,7 +982,7 @@ mod tests {
             key("test-key"),
         );
         let response = client
-            .complete(request("opencode-go/deepseek-test"))
+            .complete(request("opencode_go/deepseek-test"))
             .await
             .unwrap();
         assert_eq!(response.tool_calls.len(), 1);
@@ -1022,8 +1017,7 @@ mod tests {
             &base_url,
             key("opencode-secret"),
         );
-        let mut request = request("opencode-go/gpt-test");
-        request.route_id = Some("opencode-go".into());
+        let mut request = request("opencode_go/gpt-test");
         request.session_id = Some("session-123".into());
 
         let response = client.complete(request).await.unwrap();
@@ -1050,8 +1044,7 @@ mod tests {
             &base_url,
             key("opencode-secret"),
         );
-        let mut request = request("opencode-go/gpt-test");
-        request.route_id = Some("opencode-go".into());
+        let request = request("opencode_go/gpt-test");
 
         let response = client.complete(request).await.unwrap();
         assert_eq!(response.text, "hello");
@@ -1064,13 +1057,13 @@ mod tests {
     #[test]
     fn fallback_opencode_session_is_stable_within_the_process() {
         let first =
-            crate::native::opencode_session_id(&request("opencode-go/gpt-test")).to_string();
+            crate::native::opencode_session_id(&request("opencode_go/gpt-test")).to_string();
         let second =
-            crate::native::opencode_session_id(&request("opencode-go/gpt-test")).to_string();
+            crate::native::opencode_session_id(&request("opencode_go/gpt-test")).to_string();
         assert_eq!(first, second);
         assert!(!first.is_empty());
         // A provided thread id always wins over the generated fallback.
-        let mut with_thread = request("opencode-go/gpt-test");
+        let mut with_thread = request("opencode_go/gpt-test");
         with_thread.session_id = Some("thread-7".into());
         assert_eq!(crate::native::opencode_session_id(&with_thread), "thread-7");
     }
@@ -1092,8 +1085,7 @@ mod tests {
             &base_url,
             key("opencode-secret"),
         );
-        let mut request = request("opencode-zen/muse-spark-1.3-contributor");
-        request.route_id = Some("opencode-zen".into());
+        let mut request = request("opencode_zen/muse-spark-1.3-contributor");
         request.session_id = Some("session-muse".into());
 
         let response = client.complete(request).await.unwrap();
@@ -1122,13 +1114,13 @@ mod tests {
         );
         for (prefix, _base_env, _key_env, path) in [
             (
-                "opencode-go",
+                "opencode_go",
                 "OPENCODE_API_BASE",
                 "OPENCODE_API_KEY",
                 "/zen/go/v1",
             ),
             (
-                "opencode-zen",
+                "opencode_zen",
                 "OPENCODE_ZEN_API_BASE",
                 "OPENCODE_ZEN_API_KEY",
                 "/zen/v1",
@@ -1140,7 +1132,7 @@ mod tests {
                 return;
             };
             let client = test_client(
-                if prefix == "opencode-zen" {
+                if prefix == "opencode_zen" {
                     forge_connect::opencode_zen_profile()
                 } else {
                     forge_connect::opencode_go_profile()
@@ -1149,7 +1141,6 @@ mod tests {
                 key("opencode-secret"),
             );
             let mut request = request(&format!("{prefix}/union-alpha"));
-            request.route_id = Some(prefix.into());
             request.session_id = Some("session-union".into());
 
             let response = client.complete(request).await.unwrap();
@@ -1196,8 +1187,7 @@ mod tests {
             &format!("{base_url}/v1"),
             key("opencode-secret"),
         );
-        let mut request = request("opencode-go/grok-4.6");
-        request.route_id = Some("opencode-go".into());
+        let mut request = request("opencode_go/grok-4.6");
         request.session_id = Some("session-grok".into());
 
         let response = client.complete(request).await.unwrap();

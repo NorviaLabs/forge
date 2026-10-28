@@ -648,15 +648,11 @@ impl TuiApp {
                 // selected must reach that actor, not the primary session.
                 // Provider authentication stays global and is unaffected.
                 if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
-                    let route_id = profile_id
-                        .as_deref()
-                        .map(|id| forge_connect::route_id_for_profile(&self.connect.registry, id))
-                        .unwrap_or_default();
                     let queued = self.submit_session_command_tracked(
                         forge_session::SupervisorCommand::SetModel {
                             session_id,
                             model_id: model.clone(),
-                            route_id,
+                            profile_id: profile_id.clone().unwrap_or_default(),
                             reasoning_effort: Some(self.reasoning_effort.value.to_string()),
                         },
                         CommandFollowUp::Toast(format!(

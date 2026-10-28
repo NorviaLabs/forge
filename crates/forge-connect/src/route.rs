@@ -34,14 +34,6 @@ pub fn route_model_id(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
 }
 
-/// Resolve a persisted profile ID to the stable route ID used by execution.
-pub fn route_id_for_profile(registry: &crate::ConnectRegistry, profile_id: &str) -> String {
-    registry
-        .get(profile_id)
-        .map(|profile| profile.route_id.clone())
-        .unwrap_or_else(|| profile_id.to_string())
-}
-
 /// Group flat catalog routes by model, preserving every profile's route.
 pub fn group_routes(entries: &[CatalogEntry]) -> Vec<ModelPickerEntry> {
     let mut out: Vec<ModelPickerEntry> = Vec::new();

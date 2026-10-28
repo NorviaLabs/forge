@@ -668,7 +668,7 @@ impl TuiApp {
                 self.runtime.model_label = details.active_model.clone();
             }
             self.thinking_enabled = details.thinking_enabled;
-            if let Some(profile) = self.connect.registry.get_by_route(&details.active_route_id) {
+            if let Some(profile) = self.connect.registry.get(&details.active_profile_id) {
                 self.connect.profile = Some(profile.id.clone());
             }
         }

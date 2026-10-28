@@ -495,7 +495,6 @@ mod tests {
         let req = ModelRequest {
             workspace_root: dir.path().to_path_buf(),
             model: "anthropic/claude".into(),
-            route_id: None,
             session_id: None,
             prompt_cache: true,
             reasoning_effort: None,
@@ -539,7 +538,6 @@ mod tests {
         let req = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
-            route_id: None,
             session_id: None,
             prompt_cache: true,
             reasoning_effort: None,
@@ -588,7 +586,6 @@ mod tests {
         let req = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
-            route_id: None,
             session_id: None,
             prompt_cache: true,
             reasoning_effort: None,
@@ -715,7 +712,6 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude-sonnet-4-6".into(),
-            route_id: Some("anthropic-api".into()),
             session_id: None,
             reasoning_effort: Some("high".into()),
             thinking_enabled: true,
@@ -771,7 +767,6 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
-            route_id: Some("anthropic-api".into()),
             session_id: None,
             reasoning_effort: None,
             thinking_enabled: true,
@@ -861,7 +856,6 @@ mod tests {
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude-sonnet-4-6".into(),
-            route_id: Some("anthropic-api".into()),
             session_id: None,
             reasoning_effort: None,
             thinking_enabled: false,
@@ -918,7 +912,6 @@ mod tests {
             let request = ModelRequest {
                 workspace_root: std::path::PathBuf::new(),
                 model: "anthropic/claude-sonnet-4-6".into(),
-                route_id: Some("anthropic-api".into()),
                 session_id: None,
                 reasoning_effort: None,
                 thinking_enabled: false,

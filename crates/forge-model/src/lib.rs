@@ -212,9 +212,6 @@ pub struct ModelRequest {
     pub model: String,
     /// Workspace used to re-read `ImageRef` paths at request-build time.
     pub workspace_root: std::path::PathBuf,
-    /// Stable offering identity. `None` is retained for legacy callers while
-    /// route-aware selection is rolled through the workspace.
-    pub route_id: Option<String>,
     /// Forge session id, forwarded as `x-opencode-session` on OpenCode
     /// routes for prompt-cache affinity. Opaque to other providers.
     pub session_id: Option<String>,
@@ -316,7 +313,6 @@ mod tests {
                 .into(),
                 tools: vec![],
                 model: "mock".into(),
-                route_id: None,
                 session_id: None,
                 reasoning_effort: None,
                 thinking_enabled: true,
@@ -339,7 +335,6 @@ mod tests {
                     messages: vec![].into(),
                     tools: vec![],
                     model: "mock".into(),
-                    route_id: None,
                     session_id: None,
                     reasoning_effort: None,
                     thinking_enabled: true,
@@ -378,7 +373,6 @@ mod tests {
                 messages: vec![].into(),
                 tools: vec![],
                 model: "mock".into(),
-                route_id: None,
                 session_id: None,
                 reasoning_effort: None,
                 thinking_enabled: true,
@@ -414,7 +408,6 @@ mod tests {
                     messages: vec![].into(),
                     tools: vec![],
                     model: "mock".into(),
-                    route_id: None,
                     session_id: None,
                     reasoning_effort: None,
                     thinking_enabled: true,

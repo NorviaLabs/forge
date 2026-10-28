@@ -325,7 +325,7 @@ pub enum SupervisorCommand {
     SetModel {
         session_id: SessionId,
         model_id: String,
-        route_id: String,
+        profile_id: String,
         reasoning_effort: Option<String>,
     },
     SetThinking {
@@ -669,7 +669,7 @@ impl SupervisorState {
     async fn inherited_model(&self) -> (String, String, Option<String>) {
         let candidates: Vec<SessionId> = self.actors.read().await.keys().cloned().collect();
         if candidates.is_empty() {
-            return (self.cfg.model.model.clone(), "native".into(), None);
+            return (self.cfg.model.model.clone(), String::new(), None);
         }
         let selected = self.control.selected().await.ok().flatten();
         let primary = self
@@ -689,11 +689,11 @@ impl SupervisorState {
             .or_else(|| primary.filter(|id| candidates.contains(id)))
             .or_else(|| candidates.first().copied())
         else {
-            return (self.cfg.model.model.clone(), "native".into(), None);
+            return (self.cfg.model.model.clone(), String::new(), None);
         };
         let actor = self.actors.read().await.get(&id).cloned();
         let Some(actor) = actor else {
-            return (self.cfg.model.model.clone(), "native".into(), None);
+            return (self.cfg.model.model.clone(), String::new(), None);
         };
         // Lock-free: the snapshot carries the same model selection the
         // session holds, so creating a session never waits out another
@@ -702,10 +702,10 @@ impl SupervisorState {
         match snapshot.details.as_ref() {
             Some(details) => (
                 details.active_model.clone(),
-                details.active_route_id.clone(),
+                details.active_profile_id.clone(),
                 details.reasoning_effort.clone(),
             ),
-            None => (self.cfg.model.model.clone(), "native".into(), None),
+            None => (self.cfg.model.model.clone(), String::new(), None),
         }
     }
 }
@@ -870,7 +870,7 @@ impl RepositorySupervisor {
                         ownership: WorktreeOwnership::Primary,
                         slot: Some(1),
                         model_id: cfg.model.model.clone(),
-                        route_id: "native".into(),
+                        profile_id: String::new(),
                         reasoning_effort: None,
                     },
                     None,
@@ -989,7 +989,7 @@ impl RepositorySupervisor {
                         ownership: WorktreeOwnership::Primary,
                         slot: Some(1),
                         model_id: opened.session.active_model.clone(),
-                        route_id: opened.session.active_route_id.clone(),
+                        profile_id: opened.session.active_profile_id.clone(),
                         reasoning_effort: None,
                     },
                     None,
@@ -1838,10 +1838,10 @@ async fn execute_command(
             // using, not the process config default: config usually carries no
             // model and the selection lives on the sessions. Inherit it from
             // the selected/primary session before the task row is written.
-            let (model_id, route_id, reasoning_effort) = state.inherited_model().await;
+            let (model_id, profile_id, reasoning_effort) = state.inherited_model().await;
             if !model_id.is_empty() {
                 opened.session.set_active_model(model_id);
-                opened.session.set_active_route_id(route_id);
+                opened.session.set_active_profile_id(profile_id);
                 opened.session.set_reasoning_effort(reasoning_effort);
             }
             let task = RepositorySession {
@@ -1855,7 +1855,7 @@ async fn execute_command(
                 turn_state: SupervisorTurnState::Idle,
                 slot: None,
                 model_id: opened.session.active_model.clone(),
-                route_id: opened.session.active_route_id.clone(),
+                profile_id: opened.session.active_profile_id.clone(),
                 reasoning_effort: opened.session.reasoning_effort().map(str::to_string),
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
@@ -1877,7 +1877,7 @@ async fn execute_command(
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     Some(pending.operation_id),
@@ -2010,7 +2010,7 @@ async fn execute_command(
                 ownership: WorktreeOwnership::Attached,
                 slot: None,
                 model_id: opened.session.active_model.clone(),
-                route_id: opened.session.active_route_id.clone(),
+                profile_id: opened.session.active_profile_id.clone(),
                 reasoning_effort: None,
             };
             // Recheck the immutable worktree binding immediately before the
@@ -2614,14 +2614,14 @@ async fn execute_command(
         SupervisorCommand::SetModel {
             session_id,
             model_id,
-            route_id,
+            profile_id,
             reasoning_effort,
         } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = try_session(&task_actor)?;
             let mut selection = session.model_selection();
             selection.model = model_id;
-            selection.route_id = route_id;
+            selection.profile_id = profile_id;
             selection.reasoning_effort = reasoning_effort;
             session.set_model_selection(selection);
             let selection = session.model_selection();
@@ -2632,7 +2632,7 @@ async fn execute_command(
                 .set_session_model(
                     session_id,
                     &selection.model,
-                    &selection.route_id,
+                    &selection.profile_id,
                     selection.reasoning_effort.as_deref(),
                 )
                 .await?;
@@ -3792,8 +3792,8 @@ fn restore_task_model(session: &mut AgentSession, task: &RepositorySession) {
         return;
     }
     session.set_active_model(task.model_id.clone());
-    if !task.route_id.is_empty() {
-        session.set_active_route_id(task.route_id.clone());
+    if !task.profile_id.is_empty() {
+        session.set_active_profile_id(task.profile_id.clone());
     }
     session.set_reasoning_effort(task.reasoning_effort.clone());
 }
@@ -4204,7 +4204,7 @@ mod tests {
             turn_state: SupervisorTurnState::Idle,
             slot: None,
             model_id: "mock".into(),
-            route_id: "native".into(),
+            profile_id: String::new(),
             reasoning_effort: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -4433,7 +4433,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -4506,7 +4506,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -4603,7 +4603,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -4704,7 +4704,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: Some((index + 1) as u8),
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -4775,7 +4775,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -4869,7 +4869,7 @@ mod tests {
                 .command(SupervisorCommand::SetModel {
                     session_id,
                     model_id: "mock-v2".into(),
-                    route_id: "native-v2".into(),
+                    profile_id: "native-v2".into(),
                     reasoning_effort: Some("high".into()),
                 })
                 .await
@@ -4882,13 +4882,13 @@ mod tests {
             })
             .await;
             let details = changed.details.as_ref().unwrap();
-            assert_eq!(details.active_route_id, "native-v2");
+            assert_eq!(details.active_profile_id, "native-v2");
             assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
             // The selection must be persisted on the task row, not just held
             // in the actor: a restart reopens from the row and would lose it.
             let persisted = control.session(session_id).await.unwrap();
             assert_eq!(persisted.model_id, "mock-v2");
-            assert_eq!(persisted.route_id, "native-v2");
+            assert_eq!(persisted.profile_id, "native-v2");
             assert_eq!(persisted.reasoning_effort.as_deref(), Some("high"));
         }
 
@@ -4945,7 +4945,7 @@ mod tests {
                     ownership: WorktreeOwnership::Primary,
                     slot: Some(1),
                     model_id: "mock".into(),
-                    route_id: "native".into(),
+                    profile_id: String::new(),
                     reasoning_effort: None,
                 },
                 None,
@@ -5020,7 +5020,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -5236,7 +5236,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -5342,7 +5342,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -5464,7 +5464,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -5604,7 +5604,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -5712,7 +5712,7 @@ mod tests {
             .command(SupervisorCommand::SetModel {
                 session_id: id_a,
                 model_id: "mock-updated".into(),
-                route_id: "native-updated".into(),
+                profile_id: "native-updated".into(),
                 reasoning_effort: Some("high".into()),
             })
             .await
@@ -6091,7 +6091,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -6397,7 +6397,7 @@ mod tests {
                         ownership: task.ownership,
                         slot: task.slot,
                         model_id: task.model_id.clone(),
-                        route_id: task.route_id.clone(),
+                        profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
                     },
                     None,
@@ -6522,7 +6522,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -6629,7 +6629,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -6725,7 +6725,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -7494,7 +7494,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -7596,7 +7596,7 @@ mod tests {
                     ownership: task.ownership,
                     slot: task.slot,
                     model_id: task.model_id.clone(),
-                    route_id: task.route_id.clone(),
+                    profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
                 },
                 None,
@@ -7782,7 +7782,7 @@ mod tests {
                     ownership: primary_task.ownership,
                     slot: primary_task.slot,
                     model_id: primary_task.model_id.clone(),
-                    route_id: primary_task.route_id.clone(),
+                    profile_id: primary_task.profile_id.clone(),
                     reasoning_effort: primary_task.reasoning_effort.clone(),
                 },
                 None,
@@ -7808,7 +7808,7 @@ mod tests {
             .command(SupervisorCommand::SetModel {
                 session_id: primary_id,
                 model_id: "mock-v2".into(),
-                route_id: "native-v2".into(),
+                profile_id: "native-v2".into(),
                 reasoning_effort: Some("high".into()),
             })
             .await
@@ -7830,7 +7830,7 @@ mod tests {
             .find(|task| task.label == "inherits")
             .expect("created task row");
         assert_eq!(task.model_id, "mock-v2");
-        assert_eq!(task.route_id, "native-v2");
+        assert_eq!(task.profile_id, "native-v2");
         assert_eq!(task.reasoning_effort.as_deref(), Some("high"));
         // Auto-selecting the new managed session moves the selection only: the
         // primary keeps its ownership, its slot, and its place as the trust
@@ -7862,17 +7862,17 @@ mod tests {
         let task = task_for(session.session_id, "resumed", dir.path());
         let mut stored = task.clone();
         stored.model_id = "mock-v2".into();
-        stored.route_id = "native-v2".into();
+        stored.profile_id = "native-v2".into();
         stored.reasoning_effort = Some("high".into());
         restore_task_model(&mut session, &stored);
         assert_eq!(session.active_model, "mock-v2");
-        assert_eq!(session.active_route_id, "native-v2");
+        assert_eq!(session.active_profile_id, "native-v2");
         assert_eq!(session.reasoning_effort(), Some("high"));
 
         // A row without a stored model leaves the in-memory selection alone.
         let mut blank = task.clone();
         blank.model_id = String::new();
-        blank.route_id = "native-v3".into();
+        blank.profile_id = "native-v3".into();
         blank.reasoning_effort = Some("low".into());
         restore_task_model(&mut session, &blank);
         assert_eq!(session.active_model, "mock-v2");
@@ -7918,7 +7918,7 @@ mod tests {
                     ownership: primary_task.ownership,
                     slot: primary_task.slot,
                     model_id: primary_task.model_id.clone(),
-                    route_id: primary_task.route_id.clone(),
+                    profile_id: primary_task.profile_id.clone(),
                     reasoning_effort: primary_task.reasoning_effort.clone(),
                 },
                 None,
@@ -7950,7 +7950,7 @@ mod tests {
                     ownership: WorktreeOwnership::Managed,
                     slot: None,
                     model_id: "mock-v2".into(),
-                    route_id: "native-v2".into(),
+                    profile_id: "native-v2".into(),
                     reasoning_effort: Some("high".into()),
                 },
                 None,
@@ -7968,7 +7968,7 @@ mod tests {
             .expect("managed session reopened on restart");
         let details = reopened.details.as_ref().unwrap();
         assert_eq!(details.active_model, "mock-v2");
-        assert_eq!(details.active_route_id, "native-v2");
+        assert_eq!(details.active_profile_id, "native-v2");
         assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
@@ -8089,7 +8089,7 @@ mod tests {
             SupervisorCommand::SetModel {
                 session_id: id,
                 model_id: "mock".into(),
-                route_id: "native".into(),
+                profile_id: String::new(),
                 reasoning_effort: None,
             },
             SupervisorCommand::SetThinking {

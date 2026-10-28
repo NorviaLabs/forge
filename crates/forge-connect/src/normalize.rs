@@ -18,6 +18,34 @@ const LEGACY_PREFIXES: &[(&str, &[&str])] = &[
     (crate::opencode_zen::PROFILE_ID, &["opencode-zen"]),
 ];
 
+/// Built-in route ids sessions stored before the profile id became the only
+/// identity, and the profile each one names.
+const LEGACY_ROUTES: &[(&str, &str)] = &[
+    ("openai-api", crate::openai::PROFILE_ID),
+    ("openai-chatgpt", crate::openai_codex::PROFILE_ID),
+    ("anthropic-api", crate::anthropic::PROFILE_ID),
+    ("xai-api", crate::xai::PROFILE_ID),
+    ("opencode-go", crate::opencode_go::PROFILE_ID),
+    ("opencode-zen", crate::opencode_zen::PROFILE_ID),
+];
+
+/// The profile id a stored route names: a built-in's old route id maps to
+/// its profile; anything else (a custom id, `ollama`) is returned as is.
+pub fn profile_id_for_stored_route(route: &str) -> &str {
+    let route = route.trim();
+    LEGACY_ROUTES
+        .iter()
+        .find(|(old, _)| *old == route)
+        .map(|(_, id)| *id)
+        .unwrap_or(route)
+}
+
+/// A hint for a model id under an old prefix: the id it should use now.
+pub fn old_prefix_hint(model: &str) -> Option<String> {
+    let normalized = normalize_saved_model_id(model);
+    (normalized != model.trim()).then_some(normalized)
+}
+
 /// Old prefixes and aliases read as `profile_id`.
 pub fn legacy_prefixes(profile_id: &str) -> &'static [&'static str] {
     LEGACY_PREFIXES
@@ -27,12 +55,16 @@ pub fn legacy_prefixes(profile_id: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
-/// Ids a custom profile may not take: every old prefix or alias that is not
-/// itself a built-in profile id.
+/// Ids a custom profile may not take: every old prefix, alias, or built-in
+/// route id that is not itself a built-in profile id (stored sessions map
+/// those to built-ins).
 pub(crate) fn is_reserved_id(id: &str) -> bool {
     LEGACY_PREFIXES
         .iter()
         .any(|(profile, prefixes)| *profile != id && prefixes.contains(&id))
+        || LEGACY_ROUTES
+            .iter()
+            .any(|(route, profile)| *route == id && *profile != id)
 }
 
 /// `<PROFILE_ID>` in env names: the id uppercased, `-` replaced by `_`.

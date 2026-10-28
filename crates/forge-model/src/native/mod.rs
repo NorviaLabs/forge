@@ -268,7 +268,7 @@ impl NativeModelClient {
             return WireKind::ChatCompletions;
         };
         self.route_table()
-            .profile_for_request(&model, req.route_id.as_deref())
+            .profile_for_request(&model)
             .map(|(found, bare)| found.definition.wire_for_model(bare))
             .unwrap_or(WireKind::ChatCompletions)
     }
@@ -279,7 +279,7 @@ impl NativeModelClient {
         let model = self.model_for(req)?;
         let table = self.route_table();
         let (found, bare) = table
-            .profile_for_request(&model, req.route_id.as_deref())
+            .profile_for_request(&model)
             .ok_or_else(|| unknown_route(&table, &model))?;
         let definition = &found.definition;
         let credential = found.credential.clone();
@@ -344,13 +344,18 @@ impl NativeModelClient {
 }
 
 fn unknown_route(table: &RouteTable, model: &str) -> ModelError {
-    let prefix = model.split('/').next().unwrap_or(model);
+    // An id saved under an old prefix (`openai-codex/…`) names its new form.
+    if let Some(current) = forge_connect::old_prefix_hint(model) {
+        return ModelError::UnknownRoute(format!(
+            "model `{model}` uses an old provider prefix; did you mean `{current}`?"
+        ));
+    }
     let known: Vec<&str> = table
         .profiles()
         .map(|found| found.definition.profile_id.as_str())
         .collect();
     ModelError::UnknownRoute(format!(
-        "no provider serves model `{model}` (prefix `{prefix}`); known providers: {}",
+        "no provider serves model `{model}`; model ids are `<provider>/<model>` with one of: {}",
         known.join(", ")
     ))
 }
@@ -496,7 +501,7 @@ pub(super) mod tests {
         })
     }
 
-    pub(crate) fn request(model: &str, route_id: Option<&str>) -> ModelRequest {
+    pub(crate) fn request(model: &str) -> ModelRequest {
         ModelRequest {
             messages: vec![forge_types::Message::new(
                 forge_types::MessageRole::User,
@@ -506,7 +511,6 @@ pub(super) mod tests {
             tools: Vec::new(),
             model: model.into(),
             workspace_root: PathBuf::new(),
-            route_id: route_id.map(str::to_owned),
             session_id: None,
             reasoning_effort: None,
             thinking_enabled: false,
@@ -570,36 +574,35 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn a_stored_route_id_and_legacy_aliases_pick_the_profile() {
+    async fn the_model_prefix_picks_the_profile_and_old_prefixes_get_a_hint() {
         let dir = tempfile::tempdir().unwrap();
         let (table, creds) = builtin_table(&dir);
         let codex = forge_connect::openai_codex_profile();
         creds.set_oauth(&codex, oauth(&chatgpt_token())).unwrap();
-        creds
-            .set_oauth(&forge_connect::xai_grok_profile(), oauth("xai-token"))
-            .unwrap();
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         client.set_routes(table);
 
-        // `bench --model gpt-5 --route-id openai-chatgpt`
+        // `bench --model openai_codex/gpt-5`
         let (target, wire) = client
-            .target_for(&request("gpt-5", Some("openai-chatgpt")))
+            .target_for(&request("openai_codex/gpt-5"))
             .await
             .unwrap();
         assert_eq!(target.profile_id, "openai_codex");
         assert_eq!(target.bare_model, "gpt-5");
-        assert_eq!(target.model, "openai_codex/gpt-5");
         assert_eq!(wire, WireKind::Responses);
 
-        let (target, _) = client
-            .target_for(&request("grok/grok-4", None))
-            .await
-            .unwrap();
-        assert_eq!(target.profile_id, "xai");
-        assert_eq!(target.bare_model, "grok-4");
-
+        for (old, hint) in [
+            ("openai-codex/gpt-5", "openai_codex/gpt-5"),
+            ("grok/grok-4", "xai/grok-4"),
+        ] {
+            let error = client.target_for(&request(old)).await.err().unwrap();
+            assert!(
+                matches!(&error, ModelError::UnknownRoute(text) if text.contains(hint)),
+                "{error}"
+            );
+        }
         let error = client
-            .target_for(&request("nobody/model", None))
+            .target_for(&request("nobody/model"))
             .await
             .err()
             .unwrap();
@@ -650,7 +653,7 @@ pub(super) mod tests {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         client.set_routes(forge_connect::resolve(&registry, &creds));
 
-        let response = client.complete(request("xai/grok-4", None)).await;
+        let response = client.complete(request("xai/grok-4")).await;
         assert_eq!(response.unwrap().text, "hi");
         let sent = request_rx.await.unwrap().to_ascii_lowercase();
         assert!(sent.contains("authorization: bearer refreshed"), "{sent}");
@@ -663,21 +666,18 @@ pub(super) mod tests {
             (
                 "chat-completions",
                 forge_connect::openai_profile(),
-                None,
                 "openai/m",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
             ),
             (
                 "codex-responses",
                 forge_connect::openai_codex_profile(),
-                Some("openai-chatgpt"),
-                "gpt-5",
+                "openai_codex/gpt-5",
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
             ),
             (
                 "anthropic-messages",
                 forge_connect::anthropic_profile(),
-                Some("anthropic-api"),
                 "anthropic/claude",
                 concat!(
                     "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
@@ -686,7 +686,7 @@ pub(super) mod tests {
             ),
         ];
         let mut actual = Vec::new();
-        for (path, profile, route_id, model, truncated) in paths {
+        for (path, profile, model, truncated) in paths {
             for (case, status, body, content_type) in [
                 ("401", 401, "{}", "application/json"),
                 ("403", 403, "{}", "application/json"),
@@ -710,7 +710,6 @@ pub(super) mod tests {
                     tools: Vec::new(),
                     model: model.into(),
                     workspace_root: PathBuf::new(),
-                    route_id: route_id.map(str::to_owned),
                     session_id: None,
                     reasoning_effort: None,
                     thinking_enabled: false,
@@ -749,13 +748,12 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn native_transport_keys_follow_route_kind() {
+    fn native_transport_keys_follow_the_profile_wire() {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        let request = |route_id: Option<&str>| ModelRequest {
-            route_id: route_id.map(str::to_owned),
+        let request = |model: &str| ModelRequest {
             messages: Default::default(),
             tools: Vec::new(),
-            model: "model".into(),
+            model: model.into(),
             workspace_root: PathBuf::new(),
             session_id: None,
             reasoning_effort: None,
@@ -763,17 +761,20 @@ pub(super) mod tests {
             prompt_cache: false,
         };
         assert_eq!(
-            client.prompt_transport_key(&request(Some("anthropic-api"))),
+            client.prompt_transport_key(&request("anthropic/claude")),
             "anthropic"
         );
         assert_eq!(
-            client.prompt_transport_key(&request(Some("openai-chatgpt"))),
+            client.prompt_transport_key(&request("openai_codex/gpt-5")),
             "codex"
         );
         assert_eq!(
-            client.prompt_transport_key(&request(Some("openai-api"))),
+            client.prompt_transport_key(&request("openai/gpt-5")),
             "openai_compat"
         );
-        assert_eq!(client.prompt_transport_key(&request(None)), "openai_compat");
+        assert_eq!(
+            client.prompt_transport_key(&request("model")),
+            "openai_compat"
+        );
     }
 }

@@ -131,7 +131,7 @@ impl Default for SessionSnapshot {
 pub struct SessionDetailsSnapshot {
     pub journal_dir: PathBuf,
     pub active_model: String,
-    pub active_route_id: String,
+    pub active_profile_id: String,
     pub reasoning_effort: Option<String>,
     pub thinking_enabled: bool,
     pub image_input_supported: bool,
@@ -156,7 +156,7 @@ impl SessionDetailsSnapshot {
                 .map(|skill| (skill.name, skill.description))
                 .collect(),
             active_model: session.active_model.clone(),
-            active_route_id: session.active_route_id.clone(),
+            active_profile_id: session.active_profile_id.clone(),
             reasoning_effort: session.reasoning_effort().map(str::to_string),
             thinking_enabled: session.thinking_enabled(),
             image_input_supported: session.image_input_supported(),

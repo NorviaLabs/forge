@@ -46,7 +46,7 @@ pub use import::{
     discover_logins, discover_logins_in, login_for_profile, xdg_data_home, DiscoveredLogin,
     DiscoveredSecret,
 };
-pub use normalize::normalize_saved_model_id;
+pub use normalize::{normalize_saved_model_id, old_prefix_hint, profile_id_for_stored_route};
 pub use oauth_dispatch::OauthError;
 pub use oauth_rfc8628::{
     try_open_browser, Rfc8628Client, Rfc8628Error, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
@@ -81,10 +81,7 @@ pub use resolve::{
     env_names_for, resolve, winning_env_var, Credential, CredentialError, CredentialValue,
     ResolvedProfile, RouteDefinition, RouteTable,
 };
-pub use route::{
-    group_routes, normalize_model_id, route_id_for_profile, route_model_id, ModelPickerEntry,
-    ModelRoute,
-};
+pub use route::{group_routes, normalize_model_id, route_model_id, ModelPickerEntry, ModelRoute};
 pub use selection::ModelSelection;
 pub use service::{
     format_connected, handle_connect_action, has_connected_profile, needs_tui_api_key_prompt,

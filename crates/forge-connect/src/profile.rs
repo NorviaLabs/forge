@@ -396,9 +396,6 @@ pub struct ProviderSpec {
         alias = "route_label"
     )]
     pub label: String,
-    /// Stable public route identity, e.g. `openai-chatgpt` (legacy).
-    #[serde(default)]
-    pub route_id: String,
     #[serde(default)]
     pub catalog_mode: CatalogMode,
     /// The legacy `transport` value, read only; `normalize_spec` maps it
@@ -448,16 +445,10 @@ impl ProviderSpec {
             provider: String::new(),
             provider_label: String::new(),
             label: String::new(),
-            route_id: String::new(),
             catalog_mode: CatalogMode::LiveRegistry,
             legacy_transport: None,
             origin: SpecOrigin::Builtin,
         }
-    }
-
-    /// Stable public route identity.
-    pub fn route_id(&self) -> &str {
-        self.route_id.as_str()
     }
 
     /// The first model the profile lists: a shipped default, else one the
@@ -577,7 +568,6 @@ pub(crate) fn test_spec(id: &str, auth: AuthSpec, default_models: Vec<String>) -
         model_provider_prefix: id.into(),
         provider: id.into(),
         provider_label: id.into(),
-        route_id: id.into(),
         ..ProviderSpec::blank()
     }
 }
@@ -618,14 +608,5 @@ mod tests {
         assert_eq!(KeySource::File.as_str(), "file");
         assert_eq!(KeySource::Provided.as_str(), "provided");
         assert_eq!(KeySource::Oauth.as_str(), "oauth");
-    }
-
-    #[test]
-    fn route_id_is_a_field_not_a_match() {
-        let mut profile = profile(crate::AuthSpec::api_key(crate::AuthPrompt::Tui), vec![]);
-        profile.route_id = "openai-chatgpt".into();
-        assert_eq!(profile.route_id(), "openai-chatgpt");
-        profile.route_id = "openai-api".into();
-        assert_eq!(profile.route_id(), "openai-api");
     }
 }

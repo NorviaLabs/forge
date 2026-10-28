@@ -292,7 +292,7 @@ impl TuiApp {
                 self.try_session_command(forge_session::SupervisorCommand::SetModel {
                     session_id,
                     model_id: String::new(),
-                    route_id: String::new(),
+                    profile_id: String::new(),
                     reasoning_effort: Some(self.reasoning_effort.value.to_string()),
                 });
             }
@@ -403,12 +403,11 @@ impl TuiApp {
             // wrong wire, and every call fails until the user re-picks the model
             // — which is the only other path that sets it. The route follows the
             // profile, not the model, so it is restored either way below.
-            let restored_route =
-                forge_connect::route_id_for_profile(&self.connect.registry, &profile.id);
+            let restored_route = profile.id.clone();
             match self.selected_runtime() {
                 SelectedRuntime::Direct => {
                     if let Some(session) = self.session_runtime.as_mut() {
-                        session.set_active_route_id(restored_route.clone());
+                        session.set_active_profile_id(restored_route.clone());
                     }
                 }
                 SelectedRuntime::Supervised(session_id) => {
@@ -423,7 +422,7 @@ impl TuiApp {
                         self.try_session_command(forge_session::SupervisorCommand::SetModel {
                             session_id,
                             model_id: active_model,
-                            route_id: restored_route,
+                            profile_id: restored_route,
                             reasoning_effort: Some(self.reasoning_effort.value.to_string()),
                         });
                     }
@@ -441,14 +440,6 @@ impl TuiApp {
                     .filter(|model| self.profile_owns_model(&profile, model));
                 if let Some(model) = saved_model.or_else(|| profile.default_model()) {
                     self.apply_selection(&ModelSelection {
-                        route_id: self
-                            .connect
-                            .profile
-                            .as_deref()
-                            .map(|id| {
-                                forge_connect::route_id_for_profile(&self.connect.registry, id)
-                            })
-                            .unwrap_or_default(),
                         provider: "native".into(),
                         model: model.to_string(),
                         profile_id: Some(profile.id.clone()),
@@ -478,10 +469,6 @@ impl TuiApp {
                         self.connect.profile = Some(profile.id.clone());
                     } else {
                         self.apply_selection(&ModelSelection {
-                            route_id: forge_connect::route_id_for_profile(
-                                &self.connect.registry,
-                                &profile.id,
-                            ),
                             provider: "native".into(),
                             model,
                             profile_id: Some(profile.id.clone()),
@@ -548,7 +535,7 @@ impl TuiApp {
             self.try_session_command(forge_session::SupervisorCommand::SetModel {
                 session_id: self.selected_session_id,
                 model_id: self.runtime.model_label.clone(),
-                route_id: self.selected_active_route_id(),
+                profile_id: self.selected_active_profile_id(),
                 reasoning_effort: value,
             });
             self.try_session_command(forge_session::SupervisorCommand::SetThinking {
@@ -621,7 +608,7 @@ impl TuiApp {
             SelectedRuntime::Direct => {
                 if let Some(session) = self.session_runtime.as_mut() {
                     session.set_active_model(&selection.model);
-                    session.set_active_route_id(&selection.route_id);
+                    session.set_active_profile_id(selection.profile_id.clone().unwrap_or_default());
                     session.set_reasoning_effort(Some(self.reasoning_effort.value.to_string()));
                 }
             }
@@ -629,7 +616,7 @@ impl TuiApp {
                 self.try_session_command(forge_session::SupervisorCommand::SetModel {
                     session_id,
                     model_id: selection.model.clone(),
-                    route_id: selection.route_id.clone(),
+                    profile_id: selection.profile_id.clone().unwrap_or_default(),
                     reasoning_effort: Some(self.reasoning_effort.value.to_string()),
                 });
             }
@@ -690,10 +677,6 @@ impl TuiApp {
             Ok(Some((profile_id, model, effort))) => {
                 self.connect.auth_suspended = false;
                 self.apply_selection(&ModelSelection {
-                    route_id: forge_connect::route_id_for_profile(
-                        &self.connect.registry,
-                        &profile_id,
-                    ),
                     provider: "native".into(),
                     model: model.clone(),
                     profile_id: Some(profile_id.clone()),
@@ -1246,10 +1229,6 @@ impl TuiApp {
         // `resolve_effort_for_model`), so carry the current value through
         // unchanged rather than resetting it.
         self.apply_selection(&ModelSelection {
-            route_id: resolved_profile_id
-                .as_deref()
-                .map(|id| forge_connect::route_id_for_profile(&self.connect.registry, id))
-                .unwrap_or_default(),
             provider: provider.to_string(),
             model: model.to_string(),
             profile_id: resolved_profile_id,

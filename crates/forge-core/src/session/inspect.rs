@@ -11,7 +11,7 @@ impl AgentSession {
     pub fn model_selection(&self) -> crate::ModelExecutionSelection {
         crate::ModelExecutionSelection {
             model: self.active_model.clone(),
-            route_id: self.active_route_id.clone(),
+            profile_id: self.active_profile_id.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
             thinking_enabled: self.thinking_enabled,
         }
@@ -20,7 +20,7 @@ impl AgentSession {
     /// Apply all execution-facing model state together.
     pub fn set_model_selection(&mut self, selection: crate::ModelExecutionSelection) {
         self.active_model = selection.model;
-        self.active_route_id = selection.route_id;
+        self.active_profile_id = selection.profile_id;
         self.reasoning_effort = selection.reasoning_effort;
         self.thinking_enabled = selection.thinking_enabled;
         self.tool_ctx.active_model = self.active_model.clone();
@@ -311,9 +311,9 @@ impl AgentSession {
         )
     }
 
-    pub fn set_active_route_id(&mut self, route_id: impl Into<String>) {
+    pub fn set_active_profile_id(&mut self, profile_id: impl Into<String>) {
         let mut selection = self.model_selection();
-        selection.route_id = route_id.into();
+        selection.profile_id = profile_id.into();
         self.set_model_selection(selection);
     }
 

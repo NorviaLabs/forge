@@ -36,13 +36,13 @@ async fn setting_model_fields_keeps_the_selection_and_tool_context_synchronized(
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;
     s.set_active_model("provider/model");
-    s.set_active_route_id("route-1");
+    s.set_active_profile_id("route-1");
     s.set_reasoning_effort(Some("high".into()));
     s.set_thinking_enabled(true);
 
     let selection = s.model_selection();
     assert_eq!(selection.model, "provider/model");
-    assert_eq!(selection.route_id, "route-1");
+    assert_eq!(selection.profile_id, "route-1");
     assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
     assert!(selection.thinking_enabled);
     assert!(s.thinking_enabled());
@@ -2070,16 +2070,15 @@ async fn model_selection_updates_request_fields_as_one_value() {
 
     session.set_model_selection(ModelExecutionSelection {
         model: "provider/model-x".into(),
-        route_id: "route-x".into(),
+        profile_id: "route-x".into(),
         reasoning_effort: Some("high".into()),
         thinking_enabled: false,
     });
 
     assert_eq!(session.model_selection().model, "provider/model-x");
-    assert_eq!(session.model_selection().route_id, "route-x");
+    assert_eq!(session.model_selection().profile_id, "route-x");
     let request = session.build_model_request();
     assert_eq!(request.model, "provider/model-x");
-    assert_eq!(request.route_id.as_deref(), Some("route-x"));
     assert_eq!(request.reasoning_effort.as_deref(), Some("high"));
     assert!(!request.thinking_enabled);
 }

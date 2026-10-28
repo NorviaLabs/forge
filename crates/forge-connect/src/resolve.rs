@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::credentials::Credentials;
-use crate::normalize::{env_profile_id, legacy_prefixes};
+use crate::normalize::env_profile_id;
 use crate::profile::{
     Attach, AuthKind, CatalogKind, EffortFamily, KeySource, OauthFlavor, ProviderSpec,
     SessionHeaderKind, StaticHeader, VerifyKind, WireKind, WireOverride,
@@ -53,8 +53,6 @@ pub enum CredentialError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteDefinition {
     pub profile_id: String,
-    /// Legacy stored route id (`openai-chatgpt`); deleted in stage 8.
-    pub route_id: String,
     /// Legacy model-id prefix; dispatch matches it through stage 7.
     pub model_provider_prefix: String,
     /// With the catalog kind's request-base convention applied: Ollama ends
@@ -248,8 +246,6 @@ pub struct ResolvedProfile {
 #[derive(Debug, Default)]
 struct Inner {
     profiles: BTreeMap<String, ResolvedProfile>,
-    /// Stored route id → profile id (legacy; deleted in stage 8).
-    routes: BTreeMap<String, String>,
     credential_env_names: Vec<String>,
 }
 
@@ -261,13 +257,6 @@ impl RouteTable {
     /// A one-profile table, for tests and one-off clients.
     pub fn single(definition: RouteDefinition, credential: Credential) -> Self {
         let mut inner = Inner::default();
-        for route in [&definition.profile_id, &definition.route_id] {
-            if !route.is_empty() {
-                inner
-                    .routes
-                    .insert(route.clone(), definition.profile_id.clone());
-            }
-        }
         inner.profiles.insert(
             definition.profile_id.clone(),
             ResolvedProfile {
@@ -286,43 +275,12 @@ impl RouteTable {
         self.0.profiles.values()
     }
 
-    /// The profile a stored route id names (legacy; through stage 7).
-    pub fn profile_for_route(&self, route_id: &str) -> Option<&ResolvedProfile> {
-        self.0
-            .routes
-            .get(route_id.trim())
-            .and_then(|id| self.0.profiles.get(id))
-    }
-
-    /// Pick the profile for a request (design §4, stages 4–7): a known
-    /// `route_id` wins; otherwise the model's prefix is matched against
-    /// profile ids, current prefixes, and legacy aliases, and an unprefixed
-    /// id is `openai`. Returns the profile and the bare model id.
-    pub fn profile_for_request<'a>(
-        &self,
-        model: &'a str,
-        route_id: Option<&str>,
-    ) -> Option<(&ResolvedProfile, &'a str)> {
-        let (prefix, bare) = match model.split_once('/') {
-            Some((prefix, bare)) => (Some(prefix), bare),
-            None => (None, model),
-        };
-        if let Some(found) = route_id.and_then(|route| self.profile_for_route(route)) {
-            return Some((found, bare));
-        }
-        let Some(prefix) = prefix else {
-            return self
-                .get(crate::openai::PROFILE_ID)
-                .map(|found| (found, model));
-        };
-        self.profiles()
-            .find(|found| {
-                let definition = &found.definition;
-                definition.profile_id == prefix
-                    || definition.model_provider_prefix == prefix
-                    || legacy_prefixes(&definition.profile_id).contains(&prefix)
-            })
-            .map(|found| (found, bare))
+    /// Pick the profile for a request: the model id's prefix is the profile
+    /// id (design §4). Returns the profile and the bare model id; `None` for
+    /// an unprefixed id or a prefix no profile has.
+    pub fn profile_for_request<'a>(&self, model: &'a str) -> Option<(&ResolvedProfile, &'a str)> {
+        let (prefix, bare) = model.split_once('/')?;
+        self.get(prefix).map(|found| (found, bare))
     }
 
     /// Every env name a child process must not see: each key profile's
@@ -340,11 +298,6 @@ pub fn resolve(registry: &ConnectRegistry, credentials: &Arc<Credentials>) -> Ro
     };
     for profile in registry.profiles() {
         let definition = definition_for(profile);
-        if !profile.route_id.is_empty() {
-            inner
-                .routes
-                .insert(profile.route_id.clone(), profile.id.clone());
-        }
         inner.profiles.insert(
             profile.id.clone(),
             ResolvedProfile {
@@ -369,7 +322,6 @@ fn definition_for(profile: &ProviderSpec) -> RouteDefinition {
         .unwrap_or_else(|| profile.base_url.trim().to_string());
     RouteDefinition {
         profile_id: profile.id.clone(),
-        route_id: profile.route_id.clone(),
         model_provider_prefix: profile.model_provider_prefix.clone(),
         base_url: request_base(catalog_kind, &base),
         wire,
@@ -601,32 +553,28 @@ mod tests {
     }
 
     #[test]
-    fn requests_pick_a_profile_by_route_then_prefix_then_alias() {
+    fn requests_pick_the_profile_their_prefix_names() {
         let _env = EnvGuard::new(ENV);
         let dir = tempdir().unwrap();
         let (table, _) = table(&dir);
-        let pick = |model: &str, route: Option<&str>| {
+        let pick = |model: &str| {
             table
-                .profile_for_request(model, route)
+                .profile_for_request(model)
                 .map(|(found, bare)| (found.definition.profile_id.clone(), bare.to_string()))
         };
         assert_eq!(
-            pick("gpt-5", Some("openai-chatgpt")),
+            pick("openai_codex/gpt-5"),
             Some(("openai_codex".into(), "gpt-5".into()))
         );
         assert_eq!(
-            pick("grok/grok-4", None),
-            Some(("xai".into(), "grok-4".into()))
+            pick("my-org/org/model"),
+            None,
+            "an unknown prefix serves nothing"
         );
-        assert_eq!(
-            pick("opencode-go/kimi", None),
-            Some(("opencode_go".into(), "kimi".into()))
-        );
-        assert_eq!(
-            pick("gpt-4.1", None),
-            Some(("openai".into(), "gpt-4.1".into()))
-        );
-        assert_eq!(pick("nobody/model", None), None);
+        // Old prefixes and unprefixed ids no longer route.
+        assert_eq!(pick("grok/grok-4"), None);
+        assert_eq!(pick("opencode-go/kimi"), None);
+        assert_eq!(pick("gpt-4.1"), None);
     }
 
     #[test]
