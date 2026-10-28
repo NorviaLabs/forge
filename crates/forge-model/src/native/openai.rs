@@ -1,39 +1,13 @@
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
 use forge_types::{ModelResponse, ModelStreamEvent, ToolCall, Usage};
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::{anthropic, process_sse_lines, NativeModelClient};
+use super::{process_sse_lines, NativeModelClient, Target};
 use crate::normalize::tools_to_openai_functions;
 use crate::prompt_cache::{usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
-
-/// Application identity sent on OpenCode calls, replacing the HTTP library's
-/// default user-agent string.
-const OPENCODE_USER_AGENT: &str = concat!("forge/", env!("CARGO_PKG_VERSION"));
-
-/// Session id used when an OpenCode request arrives with no active conversation
-/// thread id to forward (non-agent callers). Sticky for the process lifetime so
-/// consecutive calls from the same process stay routed to the same upstream
-/// cache slot.
-static FALLBACK_OPENCODE_SESSION: OnceLock<String> = OnceLock::new();
-
-/// The `x-opencode-session` value for a request: the Forge session (thread) id
-/// when the caller has one, otherwise a generated process-stable identifier.
-fn opencode_session_id(req: &ModelRequest) -> &str {
-    req.session_id.as_deref().unwrap_or_else(|| {
-        FALLBACK_OPENCODE_SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
-    })
-}
-
-pub(super) struct Route {
-    pub(super) base_url: String,
-    pub(super) api_key: Option<String>,
-    model: String,
-    opencode_session: bool,
-}
 
 #[derive(Default)]
 struct ToolCallAccumulator {
@@ -47,25 +21,12 @@ struct ToolCallAccumulator {
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
-    model: &str,
+    target: Target,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let route = route(client, model)?;
-    if is_opencode_responses_model(model) || opencode_go_responses_model(model) {
-        return complete_responses(client, req, route, tx).await;
-    }
-    if opencode_messages_model(model) {
-        let endpoint = anthropic::messages_endpoint(&route.base_url);
-        let api_key = route.api_key.clone().ok_or(ModelError::MissingApiKey)?;
-        let auth = anthropic::MessagesAuth::Opencode {
-            api_key,
-            session_id: opencode_session_id(&req).to_string(),
-            user_agent: OPENCODE_USER_AGENT,
-        };
-        return anthropic::complete_messages(client, req, model, tx, endpoint, auth).await;
-    }
+    let model = target.model.as_str();
     let mut body = json!({
-        "model": route.model,
+        "model": target.bare_model,
         "messages": crate::normalize::forge_messages_to_wire_in_cached(
             &req.messages,
             &req.workspace_root,
@@ -97,22 +58,14 @@ pub(super) async fn complete(
         req.thinking_enabled,
     );
 
-    let url = format!("{}/chat/completions", route.base_url.trim_end_matches('/'));
-    let mut request = client.http.post(url).json(&body);
-    if let Some(api_key) = route.api_key {
-        request = request.bearer_auth(api_key);
-    }
-    if route.opencode_session {
-        request = request
-            .header("User-Agent", OPENCODE_USER_AGENT)
-            .header("x-opencode-session", opencode_session_id(&req));
-    }
+    let url = format!("{}/chat/completions", target.base_url.trim_end_matches('/'));
+    let request = target.authorize(client.http.post(url).json(&body), &req)?;
     let response = request
         .send()
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        return Err(crate::native::status_error(response, model).await);
+        return Err(crate::native::status_error(response, &target).await);
     }
 
     let mut stream = response.bytes_stream();
@@ -198,77 +151,32 @@ pub(super) async fn complete(
     })
 }
 
-// OpenCode exposes the Muse Spark Contributor models through its Responses
-// endpoint only. Sending these models to chat/completions produces a generic
-// upstream HTTP 500, so keep the endpoint choice tied to the model capability.
-fn is_opencode_responses_model(model: &str) -> bool {
-    let Some((prefix, model_id)) = model.split_once('/') else {
-        return false;
-    };
-    matches!(prefix, "opencode" | "opencode-go" | "opencode-zen")
-        && (model_id.starts_with("muse-spark-1.2-contributor")
-            || model_id.starts_with("muse-spark-1.3-contributor"))
-}
-
-// OpenCode Go serves each model on one of three endpoints, but its `/models`
-// listing exposes no protocol metadata, so the endpoint is mapped by id from
-// the table OpenCode publishes. Everything unlisted stays on chat/completions.
-const OPENCODE_GO_MESSAGES_MODELS: &[&str] = &[
-    "union-alpha",
-    "minimax-m3",
-    "minimax-m2.7",
-    "minimax-m2.5",
-    "qwen3.8-max",
-    "qwen3.8-flash",
-    "qwen3.7-max",
-    "qwen3.7-plus",
-    "qwen3.6-plus",
-];
-
-const OPENCODE_GO_RESPONSES_MODELS: &[&str] = &["grok-4.6", "gpt-5.6-luna"];
-
-fn opencode_go_model_id(model: &str) -> Option<&str> {
-    let (prefix, model_id) = model.split_once('/')?;
-    matches!(prefix, "opencode-go" | "opencode").then_some(model_id)
-}
-
-fn opencode_messages_model(model: &str) -> bool {
-    model == "opencode-zen/union-alpha"
-        || opencode_go_model_id(model).is_some_and(|id| OPENCODE_GO_MESSAGES_MODELS.contains(&id))
-}
-
-fn opencode_go_responses_model(model: &str) -> bool {
-    opencode_go_model_id(model).is_some_and(|id| OPENCODE_GO_RESPONSES_MODELS.contains(&id))
-}
-
-async fn complete_responses(
+/// The `responses` wire on an OpenAI-compatible gateway (OpenCode's
+/// Responses-only models).
+pub(super) async fn complete_responses(
     client: &NativeModelClient,
     req: ModelRequest,
-    route: Route,
+    target: Target,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
     let aliases = crate::native::codex::tool_aliases(&req);
-    let body = crate::native::codex::request_body(client, &req, &route.model, &aliases);
-    let mut request = client
+    let body = crate::native::codex::request_body(client, &req, &target.bare_model, &aliases);
+    let request = client
         .http
         .post(format!(
             "{}/responses",
-            route.base_url.trim_end_matches('/')
+            target.base_url.trim_end_matches('/')
         ))
         .json(&body)
-        .bearer_auth(route.api_key.ok_or(ModelError::MissingApiKey)?)
         .header("Accept", "text/event-stream")
-        .header("OpenAI-Beta", "responses=experimental")
-        .header("User-Agent", OPENCODE_USER_AGENT);
-    if route.opencode_session {
-        request = request.header("x-opencode-session", opencode_session_id(&req));
-    }
+        .header("OpenAI-Beta", "responses=experimental");
+    let request = target.authorize(request, &req)?;
     let response = request
         .send()
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        return Err(crate::native::status_error(response, &req.model).await);
+        return Err(crate::native::status_error(response, &target).await);
     }
 
     let reverse_aliases = aliases
@@ -308,105 +216,6 @@ async fn complete_responses(
         tool_calls: parsed.tool_calls,
         usage: parsed.usage,
         thinking: (!parsed.thinking.is_empty()).then_some(parsed.thinking),
-    })
-}
-
-pub(super) fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
-    let (prefix, model_id) = model.split_once('/').unwrap_or(("openai", model));
-    let configured_base = client.configured_base_url.clone();
-    let route = match prefix {
-        "openai" => Route {
-            base_url: configured_base
-                .or_else(|| client.injected_or_env(&["OPENAI_API_BASE"]))
-                .unwrap_or_else(|| "https://api.openai.com/v1".into()),
-            api_key: client.credential(&["OPENAI_API_KEY"]),
-            model: model_id.into(),
-            opencode_session: false,
-        },
-        "xai" | "grok" => Route {
-            base_url: configured_base
-                .or_else(|| client.injected_or_env(&["XAI_API_BASE"]))
-                .unwrap_or_else(|| "https://api.x.ai/v1".into()),
-            api_key: client.credential(&["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
-            model: model_id.into(),
-            opencode_session: false,
-        },
-        "opencode-go" | "opencode" => Route {
-            base_url: client
-                .injected_or_env(&["OPENCODE_API_BASE", "OPENCODE_GO_API_BASE"])
-                .unwrap_or_else(|| "https://opencode.ai/zen/go/v1".into()),
-            api_key: client.credential(&["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"]),
-            model: model_id.into(),
-            opencode_session: true,
-        },
-        "opencode-zen" => Route {
-            base_url: client
-                .injected_or_env(&["OPENCODE_ZEN_API_BASE"])
-                .unwrap_or_else(|| "https://opencode.ai/zen/v1".into()),
-            api_key: client.credential(&[
-                "OPENCODE_ZEN_API_KEY",
-                "OPENCODE_API_KEY",
-                "OPENCODE_GO_API_KEY",
-            ]),
-            model: model_id.into(),
-            opencode_session: true,
-        },
-        "ollama" | "ollama_chat" => {
-            let base = client
-                .injected_or_env(&["OLLAMA_API_BASE"])
-                .or(configured_base)
-                .unwrap_or_else(|| "http://localhost:11434".into());
-            Route {
-                base_url: if base.trim_end_matches('/').ends_with("/v1") {
-                    base
-                } else {
-                    format!("{}/v1", base.trim_end_matches('/'))
-                },
-                api_key: client.credential(&["OLLAMA_API_KEY"]),
-                model: model_id.into(),
-                opencode_session: false,
-            }
-        }
-        other => {
-            let registry = forge_connect::loaded_registry();
-            let profile = registry
-                .profile_for_model(model)
-                .filter(|p| p.is_user())
-                .ok_or_else(|| {
-                    ModelError::Provider(format!(
-                        "unsupported native model provider prefix `{other}`"
-                    ))
-                })?;
-            custom_route(client, profile, model_id)?
-        }
-    };
-    if route.api_key.is_none() && !matches!(prefix, "ollama" | "ollama_chat") {
-        return Err(ModelError::MissingApiKey);
-    }
-    Ok(route)
-}
-
-fn custom_route(
-    client: &NativeModelClient,
-    profile: &forge_connect::ProviderSpec,
-    model: &str,
-) -> Result<Route, ModelError> {
-    let env_names: Vec<&str> = profile.api_key_env.iter().map(String::as_str).collect();
-    let api_key = match client.credential(&env_names) {
-        Some(key) => Some(key),
-        None => forge_connect::CredentialStore::user_default()
-            .get_api_key(&profile.id)
-            .map_err(|err| {
-                ModelError::Provider(format!("cannot read custom provider credentials: {err}"))
-            })?,
-    };
-    Ok(Route {
-        base_url: Some(profile.base_url.clone())
-            .filter(|base| !base.trim().is_empty())
-            .ok_or_else(|| ModelError::Provider("custom provider requires a base URL".into()))?,
-        api_key,
-        model: model.into(),
-        opencode_session: false,
     })
 }
 
@@ -729,8 +538,8 @@ fn catalog_supports_openai_effort(model: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::native::test_support::serve_once;
+    use crate::native::tests::{key, test_client};
     use crate::ModelClient;
-    use forge_config::Config;
     use forge_types::{Message, MessageRole, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
     fn request(model: &str) -> ModelRequest {
@@ -753,75 +562,55 @@ mod tests {
         }
     }
 
-    /// The OpenCode profiles' `wire_overrides` (forge-connect) carry the same
-    /// per-model routing as this transport's tables, which a later stage
-    /// deletes in their favour.
+    /// OpenCode's per-model endpoints come from the profiles'
+    /// `wire_overrides` (the tables this transport used to hold).
     #[test]
-    fn opencode_wire_overrides_match_the_routing_tables() {
+    fn opencode_models_select_their_wire_from_the_profile() {
         use forge_connect::WireKind;
         let go = forge_connect::opencode_go_profile();
         let zen = forge_connect::opencode_zen_profile();
-        let mut samples: Vec<&str> = OPENCODE_GO_MESSAGES_MODELS
-            .iter()
-            .chain(OPENCODE_GO_RESPONSES_MODELS)
-            .copied()
-            .collect();
-        samples.extend([
-            "muse-spark-1.2-contributor",
-            "muse-spark-1.3-contributor-preview",
-            "muse-spark-1.1",
-            "gpt-4.1-mini",
-            "kimi-k2",
-        ]);
-        for (profile, prefix) in [(&go, "opencode-go"), (&zen, "opencode-zen")] {
-            for bare in &samples {
-                let model = format!("{prefix}/{bare}");
-                let today =
-                    if is_opencode_responses_model(&model) || opencode_go_responses_model(&model) {
-                        WireKind::Responses
-                    } else if opencode_messages_model(&model) {
-                        WireKind::AnthropicMessages
-                    } else {
-                        WireKind::ChatCompletions
-                    };
-                assert_eq!(profile.wire_for_model(bare), today, "{model}");
-            }
+        for (bare, wire) in [
+            ("union-alpha", WireKind::AnthropicMessages),
+            ("qwen3.6-plus", WireKind::AnthropicMessages),
+            ("grok-4.6", WireKind::Responses),
+            ("gpt-5.6-luna", WireKind::Responses),
+            ("muse-spark-1.3-contributor-preview", WireKind::Responses),
+            ("muse-spark-1.1", WireKind::ChatCompletions),
+            ("gpt-4.1-mini", WireKind::ChatCompletions),
+        ] {
+            assert_eq!(go.wire_for_model(bare), wire, "go {bare}");
+        }
+        for (bare, wire) in [
+            ("union-alpha", WireKind::AnthropicMessages),
+            ("minimax-m3", WireKind::ChatCompletions),
+            ("grok-4.6", WireKind::ChatCompletions),
+            ("muse-spark-1.2-contributor", WireKind::Responses),
+        ] {
+            assert_eq!(zen.wire_for_model(bare), wire, "zen {bare}");
         }
     }
 
-    #[test]
-    fn custom_provider_route_uses_endpoint_model_and_credentials() {
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[("CUSTOM_TEST_KEY".into(), "custom-key".into())]);
+    #[tokio::test]
+    async fn a_custom_profile_sends_to_its_endpoint_with_its_key() {
         let mut profile = forge_connect::openai_profile();
         profile.id = "custom-test".into();
-        profile.api_key_env = vec!["CUSTOM_TEST_KEY".into()];
-        profile.base_url = "https://custom.example/v1".into();
-        let routed = custom_route(&client, &profile, "org/model-a").unwrap();
-        assert_eq!(routed.base_url, "https://custom.example/v1");
-        assert_eq!(routed.model, "org/model-a");
-        assert_eq!(routed.api_key.as_deref(), Some("custom-key"));
-        assert!(!routed.opencode_session);
-    }
-
-    #[test]
-    fn routes_built_in_openai_compatible_providers() {
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENAI_API_KEY".into(), "openai-key".into()),
-            ("XAI_API_KEY".into(), "xai-key".into()),
-            ("OPENCODE_API_KEY".into(), "opencode-key".into()),
-        ]);
-        assert_eq!(route(&client, "openai/gpt-4.1").unwrap().model, "gpt-4.1");
-        assert_eq!(route(&client, "xai/grok-3").unwrap().model, "grok-3");
-        assert_eq!(
-            route(&client, "opencode-go/gpt-4.1-mini").unwrap().base_url,
-            "https://opencode.ai/zen/go/v1"
+        profile.route_id = "custom-test".into();
+        profile.model_provider_prefix = "custom-test".into();
+        let client = crate::native::tests::test_client(
+            profile,
+            "https://custom.example/v1",
+            crate::native::tests::key("custom-key"),
         );
-        assert_eq!(
-            route(&client, "ollama/llama3.2").unwrap().base_url,
-            "http://localhost:11434/v1"
-        );
+        let (target, _) = client
+            .target_for(&crate::native::tests::request(
+                "custom-test/org/model-a",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(target.base_url, "https://custom.example/v1");
+        assert_eq!(target.bare_model, "org/model-a");
+        assert_eq!(target.credential.unwrap().secret, "custom-key");
     }
 
     #[test]
@@ -1120,10 +909,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let mut config = Config::default();
-        config.model.base_url = Some(format!("{base_url}/v1"));
-        config.model.api_key = Some("secret".into());
-        let client = NativeModelClient::from_config(&config).unwrap();
+        let client = test_client(
+            forge_connect::openai_profile(),
+            &format!("{base_url}/v1"),
+            key("secret"),
+        );
         let (tx, rx) = std::sync::mpsc::channel();
 
         let mut request = request("openai/gpt-5-test");
@@ -1196,11 +986,11 @@ mod tests {
                 eprintln!("skipping: this host denies binding a mock listener");
                 return;
             };
-            let client = NativeModelClient::from_config(&Config::default()).unwrap();
-            client.apply_provider_env(&[
-                ("OPENCODE_API_BASE".into(), base_url),
-                ("OPENCODE_API_KEY".into(), "test-key".into()),
-            ]);
+            let client = test_client(
+                forge_connect::opencode_go_profile(),
+                &base_url,
+                key("test-key"),
+            );
             let (tx, rx) = std::sync::mpsc::channel();
             let error = client
                 .complete_with_stream(request("opencode-go/deepseek-test"), Some(tx))
@@ -1232,11 +1022,11 @@ mod tests {
                 eprintln!("skipping: this host denies binding a mock listener");
                 return;
             };
-            let client = NativeModelClient::from_config(&Config::default()).unwrap();
-            client.apply_provider_env(&[
-                ("OPENCODE_API_BASE".into(), base_url),
-                ("OPENCODE_API_KEY".into(), "test-key".into()),
-            ]);
+            let client = test_client(
+                forge_connect::opencode_go_profile(),
+                &base_url,
+                key("test-key"),
+            );
             let response = client
                 .complete(request("opencode-go/deepseek-test"))
                 .await
@@ -1267,11 +1057,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENCODE_API_BASE".into(), base_url),
-            ("OPENCODE_API_KEY".into(), "test-key".into()),
-        ]);
+        let client = test_client(
+            forge_connect::opencode_go_profile(),
+            &base_url,
+            key("test-key"),
+        );
         let response = client
             .complete(request("opencode-go/deepseek-test"))
             .await
@@ -1303,11 +1093,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENCODE_API_BASE".into(), base_url),
-            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
-        ]);
+        let client = test_client(
+            forge_connect::opencode_go_profile(),
+            &base_url,
+            key("opencode-secret"),
+        );
         let mut request = request("opencode-go/gpt-test");
         request.route_id = Some("opencode-go".into());
         request.session_id = Some("session-123".into());
@@ -1331,11 +1121,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENCODE_API_BASE".into(), base_url),
-            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
-        ]);
+        let client = test_client(
+            forge_connect::opencode_go_profile(),
+            &base_url,
+            key("opencode-secret"),
+        );
         let mut request = request("opencode-go/gpt-test");
         request.route_id = Some("opencode-go".into());
 
@@ -1349,14 +1139,16 @@ mod tests {
 
     #[test]
     fn fallback_opencode_session_is_stable_within_the_process() {
-        let first = opencode_session_id(&request("opencode-go/gpt-test")).to_string();
-        let second = opencode_session_id(&request("opencode-go/gpt-test")).to_string();
+        let first =
+            crate::native::opencode_session_id(&request("opencode-go/gpt-test")).to_string();
+        let second =
+            crate::native::opencode_session_id(&request("opencode-go/gpt-test")).to_string();
         assert_eq!(first, second);
         assert!(!first.is_empty());
         // A provided thread id always wins over the generated fallback.
         let mut with_thread = request("opencode-go/gpt-test");
         with_thread.session_id = Some("thread-7".into());
-        assert_eq!(opencode_session_id(&with_thread), "thread-7");
+        assert_eq!(crate::native::opencode_session_id(&with_thread), "thread-7");
     }
 
     #[tokio::test]
@@ -1371,11 +1163,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENCODE_ZEN_API_BASE".into(), base_url),
-            ("OPENCODE_ZEN_API_KEY".into(), "opencode-secret".into()),
-        ]);
+        let client = test_client(
+            forge_connect::opencode_zen_profile(),
+            &base_url,
+            key("opencode-secret"),
+        );
         let mut request = request("opencode-zen/muse-spark-1.3-contributor");
         request.route_id = Some("opencode-zen".into());
         request.session_id = Some("session-muse".into());
@@ -1404,7 +1196,7 @@ mod tests {
             "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\n",
             "data: {\"type\":\"message_stop\"}\n\n"
         );
-        for (prefix, base_env, key_env, path) in [
+        for (prefix, _base_env, _key_env, path) in [
             (
                 "opencode-go",
                 "OPENCODE_API_BASE",
@@ -1423,11 +1215,15 @@ mod tests {
                 eprintln!("skipping: this host denies binding a mock listener");
                 return;
             };
-            let client = NativeModelClient::from_config(&Config::default()).unwrap();
-            client.apply_provider_env(&[
-                (base_env.into(), format!("{base_url}{path}")),
-                (key_env.into(), "opencode-secret".into()),
-            ]);
+            let client = test_client(
+                if prefix == "opencode-zen" {
+                    forge_connect::opencode_zen_profile()
+                } else {
+                    forge_connect::opencode_go_profile()
+                },
+                &format!("{base_url}{path}"),
+                key("opencode-secret"),
+            );
             let mut request = request(&format!("{prefix}/union-alpha"));
             request.route_id = Some(prefix.into());
             request.session_id = Some("session-union".into());
@@ -1471,11 +1267,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[
-            ("OPENCODE_API_BASE".into(), format!("{base_url}/v1")),
-            ("OPENCODE_API_KEY".into(), "opencode-secret".into()),
-        ]);
+        let client = test_client(
+            forge_connect::opencode_go_profile(),
+            &format!("{base_url}/v1"),
+            key("opencode-secret"),
+        );
         let mut request = request("opencode-go/grok-4.6");
         request.route_id = Some("opencode-go".into());
         request.session_id = Some("session-grok".into());
@@ -1495,25 +1291,6 @@ mod tests {
             .contains("x-opencode-session: session-grok"));
     }
 
-    #[test]
-    fn opencode_go_models_map_to_their_endpoint() {
-        assert!(opencode_messages_model("opencode-go/union-alpha"));
-        assert!(opencode_messages_model("opencode-go/minimax-m3"));
-        assert!(opencode_messages_model("opencode-go/qwen3.7-plus"));
-        assert!(opencode_go_responses_model("opencode-go/grok-4.6"));
-        assert!(opencode_go_responses_model("opencode-go/gpt-5.6-luna"));
-        // Chat models and other providers' routes keep the default endpoint.
-        assert!(!opencode_messages_model("opencode-go/kimi-k3"));
-        assert!(!opencode_go_responses_model("opencode-go/kimi-k3"));
-        assert!(opencode_messages_model("opencode-zen/union-alpha"));
-        assert!(opencode_messages_model("opencode/union-alpha"));
-        assert!(!opencode_messages_model("opencode-zen/minimax-m3"));
-        assert!(!opencode_messages_model("opencode-zen/kimi-k3"));
-        assert!(!opencode_messages_model("openai/union-alpha"));
-        assert!(!opencode_messages_model("union-alpha"));
-        assert!(!opencode_messages_model("openai/gpt-5"));
-    }
-
     #[tokio::test]
     async fn reports_provider_http_errors() {
         let Some((base_url, _)) =
@@ -1522,10 +1299,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let mut config = Config::default();
-        config.model.base_url = Some(base_url);
-        config.model.api_key = Some("secret".into());
-        let client = NativeModelClient::from_config(&config).unwrap();
+        let client = test_client(forge_connect::openai_profile(), &base_url, key("secret"));
 
         let error = client
             .complete(request("openai/gpt-test"))
@@ -1536,14 +1310,17 @@ mod tests {
         assert!(error.to_string().contains("rate limited"));
     }
 
-    #[test]
-    fn rejects_missing_keys_unknown_prefixes_and_invalid_tool_json() {
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+    #[tokio::test]
+    async fn rejects_missing_keys_unknown_prefixes_and_invalid_tool_json() {
+        let client = test_client(forge_connect::openai_profile(), "http://127.0.0.1:9", None);
         assert!(matches!(
-            route(&client, "openai/gpt"),
+            client.complete(request("openai/gpt")).await,
             Err(ModelError::MissingApiKey)
         ));
-        assert!(route(&client, "unknown/model").is_err());
+        assert!(matches!(
+            client.complete(request("unknown/model")).await,
+            Err(ModelError::UnknownRoute(_))
+        ));
         let calls = BTreeMap::from([(
             0,
             ToolCallAccumulator {

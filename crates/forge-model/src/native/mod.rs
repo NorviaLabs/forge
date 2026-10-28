@@ -69,13 +69,17 @@ mod test_support {
     }
 }
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use forge_config::Config;
+use forge_connect::{
+    Attach, CredentialError, CredentialValue, Credentials, RouteTable, SessionHeaderKind,
+    StaticHeader, WireKind,
+};
 use forge_types::{ImageRef, ModelResponse};
 
 use crate::image::{load_image_ref, LoadedImage};
@@ -126,10 +130,78 @@ mod sse_tests {
 pub struct NativeModelClient {
     http: reqwest::Client,
     default_model: String,
-    configured_base_url: Option<String>,
-    configured_api_key: Option<String>,
-    credentials: Arc<Mutex<BTreeMap<String, String>>>,
+    /// The routing snapshot. Dispatch clones the `Arc` and drops the guard
+    /// before any await, so an in-flight turn keeps its snapshot.
+    routes: RwLock<RouteTable>,
+    /// Rebuilds the snapshot when the provider env is re-applied, until the
+    /// session sets the table itself.
+    credentials: Arc<Credentials>,
     image_cache: Mutex<HashMap<PathBuf, CachedImage>>,
+}
+
+/// The request's resolved destination (design §4): base URL, model ids, and
+/// how the credential and fixed headers go on the request.
+pub(super) struct Target {
+    pub(super) profile_id: String,
+    pub(super) base_url: String,
+    /// `<prefix>/<bare>`, the id effort and catalog lookups key on.
+    pub(super) model: String,
+    /// The id sent upstream.
+    pub(super) bare_model: String,
+    attach: Attach,
+    optional: bool,
+    credential: Option<CredentialValue>,
+    static_headers: Vec<StaticHeader>,
+    session_header: Option<SessionHeaderKind>,
+}
+
+/// User agent OpenCode's gateway expects with its session header.
+const OPENCODE_USER_AGENT: &str = concat!("forge/", env!("CARGO_PKG_VERSION"));
+
+/// Process-stable OpenCode session id for requests without a Forge session.
+static FALLBACK_OPENCODE_SESSION: OnceLock<String> = OnceLock::new();
+
+fn opencode_session_id(req: &ModelRequest) -> &str {
+    req.session_id.as_deref().unwrap_or_else(|| {
+        FALLBACK_OPENCODE_SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
+    })
+}
+
+impl Target {
+    /// Add the profile's fixed headers, its session header, and the
+    /// credential per its `attach`. A missing credential fails before
+    /// sending unless the profile's key is optional.
+    pub(super) fn authorize(
+        &self,
+        request: reqwest::RequestBuilder,
+        req: &ModelRequest,
+    ) -> Result<reqwest::RequestBuilder, ModelError> {
+        let mut request = request;
+        for header in &self.static_headers {
+            request = request.header(header.name.as_str(), header.value.as_str());
+        }
+        if self.session_header == Some(SessionHeaderKind::Opencode) {
+            request = request
+                .header("User-Agent", OPENCODE_USER_AGENT)
+                .header("x-opencode-session", opencode_session_id(req));
+        }
+        Ok(match (self.attach, &self.credential) {
+            (Attach::None, _) => request,
+            (Attach::Bearer, Some(value)) => request.bearer_auth(&value.secret),
+            (Attach::XApiKey, Some(value)) => request.header("x-api-key", &value.secret),
+            (Attach::BearerAccountId, Some(value)) => {
+                let account = value
+                    .account_id
+                    .as_deref()
+                    .ok_or(ModelError::MissingApiKey)?;
+                request
+                    .bearer_auth(&value.secret)
+                    .header("chatgpt-account-id", account)
+            }
+            (_, None) if self.optional => request,
+            (_, None) => return Err(ModelError::MissingApiKey),
+        })
+    }
 }
 
 impl NativeModelClient {
@@ -143,12 +215,15 @@ impl NativeModelClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ModelError::Http(error.to_string()))?;
+        let credentials = Arc::new(Credentials::user_default());
         Ok(Self {
             http,
             default_model: cfg.model.model.clone(),
-            configured_base_url: cfg.model.base_url.clone(),
-            configured_api_key: cfg.model.api_key.clone(),
-            credentials: Arc::new(Mutex::new(BTreeMap::new())),
+            routes: RwLock::new(forge_connect::resolve(
+                &forge_connect::loaded_registry(),
+                &credentials,
+            )),
+            credentials,
             image_cache: Mutex::new(HashMap::new()),
         })
     }
@@ -165,27 +240,69 @@ impl NativeModelClient {
         Ok(model.to_string())
     }
 
-    fn credential(&self, names: &[&str]) -> Option<String> {
-        self.injected_or_env(names)
-            .or_else(|| self.configured_api_key.clone())
-    }
-
-    fn injected_or_env(&self, names: &[&str]) -> Option<String> {
-        let injected = self.credentials.lock().ok();
-        names.iter().find_map(|name| {
-            injected
-                .as_ref()
-                .and_then(|values| values.get(*name).cloned())
-                .or_else(|| std::env::var(name).ok())
-                .filter(|value| !value.trim().is_empty())
-        })
-    }
-
-    pub(super) fn resolved_base_url(&self, env_names: &[&str], default: &str) -> String {
-        self.configured_base_url
+    fn route_table(&self) -> RouteTable {
+        self.routes
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-            .or_else(|| self.injected_or_env(env_names))
-            .unwrap_or_else(|| default.into())
+    }
+
+    fn reload_routes(&self) {
+        let table = forge_connect::resolve(&forge_connect::loaded_registry(), &self.credentials);
+        self.set_routes(table);
+    }
+
+    fn set_routes(&self, table: RouteTable) {
+        *self
+            .routes
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = table;
+    }
+
+    /// The wire a request would use, for prompt projection and cache keys.
+    fn wire_for_request(&self, req: &ModelRequest) -> WireKind {
+        let Ok(model) = self.model_for(req) else {
+            return WireKind::ChatCompletions;
+        };
+        self.route_table()
+            .profile_for_request(&model, req.route_id.as_deref())
+            .map(|(found, bare)| found.definition.wire_for_model(bare))
+            .unwrap_or(WireKind::ChatCompletions)
+    }
+
+    /// Pick the profile, refresh and read its credential, and build the
+    /// request target (design §4).
+    async fn target_for(&self, req: &ModelRequest) -> Result<(Target, WireKind), ModelError> {
+        let model = self.model_for(req)?;
+        let table = self.route_table();
+        let (found, bare) = table
+            .profile_for_request(&model, req.route_id.as_deref())
+            .ok_or_else(|| unknown_route(&table, &model))?;
+        let definition = &found.definition;
+        let credential = found.credential.clone();
+        let refresh = credential.clone();
+        tokio::task::spawn_blocking(move || refresh.ensure_fresh_blocking())
+            .await
+            .map_err(|error| ModelError::Other(error.to_string()))?
+            .map_err(|error| credential_error(error, &definition.profile_id))?;
+        let value = credential
+            .current()
+            .map_err(|error| credential_error(error, &definition.profile_id))?;
+        let wire = definition.wire_for_model(bare);
+        Ok((
+            Target {
+                profile_id: definition.profile_id.clone(),
+                base_url: definition.base_url.clone(),
+                model: format!("{}/{bare}", definition.model_provider_prefix),
+                bare_model: bare.to_string(),
+                attach: definition.attach,
+                optional: definition.auth_kind == forge_connect::AuthKind::ApiKeyOptional,
+                credential: value,
+                static_headers: definition.static_headers.clone(),
+                session_header: definition.session_header,
+            },
+            wire,
+        ))
     }
 
     pub(super) fn load_image_ref(
@@ -222,6 +339,33 @@ impl NativeModelClient {
     }
 }
 
+fn unknown_route(table: &RouteTable, model: &str) -> ModelError {
+    let prefix = model.split('/').next().unwrap_or(model);
+    let known: Vec<&str> = table
+        .profiles()
+        .map(|found| found.definition.profile_id.as_str())
+        .collect();
+    ModelError::UnknownRoute(format!(
+        "no provider serves model `{model}` (prefix `{prefix}`); known providers: {}",
+        known.join(", ")
+    ))
+}
+
+fn credential_error(error: CredentialError, profile_id: &str) -> ModelError {
+    match error {
+        CredentialError::Missing => ModelError::MissingApiKey,
+        CredentialError::AuthRequired => ModelError::ProviderAuth {
+            status: 401,
+            message: format!(
+                "the stored credential for `{profile_id}` was rejected; reconnect with /connect {profile_id}"
+            ),
+        },
+        CredentialError::Store(message) => {
+            ModelError::Other(format!("credentials.toml ({profile_id}): {message}"))
+        }
+    }
+}
+
 #[async_trait]
 impl ModelClient for NativeModelClient {
     async fn complete(&self, req: ModelRequest) -> Result<ModelResponse, ModelError> {
@@ -233,34 +377,33 @@ impl ModelClient for NativeModelClient {
         req: ModelRequest,
         tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, ModelError> {
-        let model = self.model_for(&req)?;
-        let model = canonical_model_for_route(req.route_id.as_deref(), &model);
-        match wire_for_route(req.route_id.as_deref()) {
-            forge_connect::WireKind::AnthropicMessages => {
-                anthropic::complete(self, req, &model, tx).await
+        let (target, wire) = self.target_for(&req).await?;
+        match wire {
+            WireKind::AnthropicMessages => anthropic::complete(self, req, target, tx).await,
+            // The ChatGPT flavor owns its own Responses endpoint and headers.
+            WireKind::Responses if target.attach == Attach::BearerAccountId => {
+                codex::complete(self, req, target, tx).await
             }
-            forge_connect::WireKind::Responses => codex::complete(self, req, &model, tx).await,
-            forge_connect::WireKind::ChatCompletions => {
-                openai::complete(self, req, &model, tx).await
-            }
+            WireKind::Responses => openai::complete_responses(self, req, target, tx).await,
+            WireKind::ChatCompletions => openai::complete(self, req, target, tx).await,
         }
     }
 
-    fn apply_provider_env(&self, pairs: &[(String, String)]) {
-        if let Ok(mut credentials) = self.credentials.lock() {
-            credentials.extend(pairs.iter().cloned());
-        }
+    fn apply_provider_env(&self, _pairs: &[(String, String)]) {
+        self.reload_routes();
     }
 
     fn clear_provider_env(&self) {
-        if let Ok(mut credentials) = self.credentials.lock() {
-            credentials.clear();
-        }
+        self.reload_routes();
+    }
+
+    fn set_route_table(&self, table: RouteTable) {
+        self.set_routes(table);
     }
 
     fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
-        match wire_for_route(req.route_id.as_deref()) {
-            forge_connect::WireKind::AnthropicMessages => {
+        match self.wire_for_request(req) {
+            WireKind::AnthropicMessages => {
                 let (system, messages) = anthropic::messages_body(req, Some(self));
                 let mut body = serde_json::json!({ "messages": messages });
                 if !system.is_empty() {
@@ -285,51 +428,20 @@ impl ModelClient for NativeModelClient {
                 }
                 crate::prompt_wire::prompt_object_from_body(body)
             }
-            forge_connect::WireKind::Responses => crate::prompt_wire::prompt_object_from_body(
+            WireKind::Responses => crate::prompt_wire::prompt_object_from_body(
                 codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
             ),
-            forge_connect::WireKind::ChatCompletions => {
-                crate::prompt_wire::openai_compat_prompt_cached(req, self)
-            }
+            WireKind::ChatCompletions => crate::prompt_wire::openai_compat_prompt_cached(req, self),
         }
     }
 
     fn prompt_transport_key(&self, req: &ModelRequest) -> &'static str {
-        match wire_for_route(req.route_id.as_deref()) {
-            forge_connect::WireKind::AnthropicMessages => "anthropic",
-            forge_connect::WireKind::Responses => "codex",
-            forge_connect::WireKind::ChatCompletions => "openai_compat",
+        match self.wire_for_request(req) {
+            WireKind::AnthropicMessages => "anthropic",
+            WireKind::Responses => "codex",
+            WireKind::ChatCompletions => "openai_compat",
         }
     }
-}
-
-/// Convert the stable offering identity into the namespaced model id the
-/// wire modules consume. Prefix comes from the registered spec, not a match.
-fn spec_for_route(route_id: &str) -> Option<forge_connect::ProviderSpec> {
-    forge_connect::loaded_registry()
-        .get_by_route(route_id)
-        .cloned()
-}
-
-fn wire_for_route(route_id: Option<&str>) -> forge_connect::WireKind {
-    route_id
-        .and_then(spec_for_route)
-        .map(|spec| spec.effective_wire())
-        .unwrap_or(forge_connect::WireKind::ChatCompletions)
-}
-
-fn canonical_model_for_route(route_id: Option<&str>, model: &str) -> String {
-    let Some(route_id) = route_id else {
-        return model.to_string();
-    };
-    let Some(spec) = spec_for_route(route_id) else {
-        return model.to_string();
-    };
-    let bare = model
-        .split_once('/')
-        .map(|(_, value)| value)
-        .unwrap_or(model);
-    format!("{}/{bare}", spec.model_provider_prefix)
 }
 
 /// Turn a non-success provider response into a [`ModelError`], the same way on
@@ -337,15 +449,16 @@ fn canonical_model_for_route(route_id: Option<&str>, model: &str) -> String {
 ///
 /// - a 3xx is refused (the client follows no redirects) and names its target
 ///   host;
-/// - a 401 is a credential failure ([`ModelError::ProviderAuth`]);
-/// - a 403 is a refusal of this request for `model`, not proof the credential
-///   is bad, so it stays a [`ModelError::ProviderStatus`];
+/// - a 401 is a credential failure for the target's profile
+///   ([`ModelError::ProviderAuth`]);
+/// - a 403 is a refusal of this request for the model, not proof the
+///   credential is bad, so it stays a [`ModelError::ProviderStatus`];
 /// - anything else carries the provider's body as detail.
-pub(super) async fn status_error(response: reqwest::Response, model: &str) -> ModelError {
+pub(super) async fn status_error(response: reqwest::Response, target: &Target) -> ModelError {
     let status = response.status();
     let code = status.as_u16();
     if status.is_redirection() {
-        let target = response
+        let location = response
             .headers()
             .get(reqwest::header::LOCATION)
             .and_then(|value| value.to_str().ok())
@@ -359,7 +472,7 @@ pub(super) async fn status_error(response: reqwest::Response, model: &str) -> Mo
         return ModelError::ProviderStatus {
             status: code,
             detail: format!(
-                "redirect to {target} refused; Forge does not follow provider redirects"
+                "redirect to {location} refused; Forge does not follow provider redirects"
             ),
         };
     }
@@ -373,11 +486,17 @@ pub(super) async fn status_error(response: reqwest::Response, model: &str) -> Mo
     match code {
         401 => ModelError::ProviderAuth {
             status: code,
-            message: format!("HTTP 401: authentication failed; run /connect{suffix}"),
+            message: format!(
+                "HTTP 401: authentication failed for `{}`; run /connect{suffix}",
+                target.profile_id
+            ),
         },
         403 => ModelError::ProviderStatus {
             status: code,
-            detail: format!("the provider refused this request for `{model}`{suffix}"),
+            detail: format!(
+                "the provider refused this request for `{}`{suffix}",
+                target.model
+            ),
         },
         _ => ModelError::ProviderStatus {
             status: code,
@@ -387,23 +506,92 @@ pub(super) async fn status_error(response: reqwest::Response, model: &str) -> Mo
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+    use forge_connect::{Credential, RouteDefinition};
 
-    #[test]
-    fn config_constructs_without_python() {
+    /// A client whose route table holds only `profile`, sent to `base_url`
+    /// with a fixed credential.
+    pub(crate) fn test_client(
+        profile: forge_connect::ProviderSpec,
+        base_url: &str,
+        credential: Option<CredentialValue>,
+    ) -> NativeModelClient {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        assert!(client.credentials.lock().unwrap().is_empty());
+        let mut definition = RouteDefinition::from_spec(&profile);
+        definition.base_url = base_url.trim_end_matches('/').to_string();
+        client.set_routes(RouteTable::single(
+            definition,
+            Credential::Static(credential),
+        ));
+        client
+    }
+
+    pub(crate) fn key(secret: &str) -> Option<CredentialValue> {
+        Some(CredentialValue {
+            secret: secret.into(),
+            account_id: None,
+        })
+    }
+
+    /// A key with a ChatGPT account id, for the `bearer-account-id` attach.
+    pub(crate) fn account_key(secret: &str) -> Option<CredentialValue> {
+        Some(CredentialValue {
+            secret: secret.into(),
+            account_id: Some("account".into()),
+        })
+    }
+
+    pub(crate) fn request(model: &str, route_id: Option<&str>) -> ModelRequest {
+        ModelRequest {
+            messages: vec![forge_types::Message::new(
+                forge_types::MessageRole::User,
+                "hello",
+            )]
+            .into(),
+            tools: Vec::new(),
+            model: model.into(),
+            workspace_root: PathBuf::new(),
+            route_id: route_id.map(str::to_owned),
+            session_id: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+            prompt_cache: false,
+        }
+    }
+
+    /// A route table over the built-ins, reading credentials from a temp
+    /// store.
+    fn builtin_table(dir: &tempfile::TempDir) -> (RouteTable, Arc<Credentials>) {
+        let creds = Arc::new(Credentials::new(forge_connect::CredentialStore::new(
+            dir.path().join("credentials.toml"),
+        )));
+        let mut registry = forge_connect::builtin_registry();
+        // Ignore ambient vendor env so the stored login is what resolves.
+        for id in ["xai", "openai_codex"] {
+            let mut spec = registry.get(id).unwrap().clone();
+            spec.api_key_env.clear();
+            registry.register(spec);
+        }
+        (forge_connect::resolve(&registry, &creds), creds)
+    }
+
+    /// A ChatGPT access token whose payload names account `account-123`.
+    fn chatgpt_token() -> String {
+        "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.signature".into()
+    }
+
+    fn oauth(access: &str) -> forge_connect::OauthTokens {
+        forge_connect::OauthTokens {
+            access_token: access.into(),
+            refresh_token: None,
+            expires_at: None,
+        }
     }
 
     #[test]
-    fn injected_credentials_are_available() {
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        client.apply_provider_env(&[("OPENAI_API_KEY".into(), "injected".into())]);
-        assert_eq!(
-            client.credential(&["OPENAI_API_KEY"]).as_deref(),
-            Some("injected")
-        );
+    fn config_constructs_without_python() {
+        NativeModelClient::from_config(&Config::default()).unwrap();
     }
 
     #[test]
@@ -427,248 +615,113 @@ mod tests {
         assert!(!Arc::ptr_eq(&second, &third));
     }
 
-    #[test]
-    fn stable_route_identity_controls_legacy_wire_namespace() {
-        assert_eq!(
-            canonical_model_for_route(Some("openai-chatgpt"), "gpt-5.6"),
-            "openai-codex/gpt-5.6"
-        );
-        assert_eq!(
-            canonical_model_for_route(Some("openai-api"), "gpt-5.6"),
-            "openai/gpt-5.6"
-        );
-        assert_eq!(
-            canonical_model_for_route(Some("anthropic-api"), "claude-sonnet-4-5"),
-            "anthropic/claude-sonnet-4-5"
-        );
-        assert_eq!(
-            canonical_model_for_route(Some("openai-api"), "vendor/model"),
-            "openai/model"
-        );
-        assert_eq!(
-            canonical_model_for_route(None, "vendor/model"),
-            "vendor/model"
-        );
+    #[tokio::test]
+    async fn a_stored_route_id_and_legacy_aliases_pick_the_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let (table, creds) = builtin_table(&dir);
+        let codex = forge_connect::openai_codex_profile();
+        creds.set_oauth(&codex, oauth(&chatgpt_token())).unwrap();
+        creds
+            .set_oauth(&forge_connect::xai_grok_profile(), oauth("xai-token"))
+            .unwrap();
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.set_routes(table);
+
+        // `bench --model gpt-5 --route-id openai-chatgpt`
+        let (target, wire) = client
+            .target_for(&request("gpt-5", Some("openai-chatgpt")))
+            .await
+            .unwrap();
+        assert_eq!(target.profile_id, "openai_codex");
+        assert_eq!(target.bare_model, "gpt-5");
+        assert_eq!(target.model, "openai-codex/gpt-5");
+        assert_eq!(wire, WireKind::Responses);
+
+        let (target, _) = client
+            .target_for(&request("grok/grok-4", None))
+            .await
+            .unwrap();
+        assert_eq!(target.profile_id, "xai");
+        assert_eq!(target.bare_model, "grok-4");
+
+        let error = client
+            .target_for(&request("nobody/model", None))
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(error, ModelError::UnknownRoute(_)), "{error}");
     }
 
-    #[test]
-    fn native_request_and_credential_fallbacks_are_deterministic() {
-        let mut cfg = Config::default();
-        cfg.model.model = "configured-model".into();
-        cfg.model.base_url = Some("https://configured.test".into());
-        cfg.model.api_key = Some("configured-key".into());
-        let client = NativeModelClient::from_config(&cfg).unwrap();
-
-        let blank = ModelRequest {
-            messages: Default::default(),
-            tools: Vec::new(),
-            model: "  ".into(),
-            workspace_root: PathBuf::new(),
-            route_id: None,
-            session_id: None,
-            reasoning_effort: None,
-            thinking_enabled: false,
-            prompt_cache: false,
+    #[tokio::test]
+    async fn an_expiring_token_is_refreshed_before_the_next_request() {
+        const ISSUER: &str = "FORGE_XAI_OAUTH_ISSUER";
+        let Some(issuer) = forge_test_support::mock_http(vec![(
+            200,
+            r#"{"access_token":"refreshed","refresh_token":"new-rt","expires_in":3600}"#,
+            vec![],
+        )]) else {
+            return;
         };
-        assert_eq!(client.model_for(&blank).unwrap(), "configured-model");
-        assert_eq!(
-            client.credential(&["MISSING_KEY"]).as_deref(),
-            Some("configured-key")
-        );
-        assert_eq!(
-            client.resolved_base_url(&["MISSING_URL"], "https://default.test"),
-            "https://configured.test"
-        );
+        let Some((chat, request_rx)) = super::test_support::serve_once(
+            "200 OK",
+            "text/event-stream",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        )
+        .await
+        else {
+            return;
+        };
+        std::env::set_var(ISSUER, &issuer);
+        let dir = tempfile::tempdir().unwrap();
+        let creds = Arc::new(Credentials::new(forge_connect::CredentialStore::new(
+            dir.path().join("credentials.toml"),
+        )));
+        let mut xai = forge_connect::xai_grok_profile();
+        xai.api_key_env.clear();
+        xai.base_url = chat;
+        creds
+            .set_oauth(
+                &xai,
+                forge_connect::OauthTokens {
+                    access_token: "expired".into(),
+                    refresh_token: Some("old-rt".into()),
+                    expires_at: Some("0".into()),
+                },
+            )
+            .unwrap();
+        let mut registry = forge_connect::ConnectRegistry::new();
+        registry.register(xai);
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.set_routes(forge_connect::resolve(&registry, &creds));
 
-        let mut empty = cfg;
-        empty.model.model.clear();
-        empty.model.api_key = None;
-        empty.model.base_url = None;
-        let empty_client = NativeModelClient::from_config(&empty).unwrap();
-        assert!(matches!(
-            empty_client.model_for(&blank),
-            Err(ModelError::Other(_))
-        ));
-        assert_eq!(
-            empty_client.resolved_base_url(&["MISSING_URL"], "https://default.test"),
-            "https://default.test"
-        );
-
-        client.apply_provider_env(&[("OPENAI_API_KEY".into(), "override".into())]);
-        assert_eq!(
-            client.credential(&["OPENAI_API_KEY"]).as_deref(),
-            Some("override")
-        );
-        client.clear_provider_env();
-        assert_eq!(
-            client.credential(&["OPENAI_API_KEY"]).as_deref(),
-            Some("configured-key")
-        );
+        let response = client.complete(request("xai/grok-4", None)).await;
+        std::env::remove_var(ISSUER);
+        assert_eq!(response.unwrap().text, "hi");
+        let sent = request_rx.await.unwrap().to_ascii_lowercase();
+        assert!(sent.contains("authorization: bearer refreshed"), "{sent}");
     }
 
-    /// Every credential and base URL variable a built-in route reads.
-    const ROUTE_ENV: &[&str] = &[
-        "OPENAI_API_KEY",
-        "OPENAI_API_BASE",
-        "XAI_API_KEY",
-        "GROK_CODE_XAI_API_KEY",
-        "XAI_API_BASE",
-        "OPENCODE_API_KEY",
-        "OPENCODE_GO_API_KEY",
-        "OPENCODE_ZEN_API_KEY",
-        "OPENCODE_API_BASE",
-        "OPENCODE_GO_API_BASE",
-        "OPENCODE_ZEN_API_BASE",
-        "OLLAMA_API_KEY",
-        "OLLAMA_API_BASE",
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_API_BASE",
-        "FORGE_CODEX_ACCESS_TOKEN",
-        "FORGE_CODEX_ACCOUNT_ID",
-        "FORGE_CODEX_API_BASE",
-    ];
-
-    /// `base_url key=<credential>` the way each transport resolves a model.
-    fn resolved_route(client: &NativeModelClient, model: &str) -> String {
-        if model.starts_with("anthropic/") {
-            let (base, key) = anthropic::base_url_and_key(client);
-            return format!("{base} key={}", key.as_deref().unwrap_or("-"));
-        }
-        if model.starts_with("openai-codex/") {
-            let (token, account) = codex::session_credentials(client);
-            return format!(
-                "{} key={} account={}",
-                codex::codex_responses_url(client),
-                token.as_deref().unwrap_or("-"),
-                account.as_deref().unwrap_or("-")
-            );
-        }
-        match openai::route(client, model) {
-            Ok(route) => format!(
-                "{} key={}",
-                route.base_url,
-                route.api_key.as_deref().unwrap_or("-")
-            ),
-            Err(error) => format!("{error:?}"),
-        }
-    }
-
-    /// Characterization (design stage 1): base URL and credential source per
-    /// route prefix with no env, injected pairs, `cfg.model.base_url` and
-    /// `api_key`, and both. Injecting an empty value masks the ambient env, so
-    /// the "no env" case holds on any machine. Injected pairs and process env
-    /// share one lookup (`injected_or_env`, injected first), which
-    /// `injected_pairs_shadow_process_env` pins with a test-only variable.
-    #[test]
-    fn characterize_route_base_url_and_credential_sources() {
-        let masked: Vec<(String, String)> = ROUTE_ENV
-            .iter()
-            .map(|name| (name.to_string(), String::new()))
-            .collect();
-        let injected: Vec<(String, String)> = ROUTE_ENV
-            .iter()
-            .map(|name| (name.to_string(), format!("${name}")))
-            .collect();
-        let mut configured = Config::default();
-        configured.model.base_url = Some("https://configured.test".into());
-        configured.model.api_key = Some("configured-key".into());
-        let cases = [
-            ("none", Config::default(), &masked),
-            ("injected", Config::default(), &injected),
-            ("config", configured.clone(), &masked),
-            ("config+injected", configured, &injected),
-        ];
-        let models = [
-            "openai/m",
-            "xai/m",
-            "grok/m",
-            "opencode-go/m",
-            "opencode/m",
-            "opencode-zen/m",
-            "ollama/m",
-            "ollama_chat/m",
-            "anthropic/m",
-            "openai-codex/m",
-        ];
-        let mut actual = Vec::new();
-        for (case, cfg, env) in cases {
-            let client = NativeModelClient::from_config(&cfg).unwrap();
-            client.apply_provider_env(env);
-            for model in models {
-                actual.push(format!(
-                    "{case} {model} -> {}",
-                    resolved_route(&client, model)
-                ));
-            }
-        }
-        // Today `cfg.model.api_key` also fills the ChatGPT account id, and
-        // `cfg.model.base_url` overrides every route except OpenCode's.
-        let expected = [
-            "none openai/m -> MissingApiKey",
-            "none xai/m -> MissingApiKey",
-            "none grok/m -> MissingApiKey",
-            "none opencode-go/m -> MissingApiKey",
-            "none opencode/m -> MissingApiKey",
-            "none opencode-zen/m -> MissingApiKey",
-            "none ollama/m -> http://localhost:11434/v1 key=-",
-            "none ollama_chat/m -> http://localhost:11434/v1 key=-",
-            "none anthropic/m -> https://api.anthropic.com key=-",
-            "none openai-codex/m -> https://chatgpt.com/backend-api/codex/responses key=- account=-",
-            "injected openai/m -> $OPENAI_API_BASE key=$OPENAI_API_KEY",
-            "injected xai/m -> $XAI_API_BASE key=$XAI_API_KEY",
-            "injected grok/m -> $XAI_API_BASE key=$XAI_API_KEY",
-            "injected opencode-go/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
-            "injected opencode/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
-            "injected opencode-zen/m -> $OPENCODE_ZEN_API_BASE key=$OPENCODE_ZEN_API_KEY",
-            "injected ollama/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
-            "injected ollama_chat/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
-            "injected anthropic/m -> $ANTHROPIC_API_BASE key=$ANTHROPIC_API_KEY",
-            "injected openai-codex/m -> $FORGE_CODEX_API_BASE/codex/responses key=$FORGE_CODEX_ACCESS_TOKEN account=$FORGE_CODEX_ACCOUNT_ID",
-            "config openai/m -> https://configured.test key=configured-key",
-            "config xai/m -> https://configured.test key=configured-key",
-            "config grok/m -> https://configured.test key=configured-key",
-            "config opencode-go/m -> https://opencode.ai/zen/go/v1 key=configured-key",
-            "config opencode/m -> https://opencode.ai/zen/go/v1 key=configured-key",
-            "config opencode-zen/m -> https://opencode.ai/zen/v1 key=configured-key",
-            "config ollama/m -> https://configured.test/v1 key=configured-key",
-            "config ollama_chat/m -> https://configured.test/v1 key=configured-key",
-            "config anthropic/m -> https://configured.test key=configured-key",
-            "config openai-codex/m -> https://configured.test/codex/responses key=configured-key account=configured-key",
-            "config+injected openai/m -> https://configured.test key=$OPENAI_API_KEY",
-            "config+injected xai/m -> https://configured.test key=$XAI_API_KEY",
-            "config+injected grok/m -> https://configured.test key=$XAI_API_KEY",
-            "config+injected opencode-go/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
-            "config+injected opencode/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
-            "config+injected opencode-zen/m -> $OPENCODE_ZEN_API_BASE key=$OPENCODE_ZEN_API_KEY",
-            "config+injected ollama/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
-            "config+injected ollama_chat/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
-            "config+injected anthropic/m -> https://configured.test key=$ANTHROPIC_API_KEY",
-            "config+injected openai-codex/m -> https://configured.test/codex/responses key=$FORGE_CODEX_ACCESS_TOKEN account=$FORGE_CODEX_ACCOUNT_ID",
-        ];
-        assert_eq!(actual, expected);
-    }
-
-    /// Characterization (design stage 1): the error each transport returns
-    /// for 401, 403 and 500, and for a stream that ends without its
-    /// completion event.
     #[tokio::test]
     async fn characterize_status_and_truncation_errors_per_transport() {
         use crate::ModelClient;
         let paths = [
             (
                 "chat-completions",
+                forge_connect::openai_profile(),
                 None,
                 "openai/m",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
             ),
             (
                 "codex-responses",
+                forge_connect::openai_codex_profile(),
                 Some("openai-chatgpt"),
                 "gpt-5",
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
             ),
             (
                 "anthropic-messages",
+                forge_connect::anthropic_profile(),
                 Some("anthropic-api"),
                 "anthropic/claude",
                 concat!(
@@ -678,7 +731,7 @@ mod tests {
             ),
         ];
         let mut actual = Vec::new();
-        for (path, route_id, model, truncated) in paths {
+        for (path, profile, route_id, model, truncated) in paths {
             for (case, status, body, content_type) in [
                 ("401", 401, "{}", "application/json"),
                 ("403", 403, "{}", "application/json"),
@@ -692,15 +745,7 @@ mod tests {
                 )]) else {
                     return;
                 };
-                let mut config = Config::default();
-                config.model.base_url = Some(base);
-                let client = NativeModelClient::from_config(&config).unwrap();
-                client.apply_provider_env(&[
-                    ("OPENAI_API_KEY".into(), "key".into()),
-                    ("ANTHROPIC_API_KEY".into(), "key".into()),
-                    ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
-                    ("FORGE_CODEX_ACCOUNT_ID".into(), "account".into()),
-                ]);
+                let client = test_client(profile.clone(), &base, account_key("token"));
                 let request = ModelRequest {
                     messages: vec![forge_types::Message::new(
                         forge_types::MessageRole::User,
@@ -746,20 +791,6 @@ mod tests {
             })
             .collect();
         assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn injected_pairs_shadow_process_env() {
-        const NAME: &str = "FORGE_MODEL_CHARACTERIZATION_ONLY_KEY";
-        std::env::set_var(NAME, "from-env");
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        assert_eq!(client.credential(&[NAME]).as_deref(), Some("from-env"));
-        assert_eq!(client.resolved_base_url(&[NAME], "default"), "from-env");
-        client.apply_provider_env(&[(NAME.into(), "injected".into())]);
-        assert_eq!(client.credential(&[NAME]).as_deref(), Some("injected"));
-        client.apply_provider_env(&[(NAME.into(), String::new())]);
-        assert_eq!(client.credential(&[NAME]), None);
-        std::env::remove_var(NAME);
     }
 
     #[test]

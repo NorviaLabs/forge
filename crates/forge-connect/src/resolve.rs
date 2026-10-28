@@ -53,6 +53,8 @@ pub enum CredentialError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteDefinition {
     pub profile_id: String,
+    /// Legacy stored route id (`openai-chatgpt`); deleted in stage 8.
+    pub route_id: String,
     /// Legacy model-id prefix; dispatch matches it through stage 7.
     pub model_provider_prefix: String,
     /// With the catalog kind's request-base convention applied: Ollama ends
@@ -71,6 +73,11 @@ pub struct RouteDefinition {
 }
 
 impl RouteDefinition {
+    /// The definition a profile resolves to now (base-URL env is read).
+    pub fn from_spec(profile: &ProviderSpec) -> Self {
+        definition_for(profile)
+    }
+
     /// The wire for one bare model id: the first matching override, else
     /// the profile's wire.
     pub fn wire_for_model(&self, bare_model: &str) -> WireKind {
@@ -254,9 +261,13 @@ impl RouteTable {
     /// A one-profile table, for tests and one-off clients.
     pub fn single(definition: RouteDefinition, credential: Credential) -> Self {
         let mut inner = Inner::default();
-        inner
-            .routes
-            .insert(definition.profile_id.clone(), definition.profile_id.clone());
+        for route in [&definition.profile_id, &definition.route_id] {
+            if !route.is_empty() {
+                inner
+                    .routes
+                    .insert(route.clone(), definition.profile_id.clone());
+            }
+        }
         inner.profiles.insert(
             definition.profile_id.clone(),
             ResolvedProfile {
@@ -361,6 +372,7 @@ fn definition_for(profile: &ProviderSpec) -> RouteDefinition {
         .unwrap_or_else(|| profile.base_url.trim().to_string());
     RouteDefinition {
         profile_id: profile.id.clone(),
+        route_id: profile.route_id.clone(),
         model_provider_prefix: profile.model_provider_prefix.clone(),
         base_url: request_base(catalog_kind, &base),
         wire,

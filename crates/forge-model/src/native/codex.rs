@@ -6,48 +6,23 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{process_sse_lines, NativeModelClient};
+use super::{process_sse_lines, NativeModelClient, Target};
 use crate::prompt_cache::{usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
-
-pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
-
-pub(super) fn codex_responses_url(client: &NativeModelClient) -> String {
-    format!(
-        "{}/codex/responses",
-        client
-            .resolved_base_url(&["FORGE_CODEX_API_BASE"], DEFAULT_BASE_URL)
-            .trim_end_matches('/')
-    )
-}
 
 fn codex_session_id<'a>(req: &'a ModelRequest, request_id: &'a str) -> &'a str {
     req.session_id.as_deref().unwrap_or(request_id)
 }
 
-/// The ChatGPT access token and account id this client resolves.
-pub(super) fn session_credentials(client: &NativeModelClient) -> (Option<String>, Option<String>) {
-    (
-        client.credential(&["FORGE_CODEX_ACCESS_TOKEN"]),
-        client.credential(&["FORGE_CODEX_ACCOUNT_ID"]),
-    )
-}
-
+/// The ChatGPT flavor's `responses` endpoint (`<base>/codex/responses`),
+/// with the account header from the target's `bearer-account-id` attach.
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
-    model: &str,
+    target: Target,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let (access_token, account_id) = session_credentials(client);
-    let access_token = access_token.ok_or_else(|| {
-        ModelError::Provider("No Forge ChatGPT session found. Run `/connect openai_codex`.".into())
-    })?;
-    let account_id = account_id.ok_or_else(|| {
-        ModelError::Provider(
-            "OpenAI Codex account id is missing. Reconnect with `/connect openai_codex`.".into(),
-        )
-    })?;
+    let model = target.model.as_str();
     let aliases = tool_aliases(&req);
     // The ChatGPT backend-api Codex endpoint rejects inline
     // `input[].content[].cache_control` markers, so request_body never emits
@@ -60,18 +35,19 @@ pub(super) async fn complete(
     // identity stable across every model step; only the client request id is
     // unique per HTTP request. Non-session callers retain the old fallback.
     let session_id = codex_session_id(&req, &request_id);
-    let response = client
+    let url = format!("{}/codex/responses", target.base_url.trim_end_matches('/'));
+    let request = client
         .http
-        .post(codex_responses_url(client))
-        .bearer_auth(access_token)
-        .header("chatgpt-account-id", account_id)
+        .post(url)
         .header("originator", "forge")
         .header("OpenAI-Beta", "responses=experimental")
         .header("accept", "text/event-stream")
         .header("session-id", session_id)
         .header("x-client-request-id", &request_id)
         .header("User-Agent", "forge")
-        .json(&body)
+        .json(&body);
+    let response = target
+        .authorize(request, &req)?
         .send()
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
@@ -85,7 +61,7 @@ pub(super) async fn complete(
                 message: "Forge's Codex login expired. Run `/connect openai_codex` again.".into(),
             });
         }
-        return Err(crate::native::status_error(response, model).await);
+        return Err(crate::native::status_error(response, &target).await);
     }
 
     let reverse_aliases: BTreeMap<String, String> = aliases
@@ -852,13 +828,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        let mut config = Config::default();
-        config.model.base_url = Some(base);
-        let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[
-            ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
-            ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
-        ]);
+        let client = crate::native::tests::test_client(
+            forge_connect::openai_codex_profile(),
+            &base,
+            crate::native::tests::account_key("token"),
+        );
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),
@@ -890,15 +864,11 @@ mod tests {
     }
 
     fn codex_client(base: String) -> NativeModelClient {
-        use crate::ModelClient;
-        let mut config = Config::default();
-        config.model.base_url = Some(base);
-        let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[
-            ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
-            ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
-        ]);
-        client
+        crate::native::tests::test_client(
+            forge_connect::openai_codex_profile(),
+            &base,
+            crate::native::tests::account_key("token"),
+        )
     }
 
     #[tokio::test]
@@ -950,13 +920,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        let mut config = Config::default();
-        config.model.base_url = Some(base);
-        let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[
-            ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
-            ("FORGE_CODEX_ACCOUNT_ID".into(), "account-123".into()),
-        ]);
+        let client = crate::native::tests::test_client(
+            forge_connect::openai_codex_profile(),
+            &base,
+            crate::native::tests::account_key("token"),
+        );
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "openai-codex/gpt-test".into(),

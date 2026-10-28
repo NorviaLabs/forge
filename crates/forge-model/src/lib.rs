@@ -7,6 +7,7 @@ mod normalize;
 mod prompt_cache;
 mod prompt_wire;
 
+pub use forge_connect::RouteTable;
 pub use image::{apply_missing_image_notes, freeze_attachments};
 pub use mock::MockModelClient;
 pub use native::NativeModelClient;
@@ -65,8 +66,11 @@ pub enum ModelError {
     /// [`ModelError::is_auth_failure`] works without the message having to say so.
     #[error("provider error: {message}")]
     ProviderAuth { status: u16, message: String },
-    #[error("missing API key (connect the provider, set its API key env var, or model.api_key)")]
+    #[error("missing API key (connect the provider with /connect or set its API key env var)")]
     MissingApiKey,
+    /// No profile serves the model id's prefix.
+    #[error("{0}")]
+    UnknownRoute(String),
     #[error("transport: {0}")]
     Transport(String),
     #[error("protocol: {0}")]
@@ -256,6 +260,10 @@ pub trait ModelClient: Send + Sync {
     /// Clear provider credentials from the transport.
     /// Default: no-op (mock).
     fn clear_provider_env(&self) {}
+
+    /// Replace the routing snapshot requests resolve through. Default:
+    /// no-op (mock).
+    fn set_route_table(&self, _table: RouteTable) {}
 
     /// Compared prompt-wire (tools + system + messages), including any
     /// adapter cache hints. Diagnostics strip `cache_control` before hashing.

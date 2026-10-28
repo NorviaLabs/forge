@@ -4,7 +4,7 @@ use forge_types::{MessageRole, ModelResponse, ModelStreamEvent, ToolCall, Usage}
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::{process_sse_lines, NativeModelClient};
+use super::{process_sse_lines, NativeModelClient, Target};
 use crate::prompt_cache::{apply_anthropic_prompt_cache, usage_from_provider, InputTokens};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
@@ -14,19 +14,6 @@ struct ToolUseAccumulator {
     name: String,
     input: String,
     start_sent: bool,
-}
-
-/// How a Messages-protocol request authenticates and identifies itself.
-pub(super) enum MessagesAuth {
-    /// Anthropic's own API: `x-api-key` plus the interleaved-thinking beta.
-    Anthropic { api_key: String },
-    /// OpenCode's Anthropic-compatible gateway (`/zen/go/v1/messages`):
-    /// Bearer auth, the client's user agent, and the routing session header.
-    Opencode {
-        api_key: String,
-        session_id: String,
-        user_agent: &'static str,
-    },
 }
 
 /// `{base}/messages`, tolerating a base that already ends in `/v1`.
@@ -44,50 +31,19 @@ fn wire_model_id(model: &str) -> &str {
     model.split_once('/').map(|(_, id)| id).unwrap_or(model)
 }
 
-/// The Anthropic base URL and API key this client resolves.
-pub(super) fn base_url_and_key(client: &NativeModelClient) -> (String, Option<String>) {
-    let base_url = client
-        .configured_base_url
-        .clone()
-        .or_else(|| client.injected_or_env(&["ANTHROPIC_API_BASE"]))
-        .unwrap_or_else(|| "https://api.anthropic.com".into());
-    (base_url, client.credential(&["ANTHROPIC_API_KEY"]))
-}
-
+/// POST a Messages request and stream the reply. Used by the Anthropic
+/// profile and by OpenCode's Messages-compatible models; they differ only in
+/// base URL, `attach`, and headers, which the target carries.
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
-    model: &str,
+    target: Target,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let (base_url, api_key) = base_url_and_key(client);
-    let api_key = api_key.ok_or(ModelError::MissingApiKey)?;
-    let endpoint = messages_endpoint(&base_url);
-    complete_messages(
-        client,
-        req,
-        model,
-        tx,
-        endpoint,
-        MessagesAuth::Anthropic { api_key },
-    )
-    .await
-}
-
-/// POST an Anthropic Messages request and stream the reply. Shared by the
-/// Anthropic transport and OpenCode's Messages-compatible gateway, which
-/// differ only in endpoint and auth.
-pub(super) async fn complete_messages(
-    client: &NativeModelClient,
-    req: ModelRequest,
-    model: &str,
-    tx: Option<StreamEventTx>,
-    endpoint: String,
-    auth: MessagesAuth,
-) -> Result<ModelResponse, ModelError> {
+    let model = target.model.as_str();
     let (system, messages) = messages_body(&req, Some(client));
     let mut body = json!({
-        "model": wire_model_id(model),
+        "model": target.bare_model,
         "max_tokens": 8192,
         "messages": messages,
         "stream": true
@@ -117,28 +73,16 @@ pub(super) async fn complete_messages(
 
     let request = client
         .http
-        .post(endpoint)
+        .post(messages_endpoint(&target.base_url))
         .header("anthropic-version", "2023-06-01");
-    let request = match &auth {
-        MessagesAuth::Anthropic { api_key } => request
-            .header("x-api-key", api_key)
-            .header("anthropic-beta", "interleaved-thinking-2025-05-14"),
-        MessagesAuth::Opencode {
-            api_key,
-            session_id,
-            user_agent,
-        } => request
-            .header("User-Agent", *user_agent)
-            .header("x-opencode-session", session_id.as_str())
-            .bearer_auth(api_key),
-    };
+    let request = target.authorize(request, &req)?;
     let response = request
         .json(&body)
         .send()
         .await
         .map_err(|error| ModelError::Transport(error.to_string()))?;
     if !response.status().is_success() {
-        return Err(crate::native::status_error(response, model).await);
+        return Err(crate::native::status_error(response, &target).await);
     }
 
     let mut stream = response.bytes_stream();
@@ -504,8 +448,8 @@ fn catalog_supports_anthropic_effort(model: &str) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::native::test_support::serve_once;
+    use crate::native::tests::{key, test_client};
     use crate::ModelClient;
-    use forge_config::Config;
     use forge_types::{Message, ModelStreamEvent, SideEffectClass, ToolDescriptor};
 
     #[test]
@@ -751,16 +695,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let mut config = Config::default();
-        config.model.base_url = Some(base_url);
-        config.model.api_key = Some("anthropic-secret".into());
-        let client = NativeModelClient::from_config(&config).unwrap();
-        let _ = client;
-        // Credential resolution consults injected values and the ambient
-        // environment before the configured key, so inject explicitly here.
-        // Without this the assertion below fails for any developer who has
-        // ANTHROPIC_API_KEY exported, because the ambient key is sent instead.
-        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
+        let client = test_client(
+            forge_connect::anthropic_profile(),
+            &base_url,
+            key("anthropic-secret"),
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
@@ -812,11 +751,12 @@ mod tests {
 
     #[tokio::test]
     async fn handles_missing_key_http_error_and_stream_error() {
-        let client = NativeModelClient::from_config(&Config::default()).unwrap();
-        // `injected_or_env` discards empty values, so injecting an empty key
-        // masks an ambient ANTHROPIC_API_KEY and keeps the MissingApiKey
-        // assertion below deterministic.
-        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), String::new())]);
+        // No credential in the table: MissingApiKey before any request.
+        let client = test_client(
+            forge_connect::anthropic_profile(),
+            "http://127.0.0.1:9",
+            None,
+        );
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude".into(),
@@ -838,11 +778,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let mut config = Config::default();
-        config.model.base_url = Some(format!("{base_url}/v1"));
-        config.model.api_key = Some("bad".into());
-        let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "bad".into())]);
+        let client = test_client(
+            forge_connect::anthropic_profile(),
+            &format!("{base_url}/v1"),
+            key("bad"),
+        );
         assert!(client
             .complete(request)
             .await
@@ -902,11 +842,11 @@ mod tests {
         sse: &'static str,
     ) -> Option<Result<ModelResponse, ModelError>> {
         let (base_url, _request_rx) = serve_once("200 OK", "text/event-stream", sse).await?;
-        let mut config = Config::default();
-        config.model.base_url = Some(base_url);
-        config.model.api_key = Some("anthropic-secret".into());
-        let client = NativeModelClient::from_config(&config).unwrap();
-        client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
+        let client = test_client(
+            forge_connect::anthropic_profile(),
+            &base_url,
+            key("anthropic-secret"),
+        );
         let request = ModelRequest {
             workspace_root: std::path::PathBuf::new(),
             model: "anthropic/claude-sonnet-4-6".into(),
@@ -959,11 +899,11 @@ mod tests {
                 eprintln!("skipping: this host denies binding a mock listener");
                 return;
             };
-            let mut config = Config::default();
-            config.model.base_url = Some(base_url);
-            config.model.api_key = Some("anthropic-secret".into());
-            let client = NativeModelClient::from_config(&config).unwrap();
-            client.apply_provider_env(&[("ANTHROPIC_API_KEY".into(), "anthropic-secret".into())]);
+            let client = test_client(
+                forge_connect::anthropic_profile(),
+                &base_url,
+                key("anthropic-secret"),
+            );
             let request = ModelRequest {
                 workspace_root: std::path::PathBuf::new(),
                 model: "anthropic/claude-sonnet-4-6".into(),
