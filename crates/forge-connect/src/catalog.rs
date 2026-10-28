@@ -649,10 +649,10 @@ fn fetch_codex_remote_models(
     let token = api_key.ok_or(CatalogError::CredentialRequired(
         "OpenAI Codex login required for catalog".into(),
     ))?;
-    let account_id = crate::openai_codex::account_id_from_token(token)
+    let account_id = crate::oauth_chatgpt::account_id_from_token(token)
         .map_err(|error| CatalogError::CredentialRequired(error.to_string()))?;
     let base = if base.is_empty() {
-        crate::openai_codex::DEFAULT_BASE_URL
+        crate::oauth_chatgpt::DEFAULT_BASE_URL
     } else {
         base
     };

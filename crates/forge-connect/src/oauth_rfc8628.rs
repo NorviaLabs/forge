@@ -17,7 +17,6 @@ use thiserror::Error;
 use crate::auth::{OauthPending, OauthTokens};
 
 /// Public Grok CLI OIDC client id (observed in `~/.grok/auth.json` after `grok login`).
-/// Override with `FORGE_XAI_OAUTH_CLIENT_ID` or `GROK_OAUTH2_CLIENT_ID`.
 pub const DEFAULT_CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
 
 /// OIDC issuer (Grok Build default SpaceXAI OAuth host).
@@ -28,16 +27,8 @@ pub const DEFAULT_SCOPES: &str = "openid profile email offline_access api:access
 
 const GRANT_DEVICE_CODE: &str = "urn:ietf:params:oauth:grant-type:device_code";
 
-/// Look up `primary`, falling back to `fallback`, then `default`.
-/// ponytail: single-threaded init path, perf irrelevant.
-fn env_with_fallback(primary: &str, fallback: &str, default: &str) -> String {
-    std::env::var(primary)
-        .or_else(|_| std::env::var(fallback))
-        .unwrap_or_else(|_| default.into())
-}
-
 #[derive(Debug, Error)]
-pub enum XaiOauthError {
+pub enum Rfc8628Error {
     #[error("HTTP: {0}")]
     Http(String),
     #[error("device code request failed: {0}")]
@@ -57,39 +48,34 @@ pub enum XaiOauthError {
 }
 
 #[derive(Debug, Clone)]
-pub struct XaiOauthClient {
+pub struct Rfc8628Client {
     pub issuer: String,
     pub client_id: String,
     pub scopes: String,
 }
 
-impl Default for XaiOauthClient {
+impl Default for Rfc8628Client {
+    /// xAI's issuer, client id, and scopes.
     fn default() -> Self {
-        Self::from_env()
+        Self {
+            issuer: DEFAULT_ISSUER.into(),
+            client_id: DEFAULT_CLIENT_ID.into(),
+            scopes: DEFAULT_SCOPES.into(),
+        }
     }
 }
 
-impl XaiOauthClient {
-    pub fn from_env() -> Self {
-        Self {
-            issuer: env_with_fallback(
-                "FORGE_XAI_OAUTH_ISSUER",
-                "GROK_OAUTH2_ISSUER",
-                DEFAULT_ISSUER,
-            )
-            .trim_end_matches('/')
-            .into(),
-            client_id: env_with_fallback(
-                "FORGE_XAI_OAUTH_CLIENT_ID",
-                "GROK_OAUTH2_CLIENT_ID",
-                DEFAULT_CLIENT_ID,
-            ),
-            scopes: env_with_fallback(
-                "FORGE_XAI_OAUTH_SCOPES",
-                "GROK_OAUTH2_SCOPES",
-                DEFAULT_SCOPES,
-            ),
-        }
+impl Rfc8628Client {
+    /// The flow for a profile's `auth` table: its issuer, client id, and
+    /// scopes. The flavor owns the `/oauth2/device/code` and `/oauth2/token`
+    /// paths.
+    pub fn for_profile(profile: &crate::ProviderSpec) -> Option<Self> {
+        let auth = profile.effective_auth();
+        Some(Self {
+            issuer: auth.issuer?.trim_end_matches('/').into(),
+            client_id: auth.client_id?,
+            scopes: auth.scopes.join(" "),
+        })
     }
 
     pub fn device_code_url(&self) -> String {
@@ -115,7 +101,7 @@ impl XaiOauthClient {
             .into()
     }
 
-    fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, String), XaiOauthError> {
+    fn post_form(url: &str, form: &[(&str, &str)]) -> Result<(u16, String), Rfc8628Error> {
         let agent = Self::agent();
         match agent
             .post(url)
@@ -127,12 +113,12 @@ impl XaiOauthClient {
                 let body = resp.body_mut().read_to_string().unwrap_or_default();
                 Ok((status, body))
             }
-            Err(e) => Err(XaiOauthError::Http(e.to_string())),
+            Err(e) => Err(Rfc8628Error::Http(e.to_string())),
         }
     }
 
     /// Start RFC 8628 device authorization (Grok: `grok login --device-code`).
-    pub fn start_device_code(&self, profile_id: &str) -> Result<OauthPending, XaiOauthError> {
+    pub fn start_device_code(&self, profile_id: &str) -> Result<OauthPending, Rfc8628Error> {
         let (status, body) = Self::post_form(
             &self.device_code_url(),
             &[
@@ -142,14 +128,14 @@ impl XaiOauthClient {
         )?;
 
         if !(200..300).contains(&status) {
-            return Err(XaiOauthError::DeviceCode(format!("HTTP {status}: {body}")));
+            return Err(Rfc8628Error::DeviceCode(format!("HTTP {status}: {body}")));
         }
 
         let parsed: DeviceCodeResponse = serde_json::from_str(&body)
-            .map_err(|e| XaiOauthError::DeviceCode(format!("invalid JSON: {e}; body={body}")))?;
+            .map_err(|e| Rfc8628Error::DeviceCode(format!("invalid JSON: {e}; body={body}")))?;
 
         if parsed.device_code.is_empty() || parsed.user_code.is_empty() {
-            return Err(XaiOauthError::DeviceCode(format!(
+            return Err(Rfc8628Error::DeviceCode(format!(
                 "missing device_code/user_code: {body}"
             )));
         }
@@ -169,11 +155,12 @@ impl XaiOauthClient {
             interval_secs: parsed.interval.unwrap_or(5).max(1),
             expires_in_secs: parsed.expires_in,
             client_id: self.client_id.clone(),
+            flavor: crate::OauthFlavor::Rfc8628,
         })
     }
 
     /// One token poll. Returns `Ok(tokens)`, `Err(AuthorizationPending)`, `Err(SlowDown)`, or hard error.
-    pub fn poll_token_once(&self, pending: &OauthPending) -> Result<OauthTokens, XaiOauthError> {
+    pub fn poll_token_once(&self, pending: &OauthPending) -> Result<OauthTokens, Rfc8628Error> {
         let (status, body) = Self::post_form(
             &self.token_url(),
             &[
@@ -186,9 +173,9 @@ impl XaiOauthClient {
         // Success path
         if (200..300).contains(&status) {
             let tok: TokenResponse = serde_json::from_str(&body)
-                .map_err(|e| XaiOauthError::Token(format!("invalid JSON: {e}; body={body}")))?;
+                .map_err(|e| Rfc8628Error::Token(format!("invalid JSON: {e}; body={body}")))?;
             if tok.access_token.is_empty() {
-                return Err(XaiOauthError::Token(format!("empty access_token: {body}")));
+                return Err(Rfc8628Error::Token(format!("empty access_token: {body}")));
             }
             let expires_at = tok.expires_in.map(|secs| {
                 let exp = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
@@ -204,21 +191,21 @@ impl XaiOauthClient {
         // OAuth error JSON (often HTTP 400 with authorization_pending)
         if let Ok(err) = serde_json::from_str::<TokenErrorResponse>(&body) {
             return match err.error.as_str() {
-                "authorization_pending" => Err(XaiOauthError::AuthorizationPending),
-                "slow_down" => Err(XaiOauthError::SlowDown),
-                "expired_token" | "expired" => Err(XaiOauthError::Expired),
-                "access_denied" => Err(XaiOauthError::AccessDenied),
-                other => Err(XaiOauthError::Oauth(
+                "authorization_pending" => Err(Rfc8628Error::AuthorizationPending),
+                "slow_down" => Err(Rfc8628Error::SlowDown),
+                "expired_token" | "expired" => Err(Rfc8628Error::Expired),
+                "access_denied" => Err(Rfc8628Error::AccessDenied),
+                other => Err(Rfc8628Error::Oauth(
                     err.error_description.unwrap_or_else(|| other.to_string()),
                 )),
             };
         }
 
-        Err(XaiOauthError::Token(format!("HTTP {status}: {body}")))
+        Err(Rfc8628Error::Token(format!("HTTP {status}: {body}")))
     }
 
     /// Refresh an access token using a stored refresh_token (silent re-auth across sessions).
-    pub fn refresh_access_token(&self, refresh_token: &str) -> Result<OauthTokens, XaiOauthError> {
+    pub fn refresh_access_token(&self, refresh_token: &str) -> Result<OauthTokens, Rfc8628Error> {
         let (status, body) = Self::post_form(
             &self.token_url(),
             &[
@@ -230,17 +217,17 @@ impl XaiOauthClient {
 
         if !(200..300).contains(&status) {
             if let Ok(err) = serde_json::from_str::<TokenErrorResponse>(&body) {
-                return Err(XaiOauthError::Oauth(
+                return Err(Rfc8628Error::Oauth(
                     err.error_description.unwrap_or(err.error),
                 ));
             }
-            return Err(XaiOauthError::Token(format!("HTTP {status}: {body}")));
+            return Err(Rfc8628Error::Token(format!("HTTP {status}: {body}")));
         }
 
         let tok: TokenResponse = serde_json::from_str(&body)
-            .map_err(|e| XaiOauthError::Token(format!("invalid JSON: {e}; body={body}")))?;
+            .map_err(|e| Rfc8628Error::Token(format!("invalid JSON: {e}; body={body}")))?;
         if tok.access_token.is_empty() {
-            return Err(XaiOauthError::Token(format!(
+            return Err(Rfc8628Error::Token(format!(
                 "empty access_token on refresh: {body}"
             )));
         }
@@ -263,19 +250,19 @@ impl XaiOauthClient {
         &self,
         pending: &OauthPending,
         max_wait: std::time::Duration,
-    ) -> Result<OauthTokens, XaiOauthError> {
+    ) -> Result<OauthTokens, Rfc8628Error> {
         let deadline = std::time::Instant::now() + max_wait;
         let mut interval = std::time::Duration::from_secs(pending.interval_secs.max(1));
         loop {
             if std::time::Instant::now() >= deadline {
-                return Err(XaiOauthError::Expired);
+                return Err(Rfc8628Error::Expired);
             }
             match self.poll_token_once(pending) {
                 Ok(tokens) => return Ok(tokens),
-                Err(XaiOauthError::AuthorizationPending) => {
+                Err(Rfc8628Error::AuthorizationPending) => {
                     std::thread::sleep(interval);
                 }
-                Err(XaiOauthError::SlowDown) => {
+                Err(Rfc8628Error::SlowDown) => {
                     interval += std::time::Duration::from_secs(5);
                     std::thread::sleep(interval);
                 }
@@ -377,35 +364,10 @@ pub fn try_open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_env::EnvGuard;
-
-    const OAUTH_ISSUER_ENV: &[&str] = &[
-        "FORGE_XAI_OAUTH_ISSUER",
-        "GROK_OAUTH2_ISSUER",
-        "FORGE_XAI_OAUTH_CLIENT_ID",
-        "GROK_OAUTH2_CLIENT_ID",
-        "FORGE_XAI_OAUTH_SCOPES",
-        "GROK_OAUTH2_SCOPES",
-    ];
-
-    /// Populate both the Forge and Grok fallback variables so precedence can be
-    /// asserted. Previously backed by a lock private to this module; it now shares
-    /// the crate-wide one, so there is a single lock covering every test in the
-    /// crate that touches the environment.
-    fn set_forge_and_grok_values() -> EnvGuard {
-        let guard = EnvGuard::new(OAUTH_ISSUER_ENV);
-        guard.set("FORGE_XAI_OAUTH_ISSUER", "https://issuer.example/");
-        guard.set("GROK_OAUTH2_ISSUER", "https://fallback.example/");
-        guard.set("FORGE_XAI_OAUTH_CLIENT_ID", "forge-client");
-        guard.set("GROK_OAUTH2_CLIENT_ID", "grok-client");
-        guard.set("FORGE_XAI_OAUTH_SCOPES", "scope-a");
-        guard.set("GROK_OAUTH2_SCOPES", "scope-b");
-        guard
-    }
 
     #[test]
     fn default_client_matches_grok_cli() {
-        let c = XaiOauthClient {
+        let c = Rfc8628Client {
             issuer: DEFAULT_ISSUER.into(),
             client_id: DEFAULT_CLIENT_ID.into(),
             scopes: DEFAULT_SCOPES.into(),
@@ -423,16 +385,6 @@ mod tests {
         let s2 = chrono_lite_rfc3339(1_704_067_200); // 2024-01-01 approx
         assert!(s2.starts_with("2024-"));
         assert!(s2.ends_with('Z'));
-    }
-
-    #[test]
-    fn from_env_trims_issuer_and_prefers_forge_over_grok_env() {
-        let _guard = set_forge_and_grok_values();
-
-        let client = XaiOauthClient::from_env();
-        assert_eq!(client.issuer, "https://issuer.example");
-        assert_eq!(client.client_id, "forge-client");
-        assert_eq!(client.scopes, "scope-a");
     }
 
     #[test]
@@ -475,30 +427,30 @@ mod tests {
     #[test]
     fn oauth_error_display_messages_cover_variants() {
         assert_eq!(
-            XaiOauthError::AuthorizationPending.to_string(),
+            Rfc8628Error::AuthorizationPending.to_string(),
             "authorization pending"
         );
         assert_eq!(
-            XaiOauthError::SlowDown.to_string(),
+            Rfc8628Error::SlowDown.to_string(),
             "slow down (increase poll interval)"
         );
-        assert_eq!(XaiOauthError::Expired.to_string(), "device code expired");
-        assert_eq!(XaiOauthError::AccessDenied.to_string(), "access denied");
+        assert_eq!(Rfc8628Error::Expired.to_string(), "device code expired");
+        assert_eq!(Rfc8628Error::AccessDenied.to_string(), "access denied");
         assert_eq!(
-            XaiOauthError::Oauth("bad".into()).to_string(),
+            Rfc8628Error::Oauth("bad".into()).to_string(),
             "OAuth error: bad"
         );
     }
 
-    fn mock_client(base: String) -> XaiOauthClient {
-        XaiOauthClient {
+    fn mock_client(base: String) -> Rfc8628Client {
+        Rfc8628Client {
             issuer: base,
             client_id: "test-client".into(),
             scopes: DEFAULT_SCOPES.into(),
         }
     }
 
-    fn pending_for(client: &XaiOauthClient) -> OauthPending {
+    fn pending_for(client: &Rfc8628Client) -> OauthPending {
         OauthPending {
             profile_id: "xai".into(),
             verification_uri: format!("{}/oauth2/device", client.issuer),
@@ -509,6 +461,7 @@ mod tests {
             interval_secs: 1,
             expires_in_secs: Some(1800),
             client_id: client.client_id.clone(),
+            flavor: crate::OauthFlavor::Rfc8628,
         }
     }
 
@@ -575,7 +528,7 @@ mod tests {
         // branch in post_form, distinct from the "got a response, bad status" path.
         let client = mock_client("http://127.0.0.1:1".into());
         let err = client.start_device_code("xai").unwrap_err();
-        assert!(matches!(err, XaiOauthError::Http(_)));
+        assert!(matches!(err, Rfc8628Error::Http(_)));
     }
 
     #[test]
@@ -586,7 +539,7 @@ mod tests {
         };
         let client = mock_client(base);
         let err = client.start_device_code("xai").unwrap_err();
-        assert!(matches!(err, XaiOauthError::DeviceCode(_)));
+        assert!(matches!(err, Rfc8628Error::DeviceCode(_)));
         assert!(err.to_string().contains("device code request failed"));
     }
 
@@ -598,7 +551,7 @@ mod tests {
         };
         let client = mock_client(base);
         let err = client.start_device_code("xai").unwrap_err();
-        assert!(matches!(err, XaiOauthError::DeviceCode(msg) if msg.contains("invalid JSON")));
+        assert!(matches!(err, Rfc8628Error::DeviceCode(msg) if msg.contains("invalid JSON")));
     }
 
     #[test]
@@ -614,7 +567,7 @@ mod tests {
         let client = mock_client(base);
         let err = client.start_device_code("xai").unwrap_err();
         assert!(
-            matches!(err, XaiOauthError::DeviceCode(msg) if msg.contains("missing device_code"))
+            matches!(err, Rfc8628Error::DeviceCode(msg) if msg.contains("missing device_code"))
         );
     }
 
@@ -647,7 +600,7 @@ mod tests {
         let client = mock_client(base);
         let pending = pending_for(&client);
         let err = client.poll_token_once(&pending).unwrap_err();
-        assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("empty access_token")));
+        assert!(matches!(err, Rfc8628Error::Token(msg) if msg.contains("empty access_token")));
     }
 
     #[test]
@@ -702,7 +655,7 @@ mod tests {
         let client = mock_client(base);
         let pending = pending_for(&client);
         let err = client.poll_token_once(&pending).unwrap_err();
-        assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("HTTP 500")));
+        assert!(matches!(err, Rfc8628Error::Token(msg) if msg.contains("HTTP 500")));
     }
 
     #[test]
@@ -760,7 +713,7 @@ mod tests {
         };
         let client = mock_client(base);
         let err = client.refresh_access_token("old-refresh").unwrap_err();
-        assert!(matches!(err, XaiOauthError::Token(msg) if msg.contains("HTTP 503")));
+        assert!(matches!(err, Rfc8628Error::Token(msg) if msg.contains("HTTP 503")));
     }
 
     #[test]
@@ -774,7 +727,7 @@ mod tests {
         let client = mock_client(base);
         let err = client.refresh_access_token("old-refresh").unwrap_err();
         assert!(
-            matches!(err, XaiOauthError::Token(msg) if msg.contains("empty access_token on refresh"))
+            matches!(err, Rfc8628Error::Token(msg) if msg.contains("empty access_token on refresh"))
         );
     }
 
@@ -806,17 +759,16 @@ mod tests {
         let err = client
             .poll_until_tokens(&pending, std::time::Duration::from_millis(0))
             .unwrap_err();
-        assert!(matches!(err, XaiOauthError::Expired));
+        assert!(matches!(err, Rfc8628Error::Expired));
     }
 
     /// Live smoke against auth.x.ai (skipped if FORGE_SKIP_NETWORK=1).
     #[test]
     fn live_device_code_start() {
-        let _guard = EnvGuard::new(OAUTH_ISSUER_ENV);
         if std::env::var("FORGE_SKIP_NETWORK").is_ok() {
             return;
         }
-        let c = XaiOauthClient::default();
+        let c = Rfc8628Client::default();
         match c.start_device_code("xai") {
             Ok(p) => {
                 assert!(!p.user_code.is_empty());
@@ -839,13 +791,12 @@ mod tests {
     /// Document that OAuth uses ureq (no nested Tokio). Network optional.
     #[test]
     fn http_stack_is_ureq_not_reqwest_blocking() {
-        let _guard = EnvGuard::new(OAUTH_ISSUER_ENV);
         // Compile-time / dependency choice: post_form uses ureq::Agent.
         // Runtime smoke: start_device_code must not panic (network may fail offline).
         if std::env::var("FORGE_SKIP_NETWORK").is_ok() {
             return;
         }
-        let c = XaiOauthClient::default();
+        let c = Rfc8628Client::default();
         let _ = c.start_device_code("xai");
     }
 }

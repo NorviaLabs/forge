@@ -1,7 +1,7 @@
 use crate::auth::{OauthPending, OauthTokens};
-use crate::oauth_openai_codex::{OpenAiCodexOauthClient, OpenAiCodexOauthError};
-use crate::oauth_xai::{XaiOauthClient, XaiOauthError};
-use crate::profile::ConnectProfile;
+use crate::oauth_chatgpt::{ChatgptOauthClient, ChatgptOauthError};
+use crate::oauth_rfc8628::{Rfc8628Client, Rfc8628Error};
+use crate::profile::{ConnectProfile, OauthFlavor};
 
 pub(crate) enum PollResult {
     Pending,
@@ -32,42 +32,63 @@ pub enum OauthError {
 
 pub(crate) struct OauthDispatcher;
 
+/// The device-login flavor a profile signs in with (design §1.1
+/// `auth.flavor`), or `NotOauth`.
+fn flavor(profile: &ConnectProfile) -> Result<OauthFlavor, OauthError> {
+    let auth = profile.effective_auth();
+    match auth.flavor {
+        Some(flavor) if auth.is_oauth() => Ok(flavor),
+        _ => Err(OauthError::NotOauth(profile.id.clone())),
+    }
+}
+
+fn rfc8628(profile: &ConnectProfile) -> Result<Rfc8628Client, OauthError> {
+    Rfc8628Client::for_profile(profile).ok_or_else(|| {
+        OauthError::Message(format!(
+            "profile `{}` needs auth.issuer and auth.client_id for device login",
+            profile.id
+        ))
+    })
+}
+
 impl OauthDispatcher {
     pub(crate) fn start(profile: &ConnectProfile) -> Result<OauthPending, OauthError> {
-        if profile.id == crate::openai_codex::PROFILE_ID {
-            return OpenAiCodexOauthClient::default()
-                .start_device_code()
-                .map_err(|error| OauthError::Provider(error.to_string()));
+        match flavor(profile)? {
+            OauthFlavor::Chatgpt => ChatgptOauthClient::for_profile(profile)
+                .start_device_code(&profile.id)
+                .map_err(|error| OauthError::Provider(error.to_string())),
+            OauthFlavor::Rfc8628 => rfc8628(profile)?
+                .start_device_code(&profile.id)
+                .map_err(|error| OauthError::Provider(error.to_string())),
         }
-
-        Self::xai_client(profile)?
-            .start_device_code(&profile.id)
-            .map_err(|error| OauthError::Provider(error.to_string()))
     }
 
     pub(crate) fn poll(pending: &OauthPending) -> Result<PollResult, OauthError> {
-        if pending.profile_id == crate::openai_codex::PROFILE_ID {
-            let client = OpenAiCodexOauthClient {
-                auth_base: pending.auth_server.clone(),
-            };
-            return match client.poll_token_once(pending) {
-                Ok(tokens) => Ok(PollResult::Complete(tokens)),
-                Err(OpenAiCodexOauthError::Pending) => Ok(PollResult::Pending),
-                Err(OpenAiCodexOauthError::SlowDown) => Ok(PollResult::SlowDown),
-                Err(error) => Err(OauthError::Provider(error.to_string())),
-            };
-        }
-
-        let client = XaiOauthClient {
-            issuer: pending.auth_server.clone(),
-            client_id: pending.client_id.clone(),
-            ..XaiOauthClient::from_env()
-        };
-        match client.poll_token_once(pending) {
-            Ok(tokens) => Ok(PollResult::Complete(tokens)),
-            Err(XaiOauthError::AuthorizationPending) => Ok(PollResult::Pending),
-            Err(XaiOauthError::SlowDown) => Ok(PollResult::SlowDown),
-            Err(error) => Err(OauthError::Provider(error.to_string())),
+        match pending.flavor {
+            OauthFlavor::Chatgpt => {
+                let client = ChatgptOauthClient {
+                    auth_base: pending.auth_server.clone(),
+                };
+                match client.poll_token_once(pending) {
+                    Ok(tokens) => Ok(PollResult::Complete(tokens)),
+                    Err(ChatgptOauthError::Pending) => Ok(PollResult::Pending),
+                    Err(ChatgptOauthError::SlowDown) => Ok(PollResult::SlowDown),
+                    Err(error) => Err(OauthError::Provider(error.to_string())),
+                }
+            }
+            OauthFlavor::Rfc8628 => {
+                let client = Rfc8628Client {
+                    issuer: pending.auth_server.clone(),
+                    client_id: pending.client_id.clone(),
+                    scopes: String::new(),
+                };
+                match client.poll_token_once(pending) {
+                    Ok(tokens) => Ok(PollResult::Complete(tokens)),
+                    Err(Rfc8628Error::AuthorizationPending) => Ok(PollResult::Pending),
+                    Err(Rfc8628Error::SlowDown) => Ok(PollResult::SlowDown),
+                    Err(error) => Err(OauthError::Provider(error.to_string())),
+                }
+            }
         }
     }
 
@@ -75,29 +96,13 @@ impl OauthDispatcher {
         profile: &ConnectProfile,
         refresh_token: &str,
     ) -> Result<OauthTokens, OauthError> {
-        if profile.id == crate::openai_codex::PROFILE_ID {
-            return OpenAiCodexOauthClient::default()
+        match flavor(profile)? {
+            OauthFlavor::Chatgpt => ChatgptOauthClient::for_profile(profile)
                 .refresh(refresh_token)
-                .map_err(|error| OauthError::Provider(error.to_string()));
-        }
-
-        Self::xai_client(profile)?
-            .refresh_access_token(refresh_token)
-            .map_err(|error| OauthError::Provider(error.to_string()))
-    }
-
-    fn xai_client(profile: &ConnectProfile) -> Result<XaiOauthClient, OauthError> {
-        let crate::auth::AuthMode::Oauth { auth_server, .. } = &profile.auth_mode else {
-            return Err(OauthError::NotOauth(profile.id.clone()));
-        };
-        let client = XaiOauthClient::from_env();
-        if profile.id == crate::xai::PROFILE_ID {
-            Ok(client)
-        } else {
-            Ok(XaiOauthClient {
-                issuer: auth_server.clone(),
-                ..client
-            })
+                .map_err(|error| OauthError::Provider(error.to_string())),
+            OauthFlavor::Rfc8628 => rfc8628(profile)?
+                .refresh_access_token(refresh_token)
+                .map_err(|error| OauthError::Provider(error.to_string())),
         }
     }
 }
@@ -112,42 +117,34 @@ mod tests {
     }
 
     #[test]
-    fn xai_client_rejects_api_key_profiles() {
+    fn api_key_profiles_have_no_oauth_flavor() {
         let profile = profile(
             "demo",
             AuthMode::ApiKey {
                 tui_always_prompt: false,
             },
         );
-        assert!(OauthDispatcher::xai_client(&profile)
+        assert!(flavor(&profile)
             .unwrap_err()
             .to_string()
             .contains("not OAuth"));
     }
 
     #[test]
-    fn xai_client_uses_profile_issuer_for_generic_oauth() {
-        let profile = profile(
-            "generic",
-            AuthMode::Oauth {
-                device_code: true,
-                system_browser: false,
-                auth_server: "https://issuer.example".into(),
-            },
-        );
-        let client = OauthDispatcher::xai_client(&profile).unwrap();
-        assert_eq!(client.issuer, "https://issuer.example");
+    fn the_rfc8628_flow_reads_the_profile_auth_table() {
+        let mut profile = crate::xai::xai_grok_profile();
+        let client = rfc8628(&profile).unwrap();
+        assert_eq!(client.issuer, crate::oauth_rfc8628::DEFAULT_ISSUER);
+        assert_eq!(client.client_id, crate::oauth_rfc8628::DEFAULT_CLIENT_ID);
+        assert!(client.scopes.contains("offline_access"));
+
+        if let Some(auth) = profile.auth.as_mut() {
+            auth.issuer = Some("https://issuer.example/".into());
+        }
+        assert_eq!(rfc8628(&profile).unwrap().issuer, "https://issuer.example");
     }
 
-    #[test]
-    fn xai_profile_keeps_environment_client_defaults() {
-        let profile = crate::xai::xai_grok_profile();
-        let client = OauthDispatcher::xai_client(&profile).unwrap();
-        assert!(!client.client_id.is_empty());
-        assert!(!client.issuer.is_empty());
-    }
-
-    /// `start` and `refresh` both consult `xai_client` before making any
+    /// `start` and `refresh` both resolve the flavor before making any
     /// request, so a non-OAuth profile is rejected without network access.
     /// These assert that short-circuit rather than the transport behind it.
     #[test]
@@ -193,11 +190,7 @@ mod tests {
 
     #[test]
     fn codex_oauth_dispatch_start_poll_and_refresh_use_mock_server() {
-        use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
-
-        const ENV: &[&str] = &["FORGE_OPENAI_CODEX_OAUTH_ISSUER"];
-        let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![
             (
                 200,
@@ -223,9 +216,12 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        guard.set("FORGE_OPENAI_CODEX_OAUTH_ISSUER", &base);
 
-        let profile = crate::openai_codex::openai_codex_profile();
+        let mut profile = crate::openai_codex::openai_codex_profile();
+        // The test-only issuer override: the flow talks to the mock.
+        if let Some(auth) = profile.auth.as_mut() {
+            auth.issuer = Some(base.clone());
+        }
         let pending = OauthDispatcher::start(&profile).unwrap();
         assert_eq!(pending.profile_id, "openai_codex");
         assert_eq!(pending.device_code, "device-1");
@@ -240,11 +236,7 @@ mod tests {
 
     #[test]
     fn codex_oauth_dispatch_poll_maps_pending_and_slowdown() {
-        use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
-
-        const ENV: &[&str] = &["FORGE_OPENAI_CODEX_OAUTH_ISSUER"];
-        let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![
             (403, "", vec![]),
             (400, r#"{"error":"slow_down"}"#, vec![]),
@@ -252,7 +244,6 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        guard.set("FORGE_OPENAI_CODEX_OAUTH_ISSUER", &base);
 
         let pending = OauthPending {
             profile_id: crate::openai_codex::PROFILE_ID.into(),
@@ -263,7 +254,8 @@ mod tests {
             auth_server: base.clone(),
             interval_secs: 1,
             expires_in_secs: Some(900),
-            client_id: crate::oauth_openai_codex::CLIENT_ID.into(),
+            client_id: crate::oauth_chatgpt::CLIENT_ID.into(),
+            flavor: crate::OauthFlavor::Chatgpt,
         };
 
         assert!(matches!(
@@ -278,11 +270,7 @@ mod tests {
 
     #[test]
     fn xai_oauth_dispatch_start_poll_and_refresh_use_mock_server() {
-        use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
-
-        const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER"];
-        let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![
             (
                 200,
@@ -303,9 +291,12 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
 
-        let profile = crate::xai::xai_grok_profile();
+        let mut profile = crate::xai::xai_grok_profile();
+        // The test-only issuer override: the flow talks to the mock.
+        if let Some(auth) = profile.auth.as_mut() {
+            auth.issuer = Some(base.clone());
+        }
         let pending = OauthDispatcher::start(&profile).unwrap();
         assert_eq!(pending.profile_id, "xai");
         assert_eq!(pending.device_code, "dc");
@@ -320,11 +311,7 @@ mod tests {
 
     #[test]
     fn xai_oauth_dispatch_poll_maps_pending_and_slowdown() {
-        use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
-
-        const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER"];
-        let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![
             (400, r#"{"error":"authorization_pending"}"#, vec![]),
             (400, r#"{"error":"slow_down"}"#, vec![]),
@@ -332,7 +319,6 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
 
         let pending = OauthPending {
             profile_id: crate::xai::PROFILE_ID.into(),
@@ -343,7 +329,8 @@ mod tests {
             auth_server: base,
             interval_secs: 1,
             expires_in_secs: Some(900),
-            client_id: crate::oauth_xai::DEFAULT_CLIENT_ID.into(),
+            client_id: crate::oauth_rfc8628::DEFAULT_CLIENT_ID.into(),
+            flavor: crate::OauthFlavor::Rfc8628,
         };
 
         assert!(matches!(

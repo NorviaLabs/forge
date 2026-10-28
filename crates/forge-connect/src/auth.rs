@@ -52,7 +52,7 @@ impl AuthMode {
         Self::Oauth {
             device_code: true,
             system_browser: true,
-            auth_server: crate::oauth_xai::DEFAULT_ISSUER.into(),
+            auth_server: crate::oauth_rfc8628::DEFAULT_ISSUER.into(),
         }
     }
 
@@ -140,6 +140,8 @@ pub struct OauthPending {
     pub interval_secs: u64,
     pub expires_in_secs: Option<u64>,
     pub client_id: String,
+    /// The device-login flow that started this session; polling uses it.
+    pub flavor: crate::OauthFlavor,
 }
 
 impl OauthPending {
@@ -160,6 +162,7 @@ impl OauthPending {
             interval_secs: 5,
             expires_in_secs: Some(1800),
             client_id: "stub".into(),
+            flavor: crate::OauthFlavor::Rfc8628,
         }
     }
 

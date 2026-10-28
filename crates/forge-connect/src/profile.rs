@@ -127,7 +127,7 @@ impl AuthSpec {
                 auth_server: match (self.flavor, &self.issuer) {
                     (_, Some(issuer)) => issuer.clone(),
                     (Some(OauthFlavor::Chatgpt), None) => {
-                        crate::oauth_openai_codex::DEFAULT_AUTH_BASE.into()
+                        crate::oauth_chatgpt::DEFAULT_AUTH_BASE.into()
                     }
                     (_, None) => String::new(),
                 },

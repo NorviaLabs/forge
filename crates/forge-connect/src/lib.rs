@@ -9,9 +9,9 @@ mod credentials;
 pub mod effort;
 mod import;
 mod normalize;
+mod oauth_chatgpt;
 mod oauth_dispatch;
-mod oauth_openai_codex;
-mod oauth_xai;
+mod oauth_rfc8628;
 mod ollama;
 mod openai;
 mod openai_codex;
@@ -46,8 +46,8 @@ pub use import::{
     DiscoveredSecret,
 };
 pub use oauth_dispatch::OauthError;
-pub use oauth_xai::{
-    try_open_browser, XaiOauthClient, XaiOauthError, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
+pub use oauth_rfc8628::{
+    try_open_browser, Rfc8628Client, Rfc8628Error, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
     DEFAULT_SCOPES,
 };
 pub use ollama::{

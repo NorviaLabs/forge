@@ -201,7 +201,7 @@ pub(crate) fn credential_from_store(
         }
         let account_id = match auth.flavor {
             Some(OauthFlavor::Chatgpt) => Some(
-                crate::openai_codex::account_id_from_token(&token)
+                crate::oauth_chatgpt::account_id_from_token(&token)
                     .map_err(|error| CredentialError::Store(error.to_string()))?,
             ),
             _ => None,

@@ -31,9 +31,9 @@ pub fn xai_grok_profile() -> ProviderSpec {
         auth: Some(AuthSpec {
             kind: AuthKind::OauthDevice,
             flavor: Some(OauthFlavor::Rfc8628),
-            issuer: Some(crate::oauth_xai::DEFAULT_ISSUER.into()),
-            client_id: Some(crate::oauth_xai::DEFAULT_CLIENT_ID.into()),
-            scopes: crate::oauth_xai::DEFAULT_SCOPES
+            issuer: Some(crate::oauth_rfc8628::DEFAULT_ISSUER.into()),
+            client_id: Some(crate::oauth_rfc8628::DEFAULT_CLIENT_ID.into()),
+            scopes: crate::oauth_rfc8628::DEFAULT_SCOPES
                 .split_whitespace()
                 .map(Into::into)
                 .collect(),

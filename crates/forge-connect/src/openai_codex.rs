@@ -1,7 +1,6 @@
 //! OpenAI Codex subscription profile and token helpers.
 
-use base64::Engine;
-
+use crate::oauth_chatgpt::{API_BASE_ENV, DEFAULT_BASE_URL};
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogSpec, EffortFamily, OauthFlavor,
     WireKind,
@@ -9,9 +8,7 @@ use crate::profile::{
 use crate::{AuthMode, CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 
 pub const PROFILE_ID: &str = "openai_codex";
-pub const API_BASE_ENV: &str = "FORGE_CODEX_API_BASE";
 pub const AUTH_SERVER: &str = "https://auth.openai.com";
-pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
 pub fn openai_codex_profile() -> ProviderSpec {
     ProviderSpec {
@@ -40,7 +37,7 @@ pub fn openai_codex_profile() -> ProviderSpec {
         auth: Some(AuthSpec {
             kind: AuthKind::OauthDevice,
             flavor: Some(OauthFlavor::Chatgpt),
-            client_id: Some(crate::oauth_openai_codex::CLIENT_ID.into()),
+            client_id: Some(crate::oauth_chatgpt::CLIENT_ID.into()),
             prompt: AuthPrompt::Browser,
             ..AuthSpec::default()
         }),
@@ -58,31 +55,10 @@ pub fn openai_codex_profile() -> ProviderSpec {
     }
 }
 
-pub(crate) fn account_id_from_token(token: &str) -> Result<String, crate::verify::VerifyError> {
-    use crate::verify::VerifyError;
-    const INVALID: &str = "OpenAI returned an invalid access token";
-    let payload = token
-        .split('.')
-        .nth(1)
-        .ok_or(VerifyError::MalformedToken(INVALID))?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .map_err(|_| VerifyError::MalformedToken(INVALID))?;
-    let value: serde_json::Value =
-        serde_json::from_slice(&decoded).map_err(|_| VerifyError::MalformedToken(INVALID))?;
-    value
-        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.trim().is_empty())
-        .map(str::to_string)
-        .ok_or(VerifyError::MalformedToken(
-            "OpenAI token does not include a ChatGPT account",
-        ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     #[test]
     fn profile_uses_forge_oauth() {
@@ -104,7 +80,8 @@ mod tests {
         });
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
         assert_eq!(
-            account_id_from_token(&format!("header.{encoded}.signature")).unwrap(),
+            crate::oauth_chatgpt::account_id_from_token(&format!("header.{encoded}.signature"))
+                .unwrap(),
             "account-123"
         );
     }

@@ -7,7 +7,7 @@ use crate::catalog::CatalogError;
 use crate::catalog::ModelCatalogCache;
 use crate::credentials::Credentials;
 use crate::oauth_dispatch::{OauthDispatcher, OauthError, PollResult};
-use crate::oauth_xai::try_open_browser;
+use crate::oauth_rfc8628::try_open_browser;
 use crate::preferences::PreferenceStore;
 use crate::profile::{ConnectOutcome, ConnectProfile, ConnectStatus, KeySource};
 use crate::registry::ConnectRegistry;
@@ -746,9 +746,18 @@ mod tests {
     }
 
     fn oauth_registry() -> ConnectRegistry {
+        oauth_registry_at(crate::oauth_rfc8628::DEFAULT_ISSUER)
+    }
+
+    /// An xAI-shaped OAuth registry whose device flow talks to `issuer`.
+    fn oauth_registry_at(issuer: &str) -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
         let mut spec =
             crate::profile::test_spec("xai", AuthMode::xai_oauth(), vec!["xai/grok-3".into()]);
+        spec.auth = crate::xai::xai_grok_profile().auth.map(|mut auth| {
+            auth.issuer = Some(issuer.into());
+            auth
+        });
         spec.title = "xAI Grok".into();
         spec.api_key_env = vec![];
         spec.auth_url = Some("https://auth.x.ai".into());
@@ -1651,7 +1660,7 @@ mod tests {
     fn ensure_oauth_fresh_refreshes_expired_tokens_via_mock() {
         use forge_test_support::mock_http;
 
-        const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER", "FORGE_CONNECT_SKIP_VERIFY"];
+        const ENV: &[&str] = &["FORGE_CONNECT_SKIP_VERIFY"];
         let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![(
             200,
@@ -1661,13 +1670,12 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
         guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        let reg = oauth_registry();
+        let reg = oauth_registry_at(&base);
         store
             .set_oauth(
                 "xai",
@@ -1697,7 +1705,7 @@ mod tests {
     fn poll_oauth_once_completes_device_flow_via_mock() {
         use forge_test_support::mock_http;
 
-        const ENV: &[&str] = &["FORGE_XAI_OAUTH_ISSUER", "FORGE_CONNECT_SKIP_VERIFY"];
+        const ENV: &[&str] = &["FORGE_CONNECT_SKIP_VERIFY"];
         let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![(
             200,
@@ -1707,13 +1715,12 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        guard.set("FORGE_XAI_OAUTH_ISSUER", &base);
         guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        let reg = oauth_registry();
+        let reg = oauth_registry_at(&base);
         let mut svc = ConnectService {
             registry: &reg,
             credentials: &crate::credentials::Credentials::for_test(&store),
@@ -1730,7 +1737,8 @@ mod tests {
             auth_server: base,
             interval_secs: 1,
             expires_in_secs: Some(900),
-            client_id: crate::oauth_xai::DEFAULT_CLIENT_ID.into(),
+            client_id: crate::oauth_rfc8628::DEFAULT_CLIENT_ID.into(),
+            flavor: crate::OauthFlavor::Rfc8628,
         };
         let outcome = svc.poll_oauth_once(&pending).unwrap().unwrap();
         assert_eq!(outcome.key_source, KeySource::Oauth);

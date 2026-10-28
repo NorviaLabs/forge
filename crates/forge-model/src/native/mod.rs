@@ -608,7 +608,6 @@ pub(super) mod tests {
 
     #[tokio::test]
     async fn an_expiring_token_is_refreshed_before_the_next_request() {
-        const ISSUER: &str = "FORGE_XAI_OAUTH_ISSUER";
         let Some(issuer) = forge_test_support::mock_http(vec![(
             200,
             r#"{"access_token":"refreshed","refresh_token":"new-rt","expires_in":3600}"#,
@@ -625,7 +624,6 @@ pub(super) mod tests {
         else {
             return;
         };
-        std::env::set_var(ISSUER, &issuer);
         let dir = tempfile::tempdir().unwrap();
         let creds = Arc::new(Credentials::new(forge_connect::CredentialStore::new(
             dir.path().join("credentials.toml"),
@@ -633,6 +631,10 @@ pub(super) mod tests {
         let mut xai = forge_connect::xai_grok_profile();
         xai.api_key_env.clear();
         xai.base_url = chat;
+        // The test-only issuer override: refresh talks to the mock.
+        if let Some(auth) = xai.auth.as_mut() {
+            auth.issuer = Some(issuer.clone());
+        }
         creds
             .set_oauth(
                 &xai,
@@ -649,7 +651,6 @@ pub(super) mod tests {
         client.set_routes(forge_connect::resolve(&registry, &creds));
 
         let response = client.complete(request("xai/grok-4", None)).await;
-        std::env::remove_var(ISSUER);
         assert_eq!(response.unwrap().text, "hi");
         let sent = request_rx.await.unwrap().to_ascii_lowercase();
         assert!(sent.contains("authorization: bearer refreshed"), "{sent}");
