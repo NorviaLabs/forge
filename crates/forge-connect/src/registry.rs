@@ -287,7 +287,9 @@ fn save_custom_provider_to(
         }),
         wire: Some(WireKind::ChatCompletions),
         base_url: base_url.into(),
-        default_models: if model.is_empty() {
+        // The typed model is the user's own pick, so it lists with the
+        // manual models and discovery never hides it.
+        manual_models: if model.is_empty() {
             vec![]
         } else {
             vec![if model.starts_with(&format!("{id}/")) {
@@ -642,6 +644,11 @@ fn normalize_spec(mut spec: ProviderSpec) -> ProviderSpec {
     if spec.model_provider_prefix.is_empty() {
         spec.model_provider_prefix = spec.id.clone();
     }
+    // A custom entry's `default_models` are ids its user typed, not a
+    // shipped fallback; they list with the manual models, so discovery
+    // never hides them.
+    let typed = std::mem::take(&mut spec.default_models);
+    spec.manual_models.splice(0..0, typed);
     spec
 }
 
@@ -805,8 +812,11 @@ mod tests {
         let spec =
             update_custom_provider_to(&path, "custom", "https://final.example/v1", "").unwrap();
         assert_eq!(spec.base_url, "https://final.example/v1");
-        assert_eq!(spec.default_models, vec!["custom/org/manual"]);
-        assert_eq!(spec.manual_models, vec!["custom/second"]);
+        assert!(spec.default_models.is_empty());
+        assert_eq!(
+            spec.manual_models,
+            vec!["custom/org/manual", "custom/second"]
+        );
         assert!(loaded_registry_from(&path).load_warnings().is_empty());
     }
 

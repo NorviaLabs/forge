@@ -78,76 +78,24 @@ pub fn opencode_go_profile() -> ProviderSpec {
         },
         import_aliases: vec!["opencode-go".into(), "opencode_go".into()],
         billing_url: "https://opencode.ai/".into(),
+        guidance: "Get a key from https://opencode.ai/auth (OpenCode Zen → subscribe to Go → copy API key).".into(),
+        min_key_len: 16,
+        billing_note: "OpenCode does not currently expose wallet balance through its model API.".into(),
         origin: SpecOrigin::Builtin,
         ..ProviderSpec::blank()
-    }
-}
-
-/// Live-check an OpenCode Go API key against `GET {base}/models`.
-/// Returns Ok(()) on 200; never includes the key in error messages.
-pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), crate::verify::VerifyError> {
-    use crate::verify::VerifyError;
-    let key = api_key.trim();
-    if key.is_empty() {
-        return Err(VerifyError::EmptyKey);
-    }
-    // Real Zen/Go keys are long; reject obvious placeholders without a network call.
-    if key.len() < 16 {
-        return Err(VerifyError::KeyTooShort {
-            len: key.len(),
-            guidance: "Get a key from https://opencode.ai/auth (OpenCode Zen → subscribe to Go → copy API key).",
-        });
-    }
-    let base = base_url.trim().trim_end_matches('/');
-    let url = format!("{base}/models");
-    let resp = ureq::get(&url)
-        .header("Authorization", &format!("Bearer {key}"))
-        .header(
-            "User-Agent",
-            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .config()
-        // Never follow redirects: a hop could forward the credential.
-        .max_redirects(0)
-        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
-        .build()
-        .call()
-        .map_err(|e| match e {
-            // ureq 3 renamed the variant and no longer carries the response;
-            // only the status was ever used here.
-            ureq::Error::StatusCode(status) => VerifyError::Rejected {
-                provider: "OpenCode Go",
-                status,
-                guidance: "Sign in at https://opencode.ai/auth, copy a fresh key, and reconnect.",
-            },
-            other => VerifyError::Unreachable {
-                provider: "OpenCode Go",
-                message: format!(
-                    "Could not reach OpenCode Go to verify key ({other}). \
-Check network access to {base}."
-                ),
-            },
-        })?;
-    let status = resp.status().as_u16();
-    if (200..300).contains(&status) {
-        Ok(())
-    } else if status == 401 || status == 403 {
-        Err(VerifyError::Unauthorized {
-            provider: "OpenCode Go",
-            guidance: "Get a key from https://opencode.ai/auth and use `/connect opencode_go --key …` in the TUI.",
-        })
-    } else {
-        Err(VerifyError::Status {
-            provider: "OpenCode Go",
-            status,
-            guidance: Some("Try again or check account status."),
-        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The profile's key check, against `base`.
+    fn verify_api_key(key: &str, base: &str) -> Result<(), crate::verify::VerifyError> {
+        let mut profile = opencode_go_profile();
+        profile.base_url = base.into();
+        crate::service::verify_profile_key(&profile, key)
+    }
     use crate::preferences::PreferenceStore;
     use crate::registry::ConnectRegistry;
     use crate::service::{

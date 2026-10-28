@@ -49,6 +49,8 @@ pub fn xai_grok_profile() -> ProviderSpec {
         import_aliases: vec!["xai".into()],
         billing_url: "https://console.x.ai/".into(),
         effort_family: EffortFamily::Xai,
+        billing_note: "xAI does not expose account balance through the connected OAuth token."
+            .into(),
         origin: SpecOrigin::Builtin,
         ..ProviderSpec::blank()
     }

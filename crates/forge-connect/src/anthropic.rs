@@ -48,6 +48,9 @@ pub fn anthropic_profile() -> ProviderSpec {
         },
         import_aliases: vec!["anthropic".into()],
         billing_url: "https://console.anthropic.com/settings/billing".into(),
+        guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
+        min_key_len: 16,
+        billing_note: "Anthropic does not expose remaining credits through the API key API.".into(),
         origin: SpecOrigin::Builtin,
         ..ProviderSpec::blank()
     }
@@ -63,7 +66,7 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
     if key.len() < 16 {
         return Err(VerifyError::KeyTooShort {
             len: key.len(),
-            guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+            guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
         });
     }
     let base = base_url.trim().trim_end_matches('/');
@@ -91,8 +94,8 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
         Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
         Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
             Err(VerifyError::Unauthorized {
-                provider: "Anthropic",
-                guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+                provider: "Anthropic".into(),
+                guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
             })
         }
         Ok(r) if r.status().as_u16() == 404 => {
@@ -105,14 +108,14 @@ pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> 
                 Ok(())
             } else {
                 Err(VerifyError::Status {
-                    provider: "Anthropic",
+                    provider: "Anthropic".into(),
                     status: r.status().as_u16(),
                     guidance: None,
                 })
             }
         }
         Err(other) => Err(VerifyError::Unreachable {
-            provider: "Anthropic",
+            provider: "Anthropic".into(),
             message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
         }),
     }
@@ -140,14 +143,14 @@ fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
     {
         Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
             Err(VerifyError::Unauthorized {
-                provider: "Anthropic",
-                guidance: "Create a key at https://console.anthropic.com/settings/keys.",
+                provider: "Anthropic".into(),
+                guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
             })
         }
         // 400/404/etc. means the credential was accepted and the payload was not.
         Ok(_) => Ok(()),
         Err(other) => Err(VerifyError::Unreachable {
-            provider: "Anthropic",
+            provider: "Anthropic".into(),
             message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
         }),
     }

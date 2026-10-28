@@ -195,37 +195,41 @@ impl<'a> ConnectService<'a> {
             return Err(ConnectError::MissingKey(profile.id.clone()));
         };
 
-        // Live-verify when possible so a bad paste fails at connect, not mid-chat.
-        // Skip network when offline tests request it.
-        if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
-            if let Err(error) = verify_profile_key(&profile, &key) {
-                // A refused credential flags any previously stored one as stale too.
+        // Design §5: probe before saving. A rejected key (401/403, or too
+        // short) writes nothing; any other failure saves it as not verified.
+        // `FORGE_CONNECT_SKIP_VERIFY` skips the network for offline tests.
+        let mut verified = true;
+        let skip = std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_ok();
+        if !skip || matches!(key_source, KeySource::Provided) {
+            let probe = if skip {
+                verify_key_length(&profile, &key)
+            } else {
+                verify_profile_key(&profile, &key)
+            };
+            if let Err(error) = probe {
                 if error.is_auth_failure() {
-                    self.report_auth_failure(&profile.id)?;
-                }
-                if profile.id != crate::opencode_zen::PROFILE_ID {
+                    // A refused credential flags any previously stored one too.
+                    if error.status().is_some_and(|status| status == 401)
+                        || matches!(error, VerifyError::Unauthorized { .. })
+                    {
+                        self.report_auth_failure(&profile.id)?;
+                    }
                     return Err(error.into());
                 }
-                // Zen reuses the Go verification path, so its guidance must be
-                // relabelled. Still done on the rendered message: doing it properly
-                // needs Zen-specific guidance threaded through the shared verifier,
-                // which changes user-facing wording and belongs in its own change.
-                return Err(ConnectError::Message(
-                    error
-                        .to_string()
-                        .replace("OpenCode Go", "OpenCode Zen")
-                        .replace("/zen/go", "/zen")
-                        .replace("subscribe to Go", "Zen billing / API keys"),
-                ));
+                verified = false;
             }
         }
 
         if key_source == KeySource::Provided {
             self.credentials.set_api_key(&profile, &key)?;
         }
-        self.report_auth_success(&profile.id)?;
+        if verified {
+            self.report_auth_success(&profile.id)?;
+        }
 
-        self.connection_outcome(&profile, key_source)
+        let mut outcome = self.connection_outcome(&profile, key_source)?;
+        outcome.verified = verified;
+        Ok(outcome)
     }
 
     /// Record that the provider rejected a profile's stored credential. This
@@ -372,19 +376,6 @@ impl<'a> ConnectService<'a> {
                 };
                 return self.connect_oauth(&profile.id, tokens);
             }
-            // Optional: power-user inject after browser login
-            if let Ok(at) = std::env::var("FORGE_XAI_OAUTH_ACCESS_TOKEN") {
-                if !at.trim().is_empty() && profile.id == "xai" {
-                    return self.connect_oauth(
-                        &profile.id,
-                        OauthTokens {
-                            access_token: at,
-                            refresh_token: std::env::var("FORGE_XAI_OAUTH_REFRESH_TOKEN").ok(),
-                            expires_at: None,
-                        },
-                    );
-                }
-            }
             let pending = self.start_oauth(&profile.id)?;
             Err(ConnectError::OauthDevicePending(Box::new(pending)))
         } else {
@@ -429,18 +420,6 @@ impl<'a> ConnectService<'a> {
                 expires_at: None,
             };
             return Ok(Ok(self.connect_oauth(&profile.id, tokens)?));
-        }
-        if let Ok(at) = std::env::var("FORGE_XAI_OAUTH_ACCESS_TOKEN") {
-            if !at.trim().is_empty() && profile.id == "xai" {
-                return Ok(Ok(self.connect_oauth(
-                    &profile.id,
-                    OauthTokens {
-                        access_token: at,
-                        refresh_token: std::env::var("FORGE_XAI_OAUTH_REFRESH_TOKEN").ok(),
-                        expires_at: None,
-                    },
-                )?));
-            }
         }
         Ok(Err(self.start_oauth(&profile.id)?))
     }
@@ -549,6 +528,7 @@ impl ConnectService<'_> {
             profile_id: profile.id.clone(),
             model,
             key_source,
+            verified: true,
         })
     }
 }
@@ -596,35 +576,64 @@ pub(crate) fn fresh_oauth_tokens(
     }
 }
 
-fn verify_profile_key(profile: &ConnectProfile, key: &str) -> Result<(), VerifyError> {
-    let base = |default: &'static str| {
-        Some(profile.base_url.as_str())
-            .filter(|base| !base.trim().is_empty())
-            .unwrap_or(default)
-    };
-    match profile.id.as_str() {
-        id if id == crate::opencode_go::PROFILE_ID => {
-            crate::opencode_go::verify_api_key(key, base(crate::opencode_go::DEFAULT_BASE_URL))
+/// Check a key before it is saved (design §5): its length against
+/// `min_key_len`, then the probe of the profile's catalog kind unless
+/// `verify.kind = none`. Labels and guidance come from the profile.
+pub(crate) fn verify_profile_key(profile: &ConnectProfile, key: &str) -> Result<(), VerifyError> {
+    verify_key_length(profile, key)?;
+    let key = key.trim();
+    let guidance = profile_guidance(profile);
+    // OAuth logins are checked by their sign-in flow, not a key probe.
+    if profile.verify.kind == crate::VerifyKind::None || profile.effective_auth().is_oauth() {
+        return Ok(());
+    }
+    let base = profile.base_url.as_str();
+    match profile.effective_catalog_kind() {
+        crate::CatalogKind::OpenaiModels => {
+            crate::verify::probe_openai_models(base, key, &profile.title, &guidance)
         }
-        id if id == crate::opencode_zen::PROFILE_ID => {
-            crate::opencode_go::verify_api_key(key, base(crate::opencode_zen::DEFAULT_BASE_URL))
-        }
-        id if id == crate::openai::PROFILE_ID => {
-            crate::openai::verify_api_key(key, base(crate::openai::DEFAULT_BASE_URL))
-        }
-        id if id == crate::anthropic::PROFILE_ID => {
-            crate::anthropic::verify_api_key(key, base(crate::anthropic::DEFAULT_BASE_URL))
-        }
-        id if id == crate::ollama::PROFILE_ID => {
-            crate::ollama::verify_reachable(base(crate::ollama::DEFAULT_BASE_URL))
-        }
-        _ => Ok(()),
+        crate::CatalogKind::AnthropicModels => crate::anthropic::verify_api_key(key, base),
+        crate::CatalogKind::OllamaTags => crate::ollama::verify_reachable(base),
+        // OAuth logins and static lists have no key to probe.
+        crate::CatalogKind::ChatgptModels | crate::CatalogKind::Static => Ok(()),
+    }
+}
+
+/// Reject an empty or too-short key without a network call.
+fn verify_key_length(profile: &ConnectProfile, key: &str) -> Result<(), VerifyError> {
+    let key = key.trim();
+    let min = usize::from(profile.min_key_len);
+    if min > 0 && key.is_empty() {
+        return Err(VerifyError::EmptyKey);
+    }
+    if key.len() < min {
+        return Err(VerifyError::KeyTooShort {
+            len: key.len(),
+            guidance: profile_guidance(profile).into(),
+        });
+    }
+    Ok(())
+}
+
+/// The profile's verify-failure guidance, else a pointer to its key page.
+fn profile_guidance(profile: &ConnectProfile) -> String {
+    if !profile.guidance.trim().is_empty() {
+        return profile.guidance.clone();
+    }
+    match &profile.auth_url {
+        Some(url) => format!("Check the key at {url}."),
+        None => "Check the key and try again.".into(),
     }
 }
 
 pub fn format_connected(outcome: &ConnectOutcome, title: &str) -> String {
+    let verified = if outcome.verified {
+        ""
+    } else {
+        " · not verified"
+    };
     format!(
-        "Connected {title} · choose a model · key_source={}",
+        "Connected {title}{verified} · choose a model · key_source={}",
         outcome.key_source.as_str()
     )
 }
@@ -717,8 +726,6 @@ mod tests {
         "FORGE_CONNECT_OAUTH_FIXTURE",
         "FORGE_CONNECT_OAUTH_STUB",
         "FORGE_CONNECT_SKIP_VERIFY",
-        "FORGE_XAI_OAUTH_ACCESS_TOKEN",
-        "FORGE_XAI_OAUTH_REFRESH_TOKEN",
     ];
 
     fn api_key_registry() -> ConnectRegistry {
@@ -1281,7 +1288,8 @@ mod tests {
             ("openai_codex", true, &[][..]),
             ("anthropic", true, &["GET /v1/models x-api-key"][..]),
             ("ollama", true, &["GET /api/tags"][..]),
-            ("custom", true, &[][..]),
+            // Every key profile is probed now, custom ones included.
+            ("custom", true, &["GET /models authorization"][..]),
         ]
         .iter()
         .map(|(id, ok, sent)| {
@@ -1408,6 +1416,8 @@ mod tests {
     #[test]
     fn connect_api_key_surfaces_verify_failures_from_mock_server() {
         use forge_test_support::mock_http;
+        // Holds the env lock and clears FORGE_CONNECT_SKIP_VERIFY.
+        let _env = EnvGuard::new(OAUTH_ENV);
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
@@ -1435,15 +1445,14 @@ mod tests {
     }
 
     #[test]
-    fn connect_api_key_rejection_flags_stale_key_and_server_errors_save_nothing() {
+    fn connect_api_key_rejection_writes_nothing_and_other_failures_save_unverified() {
         use forge_test_support::mock_http;
+        // Holds the env lock and clears FORGE_CONNECT_SKIP_VERIFY.
+        let _env = EnvGuard::new(OAUTH_ENV);
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        store
-            .set_api_key("anthropic", "sk-ant-old-key-for-tests")
-            .unwrap();
         let Some(rejected) = mock_http(vec![(401, "bad key", vec![])]) else {
             eprintln!("skipping: this host denies binding a listener");
             return;
@@ -1451,7 +1460,7 @@ mod tests {
         let Some(unavailable) = mock_http(vec![(503, "down", vec![])]) else {
             return;
         };
-        for (base, auth_failure) in [(unavailable, false), (rejected, true)] {
+        let connect = |base: String| {
             let mut reg = ConnectRegistry::new();
             let mut anthropic = crate::anthropic::anthropic_profile();
             anthropic.base_url = base;
@@ -1463,19 +1472,30 @@ mod tests {
                 active_profile_id: None,
                 active_model: None,
             };
-            assert!(svc
-                .connect_api_key("anthropic", Some("sk-ant-new-key-for-tests"))
-                .is_err());
-            assert_eq!(
-                store.get_api_key("anthropic").unwrap().as_deref(),
-                Some("sk-ant-old-key-for-tests"),
-                "a key that failed verification must not replace the stored one"
-            );
-            assert_eq!(
-                store.needs_authentication("anthropic").unwrap(),
-                auth_failure
-            );
-        }
+            svc.connect_api_key("anthropic", Some("sk-ant-new-key-for-tests"))
+        };
+
+        // A 401 writes nothing and flags the stored key.
+        store
+            .set_api_key("anthropic", "sk-ant-old-key-for-tests")
+            .unwrap();
+        assert!(connect(rejected).is_err());
+        assert_eq!(
+            store.get_api_key("anthropic").unwrap().as_deref(),
+            Some("sk-ant-old-key-for-tests"),
+            "a rejected key must not replace the stored one"
+        );
+        assert!(store.needs_authentication("anthropic").unwrap());
+
+        // A server error saves the key as not verified; it does not clear
+        // or set the flag on its own (the save does clear it).
+        let outcome = connect(unavailable).unwrap();
+        assert!(!outcome.verified);
+        assert!(format_connected(&outcome, "Anthropic").contains("not verified"));
+        assert_eq!(
+            store.get_api_key("anthropic").unwrap().as_deref(),
+            Some("sk-ant-new-key-for-tests")
+        );
     }
 
     #[test]
@@ -1579,30 +1599,6 @@ mod tests {
         };
         let err = svc.connect("xai", Some("sk-secret"), false).unwrap_err();
         assert!(matches!(err, ConnectError::OauthRejectsApiKey(ref id) if id == "xai"));
-    }
-
-    #[test]
-    fn connect_uses_xai_access_token_env_when_set() {
-        let guard = EnvGuard::new(OAUTH_ENV);
-        guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
-        guard.set("FORGE_XAI_OAUTH_ACCESS_TOKEN", "env-access");
-        guard.set("FORGE_XAI_OAUTH_REFRESH_TOKEN", "env-refresh");
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        let reg = oauth_registry();
-        let mut svc = ConnectService {
-            registry: &reg,
-            credentials: &crate::credentials::Credentials::for_test(&store),
-            preferences: &preferences,
-            active_profile_id: None,
-            active_model: None,
-        };
-        let outcome = svc.connect("xai", None, false).unwrap();
-        assert_eq!(outcome.key_source, KeySource::Oauth);
-        let stored = store.get_oauth("xai").unwrap().unwrap();
-        assert_eq!(stored.access_token, "env-access");
-        assert_eq!(stored.refresh_token.as_deref(), Some("env-refresh"));
     }
 
     #[test]

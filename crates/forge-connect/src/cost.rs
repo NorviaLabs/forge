@@ -18,51 +18,38 @@ fn codex_usage_url() -> String {
 }
 
 pub fn provider_cost_report(
-    profile_id: &str,
+    profile: &crate::ProviderSpec,
     model: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
     store: &CredentialStore,
 ) -> Result<Vec<String>, String> {
-    if let Some(report) = model_cost_report(profile_id, model, prompt_tokens, completion_tokens) {
+    // The ChatGPT flavor owns its usage endpoint (until stage 6 moves it).
+    if profile.effective_auth().flavor == Some(crate::OauthFlavor::Chatgpt) {
+        return codex_cost_report(store);
+    }
+    if let Some(report) = model_cost_report(profile, model, prompt_tokens, completion_tokens) {
         return Ok(report);
     }
-
-    match profile_id {
-        OPENAI_CODEX_PROFILE_ID => codex_cost_report(store),
-        "openai" => Ok(unavailable_report(
-            "OpenAI API",
-            "OpenAI does not expose wallet balance through the API key API.",
-            "Usage: https://platform.openai.com/usage · Billing: https://platform.openai.com/settings/organization/billing/overview",
-        )),
-        "anthropic" => Ok(unavailable_report(
-            "Anthropic API",
-            "Anthropic does not expose remaining credits through the API key API.",
-            "Usage and billing: https://console.anthropic.com/settings/billing",
-        )),
-        "xai" => Ok(unavailable_report(
-            "xAI API",
-            "xAI does not expose account balance through the connected OAuth token.",
-            "Usage and billing: https://console.x.ai/",
-        )),
-        "opencode_go" | "opencode_zen" => Ok(unavailable_report(
-            "OpenCode",
-            "OpenCode does not currently expose wallet balance through its model API.",
-            "Usage and billing: https://opencode.ai/",
-        )),
-        "ollama" => Ok(vec![
-            "Provider: Ollama (local)".into(),
-            "Cost: local inference; no provider quota or wallet balance.".into(),
-        ]),
-        other => Ok(vec![
-            format!("Provider: {other}"),
+    let title = profile.title.as_str();
+    let note = profile.billing_note.trim();
+    let url = profile.billing_url.trim();
+    Ok(match (note.is_empty(), url.is_empty()) {
+        (false, false) => unavailable_report(title, note, &format!("Usage and billing: {url}")),
+        (false, true) => vec![format!("Provider: {title}"), note.to_string()],
+        (true, false) => vec![
+            format!("Provider: {title}"),
+            format!("Usage and billing: {url}"),
+        ],
+        (true, true) => vec![
+            format!("Provider: {title}"),
             "Limits and billing information are not available for this provider.".into(),
-        ]),
-    }
+        ],
+    })
 }
 
 fn model_cost_report(
-    profile_id: &str,
+    profile: &crate::ProviderSpec,
     model: &str,
     prompt_tokens: u64,
     completion_tokens: u64,
@@ -70,14 +57,14 @@ fn model_cost_report(
     if prompt_tokens == 0 && completion_tokens == 0 {
         return None;
     }
-    let provider = models_dev_provider(profile_id)?;
+    let provider = profile.models_dev_providers.first()?;
     let model_id = model.split_once('/').map_or(model, |(_, id)| id);
     let cost = fetch_models_dev_cost(provider, model_id).ok().flatten()?;
     let input = token_cost(prompt_tokens, cost.input);
     let output = token_cost(completion_tokens, cost.output);
     let total = input + output;
     Some(vec![
-        format!("Provider: {}", provider_title(profile_id)),
+        format!("Provider: {}", profile.title),
         format!("Estimated session cost: ${total:.6} (input ${input:.6} + output ${output:.6})"),
         format!(
             "Rates: ${:.2}/M input · ${:.2}/M output · source: models.dev",
@@ -90,28 +77,6 @@ fn model_cost_report(
 struct ModelCost {
     input: f64,
     output: f64,
-}
-
-fn models_dev_provider(profile_id: &str) -> Option<&'static str> {
-    match profile_id {
-        "openai" => Some("openai"),
-        "anthropic" => Some("anthropic"),
-        "xai" => Some("xai"),
-        "opencode_go" => Some("opencode-go"),
-        "opencode_zen" => Some("opencode"),
-        _ => None,
-    }
-}
-
-fn provider_title(profile_id: &str) -> &'static str {
-    match profile_id {
-        "openai" => "OpenAI API",
-        "anthropic" => "Anthropic API",
-        "xai" => "xAI API",
-        "opencode_go" => "OpenCode Go",
-        "opencode_zen" => "OpenCode Zen",
-        _ => "Provider",
-    }
 }
 
 fn token_cost(tokens: u64, dollars_per_million: f64) -> f64 {
@@ -299,7 +264,7 @@ mod tests {
     #[test]
     fn api_key_provider_explains_balance_limitation() {
         let report = provider_cost_report(
-            "openai",
+            &crate::openai_profile(),
             "openai/unknown",
             0,
             0,
@@ -330,39 +295,26 @@ mod tests {
 
     #[test]
     fn provider_cost_report_covers_static_provider_messages() {
+        let mut custom = crate::openai_profile();
+        custom.title = "custom".into();
+        custom.billing_note.clear();
+        custom.billing_url.clear();
         for (profile, expected) in [
-            ("anthropic", "Anthropic API"),
-            ("xai", "xAI API"),
-            ("opencode_go", "OpenCode"),
-            ("opencode_zen", "OpenCode"),
-            ("ollama", "Ollama"),
-            ("custom", "custom"),
+            (crate::anthropic_profile(), "remaining credits"),
+            (crate::xai_grok_profile(), "xAI does not expose"),
+            (crate::opencode_go_profile(), "OpenCode does not"),
+            (crate::opencode_zen_profile(), "OpenCode does not"),
+            (crate::ollama_profile(), "local inference"),
+            (custom, "custom"),
         ] {
             let report =
-                provider_cost_report(profile, "unknown", 0, 0, &CredentialStore::user_default())
+                provider_cost_report(&profile, "unknown", 0, 0, &CredentialStore::user_default())
                     .unwrap();
             assert!(
                 report.iter().any(|line| line.contains(expected)),
                 "missing {expected} in {report:?}"
             );
         }
-    }
-
-    #[test]
-    fn models_dev_provider_and_title_cover_known_profiles() {
-        assert_eq!(models_dev_provider("openai"), Some("openai"));
-        assert_eq!(models_dev_provider("anthropic"), Some("anthropic"));
-        assert_eq!(models_dev_provider("xai"), Some("xai"));
-        assert_eq!(models_dev_provider("opencode_go"), Some("opencode-go"));
-        assert_eq!(models_dev_provider("opencode_zen"), Some("opencode"));
-        assert_eq!(models_dev_provider("ollama"), None);
-
-        assert_eq!(provider_title("openai"), "OpenAI API");
-        assert_eq!(provider_title("anthropic"), "Anthropic API");
-        assert_eq!(provider_title("xai"), "xAI API");
-        assert_eq!(provider_title("opencode_go"), "OpenCode Go");
-        assert_eq!(provider_title("opencode_zen"), "OpenCode Zen");
-        assert_eq!(provider_title("unknown"), "Provider");
     }
 
     #[test]
@@ -472,7 +424,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         store_codex_login(&store);
         let report = provider_cost_report(
-            OPENAI_CODEX_PROFILE_ID,
+            &crate::openai_codex_profile(),
             "openai-codex/gpt-test",
             0,
             0,
@@ -500,7 +452,7 @@ mod tests {
         guard.set("FORGE_MODELS_DEV_URL", &base);
 
         let report = provider_cost_report(
-            "openai",
+            &crate::openai_profile(),
             "openai/gpt-4.1-mini",
             1_000_000,
             500_000,

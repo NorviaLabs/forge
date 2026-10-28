@@ -905,7 +905,6 @@ async fn connect_xai_opens_oauth_overlay() {
     // Isolate credentials + use stub device start (no network).
     std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
     std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
-    std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {
@@ -937,7 +936,6 @@ async fn oauth_cancel_via_escape_stops_the_background_poll() {
     let cred_dir = tempfile::tempdir().unwrap();
     std::env::set_var("FORGE_CONNECT_OAUTH_STUB", "1");
     std::env::remove_var("FORGE_CONNECT_OAUTH_FIXTURE");
-    std::env::remove_var("FORGE_XAI_OAUTH_ACCESS_TOKEN");
     let mut app = TuiApp::new(
         session,
         TuiRuntimeConfig {

@@ -5,7 +5,6 @@ use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
     EffortFamily, ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
 };
-use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "openai";
 pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -42,72 +41,27 @@ pub fn openai_profile() -> ProviderSpec {
             kind: Some(CatalogKind::OpenaiModels),
             filter: Some(CatalogFilter::Chat),
         },
-        billing_url: "https://platform.openai.com/settings/organization/billing/overview".into(),
+        billing_url: "https://platform.openai.com/usage".into(),
         effort_family: EffortFamily::Openai,
+        guidance: "Create a key at https://platform.openai.com/api-keys.".into(),
+        min_key_len: 16,
+        billing_note: "OpenAI does not expose wallet balance through the API key API.".into(),
         origin: SpecOrigin::Builtin,
         ..ProviderSpec::blank()
-    }
-}
-
-/// Verify key with `GET /models` (Bearer). Never includes the key in errors.
-pub fn verify_api_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> {
-    let key = api_key.trim();
-    if key.is_empty() {
-        return Err(VerifyError::EmptyKey);
-    }
-    if key.len() < 16 {
-        return Err(VerifyError::KeyTooShort {
-            len: key.len(),
-            guidance: "Create a key at https://platform.openai.com/api-keys.",
-        });
-    }
-    let base = base_url.trim().trim_end_matches('/');
-    let url = format!("{base}/models");
-    let resp = ureq::get(&url)
-        .header("Authorization", &format!("Bearer {key}"))
-        .header(
-            "User-Agent",
-            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
-        )
-        .config()
-        // Never follow redirects: a hop could forward the credential.
-        .max_redirects(0)
-        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
-        .build()
-        .call()
-        .map_err(|e| match e {
-            // ureq 3 renamed the variant and no longer carries the response;
-            // only the status was ever used here.
-            ureq::Error::StatusCode(status) => VerifyError::Rejected {
-                provider: "OpenAI",
-                status,
-                guidance: "Check the key at https://platform.openai.com/api-keys.",
-            },
-            other => VerifyError::Unreachable {
-                provider: "OpenAI",
-                message: format!("Could not reach OpenAI to verify key ({other}). Check network."),
-            },
-        })?;
-    let status = resp.status().as_u16();
-    if (200..300).contains(&status) {
-        Ok(())
-    } else if status == 401 || status == 403 {
-        Err(VerifyError::Unauthorized {
-            provider: "OpenAI",
-            guidance: "Create a key at https://platform.openai.com/api-keys.",
-        })
-    } else {
-        Err(VerifyError::Status {
-            provider: "OpenAI",
-            status,
-            guidance: None,
-        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::verify::VerifyError;
+
+    /// The profile's key check, against `base`.
+    fn verify_api_key(key: &str, base: &str) -> Result<(), crate::verify::VerifyError> {
+        let mut profile = openai_profile();
+        profile.base_url = base.into();
+        crate::service::verify_profile_key(&profile, key)
+    }
 
     fn mock_server(status: u16) -> Option<String> {
         crate::test_support::serve(vec![status], r#"{"data":[]}"#)

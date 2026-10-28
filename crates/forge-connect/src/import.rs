@@ -185,19 +185,22 @@ fn from_opencode(home: &Path, data_home: Option<&Path>) -> Vec<DiscoveredLogin> 
         return Vec::new();
     };
 
+    let builtins = crate::builtin_registry();
     let mut out = Vec::new();
     for (provider, entry) in map {
         // OpenCode's `openai` entry is a ChatGPT sign-in for Codex-subscription
         // access, which is what Forge's `openai_codex` profile wants — not its
         // API-key `openai` profile.
-        let profile_id = match provider.as_str() {
-            "openai" => crate::openai_codex::PROFILE_ID,
-            "xai" => crate::xai::PROFILE_ID,
-            "opencode-go" | "opencode_go" => crate::opencode_go::PROFILE_ID,
-            "anthropic" => crate::anthropic::PROFILE_ID,
-            // Anything else (openrouter, …) has no Forge profile to satisfy.
-            _ => continue,
+        // Each built-in lists the names other CLIs use for it
+        // (`import_aliases`); anything else (openrouter, …) has no profile.
+        let Some(profile) = builtins
+            .profiles()
+            .iter()
+            .find(|profile| profile.import_aliases.contains(provider))
+        else {
+            continue;
         };
+        let profile_id = profile.id.as_str();
         let account = non_empty(entry.get("accountId"));
         let secret = match entry.get("type").and_then(serde_json::Value::as_str) {
             Some("api") => match non_empty(entry.get("key")) {

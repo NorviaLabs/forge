@@ -50,6 +50,7 @@ pub fn ollama_profile() -> ProviderSpec {
             kind: Some(CatalogKind::OllamaTags),
             filter: None,
         },
+        billing_note: "Cost: local inference; no provider quota or wallet balance.".into(),
         origin: SpecOrigin::Builtin,
         ..ProviderSpec::blank()
     }
@@ -74,10 +75,10 @@ pub fn verify_reachable(base_url: &str) -> Result<(), VerifyError> {
     {
         Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
         Ok(r) => Err(VerifyError::Unhealthy {
-            provider: "Ollama",
+            provider: "Ollama".into(),
             status: r.status().as_u16(),
             endpoint: base.to_string(),
-            guidance: "Is the server healthy?",
+            guidance: "Is the server healthy?".into(),
         }),
         Err(_) => {
             let models = format!("{base}/v1/models");
@@ -95,13 +96,13 @@ pub fn verify_reachable(base_url: &str) -> Result<(), VerifyError> {
             {
                 Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
                 Ok(r) => Err(VerifyError::Unhealthy {
-                    provider: "Ollama",
+                    provider: "Ollama".into(),
                     status: r.status().as_u16(),
                     endpoint: base.to_string(),
-                    guidance: "Is the server healthy?",
+                    guidance: "Is the server healthy?".into(),
                 }),
                 Err(e) => Err(VerifyError::Unreachable {
-                    provider: "Ollama",
+                    provider: "Ollama".into(),
                     message: format!(
                         "Cannot reach Ollama at {base} ({e}). \
 Start it with `ollama serve` (default http://localhost:11434)."

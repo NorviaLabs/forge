@@ -72,6 +72,10 @@ pub fn opencode_zen_profile() -> ProviderSpec {
             filter: None,
         },
         billing_url: "https://opencode.ai/".into(),
+        guidance: "Get a key from https://opencode.ai/auth (Zen billing / API keys).".into(),
+        min_key_len: 16,
+        billing_note: "OpenCode does not currently expose wallet balance through its model API."
+            .into(),
         origin: SpecOrigin::Builtin,
         ..ProviderSpec::blank()
     }

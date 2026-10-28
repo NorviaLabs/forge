@@ -48,12 +48,16 @@ fn a_legacy_custom_entry_loads_keeps_its_override_and_normalizes_models() {
     assert_eq!(spec.base_url, "https://edge.sailresearch.com/v1");
     assert_eq!(spec.effective_wire(), WireKind::ChatCompletions);
     assert!(spec.needs_tui_api_key_prompt());
+    // A custom entry's typed `default_models` list with its manual models;
+    // the bare duplicate collapses into the prefixed one.
+    assert!(spec.default_models.is_empty());
     assert_eq!(
-        spec.default_models,
-        vec!["sail-research/deepseek-ai/DeepSeek-V4.1-Flash-1017"]
+        spec.manual_models,
+        vec![
+            "sail-research/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "sail-research/qwen/Qwen3-32B"
+        ]
     );
-    // The bare duplicate of the default collapses; the prefixed entry stays.
-    assert_eq!(spec.manual_models, vec!["sail-research/qwen/Qwen3-32B"]);
 }
 
 #[test]
@@ -77,10 +81,7 @@ fn an_entry_saved_by_this_writer_reloads() {
         registry.load_warnings()
     );
     assert_eq!(registry.get("my-llm"), Some(&saved));
-    assert_eq!(
-        saved.default_models,
-        vec!["my-llm/meta-llama/Llama-3.3-70B"]
-    );
+    assert_eq!(saved.manual_models, vec!["my-llm/meta-llama/Llama-3.3-70B"]);
 
     let text = std::fs::read_to_string(find_providers_file(dir.path())).unwrap();
     // Legacy keys stay until stage 8 so an older binary can read the entry.

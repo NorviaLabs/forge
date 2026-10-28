@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::profile::{CatalogMode, ConnectProfile, ProviderTransport};
+use crate::profile::{AuthKind, CatalogFilter, CatalogKind, ConnectProfile};
 use crate::store::{resolve_key, CredentialStore};
 
 /// Default TTL for cached catalog entries (1 hour).
@@ -596,114 +596,39 @@ pub fn fetch_remote_models(
     let base = profile.base_url.trim().trim_end_matches('/');
     let prefix = profile.model_provider_prefix.as_str();
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
-
-    match profile.id.as_str() {
-        "openai_codex" => fetch_codex_remote_models(base, prefix, &ua, api_key),
-        "openai" => {
-            let key = api_key.ok_or(CatalogError::CredentialRequired(
-                "OpenAI API key required for catalog".into(),
-            ))?;
-            let url = format!(
-                "{}/models",
-                if base.is_empty() {
-                    "https://api.openai.com/v1"
-                } else {
-                    base
-                }
-            );
-            let raw = http_get_json_ids(
-                &url,
-                &[
-                    ("Authorization", &format!("Bearer {key}")),
-                    ("User-Agent", &ua),
-                ],
-            )?;
-            Ok(map_prefix(prefix, raw, filter_openai_chat_ish))
-        }
-        "anthropic" => fetch_anthropic_remote_models(base, prefix, &ua, api_key),
-        "ollama" => fetch_ollama_remote_models(base, prefix, &ua),
-        "opencode_go" => {
-            let key = api_key.ok_or(CatalogError::CredentialRequired(
-                "OpenCode Go API key required for catalog".into(),
-            ))?;
-            let b = if base.is_empty() {
-                crate::opencode_go::DEFAULT_BASE_URL
-            } else {
-                base
-            };
-            let url = format!("{b}/models");
-            let raw = http_get_json_ids(
-                &url,
-                &[
-                    ("Authorization", &format!("Bearer {key}")),
-                    ("User-Agent", &ua),
-                ],
-            )?;
-            // Worker rewrites opencode-go/* → openai/* + base
-            Ok(map_prefix("opencode-go", raw, |_| true))
-        }
-        "opencode_zen" => {
-            let key = api_key.ok_or(CatalogError::CredentialRequired(
-                "OpenCode Zen API key required for catalog".into(),
-            ))?;
-            let b = if base.is_empty() {
-                crate::opencode_zen::DEFAULT_BASE_URL
-            } else {
-                base
-            };
-            let url = format!("{b}/models");
-            let raw = http_get_json_ids(
-                &url,
-                &[
-                    ("Authorization", &format!("Bearer {key}")),
-                    ("User-Agent", &ua),
-                ],
-            )?;
-            Ok(map_prefix("opencode-zen", raw, |_| true))
-        }
-        "xai" => {
-            let key = api_key.ok_or(CatalogError::CredentialRequired(
-                "xAI OAuth token required for catalog".into(),
-            ))?;
-            let b = if base.is_empty() {
-                "https://api.x.ai/v1"
-            } else {
-                base
-            };
-            let url = format!("{b}/models");
-            let raw = http_get_json_ids(
-                &url,
-                &[
-                    ("Authorization", &format!("Bearer {key}")),
-                    ("User-Agent", &ua),
-                ],
-            )?;
-            Ok(map_prefix(prefix, raw, |_| true))
-        }
-        _ if profile.is_user() && profile.transport == crate::ProviderTransport::OpenaiCompat => {
-            let key = api_key.ok_or_else(|| {
-                CatalogError::CredentialRequired("API key required for catalog".into())
-            })?;
-            let raw = http_get_json_ids(
-                &format!("{base}/models"),
-                &[
-                    ("Authorization", &format!("Bearer {key}")),
-                    ("User-Agent", &ua),
-                ],
-            )?;
-            Ok(raw
-                .into_iter()
-                .filter(|id| !id.trim().is_empty())
-                .map(|id| {
-                    if id.starts_with(&format!("{prefix}/")) {
-                        id
+    // One fetch per catalog kind; each owns its endpoint, auth, and fallback.
+    match profile.effective_catalog_kind() {
+        CatalogKind::ChatgptModels => fetch_codex_remote_models(base, prefix, &ua, api_key),
+        CatalogKind::AnthropicModels => fetch_anthropic_remote_models(base, prefix, &ua, api_key),
+        CatalogKind::OllamaTags => fetch_ollama_remote_models(base, prefix, &ua),
+        CatalogKind::Static => Ok(Vec::new()),
+        CatalogKind::OpenaiModels => {
+            let mut headers = vec![("User-Agent", ua.clone())];
+            match api_key {
+                Some(key) => headers.push(("Authorization", format!("Bearer {key}"))),
+                None if profile.effective_auth().kind == AuthKind::ApiKeyOptional => {}
+                None => {
+                    let what = if profile.effective_auth().is_oauth() {
+                        "OAuth token"
                     } else {
-                        format!("{prefix}/{id}")
-                    }
-                })
-                .collect())
+                        "API key"
+                    };
+                    return Err(CatalogError::CredentialRequired(format!(
+                        "{} {what} required for catalog",
+                        profile.title
+                    )));
+                }
+            }
+            let headers: Vec<(&str, &str)> = headers
+                .iter()
+                .map(|(name, value)| (*name, value.as_str()))
+                .collect();
+            let raw = http_get_json_ids(&format!("{base}/models"), &headers)?;
+            Ok(match profile.catalog.filter {
+                Some(CatalogFilter::Chat) => map_prefix(prefix, raw, filter_openai_chat_ish),
+                None => map_prefix(prefix, raw, |_| true),
+            })
         }
-        other => Err(CatalogError::UnsupportedProfile(other.to_string())),
     }
 }
 
@@ -830,8 +755,10 @@ fn map_prefix(prefix: &str, raw: Vec<String>, keep: impl Fn(&str) -> bool) -> Ve
         .into_iter()
         .filter(|id| keep(id))
         .map(|id| {
+            // Keep an id already in this profile's namespace; prefix every
+            // other one, so `org/model` stays whole under the profile.
             let id = id.trim().to_string();
-            if id.contains('/') {
+            if id.starts_with(&format!("{prefix}/")) {
                 id
             } else {
                 format!("{prefix}/{id}")
@@ -1113,11 +1040,13 @@ fn profile_picker_entries(
     cache: &ModelCatalogCache,
     refresh_stale: bool,
 ) -> Vec<(String, CatalogSource)> {
+    // The catalog merge rule (design §1.1): live results from the catalog
+    // kind unless it is static; models.dev rows when `models_dev_providers`
+    // is set; `default_models` only when nothing else came back; manual
+    // models always.
+    let kind = profile.effective_catalog_kind();
     let mut entries = Vec::new();
-    let live = matches!(
-        profile.catalog_mode,
-        CatalogMode::Live | CatalogMode::LiveRegistry
-    ) || profile.is_user();
+    let live = kind != CatalogKind::Static;
     if live && refresh_stale {
         if let Ok(models) = refresh_profile_catalog(profile, store, cache) {
             entries.extend(models.into_iter().map(|id| (id, CatalogSource::Live)));
@@ -1131,7 +1060,7 @@ fn profile_picker_entries(
                 .map(|id| (id, CatalogSource::Cached)),
         );
     }
-    if profile.transport == ProviderTransport::Codex {
+    if kind == CatalogKind::ChatgptModels {
         // Supplement the Forge cache with the official CLI cache so a
         // temporary empty endpoint does not hide an account's models.
         entries.extend(
@@ -1144,15 +1073,9 @@ fn profile_picker_entries(
             .map(|id| (id, CatalogSource::Cached)),
         );
     }
-    let include_registry_rows = match profile.catalog_mode {
-        CatalogMode::Registry => true,
-        CatalogMode::LiveRegistry => {
-            !profile.models_dev_providers.is_empty()
-                && profile.transport != ProviderTransport::Codex
-        }
-        CatalogMode::Live | CatalogMode::Static => false,
-    };
-    if include_registry_rows {
+    // A ChatGPT plan's entitlement is its own catalog; models.dev only
+    // supplies metadata for it.
+    if !profile.models_dev_providers.is_empty() && kind != CatalogKind::ChatgptModels {
         entries.extend(
             cache
                 .get_registry_cached(&profile.id)
@@ -1160,21 +1083,18 @@ fn profile_picker_entries(
                 .map(|id| (id, CatalogSource::Registry)),
         );
     }
-    if profile.catalog_mode == CatalogMode::Static || profile.is_user() {
+    if entries.is_empty() {
+        let source = if kind == CatalogKind::Static {
+            CatalogSource::Configured
+        } else {
+            CatalogSource::Default
+        };
         entries.extend(
             profile
                 .default_models
                 .iter()
                 .cloned()
-                .map(|id| (id, CatalogSource::Configured)),
-        );
-    } else if entries.is_empty() && profile.catalog_mode != CatalogMode::Live {
-        entries.extend(
-            profile
-                .default_models
-                .iter()
-                .cloned()
-                .map(|id| (id, CatalogSource::Default)),
+                .map(|id| (id, source)),
         );
     }
     entries.extend(
@@ -1223,9 +1143,8 @@ mod tests {
         profile.id = "custom".into();
         profile.model_provider_prefix = "custom".into();
         profile.origin = crate::SpecOrigin::User;
-        profile.catalog_mode = CatalogMode::Live;
         profile.base_url = url;
-        profile.default_models = vec!["custom/manual".into()];
+        profile.manual_models = vec!["custom/manual".into()];
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("keys.toml"));
         let cache = ModelCatalogCache::new(dir.path().join("models.toml"));
@@ -2312,14 +2231,7 @@ mod tests {
             fetch_remote_models(&crate::xai::xai_grok_profile(), None)
                 .unwrap_err()
                 .to_string(),
-            "xAI OAuth token required for catalog"
+            "xAI Grok OAuth token required for catalog"
         );
-
-        let mut unknown = openai_profile();
-        unknown.id = "unknown".into();
-        assert!(fetch_remote_models(&unknown, Some("key"))
-            .unwrap_err()
-            .to_string()
-            .contains("no remote catalog implemented"));
     }
 }

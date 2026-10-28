@@ -359,10 +359,7 @@ pub fn resolve(registry: &ConnectRegistry, credentials: &Arc<Credentials>) -> Ro
 fn definition_for(profile: &ProviderSpec) -> RouteDefinition {
     let auth = profile.effective_auth();
     let wire = profile.effective_wire();
-    let catalog_kind = profile.catalog.kind.unwrap_or(match wire {
-        WireKind::AnthropicMessages => CatalogKind::AnthropicModels,
-        _ => CatalogKind::OpenaiModels,
-    });
+    let catalog_kind = profile.effective_catalog_kind();
     let attach = profile.attach.unwrap_or(match wire {
         WireKind::AnthropicMessages => Attach::XApiKey,
         _ => Attach::Bearer,

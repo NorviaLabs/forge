@@ -8,6 +8,8 @@
 //! `Display` output is deliberately byte-identical to the strings these checks
 //! used to return, and — as before — never contains the credential.
 
+use std::borrow::Cow;
+
 use thiserror::Error;
 
 /// A credential-verification or reachability probe failed.
@@ -18,29 +20,32 @@ pub enum VerifyError {
     EmptyKey,
 
     #[error("API key looks too short ({len} chars). {guidance}")]
-    KeyTooShort { len: usize, guidance: &'static str },
+    KeyTooShort {
+        len: usize,
+        guidance: Cow<'static, str>,
+    },
 
     /// Server rejected the credential outright (401/403). Retrying will not help.
     #[error("{provider} rejected the API key (unauthorized). {guidance}")]
     Unauthorized {
-        provider: &'static str,
-        guidance: &'static str,
+        provider: Cow<'static, str>,
+        guidance: Cow<'static, str>,
     },
 
     /// Server rejected the credential and reported a status.
     #[error("{provider} rejected the API key (HTTP {status}). {guidance}")]
     Rejected {
-        provider: &'static str,
+        provider: Cow<'static, str>,
         status: u16,
-        guidance: &'static str,
+        guidance: Cow<'static, str>,
     },
 
     /// Non-success status that is not an authentication failure.
-    #[error("{provider} key verification failed (HTTP {status}).{}", .guidance.map(|g| format!(" {g}")).unwrap_or_default())]
+    #[error("{provider} key verification failed (HTTP {status}).{}", .guidance.as_ref().map(|g| format!(" {g}")).unwrap_or_default())]
     Status {
-        provider: &'static str,
+        provider: Cow<'static, str>,
         status: u16,
-        guidance: Option<&'static str>,
+        guidance: Option<Cow<'static, str>>,
     },
 
     /// An OAuth token could not be parsed, or lacked a required claim.
@@ -50,10 +55,10 @@ pub enum VerifyError {
     /// Reached the service but it reported itself unhealthy.
     #[error("{provider} responded HTTP {status} at {endpoint}. {guidance}")]
     Unhealthy {
-        provider: &'static str,
+        provider: Cow<'static, str>,
         status: u16,
         endpoint: String,
-        guidance: &'static str,
+        guidance: Cow<'static, str>,
     },
 
     /// Could not reach the service at all. `detail` is the transport error, which
@@ -61,7 +66,7 @@ pub enum VerifyError {
     /// on, and the text is only for the operator.
     #[error("{message}")]
     Unreachable {
-        provider: &'static str,
+        provider: Cow<'static, str>,
         message: String,
     },
 }
@@ -98,6 +103,51 @@ impl VerifyError {
     }
 }
 
+/// The `openai-models` probe: `GET <base>/models` with a Bearer key. A 401 or
+/// 403 is a rejected key; any other non-success status, or no answer, is not.
+pub(crate) fn probe_openai_models(
+    base_url: &str,
+    key: &str,
+    provider: &str,
+    guidance: &str,
+) -> Result<(), VerifyError> {
+    let base = base_url.trim().trim_end_matches('/');
+    let url = format!("{base}/models");
+    let response = ureq::get(&url)
+        .header("Authorization", &format!("Bearer {key}"))
+        .header(
+            "User-Agent",
+            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .call()
+        .map_err(|error| VerifyError::Unreachable {
+            provider: provider.to_string().into(),
+            message: format!(
+                "Could not reach {provider} to verify key ({error}). Check network access to {base}."
+            ),
+        })?;
+    let status = response.status().as_u16();
+    match status {
+        200..=299 => Ok(()),
+        401 | 403 => Err(VerifyError::Rejected {
+            provider: provider.to_string().into(),
+            status,
+            guidance: guidance.to_string().into(),
+        }),
+        _ => Err(VerifyError::Status {
+            provider: provider.to_string().into(),
+            status,
+            guidance: None,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,7 +162,7 @@ mod tests {
         assert_eq!(
             VerifyError::KeyTooShort {
                 len: 4,
-                guidance: "Paste the full key.",
+                guidance: "Paste the full key.".into(),
             }
             .to_string(),
             "API key looks too short (4 chars). Paste the full key."
@@ -120,8 +170,8 @@ mod tests {
 
         assert_eq!(
             VerifyError::Unauthorized {
-                provider: "OpenAI",
-                guidance: "Check the key.",
+                provider: "OpenAI".into(),
+                guidance: "Check the key.".into(),
             }
             .to_string(),
             "OpenAI rejected the API key (unauthorized). Check the key."
@@ -129,9 +179,9 @@ mod tests {
 
         assert_eq!(
             VerifyError::Rejected {
-                provider: "OpenAI",
+                provider: "OpenAI".into(),
                 status: 403,
-                guidance: "Check the key.",
+                guidance: "Check the key.".into(),
             }
             .to_string(),
             "OpenAI rejected the API key (HTTP 403). Check the key."
@@ -144,10 +194,10 @@ mod tests {
 
         assert_eq!(
             VerifyError::Unhealthy {
-                provider: "Ollama",
+                provider: "Ollama".into(),
                 status: 503,
                 endpoint: "http://localhost:11434/api/tags".into(),
-                guidance: "Is it running?",
+                guidance: "Is it running?".into(),
             }
             .to_string(),
             "Ollama responded HTTP 503 at http://localhost:11434/api/tags. Is it running?"
@@ -155,7 +205,7 @@ mod tests {
 
         assert_eq!(
             VerifyError::Unreachable {
-                provider: "Ollama",
+                provider: "Ollama".into(),
                 message: "connection refused".into(),
             }
             .to_string(),
@@ -170,16 +220,16 @@ mod tests {
     fn status_display_appends_guidance_only_when_present() {
         assert_eq!(
             VerifyError::Status {
-                provider: "xAI",
+                provider: "xAI".into(),
                 status: 500,
-                guidance: Some("Try again shortly."),
+                guidance: Some("Try again shortly.".into()),
             }
             .to_string(),
             "xAI key verification failed (HTTP 500). Try again shortly."
         );
         assert_eq!(
             VerifyError::Status {
-                provider: "xAI",
+                provider: "xAI".into(),
                 status: 500,
                 guidance: None,
             }
@@ -192,16 +242,16 @@ mod tests {
     fn status_is_reported_only_when_the_server_supplied_one() {
         assert_eq!(
             VerifyError::Rejected {
-                provider: "p",
+                provider: "p".into(),
                 status: 401,
-                guidance: "g",
+                guidance: "g".into(),
             }
             .status(),
             Some(401)
         );
         assert_eq!(
             VerifyError::Status {
-                provider: "p",
+                provider: "p".into(),
                 status: 429,
                 guidance: None,
             }
@@ -210,10 +260,10 @@ mod tests {
         );
         assert_eq!(
             VerifyError::Unhealthy {
-                provider: "p",
+                provider: "p".into(),
                 status: 503,
                 endpoint: "e".into(),
-                guidance: "g",
+                guidance: "g".into(),
             }
             .status(),
             Some(503)
@@ -223,8 +273,8 @@ mod tests {
         // so it deliberately reports None rather than inventing one.
         assert_eq!(
             VerifyError::Unauthorized {
-                provider: "p",
-                guidance: "g",
+                provider: "p".into(),
+                guidance: "g".into(),
             }
             .status(),
             None
@@ -233,7 +283,7 @@ mod tests {
         assert_eq!(
             VerifyError::KeyTooShort {
                 len: 1,
-                guidance: "g"
+                guidance: "g".into()
             }
             .status(),
             None
@@ -241,7 +291,7 @@ mod tests {
         assert_eq!(VerifyError::MalformedToken("m").status(), None);
         assert_eq!(
             VerifyError::Unreachable {
-                provider: "p",
+                provider: "p".into(),
                 message: "m".into(),
             }
             .status(),
@@ -254,12 +304,12 @@ mod tests {
         assert!(VerifyError::EmptyKey.is_auth_failure());
         assert!(VerifyError::KeyTooShort {
             len: 2,
-            guidance: "g"
+            guidance: "g".into()
         }
         .is_auth_failure());
         assert!(VerifyError::Unauthorized {
-            provider: "p",
-            guidance: "g",
+            provider: "p".into(),
+            guidance: "g".into(),
         }
         .is_auth_failure());
 
@@ -268,9 +318,9 @@ mod tests {
         for status in [401, 403] {
             assert!(
                 VerifyError::Rejected {
-                    provider: "p",
+                    provider: "p".into(),
                     status,
-                    guidance: "g",
+                    guidance: "g".into(),
                 }
                 .is_auth_failure(),
                 "HTTP {status} should count as an auth failure"
@@ -279,9 +329,9 @@ mod tests {
         for status in [400, 429, 500, 503] {
             assert!(
                 !VerifyError::Rejected {
-                    provider: "p",
+                    provider: "p".into(),
                     status,
-                    guidance: "g",
+                    guidance: "g".into(),
                 }
                 .is_auth_failure(),
                 "HTTP {status} should not be treated as a bad credential"
@@ -289,7 +339,7 @@ mod tests {
         }
 
         assert!(!VerifyError::Unreachable {
-            provider: "p",
+            provider: "p".into(),
             message: "m".into(),
         }
         .is_auth_failure());
@@ -300,7 +350,7 @@ mod tests {
     fn retryable_covers_transport_faults_and_server_errors_only() {
         // A transport fault never reached the server, so a retry is reasonable.
         assert!(VerifyError::Unreachable {
-            provider: "p",
+            provider: "p".into(),
             message: "connection reset".into(),
         }
         .is_retryable());
@@ -309,7 +359,7 @@ mod tests {
         for status in [500, 502, 503] {
             assert!(
                 VerifyError::Status {
-                    provider: "p",
+                    provider: "p".into(),
                     status,
                     guidance: None,
                 }
@@ -317,17 +367,17 @@ mod tests {
                 "HTTP {status} should be retryable"
             );
             assert!(VerifyError::Unhealthy {
-                provider: "p",
+                provider: "p".into(),
                 status,
                 endpoint: "e".into(),
-                guidance: "g",
+                guidance: "g".into(),
             }
             .is_retryable());
         }
         for status in [400, 401, 404, 429] {
             assert!(
                 !VerifyError::Status {
-                    provider: "p",
+                    provider: "p".into(),
                     status,
                     guidance: None,
                 }
@@ -339,14 +389,14 @@ mod tests {
         // A refused or malformed credential will not fix itself.
         assert!(!VerifyError::EmptyKey.is_retryable());
         assert!(!VerifyError::Unauthorized {
-            provider: "p",
-            guidance: "g",
+            provider: "p".into(),
+            guidance: "g".into(),
         }
         .is_retryable());
         assert!(!VerifyError::Rejected {
-            provider: "p",
+            provider: "p".into(),
             status: 401,
-            guidance: "g",
+            guidance: "g".into(),
         }
         .is_retryable());
     }
@@ -359,36 +409,36 @@ mod tests {
             VerifyError::EmptyKey,
             VerifyError::KeyTooShort {
                 len: 3,
-                guidance: "g",
+                guidance: "g".into(),
             },
             VerifyError::Unauthorized {
-                provider: "p",
-                guidance: "g",
+                provider: "p".into(),
+                guidance: "g".into(),
             },
             VerifyError::Rejected {
-                provider: "p",
+                provider: "p".into(),
                 status: 401,
-                guidance: "g",
+                guidance: "g".into(),
             },
             VerifyError::Rejected {
-                provider: "p",
+                provider: "p".into(),
                 status: 500,
-                guidance: "g",
+                guidance: "g".into(),
             },
             VerifyError::Status {
-                provider: "p",
+                provider: "p".into(),
                 status: 500,
                 guidance: None,
             },
             VerifyError::MalformedToken("m"),
             VerifyError::Unhealthy {
-                provider: "p",
+                provider: "p".into(),
                 status: 503,
                 endpoint: "e".into(),
-                guidance: "g",
+                guidance: "g".into(),
             },
             VerifyError::Unreachable {
-                provider: "p",
+                provider: "p".into(),
                 message: "m".into(),
             },
         ];
@@ -408,7 +458,7 @@ mod tests {
         let secret = "sk-supersecret";
         let rendered = VerifyError::KeyTooShort {
             len: secret.len(),
-            guidance: "Paste the full key.",
+            guidance: "Paste the full key.".into(),
         }
         .to_string();
         assert!(

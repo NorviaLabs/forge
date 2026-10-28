@@ -481,8 +481,13 @@ impl ProviderSpec {
         self.route_id.as_str()
     }
 
+    /// The first model the profile lists: a shipped default, else one the
+    /// user added.
     pub fn default_model(&self) -> Option<&str> {
-        self.default_models.first().map(|s| s.as_str())
+        self.default_models
+            .first()
+            .or_else(|| self.manual_models.first())
+            .map(|s| s.as_str())
     }
 
     /// True when this vendor has more than one offering registered alongside
@@ -520,6 +525,16 @@ impl ProviderSpec {
             .unwrap_or_else(|| AuthSpec::from(&self.auth_mode))
     }
 
+    /// The catalog kind: `catalog.kind`, else from the wire
+    /// (`anthropic-messages` → `anthropic-models`, otherwise
+    /// `openai-models`).
+    pub fn effective_catalog_kind(&self) -> CatalogKind {
+        self.catalog.kind.unwrap_or(match self.effective_wire() {
+            WireKind::AnthropicMessages => CatalogKind::AnthropicModels,
+            _ => CatalogKind::OpenaiModels,
+        })
+    }
+
     /// The wire for one model: the first matching override, else the
     /// profile's wire.
     pub fn wire_for_model(&self, bare_model: &str) -> WireKind {
@@ -537,6 +552,9 @@ pub struct ConnectOutcome {
     pub profile_id: String,
     pub model: String,
     pub key_source: KeySource,
+    /// False when the key was saved after a probe that neither accepted nor
+    /// rejected it (not found, server error, unreachable).
+    pub verified: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
