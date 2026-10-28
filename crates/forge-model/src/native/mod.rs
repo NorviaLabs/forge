@@ -506,6 +506,262 @@ mod tests {
         );
     }
 
+    /// Every credential and base URL variable a built-in route reads.
+    const ROUTE_ENV: &[&str] = &[
+        "OPENAI_API_KEY",
+        "OPENAI_API_BASE",
+        "XAI_API_KEY",
+        "GROK_CODE_XAI_API_KEY",
+        "XAI_API_BASE",
+        "OPENCODE_API_KEY",
+        "OPENCODE_GO_API_KEY",
+        "OPENCODE_ZEN_API_KEY",
+        "OPENCODE_API_BASE",
+        "OPENCODE_GO_API_BASE",
+        "OPENCODE_ZEN_API_BASE",
+        "OLLAMA_API_KEY",
+        "OLLAMA_API_BASE",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_API_BASE",
+        "FORGE_CODEX_ACCESS_TOKEN",
+        "FORGE_CODEX_ACCOUNT_ID",
+        "FORGE_CODEX_API_BASE",
+    ];
+
+    /// `base_url key=<credential>` the way each transport resolves a model.
+    fn resolved_route(client: &NativeModelClient, model: &str) -> String {
+        if model.starts_with("anthropic/") {
+            let (base, key) = anthropic::base_url_and_key(client);
+            return format!("{base} key={}", key.as_deref().unwrap_or("-"));
+        }
+        if model.starts_with("openai-codex/") {
+            let (token, account) = codex::session_credentials(client);
+            return format!(
+                "{} key={} account={}",
+                codex::codex_responses_url(client),
+                token.as_deref().unwrap_or("-"),
+                account.as_deref().unwrap_or("-")
+            );
+        }
+        match openai::route(client, model) {
+            Ok(route) => format!(
+                "{} key={}",
+                route.base_url,
+                route.api_key.as_deref().unwrap_or("-")
+            ),
+            Err(error) => format!("{error:?}"),
+        }
+    }
+
+    /// Characterization (design stage 1): base URL and credential source per
+    /// route prefix with no env, injected pairs, `cfg.model.base_url` and
+    /// `api_key`, and both. Injecting an empty value masks the ambient env, so
+    /// the "no env" case holds on any machine. Injected pairs and process env
+    /// share one lookup (`injected_or_env`, injected first), which
+    /// `injected_pairs_shadow_process_env` pins with a test-only variable.
+    #[test]
+    fn characterize_route_base_url_and_credential_sources() {
+        let masked: Vec<(String, String)> = ROUTE_ENV
+            .iter()
+            .map(|name| (name.to_string(), String::new()))
+            .collect();
+        let injected: Vec<(String, String)> = ROUTE_ENV
+            .iter()
+            .map(|name| (name.to_string(), format!("${name}")))
+            .collect();
+        let mut configured = Config::default();
+        configured.model.base_url = Some("https://configured.test".into());
+        configured.model.api_key = Some("configured-key".into());
+        let cases = [
+            ("none", Config::default(), &masked),
+            ("injected", Config::default(), &injected),
+            ("config", configured.clone(), &masked),
+            ("config+injected", configured, &injected),
+        ];
+        let models = [
+            "openai/m",
+            "xai/m",
+            "grok/m",
+            "opencode-go/m",
+            "opencode/m",
+            "opencode-zen/m",
+            "ollama/m",
+            "ollama_chat/m",
+            "anthropic/m",
+            "openai-codex/m",
+        ];
+        let mut actual = Vec::new();
+        for (case, cfg, env) in cases {
+            let client = NativeModelClient::from_config(&cfg).unwrap();
+            client.apply_provider_env(env);
+            for model in models {
+                actual.push(format!(
+                    "{case} {model} -> {}",
+                    resolved_route(&client, model)
+                ));
+            }
+        }
+        // Today `cfg.model.api_key` also fills the ChatGPT account id, and
+        // `cfg.model.base_url` overrides every route except OpenCode's.
+        let expected = [
+            "none openai/m -> MissingApiKey",
+            "none xai/m -> MissingApiKey",
+            "none grok/m -> MissingApiKey",
+            "none opencode-go/m -> MissingApiKey",
+            "none opencode/m -> MissingApiKey",
+            "none opencode-zen/m -> MissingApiKey",
+            "none ollama/m -> http://localhost:11434/v1 key=-",
+            "none ollama_chat/m -> http://localhost:11434/v1 key=-",
+            "none anthropic/m -> https://api.anthropic.com key=-",
+            "none openai-codex/m -> https://chatgpt.com/backend-api/codex/responses key=- account=-",
+            "injected openai/m -> $OPENAI_API_BASE key=$OPENAI_API_KEY",
+            "injected xai/m -> $XAI_API_BASE key=$XAI_API_KEY",
+            "injected grok/m -> $XAI_API_BASE key=$XAI_API_KEY",
+            "injected opencode-go/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
+            "injected opencode/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
+            "injected opencode-zen/m -> $OPENCODE_ZEN_API_BASE key=$OPENCODE_ZEN_API_KEY",
+            "injected ollama/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
+            "injected ollama_chat/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
+            "injected anthropic/m -> $ANTHROPIC_API_BASE key=$ANTHROPIC_API_KEY",
+            "injected openai-codex/m -> $FORGE_CODEX_API_BASE/codex/responses key=$FORGE_CODEX_ACCESS_TOKEN account=$FORGE_CODEX_ACCOUNT_ID",
+            "config openai/m -> https://configured.test key=configured-key",
+            "config xai/m -> https://configured.test key=configured-key",
+            "config grok/m -> https://configured.test key=configured-key",
+            "config opencode-go/m -> https://opencode.ai/zen/go/v1 key=configured-key",
+            "config opencode/m -> https://opencode.ai/zen/go/v1 key=configured-key",
+            "config opencode-zen/m -> https://opencode.ai/zen/v1 key=configured-key",
+            "config ollama/m -> https://configured.test/v1 key=configured-key",
+            "config ollama_chat/m -> https://configured.test/v1 key=configured-key",
+            "config anthropic/m -> https://configured.test key=configured-key",
+            "config openai-codex/m -> https://configured.test/codex/responses key=configured-key account=configured-key",
+            "config+injected openai/m -> https://configured.test key=$OPENAI_API_KEY",
+            "config+injected xai/m -> https://configured.test key=$XAI_API_KEY",
+            "config+injected grok/m -> https://configured.test key=$XAI_API_KEY",
+            "config+injected opencode-go/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
+            "config+injected opencode/m -> $OPENCODE_API_BASE key=$OPENCODE_API_KEY",
+            "config+injected opencode-zen/m -> $OPENCODE_ZEN_API_BASE key=$OPENCODE_ZEN_API_KEY",
+            "config+injected ollama/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
+            "config+injected ollama_chat/m -> $OLLAMA_API_BASE/v1 key=$OLLAMA_API_KEY",
+            "config+injected anthropic/m -> https://configured.test key=$ANTHROPIC_API_KEY",
+            "config+injected openai-codex/m -> https://configured.test/codex/responses key=$FORGE_CODEX_ACCESS_TOKEN account=$FORGE_CODEX_ACCOUNT_ID",
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    /// Characterization (design stage 1): the error each transport returns
+    /// for 401, 403 and 500, and for a stream that ends without its
+    /// completion event.
+    #[tokio::test]
+    async fn characterize_status_and_truncation_errors_per_transport() {
+        use crate::ModelClient;
+        let paths = [
+            (
+                "chat-completions",
+                None,
+                "openai/m",
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            ),
+            (
+                "codex-responses",
+                Some("openai-chatgpt"),
+                "gpt-5",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
+            ),
+            (
+                "anthropic-messages",
+                Some("anthropic-api"),
+                "anthropic/claude",
+                concat!(
+                    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+                    "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n"
+                ),
+            ),
+        ];
+        let mut actual = Vec::new();
+        for (path, route_id, model, truncated) in paths {
+            for (case, status, body, content_type) in [
+                ("401", 401, "{}", "application/json"),
+                ("403", 403, "{}", "application/json"),
+                ("500", 500, "{}", "application/json"),
+                ("truncated", 200, truncated, "text/event-stream"),
+            ] {
+                let Some(base) = forge_test_support::mock_http(vec![(
+                    status,
+                    body,
+                    vec![("content-type", content_type)],
+                )]) else {
+                    return;
+                };
+                let mut config = Config::default();
+                config.model.base_url = Some(base);
+                let client = NativeModelClient::from_config(&config).unwrap();
+                client.apply_provider_env(&[
+                    ("OPENAI_API_KEY".into(), "key".into()),
+                    ("ANTHROPIC_API_KEY".into(), "key".into()),
+                    ("FORGE_CODEX_ACCESS_TOKEN".into(), "token".into()),
+                    ("FORGE_CODEX_ACCOUNT_ID".into(), "account".into()),
+                ]);
+                let request = ModelRequest {
+                    messages: vec![forge_types::Message::new(
+                        forge_types::MessageRole::User,
+                        "hello",
+                    )]
+                    .into(),
+                    tools: Vec::new(),
+                    model: model.into(),
+                    workspace_root: PathBuf::new(),
+                    route_id: route_id.map(str::to_owned),
+                    session_id: None,
+                    reasoning_effort: None,
+                    thinking_enabled: false,
+                    prompt_cache: false,
+                };
+                let outcome = match client.complete(request).await {
+                    Ok(_) => "Ok".to_string(),
+                    Err(error) => {
+                        let debug = format!("{error:?}");
+                        let variant = debug
+                            .split(|c: char| !c.is_alphanumeric())
+                            .next()
+                            .unwrap_or_default()
+                            .to_string();
+                        match error.status() {
+                            Some(status) => format!("{variant} {status}"),
+                            None => variant,
+                        }
+                    }
+                };
+                actual.push(format!("{path} {case} -> {outcome}"));
+            }
+        }
+        let expected: Vec<String> = ["chat-completions", "codex-responses", "anthropic-messages"]
+            .iter()
+            .flat_map(|path| {
+                [
+                    format!("{path} 401 -> ProviderAuth 401"),
+                    format!("{path} 403 -> ProviderStatus 403"),
+                    format!("{path} 500 -> ProviderStatus 500"),
+                    format!("{path} truncated -> Transport"),
+                ]
+            })
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn injected_pairs_shadow_process_env() {
+        const NAME: &str = "FORGE_MODEL_CHARACTERIZATION_ONLY_KEY";
+        std::env::set_var(NAME, "from-env");
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        assert_eq!(client.credential(&[NAME]).as_deref(), Some("from-env"));
+        assert_eq!(client.resolved_base_url(&[NAME], "default"), "from-env");
+        client.apply_provider_env(&[(NAME.into(), "injected".into())]);
+        assert_eq!(client.credential(&[NAME]).as_deref(), Some("injected"));
+        client.apply_provider_env(&[(NAME.into(), String::new())]);
+        assert_eq!(client.credential(&[NAME]), None);
+        std::env::remove_var(NAME);
+    }
+
     #[test]
     fn native_transport_keys_follow_route_kind() {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();

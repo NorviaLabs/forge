@@ -1947,6 +1947,68 @@ mod tests {
         );
     }
 
+    /// Characterization (design stage 1): the request each built-in and a
+    /// custom profile's catalog fetch sends today.
+    #[test]
+    fn characterize_fetch_remote_models_requests_for_every_profile() {
+        let mut profiles = crate::builtin_registry().profiles().to_vec();
+        let mut custom = crate::profile::test_spec(
+            "custom",
+            crate::AuthMode::ApiKey {
+                tui_always_prompt: true,
+            },
+            vec![],
+        );
+        custom.transport = crate::ProviderTransport::OpenaiCompat;
+        custom.origin = crate::SpecOrigin::User;
+        profiles.push(custom);
+        let token = codex_access_token_for_tests();
+        let mut actual = Vec::new();
+        for mut profile in profiles {
+            let Some((url, requests)) = crate::test_support::serve_recording(vec![
+                (
+                    200,
+                    r#"{"data":[{"id":"m"}],"models":[{"slug":"m","name":"m"}]}"#,
+                ),
+                (
+                    200,
+                    r#"{"data":[{"id":"m"}],"models":[{"slug":"m","name":"m"}]}"#,
+                ),
+            ]) else {
+                return;
+            };
+            profile.default_base_url = Some(url);
+            let key = if profile.id == crate::OPENAI_CODEX_PROFILE_ID {
+                token.as_str()
+            } else {
+                "catalog-key"
+            };
+            let result = fetch_remote_models(&profile, Some(key));
+            let sent: Vec<String> = requests
+                .try_iter()
+                .map(|line| line.replace(env!("CARGO_PKG_VERSION"), "<version>"))
+                .collect();
+            actual.push((profile.id.clone(), result.is_ok(), sent));
+        }
+        let expected: Vec<(String, bool, Vec<String>)> = [
+            ("xai", "GET /models authorization"),
+            ("opencode_go", "GET /models authorization"),
+            ("opencode_zen", "GET /models authorization"),
+            ("openai", "GET /models authorization"),
+            (
+                "openai_codex",
+                "GET /codex/models?client_version=<version> authorization chatgpt-account-id",
+            ),
+            ("anthropic", "GET /v1/models?limit=1000 x-api-key"),
+            ("ollama", "GET /api/tags"),
+            ("custom", "GET /models authorization"),
+        ]
+        .iter()
+        .map(|(id, sent)| (id.to_string(), true, vec![sent.to_string()]))
+        .collect();
+        assert_eq!(actual, expected);
+    }
+
     fn codex_access_token_for_tests() -> String {
         use base64::Engine;
         let payload = serde_json::json!({

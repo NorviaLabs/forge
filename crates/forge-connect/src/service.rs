@@ -1378,6 +1378,196 @@ mod tests {
         );
     }
 
+    /// A custom OpenAI-compatible profile shaped like `save_custom_provider`'s.
+    fn characterization_custom_profile() -> ConnectProfile {
+        let mut custom = crate::profile::test_spec(
+            "custom",
+            AuthMode::ApiKey {
+                tui_always_prompt: true,
+            },
+            vec!["custom/model".into()],
+        );
+        custom.api_key_env = vec!["CUSTOM_KEY".into()];
+        custom.default_base_url = Some("https://custom.example/v1".into());
+        custom.transport = crate::ProviderTransport::OpenaiCompat;
+        custom.origin = crate::SpecOrigin::User;
+        custom
+    }
+
+    /// Characterization (design stage 1): the exact env pairs each built-in
+    /// and a custom profile export from a stored key or token today.
+    #[test]
+    fn characterize_provider_env_for_every_profile() {
+        let mut reg = crate::builtin_registry();
+        reg.register(characterization_custom_profile());
+        let mut env_names: Vec<&str> = reg
+            .profiles()
+            .iter()
+            .flat_map(|profile| profile.api_key_env.iter().map(String::as_str))
+            .collect();
+        env_names.extend(OAUTH_ENV);
+        env_names.extend(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
+        let _env = EnvGuard::new(&env_names);
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
+        let svc = ConnectService {
+            registry: &reg,
+            store: &store,
+            preferences: &preferences,
+            active_profile_id: None,
+            active_model: None,
+        };
+        let token = codex_access_token_for_tests();
+        let mut actual = Vec::new();
+        for profile in reg.profiles() {
+            if profile.auth_mode.is_oauth() {
+                let access_token = if profile.id == crate::OPENAI_CODEX_PROFILE_ID {
+                    token.clone()
+                } else {
+                    "oauth-token".into()
+                };
+                store
+                    .set_oauth(
+                        &profile.id,
+                        OauthTokens {
+                            access_token,
+                            refresh_token: None,
+                            expires_at: None,
+                        },
+                    )
+                    .unwrap();
+            } else {
+                store.set_api_key(&profile.id, "stored-key").unwrap();
+            }
+            let pairs = svc.provider_env_for_profile(&profile.id).unwrap();
+            let pairs: Vec<(String, String)> = pairs
+                .into_iter()
+                .map(|(name, value)| {
+                    let value = if value == token {
+                        "<codex token>".into()
+                    } else {
+                        value
+                    };
+                    (name, value)
+                })
+                .collect();
+            actual.push((profile.id.clone(), pairs));
+        }
+        let pairs = |items: &[(&str, &str)]| -> Vec<(String, String)> {
+            items
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect()
+        };
+        let expected = vec![
+            ("xai".to_string(), pairs(&[("XAI_API_KEY", "oauth-token")])),
+            (
+                "opencode_go".into(),
+                pairs(&[
+                    ("OPENCODE_API_KEY", "stored-key"),
+                    ("OPENCODE_GO_API_KEY", "stored-key"),
+                    ("OPENCODE_API_BASE", "https://opencode.ai/zen/go/v1"),
+                ]),
+            ),
+            (
+                "opencode_zen".into(),
+                pairs(&[
+                    ("OPENCODE_ZEN_API_KEY", "stored-key"),
+                    ("OPENCODE_API_KEY", "stored-key"),
+                    ("OPENCODE_GO_API_KEY", "stored-key"),
+                    ("OPENCODE_ZEN_API_BASE", "https://opencode.ai/zen/v1"),
+                ]),
+            ),
+            (
+                "openai".into(),
+                pairs(&[
+                    ("OPENAI_API_KEY", "stored-key"),
+                    ("OPENAI_API_BASE", "https://api.openai.com/v1"),
+                ]),
+            ),
+            (
+                "openai_codex".into(),
+                pairs(&[
+                    ("FORGE_CODEX_ACCESS_TOKEN", "<codex token>"),
+                    ("FORGE_CODEX_ACCOUNT_ID", "account-123"),
+                ]),
+            ),
+            (
+                "anthropic".into(),
+                pairs(&[
+                    ("ANTHROPIC_API_KEY", "stored-key"),
+                    ("ANTHROPIC_API_BASE", "https://api.anthropic.com"),
+                ]),
+            ),
+            (
+                "ollama".into(),
+                pairs(&[
+                    ("OLLAMA_API_KEY", "stored-key"),
+                    ("OLLAMA_API_BASE", "http://localhost:11434"),
+                ]),
+            ),
+            (
+                "custom".into(),
+                pairs(&[
+                    ("CUSTOM_KEY", "stored-key"),
+                    ("CUSTOM_API_BASE", "https://custom.example/v1"),
+                ]),
+            ),
+        ];
+        assert_eq!(actual, expected);
+    }
+
+    /// Characterization (design stage 1): which request each profile's key
+    /// check sends, and which profiles skip the check.
+    #[test]
+    fn characterize_verify_profile_key_for_every_profile() {
+        let mut profiles = crate::builtin_registry().profiles().to_vec();
+        profiles.push(characterization_custom_profile());
+        let mut actual = Vec::new();
+        for mut profile in profiles {
+            let Some((url, requests)) = crate::test_support::serve_recording(vec![
+                (200, r#"{"data":[]}"#),
+                (200, r#"{"data":[]}"#),
+            ]) else {
+                return;
+            };
+            profile.default_base_url = Some(url);
+            let result = verify_profile_key(&profile, "sk-characterization-key-0123456789");
+            let sent: Vec<String> = requests.try_iter().collect();
+            actual.push((profile.id.clone(), result.is_ok(), sent));
+        }
+        let expected: Vec<(String, bool, Vec<String>)> = [
+            ("xai", true, &[][..]),
+            ("opencode_go", true, &["GET /models authorization"][..]),
+            ("opencode_zen", true, &["GET /models authorization"][..]),
+            ("openai", true, &["GET /models authorization"][..]),
+            ("openai_codex", true, &[][..]),
+            ("anthropic", true, &["GET /v1/models x-api-key"][..]),
+            ("ollama", true, &["GET /api/tags"][..]),
+            ("custom", true, &[][..]),
+        ]
+        .iter()
+        .map(|(id, ok, sent)| {
+            (
+                id.to_string(),
+                *ok,
+                sent.iter().map(|s| s.to_string()).collect(),
+            )
+        })
+        .collect();
+        assert_eq!(actual, expected);
+    }
+
+    fn codex_access_token_for_tests() -> String {
+        use base64::Engine;
+        let payload = serde_json::json!({
+            "https://api.openai.com/auth": { "chatgpt_account_id": "account-123" }
+        });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
+        format!("header.{encoded}.signature")
+    }
+
     #[test]
     fn connected_profiles_include_api_keys_and_skip_fixture_oauth() {
         let dir = tempdir().unwrap();

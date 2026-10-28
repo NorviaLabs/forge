@@ -12,7 +12,7 @@ use crate::{ModelError, ModelRequest, StreamEventTx};
 
 pub const DEFAULT_BASE_URL: &str = "https://chatgpt.com/backend-api";
 
-fn codex_responses_url(client: &NativeModelClient) -> String {
+pub(super) fn codex_responses_url(client: &NativeModelClient) -> String {
     format!(
         "{}/codex/responses",
         client
@@ -25,27 +25,29 @@ fn codex_session_id<'a>(req: &'a ModelRequest, request_id: &'a str) -> &'a str {
     req.session_id.as_deref().unwrap_or(request_id)
 }
 
+/// The ChatGPT access token and account id this client resolves.
+pub(super) fn session_credentials(client: &NativeModelClient) -> (Option<String>, Option<String>) {
+    (
+        client.credential(&["FORGE_CODEX_ACCESS_TOKEN"]),
+        client.credential(&["FORGE_CODEX_ACCOUNT_ID"]),
+    )
+}
+
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
     model: &str,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let access_token = client
-        .credential(&["FORGE_CODEX_ACCESS_TOKEN"])
-        .ok_or_else(|| {
-            ModelError::Provider(
-                "No Forge ChatGPT session found. Run `/connect openai_codex`.".into(),
-            )
-        })?;
-    let account_id = client
-        .credential(&["FORGE_CODEX_ACCOUNT_ID"])
-        .ok_or_else(|| {
-            ModelError::Provider(
-                "OpenAI Codex account id is missing. Reconnect with `/connect openai_codex`."
-                    .into(),
-            )
-        })?;
+    let (access_token, account_id) = session_credentials(client);
+    let access_token = access_token.ok_or_else(|| {
+        ModelError::Provider("No Forge ChatGPT session found. Run `/connect openai_codex`.".into())
+    })?;
+    let account_id = account_id.ok_or_else(|| {
+        ModelError::Provider(
+            "OpenAI Codex account id is missing. Reconnect with `/connect openai_codex`.".into(),
+        )
+    })?;
     let aliases = tool_aliases(&req);
     // The ChatGPT backend-api Codex endpoint rejects inline
     // `input[].content[].cache_control` markers, so request_body never emits

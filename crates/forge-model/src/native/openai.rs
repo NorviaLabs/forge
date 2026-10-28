@@ -28,9 +28,9 @@ fn opencode_session_id(req: &ModelRequest) -> &str {
     })
 }
 
-struct Route {
-    base_url: String,
-    api_key: Option<String>,
+pub(super) struct Route {
+    pub(super) base_url: String,
+    pub(super) api_key: Option<String>,
     model: String,
     opencode_session: bool,
 }
@@ -311,7 +311,7 @@ async fn complete_responses(
     })
 }
 
-fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
+pub(super) fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
     let (prefix, model_id) = model.split_once('/').unwrap_or(("openai", model));
     let configured_base = client.configured_base_url.clone();
     let route = match prefix {

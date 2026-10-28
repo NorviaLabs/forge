@@ -4,7 +4,10 @@
 
 use super::prelude::*;
 use crate::overlays::{handle_overlay_key, Key as OverlayKey, ModelItem, OverlayAction};
-use forge_connect::PreferenceStore;
+use forge_connect::{
+    PreferenceStore, ANTHROPIC_PROFILE_ID, OPENAI_CODEX_PROFILE_ID, OPENAI_PROFILE_ID,
+    OPENCODE_GO_PROFILE_ID, XAI_PROFILE_ID,
+};
 
 #[tokio::test]
 async fn connect_opencode_go_opens_api_key_overlay() {
@@ -58,14 +61,20 @@ async fn refresh_failure_keeps_manual_rows_and_reports_discovery_error() {
     let (_dir, mut app) = focus_test_app().await;
     let credentials = tempfile::tempdir().unwrap();
     app.connect.store = CredentialStore::new(credentials.path().join("credentials.toml"));
-    app.connect.store.set_api_key("openai", "test-key").unwrap();
+    app.connect
+        .store
+        .set_api_key(OPENAI_PROFILE_ID, "test-key")
+        .unwrap();
     let mut profile = forge_connect::openai_profile();
     profile.manual_models = vec!["openai/manual".into()];
     app.connect.registry.register(profile);
-    app.overlay = Some(model_picker_overlay_with("openai/manual", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/manual",
+        OPENAI_PROFILE_ID,
+    ));
     let (tx, rx) = std::sync::mpsc::channel();
     app.catalog_fetch.refresh_rx = Some(rx);
-    app.catalog_fetch.refreshing_profile = Some("openai".into());
+    app.catalog_fetch.refreshing_profile = Some(OPENAI_PROFILE_ID.into());
     tx.send(Err(forge_connect::CatalogError::Http {
         label: "models".into(),
         status: 404,
@@ -78,7 +87,11 @@ async fn refresh_failure_keeps_manual_rows_and_reports_discovery_error() {
     );
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     assert!(matches!(action, OverlayAction::SelectModel { model, .. } if model == "openai/manual"));
-    assert!(!app.connect.store.needs_authentication("openai").unwrap());
+    assert!(!app
+        .connect
+        .store
+        .needs_authentication(OPENAI_PROFILE_ID)
+        .unwrap());
 }
 
 #[tokio::test]
@@ -102,9 +115,9 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-saved-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-saved-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
     app.session_runtime.set_active_model("openai/gpt-4.1-mini");
 
@@ -113,7 +126,7 @@ async fn disconnect_clears_credentials_and_prompts_reauth() {
     assert!(app.connect.auth_suspended);
     assert!(app.connect.profile.is_none());
     assert!(!app.is_provider_connected());
-    assert!(!app.connect.store.is_connected("openai").unwrap());
+    assert!(!app.connect.store.is_connected(OPENAI_PROFILE_ID).unwrap());
     assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
     assert!(app.feedback.text.contains("disconnected"));
 }
@@ -139,7 +152,7 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-saved-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-saved-credential")
         .unwrap();
 
     app.open_connect_picker();
@@ -150,7 +163,7 @@ async fn connect_picker_marks_saved_credentials_as_connected() {
         providers
             .iter()
             .flat_map(|vendor| &vendor.routes)
-            .any(|route| route.profile_id == "openai" && route.connected),
+            .any(|route| route.profile_id == OPENAI_PROFILE_ID && route.connected),
         "saved provider should be marked connected"
     );
 }
@@ -176,13 +189,13 @@ async fn successful_connect_hands_off_to_model_picker() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-saved-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-saved-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
     app.session_runtime.set_active_model("openai/gpt-4.1-mini");
 
-    app.open_model_picker_after_connect("openai");
+    app.open_model_picker_after_connect(OPENAI_PROFILE_ID);
     let Some(Overlay::ConnectModel {
         selected_route,
         focus,
@@ -191,7 +204,7 @@ async fn successful_connect_hands_off_to_model_picker() {
     else {
         panic!("expected model picker");
     };
-    assert_eq!(selected_route.as_deref(), Some("openai"));
+    assert_eq!(selected_route.as_deref(), Some(OPENAI_PROFILE_ID));
     assert_eq!(*focus, ConnectModelColumn::Models);
     assert!(app.feedback.text.contains("choose a model"));
 }
@@ -217,17 +230,17 @@ async fn model_selection_switches_to_the_matching_connected_provider() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-openai-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-openai-credential")
         .unwrap();
     app.connect
         .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .set_api_key(ANTHROPIC_PROFILE_ID, "sk-test-anthropic-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
 
     app.apply_model_selection("native", "anthropic/claude-sonnet-4-5", None);
 
-    assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
+    assert_eq!(app.connect.profile.as_deref(), Some(ANTHROPIC_PROFILE_ID));
     assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
 }
 
@@ -256,27 +269,34 @@ async fn model_selection_with_explicit_route_never_crosses_wires_between_openai_
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-openai-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-openai-credential")
         .unwrap();
     app.connect
         .store
-        .set_api_key("openai_codex", "sk-test-openai-codex-credential")
+        .set_api_key(OPENAI_CODEX_PROFILE_ID, "sk-test-openai-codex-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
 
     // The picker-selection path always supplies an explicit `profile_id`
     // (the resolved route) — this is what `finish_connect_flow`/the Models
     // column Enter handler do, never the free-text `/model <arg>` path.
-    app.apply_model_selection("native", "openai-codex/gpt-5.6", Some("openai_codex"));
+    app.apply_model_selection(
+        "native",
+        "openai-codex/gpt-5.6",
+        Some(OPENAI_CODEX_PROFILE_ID),
+    );
 
-    assert_eq!(app.connect.profile.as_deref(), Some("openai_codex"));
+    assert_eq!(
+        app.connect.profile.as_deref(),
+        Some(OPENAI_CODEX_PROFILE_ID)
+    );
     assert_eq!(app.runtime.model_label, "openai-codex/gpt-5.6");
 
     // And the reverse: switching back to the generic API-key route must not
     // stick on the subscription route either.
-    app.apply_model_selection("native", "openai/gpt-5.6", Some("openai"));
+    app.apply_model_selection("native", "openai/gpt-5.6", Some(OPENAI_PROFILE_ID));
 
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.connect.profile.as_deref(), Some(OPENAI_PROFILE_ID));
     assert_eq!(app.runtime.model_label, "openai/gpt-5.6");
 }
 
@@ -319,9 +339,9 @@ async fn model_switch_test_app(cred_dir: &tempfile::TempDir) -> TuiApp {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-openai-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-openai-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
     app.session_runtime.set_active_model("openai/gpt-5.6");
     app
 }
@@ -331,11 +351,14 @@ async fn selecting_the_current_model_is_a_no_op_and_keeps_the_same_route() {
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
-    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/gpt-5.6",
+        OPENAI_PROFILE_ID,
+    ));
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
 
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.connect.profile.as_deref(), Some(OPENAI_PROFILE_ID));
     assert_eq!(app.runtime.model_label, "openai/gpt-5.6");
     assert_eq!(app.session_runtime.active_model, "openai/gpt-5.6");
 }
@@ -353,11 +376,11 @@ async fn switching_to_another_model_updates_label_route_and_session_together() {
         vec![ModelItem {
             provider: "native".into(),
             model: "openai/gpt-5.6-luna".into(),
-            profile_id: Some("openai".into()),
+            profile_id: Some(OPENAI_PROFILE_ID.into()),
             source: forge_connect::CatalogSource::Default,
             route_label: "openai".into(),
         }],
-        Some("openai"),
+        Some(OPENAI_PROFILE_ID),
         "openai/gpt-5.6",
         ReasoningEffort::default(),
         ConnectModelColumn::Models,
@@ -372,7 +395,7 @@ async fn switching_to_another_model_updates_label_route_and_session_together() {
     );
     app.apply_overlay_action(action).await.unwrap();
 
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.connect.profile.as_deref(), Some(OPENAI_PROFILE_ID));
     assert_eq!(app.runtime.model_label, "openai/gpt-5.6-luna");
     assert_eq!(app.session_runtime.active_model, "openai/gpt-5.6-luna");
 }
@@ -382,7 +405,10 @@ async fn changing_effort_after_a_model_switch_persists_the_new_value() {
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
-    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/gpt-5.6-luna",
+        OPENAI_PROFILE_ID,
+    ));
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
 
@@ -405,7 +431,10 @@ async fn cancelling_at_the_models_column_leaves_active_selection_untouched() {
     let (before_label, before_profile) =
         (app.runtime.model_label.clone(), app.connect.profile.clone());
 
-    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/gpt-5.6-luna",
+        OPENAI_PROFILE_ID,
+    ));
     for c in "luna".chars() {
         handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Char(c));
     }
@@ -427,7 +456,7 @@ async fn cancelling_at_the_effort_column_leaves_active_selection_untouched() {
     app.overlay = Some(Overlay::connect_model_open(
         vec![],
         vec![],
-        Some("openai"),
+        Some(OPENAI_PROFILE_ID),
         "openai/gpt-5.6",
         ReasoningEffort::default(),
         ConnectModelColumn::Effort,
@@ -446,7 +475,10 @@ async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
-    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/gpt-5.6-luna",
+        OPENAI_PROFILE_ID,
+    ));
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
     app.apply_overlay_action(OverlayAction::SelectEffort(ReasoningEffort::High))
@@ -474,11 +506,14 @@ async fn restart_restores_the_persisted_selection_via_restore_saved_auth() {
     restarted
         .connect
         .store
-        .set_api_key("openai", "sk-test-openai-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-openai-credential")
         .unwrap();
     let restarted = restarted.restore_saved_auth();
 
-    assert_eq!(restarted.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(
+        restarted.connect.profile.as_deref(),
+        Some(OPENAI_PROFILE_ID)
+    );
     assert_eq!(restarted.runtime.model_label, "openai/gpt-5.6-luna");
     assert_eq!(restarted.reasoning_effort.value, ReasoningEffort::High);
     assert_eq!(
@@ -504,7 +539,10 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
-    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/gpt-5.6-luna",
+        OPENAI_PROFILE_ID,
+    ));
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
     app.persist_selection();
@@ -535,7 +573,7 @@ async fn restart_restores_the_route_and_not_only_the_model() {
     restarted
         .connect
         .store
-        .set_api_key("openai", "sk-test-openai-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-openai-credential")
         .unwrap();
     let restarted = restarted.restore_saved_auth();
 
@@ -574,11 +612,11 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("opencode_go", "sk-test-opencode-go")
+        .set_api_key(OPENCODE_GO_PROFILE_ID, "sk-test-opencode-go")
         .unwrap();
     app.connect
         .preferences
-        .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
+        .set_last_selection(XAI_PROFILE_ID, "opencode-go/deepseek-v4.1-flash")
         .unwrap();
     // `TuiApp::new` restores the developer's real credential store before the
     // test swaps in its isolated stores. Reset the runtime seed so the second
@@ -589,7 +627,10 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
 
     let restored = app.restore_saved_auth();
 
-    assert_eq!(restored.connect.profile.as_deref(), Some("opencode_go"));
+    assert_eq!(
+        restored.connect.profile.as_deref(),
+        Some(OPENCODE_GO_PROFILE_ID)
+    );
     assert_eq!(
         restored.session_runtime.active_route_id, "opencode-go",
         "route must follow the model, not the stale saved profile"
@@ -608,7 +649,10 @@ async fn first_request_after_switching_models_uses_the_new_complete_id() {
     let cred_dir = tempfile::tempdir().unwrap();
     let mut app = model_switch_test_app(&cred_dir).await;
 
-    app.overlay = Some(model_picker_overlay_with("openai/gpt-5.6-luna", "openai"));
+    app.overlay = Some(model_picker_overlay_with(
+        "openai/gpt-5.6-luna",
+        OPENAI_PROFILE_ID,
+    ));
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
     app.apply_overlay_action(action).await.unwrap();
 
@@ -637,30 +681,34 @@ async fn quick_switch_toggles_between_the_two_most_recent_deliberate_selections(
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-openai-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-openai-credential")
         .unwrap();
     app.connect
         .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .set_api_key(ANTHROPIC_PROFILE_ID, "sk-test-anthropic-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
 
     // No deliberate selection recorded yet: nothing to switch to.
     app.quick_switch_model();
     assert_eq!(app.status_state.message, "no previous model to switch to");
 
-    app.apply_model_selection("native", "openai/gpt-4.1-mini", Some("openai"));
-    app.apply_model_selection("native", "anthropic/claude-sonnet-4-5", Some("anthropic"));
+    app.apply_model_selection("native", "openai/gpt-4.1-mini", Some(OPENAI_PROFILE_ID));
+    app.apply_model_selection(
+        "native",
+        "anthropic/claude-sonnet-4-5",
+        Some(ANTHROPIC_PROFILE_ID),
+    );
     assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
 
     app.quick_switch_model();
     assert_eq!(app.runtime.model_label, "openai/gpt-4.1-mini");
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.connect.profile.as_deref(), Some(OPENAI_PROFILE_ID));
 
     // A second Quick Switch toggles back — no picker opened at any point.
     app.quick_switch_model();
     assert_eq!(app.runtime.model_label, "anthropic/claude-sonnet-4-5");
-    assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
+    assert_eq!(app.connect.profile.as_deref(), Some(ANTHROPIC_PROFILE_ID));
     assert!(app.overlay.is_none());
 }
 
@@ -683,13 +731,13 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
     );
     app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
-    let mut overlay = Overlay::connect_api_key("openai", "OpenAI", None, None);
+    let mut overlay = Overlay::connect_api_key(OPENAI_PROFILE_ID, "OpenAI", None, None);
     if let Overlay::ConnectApiKey { key_input, .. } = &mut overlay {
         *key_input = "bad".into();
     }
     app.overlay = Some(overlay);
 
-    app.try_connect_api_key("openai", Some("bad".into()));
+    app.try_connect_api_key(OPENAI_PROFILE_ID, Some("bad".into()));
     let Some(Overlay::ConnectApiKey {
         key_input, error, ..
     }) = &app.overlay
@@ -736,11 +784,11 @@ async fn first_connection_requires_explicit_model_selection() {
     );
     app.connect
         .store
-        .set_api_key("openai", "sk-test-saved-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-saved-credential")
         .unwrap();
-    app.finish_connect_flow("openai");
+    app.finish_connect_flow(OPENAI_PROFILE_ID);
     assert!(
-        matches!(app.overlay, Some(Overlay::ConnectModel { focus: ConnectModelColumn::Models, selected_route: Some(ref id), .. }) if id == "openai")
+        matches!(app.overlay, Some(Overlay::ConnectModel { focus: ConnectModelColumn::Models, selected_route: Some(ref id), .. }) if id == OPENAI_PROFILE_ID)
     );
     assert!(app.runtime.model_label.is_empty());
     assert!(app.connect.profile.is_none());
@@ -769,18 +817,18 @@ async fn second_connection_still_opens_the_model_picker() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-saved-credential")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-saved-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
-    app.finish_connect_flow("openai");
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
+    app.finish_connect_flow(OPENAI_PROFILE_ID);
     assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
 
     app.connect
         .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .set_api_key(ANTHROPIC_PROFILE_ID, "sk-test-anthropic-credential")
         .unwrap();
-    app.connect.profile = Some("anthropic".into());
-    app.finish_connect_flow("anthropic");
+    app.connect.profile = Some(ANTHROPIC_PROFILE_ID.into());
+    app.finish_connect_flow(ANTHROPIC_PROFILE_ID);
 
     let Some(Overlay::ConnectModel {
         selected_route,
@@ -793,7 +841,7 @@ async fn second_connection_still_opens_the_model_picker() {
             app.overlay
         );
     };
-    assert_eq!(selected_route.as_deref(), Some("anthropic"));
+    assert_eq!(selected_route.as_deref(), Some(ANTHROPIC_PROFILE_ID));
     assert_eq!(*focus, ConnectModelColumn::Models);
 }
 
@@ -851,7 +899,7 @@ async fn oauth_cancel_via_escape_stops_the_background_poll() {
     app.connect.store = CredentialStore::new(cred_dir.path().join("c.toml"));
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.show_oauth_pending(forge_connect::OauthPending::start_stub(
-        "xai",
+        XAI_PROFILE_ID,
         "https://oauth.example.test",
     ));
     std::env::remove_var("FORGE_CONNECT_OAUTH_STUB");
@@ -1008,9 +1056,9 @@ async fn startup_requires_provider_model_setup_when_credentials_have_no_model() 
     app.connect.store = CredentialStore::new(store_dir.path().join("credentials.toml"));
     app.connect
         .store
-        .set_api_key("openai", "sk-test-startup")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-startup")
         .unwrap();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
 
     assert!(app.needs_provider_model_setup());
 }
@@ -1175,9 +1223,9 @@ async fn f4_opens_compact_model_control() {
     app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .set_api_key(ANTHROPIC_PROFILE_ID, "sk-test-anthropic-credential")
         .unwrap();
-    app.connect.profile = Some("anthropic".into());
+    app.connect.profile = Some(ANTHROPIC_PROFILE_ID.into());
 
     app.handle_key(press(KeyCode::F(4), KeyModifiers::NONE))
         .await
@@ -1222,9 +1270,9 @@ async fn compact_control_escape_cancels_without_state_change() {
     app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
     app.connect
         .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .set_api_key(ANTHROPIC_PROFILE_ID, "sk-test-anthropic-credential")
         .unwrap();
-    app.connect.profile = Some("anthropic".into());
+    app.connect.profile = Some(ANTHROPIC_PROFILE_ID.into());
     app.reasoning_effort.value = ReasoningEffort::Low;
     let model_before = app.runtime.model_label.clone();
     let effort_before = app.reasoning_effort.value;
@@ -1286,7 +1334,12 @@ async fn esc_on_api_key_screen_returns_to_provider_list() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.overlay = Some(Overlay::connect_api_key("openai", "OpenAI", None, None));
+    app.overlay = Some(Overlay::connect_api_key(
+        OPENAI_PROFILE_ID,
+        "OpenAI",
+        None,
+        None,
+    ));
 
     let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Esc);
     assert_eq!(action, OverlayAction::Close);
@@ -1316,7 +1369,12 @@ async fn esc_on_api_key_screen_during_onboarding_returns_to_provider_list_not_ex
         },
     );
     app.onboarding_connect = true;
-    app.overlay = Some(Overlay::connect_api_key("openai", "OpenAI", None, None));
+    app.overlay = Some(Overlay::connect_api_key(
+        OPENAI_PROFILE_ID,
+        "OpenAI",
+        None,
+        None,
+    ));
 
     app.handle_key(press(
         crossterm::event::KeyCode::Esc,
@@ -1358,11 +1416,11 @@ async fn connecting_makes_the_status_card_agree_with_the_toast() {
     // saying "connected" beside a status card still serving the cached
     // pre-sign-in answer until its TTL lapsed.
     let (_dir, mut app) = focus_test_app().await;
-    app.connect.profile = Some("openai_codex".into());
+    app.connect.profile = Some(OPENAI_CODEX_PROFILE_ID.into());
     // Prime the cache with the pre-sign-in answer.
     app.connect.connected = Some((std::time::Instant::now(), false));
 
-    app.finish_connect_flow("openai_codex");
+    app.finish_connect_flow(OPENAI_CODEX_PROFILE_ID);
 
     assert!(
         app.connect.connected.is_none(),
@@ -1375,11 +1433,11 @@ async fn connecting_opens_models_without_changing_active_selection() {
     let (_dir, mut app) = focus_test_app().await;
     let model = app.runtime.model_label.clone();
     let profile = app.connect.profile.clone();
-    app.finish_connect_flow("openai_codex");
+    app.finish_connect_flow(OPENAI_CODEX_PROFILE_ID);
     assert_eq!(app.runtime.model_label, model);
     assert_eq!(app.connect.profile, profile);
     assert!(
-        matches!(app.overlay, Some(Overlay::ConnectModel { selected_route: Some(ref id), focus: ConnectModelColumn::Models, .. }) if id == "openai_codex")
+        matches!(app.overlay, Some(Overlay::ConnectModel { selected_route: Some(ref id), focus: ConnectModelColumn::Models, .. }) if id == OPENAI_CODEX_PROFILE_ID)
     );
 }
 
@@ -1528,11 +1586,11 @@ async fn connection_state_cache_handles_mock_missing_and_live_profiles() {
     assert!(!app.connected_cached());
     assert!(!app.provider_connected_cached());
 
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
     assert!(!app.connected_cached());
     app.connect
         .store
-        .set_api_key("openai", "sk-test-cache-key")
+        .set_api_key(OPENAI_PROFILE_ID, "sk-test-cache-key")
         .unwrap();
     app.invalidate_connected();
     assert!(app.connected_cached());
@@ -1547,16 +1605,16 @@ async fn connection_labels_and_stale_profile_guards_cover_fallbacks() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
 
     assert_eq!(app.vendor_route_labels("does-not-exist"), (None, None));
-    let (vendor, route) = app.vendor_route_labels("openai");
+    let (vendor, route) = app.vendor_route_labels(OPENAI_PROFILE_ID);
     assert_eq!(vendor.as_deref(), Some("OpenAI"));
     assert_eq!(route.as_deref(), Some("API"));
 
     app.runtime.provider = "native".into();
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
     app.connect.auth_suspended = true;
     app.refresh_connection_ui();
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.connect.profile.as_deref(), Some(OPENAI_PROFILE_ID));
 
     app.connect.auth_suspended = false;
     app.refresh_connection_ui();
@@ -1584,9 +1642,9 @@ async fn disconnecting_an_empty_profile_reports_that_nothing_was_stored() {
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.runtime.provider = "native".into();
     app.runtime.model_label = "openai/gpt-4.1-mini".into();
-    app.connect.profile = Some("openai".into());
+    app.connect.profile = Some(OPENAI_PROFILE_ID.into());
 
-    let message = app.disconnect_auth(Some("openai")).unwrap();
+    let message = app.disconnect_auth(Some(OPENAI_PROFILE_ID)).unwrap();
     assert_eq!(message, "no stored credentials for `openai`");
     assert!(app.connect.auth_suspended);
     assert!(app.connect.profile.is_none());
@@ -1615,12 +1673,12 @@ async fn model_capability_and_effort_fallback_paths_keep_session_state_in_sync()
         provider: String::new(),
         model: "openai/gpt-4.1-mini".into(),
         route_id: "openai-api".into(),
-        profile_id: Some("openai".into()),
+        profile_id: Some(OPENAI_PROFILE_ID.into()),
         effort: "high".into(),
     });
     assert_eq!(app.runtime.provider, "native");
     assert_eq!(app.session_runtime.active_model, "openai/gpt-4.1-mini");
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
+    assert_eq!(app.connect.profile.as_deref(), Some(OPENAI_PROFILE_ID));
 }
 
 /// Choosing a model on an already-connected route (the picker's "connected"
@@ -1654,17 +1712,17 @@ async fn selecting_a_model_on_a_connected_route_clears_the_not_connected_hint() 
 
     app.connect
         .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
+        .set_api_key(ANTHROPIC_PROFILE_ID, "sk-test-anthropic-credential")
         .unwrap();
     app.apply_overlay_action(OverlayAction::SelectModel {
         provider: "native".into(),
         model: "anthropic/claude-sonnet-4-5".into(),
-        profile_id: Some("anthropic".into()),
+        profile_id: Some(ANTHROPIC_PROFILE_ID.into()),
     })
     .await
     .unwrap();
 
-    assert_eq!(app.connect.profile.as_deref(), Some("anthropic"));
+    assert_eq!(app.connect.profile.as_deref(), Some(ANTHROPIC_PROFILE_ID));
     assert!(
         !app.input.not_connected,
         "composer still reads disconnected"

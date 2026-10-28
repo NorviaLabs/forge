@@ -44,20 +44,24 @@ fn wire_model_id(model: &str) -> &str {
     model.split_once('/').map(|(_, id)| id).unwrap_or(model)
 }
 
+/// The Anthropic base URL and API key this client resolves.
+pub(super) fn base_url_and_key(client: &NativeModelClient) -> (String, Option<String>) {
+    let base_url = client
+        .configured_base_url
+        .clone()
+        .or_else(|| client.injected_or_env(&["ANTHROPIC_API_BASE"]))
+        .unwrap_or_else(|| "https://api.anthropic.com".into());
+    (base_url, client.credential(&["ANTHROPIC_API_KEY"]))
+}
+
 pub(super) async fn complete(
     client: &NativeModelClient,
     req: ModelRequest,
     model: &str,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let api_key = client
-        .credential(&["ANTHROPIC_API_KEY"])
-        .ok_or(ModelError::MissingApiKey)?;
-    let base_url = client
-        .configured_base_url
-        .clone()
-        .or_else(|| client.injected_or_env(&["ANTHROPIC_API_BASE"]))
-        .unwrap_or_else(|| "https://api.anthropic.com".into());
+    let (base_url, api_key) = base_url_and_key(client);
+    let api_key = api_key.ok_or(ModelError::MissingApiKey)?;
     let endpoint = messages_endpoint(&base_url);
     complete_messages(
         client,
