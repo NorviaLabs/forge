@@ -741,6 +741,7 @@ impl TuiApp {
                     error: None,
                     editing: false,
                     wire: forge_connect::WireKind::ChatCompletions,
+                    details: None,
                 });
             }
             OverlayAction::SaveCustomProvider {
@@ -750,8 +751,19 @@ impl TuiApp {
                 api_key,
                 editing,
                 wire,
+                details,
             } => match if editing {
-                forge_connect::update_custom_provider(&id, &base_url, &model)
+                let details = details.map(|[title, label, envs]| forge_connect::ProviderDetails {
+                    title,
+                    label,
+                    api_key_env: envs
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect(),
+                });
+                forge_connect::update_custom_provider(&id, &base_url, &model, details.as_ref())
             } else {
                 forge_connect::save_custom_provider(&id, &base_url, &model, wire)
             } {
@@ -815,6 +827,14 @@ impl TuiApp {
                                 error: None,
                                 editing: true,
                                 wire: profile.effective_wire(),
+                                // Built-ins edit only their base URL.
+                                details: profile.is_user().then(|| {
+                                    [
+                                        profile.title.clone(),
+                                        profile.label.clone(),
+                                        profile.api_key_env.join(", "),
+                                    ]
+                                }),
                             });
                         } else if profile.effective_auth().is_oauth() {
                             self.begin_oauth_flow(&profile_id);
@@ -1092,6 +1112,7 @@ mod tests {
             api_key: String::new(),
             editing: false,
             wire: forge_connect::WireKind::ChatCompletions,
+            details: None,
         })
         .await
         .unwrap();

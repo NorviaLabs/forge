@@ -55,12 +55,26 @@ fn save_manual_model_to(path: &Path, profile_id: &str, model: &str) -> Result<()
     )
 }
 
+/// The fields a custom provider's edit form changes in its own
+/// `[[providers]]` entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderDetails {
+    pub title: String,
+    pub label: String,
+    pub api_key_env: Vec<String>,
+}
+
+/// Edit a provider's base URL (custom providers and built-ins whose base
+/// URL is `editable`), add an optional manual model, and, for a custom
+/// provider, replace its title, label, and key env names. Everything is
+/// validated before the first write.
 pub fn update_custom_provider(
     id: &str,
     base_url: &str,
     model: &str,
+    details: Option<&ProviderDetails>,
 ) -> Result<ProviderSpec, String> {
-    update_custom_provider_to(&user_providers_path(), id, base_url, model)
+    update_custom_provider_to(&user_providers_path(), id, base_url, model, details)
 }
 
 fn update_custom_provider_to(
@@ -68,6 +82,7 @@ fn update_custom_provider_to(
     id: &str,
     base_url: &str,
     model: &str,
+    details: Option<&ProviderDetails>,
 ) -> Result<ProviderSpec, String> {
     let registry = loaded_registry_from(path);
     // Custom providers, and built-ins whose definition lists `base_url` as
@@ -77,6 +92,13 @@ fn update_custom_provider_to(
         .filter(|profile| profile.is_user() || profile.editable.contains(&EditableField::BaseUrl))
         .ok_or("this provider's base URL cannot be edited")?;
     check_base_url(base_url)?;
+    if let Some(details) = details {
+        if !profile.is_user() {
+            return Err("only a custom provider's details can be edited".into());
+        }
+        check_details(details)?;
+        replace_provider_entry(path, &profile.id, details)?;
+    }
     let original = std::fs::read_to_string(path).map_err(|_| "cannot read providers file")?;
     let section = format!(
         "provider_overrides.{}",
@@ -97,6 +119,130 @@ fn update_custom_provider_to(
         .get(id)
         .cloned()
         .ok_or_else(|| "cannot reload provider".into())
+}
+
+fn check_details(details: &ProviderDetails) -> Result<(), String> {
+    if details.title.trim().is_empty() {
+        return Err("a title is required".into());
+    }
+    if [&details.title, &details.label]
+        .iter()
+        .any(|text| text.chars().any(char::is_control))
+    {
+        return Err("title and label cannot contain control characters".into());
+    }
+    // The message never echoes the value: a key pasted here is a secret.
+    if details
+        .api_key_env
+        .iter()
+        .any(|name| !is_valid_key_env_name(name))
+    {
+        return Err(
+            "key env names must look like MY_API_KEY (A-Z, 0-9, _; ending in _KEY or _TOKEN)"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// Replace the `id` entry of the `[[providers]]` array: its lines are
+/// removed and a rewritten copy is appended at the end of the file, so
+/// comments inside that entry are lost and the provider moves last. Every
+/// other byte of the file is kept.
+fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> Result<(), String> {
+    const LAYOUT: &str = "cannot safely edit this TOML layout; edit providers.toml directly";
+    let original = read_provider_text(path)?;
+    let document: toml::Value = toml::from_str(&original).map_err(|_| "invalid providers TOML")?;
+    let entries = document
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let index = entries
+        .iter()
+        .position(|entry| entry.get("id").and_then(toml::Value::as_str) == Some(id))
+        .ok_or("this provider is not defined in providers.toml")?;
+    // The entry spans from its `[[providers]]` header to the next header
+    // that is not one of its own sub-tables (`[providers.auth]`, ...).
+    let mut seen = 0;
+    let mut start = None;
+    let mut end = original.len();
+    let mut offset = 0;
+    for line in original.split_inclusive('\n') {
+        let header = line.trim();
+        if header == "[[providers]]" {
+            if start.is_some() {
+                end = offset;
+                break;
+            }
+            if seen == index {
+                start = Some(offset);
+            }
+            seen += 1;
+        } else if start.is_some()
+            && header.starts_with('[')
+            && !header.starts_with("[providers.")
+            && !header.starts_with("[[providers.")
+        {
+            end = offset;
+            break;
+        }
+        offset += line.len();
+    }
+    let start = start.ok_or(LAYOUT)?;
+    // Comments and blank lines just above the next header belong to what
+    // follows, so they stay.
+    let mut kept = end;
+    for line in original[start..end].split_inclusive('\n').rev() {
+        let text = line.trim();
+        if !(text.is_empty() || text.starts_with('#')) {
+            break;
+        }
+        kept -= line.len();
+    }
+    let end = kept.max(start);
+    let remainder = format!("{}{}", &original[..start], &original[end..]);
+    // The cut must have removed exactly that entry and nothing else.
+    let mut expected = entries.clone();
+    let mut entry = expected.remove(index);
+    let left: toml::Value = toml::from_str(&remainder).map_err(|_| LAYOUT)?;
+    let left_entries = left
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut left_rest = left.as_table().cloned().unwrap_or_default();
+    left_rest.remove("providers");
+    let mut doc_rest = document.as_table().cloned().unwrap_or_default();
+    doc_rest.remove("providers");
+    if left_entries != expected || left_rest != doc_rest {
+        return Err(LAYOUT.into());
+    }
+    let table = entry.as_table_mut().ok_or(LAYOUT)?;
+    table.insert("title".into(), details.title.trim().into());
+    table.remove("route_label");
+    if details.label.trim().is_empty() {
+        table.remove("label");
+    } else {
+        table.insert("label".into(), details.label.trim().into());
+    }
+    table.insert(
+        "api_key_env".into(),
+        toml::Value::try_from(&details.api_key_env).map_err(|_| "cannot serialize provider")?,
+    );
+    let mut file = toml::Table::new();
+    file.insert("providers".into(), toml::Value::Array(vec![entry]));
+    let addition =
+        toml::to_string_pretty(&file).map_err(|err| format!("cannot serialize provider: {err}"))?;
+    let updated = format!("{}\n\n{addition}", remainder.trim_end_matches('\n'));
+    let check: toml::Value = toml::from_str(&updated).map_err(|_| LAYOUT)?;
+    let rewritten = check
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .and_then(|entries| entries.last())
+        .ok_or(LAYOUT)?;
+    check_custom_keys(rewritten)?;
+    write_checked(path, &original, &updated)
 }
 
 fn replace_section(path: &Path, original: &str, section: &str, body: &str) -> Result<(), String> {
@@ -121,6 +267,11 @@ fn replace_section(path: &Path, original: &str, section: &str, body: &str) -> Re
     };
     toml::from_str::<toml::Value>(&updated)
         .map_err(|_| "cannot safely update this TOML layout; edit providers.toml directly")?;
+    write_checked(path, original, &updated)
+}
+
+/// Swap `updated` in for `original`, refusing if the file changed meanwhile.
+fn write_checked(path: &Path, original: &str, updated: &str) -> Result<(), String> {
     if read_provider_text(path)? != original {
         return Err("providers file changed while saving; retry".into());
     }
@@ -835,9 +986,10 @@ mod tests {
             crate::WireKind::ChatCompletions,
         )
         .unwrap();
-        update_custom_provider_to(&path, "custom", "https://new.example/v1", "second").unwrap();
-        let spec =
-            update_custom_provider_to(&path, "custom", "https://final.example/v1", "").unwrap();
+        update_custom_provider_to(&path, "custom", "https://new.example/v1", "second", None)
+            .unwrap();
+        let spec = update_custom_provider_to(&path, "custom", "https://final.example/v1", "", None)
+            .unwrap();
         assert_eq!(spec.base_url, "https://final.example/v1");
         assert!(spec.default_models.is_empty());
         assert_eq!(
@@ -845,6 +997,99 @@ mod tests {
             vec!["custom/org/manual", "custom/second"]
         );
         assert!(loaded_registry_from(&path).load_warnings().is_empty());
+    }
+
+    #[test]
+    fn editing_details_replaces_only_that_entry() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            "# my providers\n\n[[providers]]\n# inside first\nid = \"first\"\ntitle = \"first\"\nbase_url = \"https://one.example/v1\"\nroute_label = \"old\"\n\n[providers.auth]\nkind = \"api-key\"\n\n# before second\n[[providers]]\nid = \"second\"\ntitle = \"second\"\nbase_url = \"https://two.example/v1\"\n\n[manual_models]\nfirst = [\"first/m\"]\n",
+        )
+        .unwrap();
+        let details = ProviderDetails {
+            title: " First Co ".into(),
+            label: "Team".into(),
+            api_key_env: vec!["FIRST_API_KEY".into()],
+        };
+        let spec =
+            update_custom_provider_to(&path, "first", "https://one.example/v1", "", Some(&details))
+                .unwrap();
+        assert_eq!(spec.title, "First Co");
+        assert_eq!(spec.label, "Team");
+        assert_eq!(spec.api_key_env, vec!["FIRST_API_KEY"]);
+        assert_eq!(spec.manual_models, vec!["first/m"]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Comments outside the entry stay; the entry moves to the end.
+        assert!(text.starts_with("# my providers\n"), "{text}");
+        assert!(text.contains("# before second"), "{text}");
+        assert!(!text.contains("# inside first"), "{text}");
+        assert!(!text.contains("route_label"), "{text}");
+        let registry = loaded_registry_from(&path);
+        assert!(
+            registry.load_warnings().is_empty(),
+            "{:?}",
+            registry.load_warnings()
+        );
+        assert_eq!(
+            registry.get("second").unwrap().base_url,
+            "https://two.example/v1"
+        );
+        assert_eq!(
+            registry.get("first").unwrap().effective_auth().kind,
+            crate::AuthKind::ApiKey
+        );
+    }
+
+    #[test]
+    fn editing_details_rejects_bad_input_before_writing() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        save_custom_provider_to(
+            &path,
+            "custom",
+            "https://old.example/v1",
+            "",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
+        let original = std::fs::read_to_string(&path).unwrap();
+        for details in [
+            ProviderDetails {
+                title: " ".into(),
+                ..ProviderDetails::default()
+            },
+            ProviderDetails {
+                title: "t".into(),
+                api_key_env: vec!["sk-live-secret-value".into()],
+                ..ProviderDetails::default()
+            },
+        ] {
+            let err = update_custom_provider_to(
+                &path,
+                "custom",
+                "https://new.example/v1",
+                "",
+                Some(&details),
+            )
+            .unwrap_err();
+            assert!(!err.contains("sk-live"), "{err}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        }
+        let details = ProviderDetails {
+            title: "Ollama".into(),
+            ..ProviderDetails::default()
+        };
+        assert!(update_custom_provider_to(
+            &path,
+            "ollama",
+            "http://10.0.0.5:11434",
+            "",
+            Some(&details)
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]
@@ -1036,9 +1281,12 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         let path = dir.path().join("providers.toml");
         std::fs::write(&path, "").unwrap();
         let ollama =
-            update_custom_provider_to(&path, "ollama", "http://10.0.0.5:11434", "").unwrap();
+            update_custom_provider_to(&path, "ollama", "http://10.0.0.5:11434", "", None).unwrap();
         assert_eq!(ollama.base_url, "http://10.0.0.5:11434");
-        assert!(update_custom_provider_to(&path, "openai", "https://evil.example/v1", "").is_err());
+        assert!(
+            update_custom_provider_to(&path, "openai", "https://evil.example/v1", "", None)
+                .is_err()
+        );
         assert!(loaded_registry_from(&path).load_warnings().is_empty());
     }
 

@@ -110,6 +110,9 @@ pub enum Overlay {
         editing: bool,
         /// Chat-completions or Anthropic Messages; fixed once saved.
         wire: forge_connect::WireKind,
+        /// Title, label, and comma-separated key env names, edited only for
+        /// a saved custom provider (rows 5-7). `None` hides those rows.
+        details: Option<[String; 3]>,
     },
     ConnectManualModel {
         profile_id: String,
@@ -1289,8 +1292,11 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
-            Self::ConnectCustom { selected, .. } => {
-                *selected = (*selected as i32 + delta).rem_euclid(CUSTOM_FORM_ROWS as i32) as usize;
+            Self::ConnectCustom {
+                selected, details, ..
+            } => {
+                let rows = custom_form_rows(details.is_some()) as i32;
+                *selected = (*selected as i32 + delta).rem_euclid(rows) as usize;
             }
             Self::GitCommitSuggest { selected } => {
                 let n = GIT_COMMIT_SUGGEST.len() as i32;
@@ -1551,6 +1557,8 @@ pub enum OverlayAction {
         api_key: String,
         editing: bool,
         wire: forge_connect::WireKind,
+        /// Title, label, and key env names for a saved custom provider.
+        details: Option<[String; 3]>,
     },
     RefreshModels,
     AddManualModel,
@@ -1587,6 +1595,12 @@ pub(crate) fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
 
 /// The custom-provider form: four text rows, then the protocol toggle.
 const CUSTOM_FORM_ROWS: usize = 5;
+/// Title, label, and key env names follow the protocol row.
+const CUSTOM_DETAIL_ROWS: usize = 3;
+
+fn custom_form_rows(details: bool) -> usize {
+    CUSTOM_FORM_ROWS + if details { CUSTOM_DETAIL_ROWS } else { 0 }
+}
 const CUSTOM_PROTOCOL_ROW: usize = 4;
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
@@ -1596,10 +1610,11 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
         error,
         editing,
         wire,
+        details,
     } = overlay
     {
         use forge_connect::WireKind;
-        let rows = CUSTOM_FORM_ROWS;
+        let rows = custom_form_rows(details.is_some());
         let on_protocol = *selected == CUSTOM_PROTOCOL_ROW;
         // The id is fixed once saved, and so is the protocol.
         let locked = *editing && (*selected == 0 || on_protocol);
@@ -1616,6 +1631,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     api_key: fields[3].clone(),
                     editing: *editing,
                     wire: *wire,
+                    details: details.clone(),
                 }
             }
             Key::Left | Key::Right | Key::Char(' ') if on_protocol && !locked => {
@@ -1626,16 +1642,20 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 *error = None;
             }
             _ if locked || on_protocol => {}
-            Key::Char(c) if !c.is_control() => {
-                fields[*selected].push(c);
-                *error = None;
-            }
-            Key::Paste(data) => {
-                fields[*selected].extend(data.chars().filter(|c| !c.is_control()));
-                *error = None;
-            }
-            Key::Backspace => {
-                fields[*selected].pop();
+            Key::Char(_) | Key::Paste(_) | Key::Backspace => {
+                let field = match (*selected, details.as_mut()) {
+                    (row, _) if row < CUSTOM_PROTOCOL_ROW => &mut fields[row],
+                    (row, Some(details)) => &mut details[row - CUSTOM_PROTOCOL_ROW - 1],
+                    _ => return OverlayAction::None,
+                };
+                match key {
+                    Key::Char(c) if !c.is_control() => field.push(c),
+                    Key::Paste(data) => field.extend(data.chars().filter(|c| !c.is_control())),
+                    Key::Backspace => {
+                        field.pop();
+                    }
+                    _ => return OverlayAction::None,
+                }
                 *error = None;
             }
             _ => {}
@@ -3853,8 +3873,10 @@ impl Widget for OverlayWidget<'_> {
                 error,
                 editing,
                 wire,
+                details,
             } => {
-                let r = centered_content_rect(area, 78, 22, 22);
+                let height = if details.is_some() { 31 } else { 22 };
+                let r = centered_content_rect(area, 78, height, height);
                 clear_modal(r, buf);
                 let labels = [
                     "Provider ID (e.g. my-provider)",
@@ -3912,6 +3934,31 @@ impl Widget for OverlayWidget<'_> {
                     },
                 ));
                 lines.push(Line::from(""));
+                if let Some(details) = details {
+                    let labels = [
+                        "Title",
+                        "Label (optional short name, e.g. Team)",
+                        "Key env names (comma-separated, e.g. MY_API_KEY)",
+                    ];
+                    for (i, label) in labels.iter().enumerate() {
+                        let row = CUSTOM_PROTOCOL_ROW + 1 + i;
+                        lines.push(Line::styled(*label, theme::dim()));
+                        lines.push(Line::styled(
+                            format!(
+                                "{}{}{}",
+                                if row == *selected { "> " } else { "  " },
+                                details[i],
+                                if row == *selected { "█" } else { "" }
+                            ),
+                            if row == *selected {
+                                theme::focused_selection_style()
+                            } else {
+                                theme::text()
+                            },
+                        ));
+                        lines.push(Line::from(""));
+                    }
+                }
                 lines.push(Line::from(error.as_deref().unwrap_or("")));
                 lines.push(Line::from("Tab / ↑↓ field · Enter next / save · Esc back"));
                 Paragraph::new(lines)
@@ -5817,6 +5864,7 @@ mod tests {
             error: None,
             editing: false,
             wire: forge_connect::WireKind::ChatCompletions,
+            details: None,
         };
         for (value, next) in [
             ("my-provider", Key::Tab),
@@ -5847,12 +5895,72 @@ mod tests {
                 api_key: "secret-key".into(),
                 editing: false,
                 wire: forge_connect::WireKind::AnthropicMessages,
+                details: None,
             }
         );
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Esc),
             OverlayAction::Close
         );
+    }
+
+    #[test]
+    fn custom_provider_edit_form_edits_details_and_submits_them() {
+        let mut overlay = Overlay::ConnectCustom {
+            fields: [
+                "mine".into(),
+                "https://api.example.com/v1".into(),
+                String::new(),
+                String::new(),
+            ],
+            selected: 1,
+            error: None,
+            editing: true,
+            wire: forge_connect::WireKind::ChatCompletions,
+            details: Some(["mine".into(), String::new(), String::new()]),
+        };
+        overlay.move_sel(-2);
+        assert!(matches!(
+            overlay,
+            Overlay::ConnectCustom { selected: 7, .. }
+        ));
+        handle_overlay_key(&mut overlay, Key::Paste("MINE_API_KEY, MINE_TOKEN".into()));
+        handle_overlay_key(&mut overlay, Key::Up);
+        handle_overlay_key(&mut overlay, Key::Paste("Team".into()));
+        handle_overlay_key(&mut overlay, Key::Up);
+        handle_overlay_key(&mut overlay, Key::Backspace);
+        handle_overlay_key(&mut overlay, Key::Paste("e Co".into()));
+        // The locked protocol row ignores typing.
+        handle_overlay_key(&mut overlay, Key::Up);
+        handle_overlay_key(&mut overlay, Key::Char('x'));
+        overlay.move_sel(3);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SaveCustomProvider {
+                id: "mine".into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: String::new(),
+                api_key: String::new(),
+                editing: true,
+                wire: forge_connect::WireKind::ChatCompletions,
+                details: Some([
+                    "mine Co".into(),
+                    "Team".into(),
+                    "MINE_API_KEY, MINE_TOKEN".into()
+                ]),
+            }
+        );
+        let area = Rect::new(0, 0, 90, 40);
+        let mut buf = Buffer::empty(area);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, &mut buf);
+        let text: String = buf.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("Key env names"), "{text}");
+        assert!(text.contains("mine Co"), "{text}");
     }
 
     #[test]
@@ -5863,6 +5971,7 @@ mod tests {
             error: None,
             editing: false,
             wire: forge_connect::WireKind::ChatCompletions,
+            details: None,
         };
         overlay.move_sel(-1);
         assert!(matches!(
@@ -5889,6 +5998,7 @@ mod tests {
             error: Some("Provider ID already exists".into()),
             editing: false,
             wire: forge_connect::WireKind::ChatCompletions,
+            details: None,
         };
         let area = Rect::new(0, 0, 90, 30);
         let mut buf = Buffer::empty(area);

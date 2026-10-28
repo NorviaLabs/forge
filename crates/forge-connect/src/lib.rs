@@ -56,6 +56,7 @@ pub use profile::{
 pub use registry::{
     builtin_registry, credential_env_names, loaded_registry, loaded_registry_from,
     save_custom_provider, save_manual_model, update_custom_provider, ConnectRegistry,
+    ProviderDetails,
 };
 pub use resolve::{
     env_names_for, resolve, winning_env_var, Credential, CredentialError, CredentialValue,
