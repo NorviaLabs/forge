@@ -1704,8 +1704,6 @@ impl forge_model::ModelClient for BurstStreamingModel {
             thinking: None,
         })
     }
-
-    fn clear_provider_env(&self) {}
 }
 
 #[async_trait]

@@ -1512,7 +1512,9 @@ async fn app_with_supervisor_and_model(
     let mut app = TuiApp::new_supervised(initial, runtime, handle.clone());
     app.connect.profile = None;
     app.runtime.provider = "mock".into();
-    app.connect.store = CredentialStore::new(dir.path().join("empty-creds.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(dir.path().join("empty-creds.toml")),
+    ));
     assert!(app.session_runtime.as_ref().is_none());
     (dir, app, handle)
 }
@@ -1702,8 +1704,6 @@ impl forge_model::ModelClient for GateModel {
     ) -> Result<forge_types::ModelResponse, forge_model::ModelError> {
         self.step(&req, tx).await
     }
-
-    fn clear_provider_env(&self) {}
 }
 
 async fn wait_for_turn_state(

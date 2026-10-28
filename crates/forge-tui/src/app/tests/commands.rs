@@ -1507,7 +1507,9 @@ async fn effort_selection_persists_across_tui_instances() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(credential_path.clone());
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(credential_path.clone()),
+    ));
     app.connect.preferences =
         PreferenceStore::new(credential_path.clone().with_file_name("preferences.toml"));
 
@@ -1535,7 +1537,9 @@ async fn effort_selection_persists_across_tui_instances() {
     );
     restarted.connect.preferences =
         PreferenceStore::new(credential_path.with_file_name("preferences.toml"));
-    restarted.connect.store = CredentialStore::new(credential_path);
+    restarted.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(credential_path),
+    ));
     restarted = restarted.restore_saved_auth();
 
     assert_eq!(restarted.reasoning_effort.value, ReasoningEffort::High);
@@ -1558,7 +1562,9 @@ async fn switching_to_a_model_that_drops_the_current_effort_notifies_and_falls_b
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(credential_dir.path().join("credentials.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(credential_dir.path().join("credentials.toml")),
+    ));
     app.connect.preferences = PreferenceStore::new(credential_dir.path().join("preferences.toml"));
 
     // claude-sonnet-4-6 does not offer XHigh (effort.rs::options_for_model).
@@ -1596,10 +1602,13 @@ async fn drain_pending_prompt_sends_selected_effort_on_outbound_request() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(dir.path().join("credentials.toml")),
+    ));
     app.connect.preferences = PreferenceStore::new(dir.path().join("preferences.toml"));
     app.connect
-        .store
+        .credentials
+        .store()
         .set_api_key("anthropic", "sk-test-anthropic-credential")
         .unwrap();
     app.connect.profile = Some("anthropic".into());
@@ -1638,7 +1647,9 @@ async fn drain_pending_prompt_omits_effort_for_model_that_does_not_support_it() 
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(dir.path().join("credentials.toml")),
+    ));
     app.connect.preferences = PreferenceStore::new(dir.path().join("preferences.toml"));
     // Stale effort left over from a previous model — must not leak onto a
     // model that doesn't support effort at all.
@@ -1677,10 +1688,13 @@ async fn drain_pending_prompt_sends_separate_thinking_flag() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(dir.path().join("credentials.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(dir.path().join("credentials.toml")),
+    ));
     app.connect.preferences = PreferenceStore::new(dir.path().join("preferences.toml"));
     app.connect
-        .store
+        .credentials
+        .store()
         .set_api_key("anthropic", "sk-test-anthropic-credential")
         .unwrap();
     app.connect.profile = Some("anthropic".into());
@@ -1721,10 +1735,13 @@ async fn model_command_applies_provider_id_to_session() {
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(cred_dir.path().join("credentials.toml")),
+    ));
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
     app.connect
-        .store
+        .credentials
+        .store()
         .set_api_key("openai", "sk-test-openai-credential")
         .unwrap();
     app.connect.profile = Some("openai".into());
@@ -1753,9 +1770,13 @@ async fn model_command_rejects_cross_provider_selection_without_matching_connect
             theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
         },
     );
-    app.connect.store = CredentialStore::new(cred_dir.path().join("credentials.toml"));
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(cred_dir.path().join("credentials.toml")),
+    ));
     app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
-    app.connect.store
+    app.connect
+        .credentials
+        .store()
         .set_oauth(
             "openai_codex",
             forge_connect::OauthTokens {

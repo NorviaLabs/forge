@@ -132,6 +132,4 @@ impl ModelClient for MockModelClient {
             }
         }
     }
-
-    fn clear_provider_env(&self) {}
 }

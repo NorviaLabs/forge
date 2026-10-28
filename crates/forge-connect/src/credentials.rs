@@ -43,6 +43,21 @@ impl Credentials {
         Self::new(CredentialStore::user_default())
     }
 
+    /// The process's handle over the user credential store. Every caller
+    /// that does not hold an explicit handle (the CLI, session open, the
+    /// TUI's default) shares this one, so session keys and refresh
+    /// single-flight are per process.
+    pub fn shared() -> Arc<Self> {
+        static SHARED: std::sync::OnceLock<Arc<Credentials>> = std::sync::OnceLock::new();
+        Arc::clone(SHARED.get_or_init(|| Arc::new(Self::user_default())))
+    }
+
+    /// A handle over the same file as `store`, for tests that hold a store.
+    #[cfg(test)]
+    pub(crate) fn for_test(store: &CredentialStore) -> Self {
+        Self::new(CredentialStore::new(store.path().to_path_buf()))
+    }
+
     pub fn store(&self) -> &CredentialStore {
         &self.store
     }
@@ -108,15 +123,11 @@ impl Credentials {
     }
 
     /// Flag the profile's stored credential and drop its session key.
-    // `ConnectService` moves onto the handle in the next stage-4 commit.
-    #[allow(dead_code)]
     pub(crate) fn report_auth_failure(&self, profile: &ProviderSpec) -> Result<(), StoreError> {
         self.session_keys().remove(Self::slot_for(profile));
         self.store.mark_auth_required(Self::slot_for(profile), true)
     }
 
-    // `ConnectService` moves onto the handle in the next stage-4 commit.
-    #[allow(dead_code)]
     pub(crate) fn report_auth_success(&self, profile: &ProviderSpec) -> Result<(), StoreError> {
         self.store
             .mark_auth_required(Self::slot_for(profile), false)

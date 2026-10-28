@@ -406,8 +406,6 @@ mod tests {
                 thinking: None,
             })
         }
-
-        fn clear_provider_env(&self) {}
     }
 
     #[tokio::test]

@@ -19,7 +19,8 @@ struct ModelCostCache {
 
 pub(crate) struct ConnectionModel {
     pub(super) registry: ConnectRegistry,
-    pub(super) store: CredentialStore,
+    /// The process credentials handle (store, session keys, refresh).
+    pub(super) credentials: std::sync::Arc<forge_connect::Credentials>,
     /// Non-secret interactive selections, in their own file.
     pub(super) preferences: PreferenceStore,
     pub(super) profile: Option<String>,
@@ -47,7 +48,7 @@ impl ConnectionModel {
     pub(super) fn new() -> Self {
         Self {
             registry: loaded_registry(),
-            store: CredentialStore::user_default(),
+            credentials: forge_connect::Credentials::shared(),
             preferences: PreferenceStore::user_default(),
             profile: None,
             auth_suspended: false,
@@ -86,7 +87,7 @@ impl TuiApp {
     fn report_catalog_auth(&self, profile_id: &str, failed: bool) {
         let svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
@@ -102,7 +103,7 @@ impl TuiApp {
     fn credentials_live_for(&self, profile_id: &str) -> bool {
         let svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
@@ -252,39 +253,10 @@ impl TuiApp {
     }
 
     pub(super) fn disconnect_auth(&mut self, profile_id: Option<&str>) -> Result<String, TuiError> {
-        let mut env_keys = Vec::new();
-        {
-            let svc = ConnectService {
-                registry: &self.connect.registry,
-                store: &self.connect.store,
-                preferences: &self.connect.preferences,
-                active_profile_id: self.connect.profile.clone(),
-                active_model: Some(self.runtime.model_label.clone()),
-            };
-            let profiles: Vec<_> = if let Some(id) = profile_id {
-                svc.profile(id).into_iter().cloned().collect()
-            } else {
-                svc.connected_profiles().unwrap_or_default()
-            };
-            for p in profiles {
-                if let Ok(pairs) = svc.provider_env_for_profile(&p.id) {
-                    env_keys.extend(pairs.into_iter().map(|(k, _)| k));
-                }
-            }
-        }
-        for key in env_keys {
-            std::env::remove_var(key);
-        }
-        match self.selected_runtime() {
-            SelectedRuntime::Direct => {
-                if let Some(session) = self.session_runtime.as_ref() {
-                    session.clear_provider_env();
-                }
-            }
-            SelectedRuntime::Supervised(_) => {
-                self.try_session_command(forge_session::SupervisorCommand::ClearProviderEnv);
-            }
-        }
+        // Disconnect never changes the process environment; a profile whose
+        // key comes from env stays usable, and the message says how to stop it.
+        let env_var =
+            profile_id.and_then(|id| forge_connect::winning_env_var(&self.connect.registry, id));
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.pending_turn.clear();
@@ -340,13 +312,14 @@ impl TuiApp {
         self.connect.auth_suspended = true;
 
         let cleared = if let Some(id) = profile_id {
-            self.connect
-                .store
-                .clear(id)
-                .map_err(|e| TuiError::Other(e.to_string()))?
+            match self.connect.registry.get(id) {
+                Some(profile) => self.connect.credentials.clear(profile),
+                None => self.connect.credentials.store().clear(id),
+            }
+            .map_err(|e| TuiError::Other(e.to_string()))?
         } else {
             self.connect
-                .store
+                .credentials
                 .clear_all()
                 .map_err(|e| TuiError::Other(e.to_string()))?
         };
@@ -356,7 +329,9 @@ impl TuiApp {
             let _ = self.connect.preferences.clear_last_selection(None);
         }
         self.refresh_connection_ui();
-        let msg = if let Some(id) = profile_id {
+        let msg = if let (Some(id), Some(var)) = (profile_id, env_var.as_deref()) {
+            format!("`{id}` is set by `${var}`; unset it to disconnect")
+        } else if let Some(id) = profile_id {
             if cleared {
                 format!("disconnected `{id}`")
             } else {
@@ -377,7 +352,7 @@ impl TuiApp {
     pub(super) fn restore_saved_auth(mut self) -> Self {
         let svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: None,
             active_model: None,
@@ -419,22 +394,8 @@ impl TuiApp {
             .find(|p| saved_profile_id.as_deref() == Some(p.id.as_str()))
             .cloned();
         if let Some(profile) = chosen {
-            // Refresh and inject provider credentials into the client only.
+            // Refresh a stale login now; requests read credentials per call.
             let _ = svc.ensure_oauth_fresh(&profile.id);
-            if let Ok(pairs) = svc.provider_env_for_profile(&profile.id) {
-                match self.selected_runtime() {
-                    SelectedRuntime::Direct => {
-                        if let Some(session) = self.session_runtime.as_ref() {
-                            session.apply_provider_env(&pairs);
-                        }
-                    }
-                    SelectedRuntime::Supervised(_) => {
-                        self.try_session_command(
-                            forge_session::SupervisorCommand::ApplyProviderEnv { pairs },
-                        );
-                    }
-                }
-            }
             self.connect.profile = Some(profile.id.clone());
             // The route decides the *transport*, and `transport_for_route(None)`
             // falls back to OpenAI-compat. Restoring the model without the route
@@ -729,7 +690,6 @@ impl TuiApp {
                     profile_id: Some(profile_id.clone()),
                     effort,
                 });
-                self.apply_connect_credentials(&profile_id);
                 self.feedback = FeedbackModel::default();
                 self.status_state.message.clear();
                 self.push_activity(
@@ -762,7 +722,7 @@ impl TuiApp {
         let connected: HashSet<String> = {
             let svc = ConnectService {
                 registry: &self.connect.registry,
-                store: &self.connect.store,
+                credentials: &self.connect.credentials,
                 preferences: &self.connect.preferences,
                 active_profile_id: self.connect.profile.clone(),
                 active_model: Some(self.runtime.model_label.clone()),
@@ -870,7 +830,7 @@ impl TuiApp {
     fn connected_profile_count(&self) -> usize {
         let svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
@@ -917,7 +877,7 @@ impl TuiApp {
         let connected: HashSet<String> = {
             let svc = ConnectService {
                 registry: &self.connect.registry,
-                store: &self.connect.store,
+                credentials: &self.connect.credentials,
                 preferences: &self.connect.preferences,
                 active_profile_id: self.connect.profile.clone(),
                 active_model: Some(self.runtime.model_label.clone()),
@@ -996,7 +956,7 @@ impl TuiApp {
         match handle_connect_action(
             action,
             &self.connect.registry,
-            &self.connect.store,
+            &self.connect.credentials,
             &self.connect.preferences,
             &mut self.connect.profile,
             &mut model,
@@ -1053,7 +1013,7 @@ impl TuiApp {
     pub(super) fn begin_oauth_flow(&mut self, profile_id: &str) {
         let mut svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
@@ -1079,37 +1039,18 @@ impl TuiApp {
         self.finish_connect_flow(&out.profile_id);
     }
 
-    /// Export stored OAuth / API key material into the native model client.
-    pub(super) fn apply_connect_credentials(&mut self, profile_id: &str) {
-        let svc = ConnectService {
-            registry: &self.connect.registry,
-            store: &self.connect.store,
-            preferences: &self.connect.preferences,
-            active_profile_id: self.connect.profile.clone(),
-            active_model: Some(self.runtime.model_label.clone()),
-        };
-        match svc.provider_env_for_profile(profile_id) {
-            Ok(pairs) if !pairs.is_empty() => {
-                // Given to the client only. `NativeModelClient::injected_or_env`
-                // reads the injected map ahead of the process environment, so
-                // exporting these as well changed nothing for the client — it
-                // only made every child process inherit them.
-                match self.selected_runtime() {
-                    SelectedRuntime::Direct => {
-                        if let Some(session) = self.session_runtime.as_ref() {
-                            session.apply_provider_env(&pairs);
-                        }
-                    }
-                    SelectedRuntime::Supervised(_) => {
-                        self.try_session_command(
-                            forge_session::SupervisorCommand::ApplyProviderEnv { pairs },
-                        );
-                    }
+    /// Rebuild the routing snapshot after a provider definition change (a
+    /// custom profile, a user override, or a manual model was saved).
+    pub(super) fn reload_providers(&mut self) {
+        self.connect.registry = loaded_registry();
+        match self.selected_runtime() {
+            SelectedRuntime::Direct => {
+                if let Some(session) = self.session_runtime.as_mut() {
+                    session.set_route_table(forge_session::route_table());
                 }
             }
-            Ok(_) => {}
-            Err(_e) => {
-                // Non-fatal: operator can still set XAI_API_KEY in the shell.
+            SelectedRuntime::Supervised(_) => {
+                self.try_session_command(forge_session::SupervisorCommand::ReloadProviders);
             }
         }
     }
@@ -1150,7 +1091,7 @@ impl TuiApp {
         self.connect.oauth_last_poll = Some(std::time::Instant::now());
         let mut svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
@@ -1198,12 +1139,19 @@ impl TuiApp {
         match handle_connect_action(
             action,
             &self.connect.registry,
-            &self.connect.store,
+            &self.connect.credentials,
             &self.connect.preferences,
             &mut self.connect.profile,
             &mut model,
         ) {
             Ok(msg) => {
+                // The probe accepted the key: hold it for this process too,
+                // so it wins over env and the store until disconnect.
+                if let (Some(key), Some(profile)) =
+                    (api_key.as_deref(), self.connect.registry.get(profile_id))
+                {
+                    self.connect.credentials.set_session_key(profile, key);
+                }
                 self.status_state.message = msg.lines().next().unwrap_or_default().to_string();
                 self.refresh_connection_ui();
                 self.finish_connect_flow(profile_id);
@@ -1250,7 +1198,7 @@ impl TuiApp {
                 let prefix = model.split('/').next().unwrap_or("");
                 let svc = ConnectService {
                     registry: &self.connect.registry,
-                    store: &self.connect.store,
+                    credentials: &self.connect.credentials,
                     preferences: &self.connect.preferences,
                     active_profile_id: None,
                     active_model: None,
@@ -1281,9 +1229,6 @@ impl TuiApp {
             profile_id: resolved_profile_id,
             effort: self.reasoning_effort.value.to_string(),
         });
-        if let Some(profile_id) = self.connect.profile.clone() {
-            self.apply_connect_credentials(&profile_id);
-        }
         // Picking a model on an already-connected route is a connect too: the
         // composer hint and banner must follow, not only fresh sign-ins.
         self.refresh_connection_chrome();
@@ -1325,7 +1270,7 @@ impl TuiApp {
     fn picker_profiles(&self) -> Vec<forge_connect::ConnectProfile> {
         let svc = ConnectService {
             registry: &self.connect.registry,
-            store: &self.connect.store,
+            credentials: &self.connect.credentials,
             preferences: &self.connect.preferences,
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
@@ -1356,8 +1301,12 @@ impl TuiApp {
         }
         let profiles = self.picker_profiles();
         let cache = ModelCatalogCache::user_default();
-        let entries =
-            runnable_models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
+        let entries = runnable_models_for_picker(
+            &profiles,
+            self.connect.credentials.store(),
+            &cache,
+            refresh_stale,
+        );
         let mut items = models_from_catalog(&entries);
         for item in &mut items {
             if let Some(profile_id) = item.profile_id.as_deref() {
@@ -1401,7 +1350,7 @@ impl TuiApp {
         let Some(profile) = self.connect.registry.get(&id).cloned() else {
             return;
         };
-        let store_path = self.connect.store.path().to_path_buf();
+        let store_path = self.connect.credentials.store().path().to_path_buf();
         let cache_path = ModelCatalogCache::user_default().path().to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1547,10 +1496,27 @@ impl TuiApp {
         };
         let stored = match &login.secret {
             forge_connect::DiscoveredSecret::ApiKey(key) => {
-                self.connect.store.set_api_key(profile_id, key)
+                match self.connect.registry.get(profile_id) {
+                    Some(profile) => self.connect.credentials.set_api_key(profile, key),
+                    None => self
+                        .connect
+                        .credentials
+                        .store()
+                        .set_api_key(profile_id, key),
+                }
             }
             forge_connect::DiscoveredSecret::Oauth(tokens) => {
-                self.connect.store.set_oauth(profile_id, (**tokens).clone())
+                match self.connect.registry.get(profile_id) {
+                    Some(profile) => self
+                        .connect
+                        .credentials
+                        .set_oauth(profile, (**tokens).clone()),
+                    None => self
+                        .connect
+                        .credentials
+                        .store()
+                        .set_oauth(profile_id, (**tokens).clone()),
+                }
             }
         };
         if let Err(error) = stored {

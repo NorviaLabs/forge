@@ -133,9 +133,6 @@ pub struct NativeModelClient {
     /// The routing snapshot. Dispatch clones the `Arc` and drops the guard
     /// before any await, so an in-flight turn keeps its snapshot.
     routes: RwLock<RouteTable>,
-    /// Rebuilds the snapshot when the provider env is re-applied, until the
-    /// session sets the table itself.
-    credentials: Arc<Credentials>,
     image_cache: Mutex<HashMap<PathBuf, CachedImage>>,
 }
 
@@ -215,15 +212,15 @@ impl NativeModelClient {
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ModelError::Http(error.to_string()))?;
-        let credentials = Arc::new(Credentials::user_default());
+        // Sessions replace this with their own snapshot; a bare client (bench,
+        // one-off calls) routes through the registry and the process handle.
         Ok(Self {
             http,
             default_model: cfg.model.model.clone(),
             routes: RwLock::new(forge_connect::resolve(
                 &forge_connect::loaded_registry(),
-                &credentials,
+                &Credentials::shared(),
             )),
-            credentials,
             image_cache: Mutex::new(HashMap::new()),
         })
     }
@@ -245,11 +242,6 @@ impl NativeModelClient {
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
-    }
-
-    fn reload_routes(&self) {
-        let table = forge_connect::resolve(&forge_connect::loaded_registry(), &self.credentials);
-        self.set_routes(table);
     }
 
     fn set_routes(&self, table: RouteTable) {
@@ -387,14 +379,6 @@ impl ModelClient for NativeModelClient {
             WireKind::Responses => openai::complete_responses(self, req, target, tx).await,
             WireKind::ChatCompletions => openai::complete(self, req, target, tx).await,
         }
-    }
-
-    fn apply_provider_env(&self, _pairs: &[(String, String)]) {
-        self.reload_routes();
-    }
-
-    fn clear_provider_env(&self) {
-        self.reload_routes();
     }
 
     fn set_route_table(&self, table: RouteTable) {

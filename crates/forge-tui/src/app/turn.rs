@@ -730,9 +730,6 @@ impl TuiApp {
                 // appending again — the same mechanism used to resume after the
                 // turn-limit overlay.
                 self.clear_error_chrome();
-                if let Some(pid) = self.connect.profile.clone() {
-                    self.apply_connect_credentials(&pid);
-                }
                 self.pending_turn.request_continue();
                 self.busy_state.start(BusyPhase::Model);
                 self.timing.started = Some(Instant::now());
@@ -1455,11 +1452,6 @@ impl TuiApp {
         }
         if line.is_none() && !continuing {
             return Ok(());
-        }
-
-        // Refresh OAuth close to expiry and recycle the worker with the current token.
-        if let Some(profile_id) = self.connect.profile.clone() {
-            self.apply_connect_credentials(&profile_id);
         }
 
         self.busy_state.start(BusyPhase::Model);

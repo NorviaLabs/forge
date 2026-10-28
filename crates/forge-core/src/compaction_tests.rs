@@ -117,8 +117,6 @@ impl ModelClient for CheckpointModel {
         }
         Ok(response)
     }
-
-    fn clear_provider_env(&self) {}
 }
 
 fn cfg(dir: &std::path::Path) -> LoopConfig {

@@ -90,7 +90,7 @@ mod tests {
                 oauth_fixture: false,
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut ap,
             &mut am,
@@ -116,7 +116,7 @@ mod tests {
                 oauth_fixture: true,
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut ap,
             &mut am,
@@ -134,27 +134,30 @@ mod tests {
     }
 
     #[test]
-    fn provider_env_exports_bearer_from_oauth() {
+    fn fixture_logins_never_resolve_but_real_tokens_do() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
-        reg.register(xai_grok_profile());
-        // Fixture tokens must NOT be exported to the live worker.
+        // Ignore an ambient XAI_API_KEY so the stored login is what resolves.
+        let mut xai = xai_grok_profile();
+        xai.api_key_env.clear();
+        reg.register(xai);
         let mut svc = crate::service::ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
         };
         svc.connect("xai", None, true).unwrap();
-        let env = svc.provider_env_for_profile("xai").unwrap();
-        assert!(
-            env.is_empty(),
-            "fixture OAuth must not become XAI_API_KEY: {env:?}"
+        // Fixture tokens never resolve as a credential.
+        let table = crate::resolve(
+            &reg,
+            &std::sync::Arc::new(crate::credentials::Credentials::for_test(&store)),
         );
-        // Real-looking token is exported.
+        let xai = &table.get("xai").unwrap().credential;
+        assert_eq!(xai.current(), Err(crate::CredentialError::Missing));
         store
             .set_oauth(
                 "xai",
@@ -165,8 +168,9 @@ mod tests {
                 },
             )
             .unwrap();
-        let env = svc.provider_env_for_profile("xai").unwrap();
-        assert_eq!(env[0].0, "XAI_API_KEY");
-        assert_eq!(env[0].1, "xai-real-token-for-test");
+        assert_eq!(
+            xai.current().unwrap().unwrap().secret,
+            "xai-real-token-for-test"
+        );
     }
 }

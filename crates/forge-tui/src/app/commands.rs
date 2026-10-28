@@ -1476,37 +1476,33 @@ impl TuiApp {
                 }
             }
         }
-        // Re-apply credentials (with silent refresh) before each turn so sessions stay signed in.
-        if !self.connect.auth_suspended {
-            if let Some(pid) = self.connect.profile.clone() {
-                self.apply_connect_credentials(&pid);
-            } else {
-                // Try restore mid-session if credentials appeared (e.g. /connect in another terminal)
-                let restored = {
-                    let svc = ConnectService {
-                        registry: &self.connect.registry,
-                        store: &self.connect.store,
-                        preferences: &self.connect.preferences,
-                        active_profile_id: None,
-                        active_model: None,
-                    };
-                    svc.connected_profiles().ok().and_then(|v| {
-                        v.iter()
-                            .find(|p| p.id == "xai")
-                            .cloned()
-                            .or_else(|| v.into_iter().next())
-                    })
+        // Requests read credentials per call (refreshing near expiry), so a
+        // connected profile needs nothing here; restore one that appeared.
+        if !self.connect.auth_suspended && self.connect.profile.is_none() {
+            // Try restore mid-session if credentials appeared (e.g. /connect in another terminal)
+            let restored = {
+                let svc = ConnectService {
+                    registry: &self.connect.registry,
+                    credentials: &self.connect.credentials,
+                    preferences: &self.connect.preferences,
+                    active_profile_id: None,
+                    active_model: None,
                 };
-                if let Some(p) = restored {
-                    self.connect.profile = Some(p.id.clone());
-                    self.apply_connect_credentials(&p.id);
-                    if let Some(m) = p.default_model() {
-                        self.runtime.model_label = m.to_string();
-                        self.set_selected_model(m.to_string());
-                        self.sync_model_capabilities();
-                    }
-                    self.refresh_connection_ui();
+                svc.connected_profiles().ok().and_then(|v| {
+                    v.iter()
+                        .find(|p| p.id == "xai")
+                        .cloned()
+                        .or_else(|| v.into_iter().next())
+                })
+            };
+            if let Some(p) = restored {
+                self.connect.profile = Some(p.id.clone());
+                if let Some(m) = p.default_model() {
+                    self.runtime.model_label = m.to_string();
+                    self.set_selected_model(m.to_string());
+                    self.sync_model_capabilities();
                 }
+                self.refresh_connection_ui();
             }
         }
 

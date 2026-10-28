@@ -644,11 +644,11 @@ async fn drawing_does_not_read_the_credential_store() {
     app.connect.profile = Some("anthropic".into());
     draw_app(&mut app, 100, 30);
 
-    let before = app.connect.store.read_count();
+    let before = app.connect.credentials.store().read_count();
     for _ in 0..5 {
         draw_app(&mut app, 100, 30);
     }
-    let after = app.connect.store.read_count();
+    let after = app.connect.credentials.store().read_count();
 
     assert_eq!(
         after - before,
@@ -686,10 +686,10 @@ async fn invalidating_forces_the_next_read_to_recompute() {
     app.connect.profile = Some("anthropic".into());
 
     app.connected_cached();
-    let before = app.connect.store.read_count();
+    let before = app.connect.credentials.store().read_count();
     app.connected_cached();
     assert_eq!(
-        app.connect.store.read_count(),
+        app.connect.credentials.store().read_count(),
         before,
         "a fresh cache must not re-read"
     );
@@ -697,7 +697,7 @@ async fn invalidating_forces_the_next_read_to_recompute() {
     app.invalidate_connected();
     app.connected_cached();
     assert!(
-        app.connect.store.read_count() > before,
+        app.connect.credentials.store().read_count() > before,
         "invalidating must force a recompute"
     );
 }

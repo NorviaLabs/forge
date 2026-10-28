@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::auth::{AuthMode, OauthPending, OauthTokens};
 use crate::catalog::CatalogError;
 use crate::catalog::ModelCatalogCache;
+use crate::credentials::Credentials;
 use crate::oauth_dispatch::{OauthDispatcher, OauthError, PollResult};
 use crate::oauth_xai::try_open_browser;
 use crate::preferences::PreferenceStore;
@@ -98,8 +99,8 @@ pub fn parse_connect_args(args: &str) -> Result<ConnectAction, ConnectError> {
 
 pub struct ConnectService<'a> {
     pub registry: &'a ConnectRegistry,
-    pub store: &'a CredentialStore,
-    /// Non-secret interactive selections. Separate from `store` because they
+    pub credentials: &'a Credentials,
+    /// Non-secret interactive selections. Separate from `credentials` because they
     /// are not secrets and no longer share its file.
     pub preferences: &'a PreferenceStore,
     pub active_profile_id: Option<String>,
@@ -110,7 +111,7 @@ impl<'a> ConnectService<'a> {
     pub fn list_lines(&self) -> Result<Vec<String>, ConnectError> {
         let mut lines = Vec::new();
         for p in self.registry.profiles() {
-            let connected = resolve_connected(p, self.store)?.is_some();
+            let connected = resolve_connected(p, self.credentials.store())?.is_some();
             let active = self
                 .active_profile_id
                 .as_deref()
@@ -137,13 +138,13 @@ impl<'a> ConnectService<'a> {
     pub fn status(&self) -> Result<ConnectStatus, ConnectError> {
         let mut connected = Vec::new();
         for p in self.registry.profiles() {
-            if resolve_connected(p, self.store)?.is_some() {
+            if resolve_connected(p, self.credentials.store())?.is_some() {
                 connected.push(p.id.clone());
             }
         }
         let key_source = if let Some(ref id) = self.active_profile_id {
             if let Some(p) = self.registry.get(id) {
-                resolve_connected(p, self.store)?
+                resolve_connected(p, self.credentials.store())?
             } else {
                 None
             }
@@ -182,7 +183,7 @@ impl<'a> ConnectService<'a> {
 
         let (key, key_source) = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty()) {
             (k.to_string(), KeySource::Provided)
-        } else if let Some((k, src)) = resolve_key(&profile, self.store)? {
+        } else if let Some((k, src)) = resolve_key(&profile, self.credentials.store())? {
             (k, src)
         } else if profile.id == crate::ollama::PROFILE_ID {
             // Local Ollama does not require a cloud API key.
@@ -220,7 +221,7 @@ impl<'a> ConnectService<'a> {
         }
 
         if key_source == KeySource::Provided {
-            self.store.set_api_key(&profile.id, &key)?;
+            self.credentials.set_api_key(&profile, &key)?;
         }
         self.report_auth_success(&profile.id)?;
 
@@ -231,14 +232,16 @@ impl<'a> ConnectService<'a> {
     /// and [`Self::report_auth_success`] are the only writers of the persisted
     /// `auth_required` flag.
     pub fn report_auth_failure(&self, profile_id: &str) -> Result<(), ConnectError> {
-        self.store.mark_auth_required(profile_id, true)?;
+        let profile = self.profile_or_err(profile_id)?;
+        self.credentials.report_auth_failure(&profile)?;
         Ok(())
     }
 
     /// Record that a profile's credential worked; clears `auth_required`.
     /// Writes nothing when the flag was not set.
     pub fn report_auth_success(&self, profile_id: &str) -> Result<(), ConnectError> {
-        self.store.mark_auth_required(profile_id, false)?;
+        let profile = self.profile_or_err(profile_id)?;
+        self.credentials.report_auth_success(&profile)?;
         Ok(())
     }
 
@@ -258,7 +261,7 @@ impl<'a> ConnectService<'a> {
         if tokens.access_token.trim().is_empty() {
             return Err(ConnectError::Message("OAuth access_token empty".into()));
         }
-        self.store.set_oauth(&profile.id, tokens)?;
+        self.credentials.set_oauth(&profile, tokens)?;
         self.connection_outcome(&profile, KeySource::Oauth)
     }
 
@@ -352,7 +355,7 @@ impl<'a> ConnectService<'a> {
                 return Err(ConnectError::OauthRejectsApiKey(profile.id));
             }
             // Already have tokens?
-            if let Some(tokens) = self.store.get_oauth(&profile.id)? {
+            if let Some(tokens) = self.credentials.store().get_oauth(&profile.id)? {
                 return self
                     .connection_outcome(&profile, KeySource::Oauth)
                     .map(|mut o| {
@@ -407,7 +410,7 @@ impl<'a> ConnectService<'a> {
             Ok(None) => {}
             Err(_) => {
                 // Refresh failed — try existing non-fixture token once, else re-login.
-                if let Some(tokens) = self.store.get_oauth(&profile.id)? {
+                if let Some(tokens) = self.credentials.store().get_oauth(&profile.id)? {
                     let at = tokens.access_token.trim();
                     if !at.is_empty()
                         && !at.starts_with("fixture-")
@@ -447,13 +450,13 @@ impl<'a> ConnectService<'a> {
             .map(|s| s.to_string())
             .or_else(|| self.active_profile_id.clone())
             .ok_or_else(|| ConnectError::Message("no profile to disconnect".into()))?;
-        if self.registry.get(&id).is_none() {
+        let Some(profile) = self.registry.get(&id) else {
             return Err(ConnectError::UnknownProfile(
                 id,
                 self.registry.ids().join(", "),
             ));
-        }
-        let removed = self.store.clear(&id)?;
+        };
+        let removed = self.credentials.clear(profile)?;
         self.preferences.clear_last_selection(Some(&id))?;
         if removed {
             Ok(format!(
@@ -473,107 +476,22 @@ impl<'a> ConnectService<'a> {
         &self,
         profile_id: &str,
     ) -> Result<Option<OauthTokens>, ConnectError> {
-        if self.store.get_oauth(profile_id)?.is_none() {
+        if self.credentials.store().get_oauth(profile_id)?.is_none() {
             return Ok(None);
         }
         let profile = self.profile_or_err(profile_id)?;
-        fresh_oauth_tokens(&profile, self.store)
-    }
-
-    pub fn provider_env_for_profile(
-        &self,
-        profile_id: &str,
-    ) -> Result<Vec<(String, String)>, ConnectError> {
-        let profile = self.profile_or_err(profile_id)?;
-        match &profile.auth_mode {
-            AuthMode::Oauth { .. } => self.oauth_provider_env(&profile),
-            AuthMode::ApiKey { .. } => self.api_key_provider_env(&profile),
-        }
-    }
-
-    fn oauth_provider_env(
-        &self,
-        profile: &ConnectProfile,
-    ) -> Result<Vec<(String, String)>, ConnectError> {
-        // Prefer a fresh token (silent refresh across sessions).
-        let token = match self.ensure_oauth_fresh(&profile.id) {
-            Ok(token) => token,
-            Err(_) => self.store.get_oauth(&profile.id)?,
-        };
-        let Some(token) = token else {
-            return Ok(Vec::new());
-        };
-        let access_token = token.access_token.trim();
-        // Never export fixture tokens to the live worker — they only exist for unit tests.
-        if access_token.is_empty()
-            || access_token.starts_with("fixture-")
-            || access_token == "fixture-access-token"
-        {
-            return Ok(Vec::new());
-        }
-        if profile.id == crate::openai_codex::PROFILE_ID {
-            let account_id = crate::openai_codex::account_id_from_token(access_token)?;
-            return Ok(vec![
-                (
-                    crate::openai_codex::ACCESS_TOKEN_ENV.into(),
-                    access_token.to_string(),
-                ),
-                (crate::openai_codex::ACCOUNT_ID_ENV.into(), account_id),
-            ]);
-        }
-        // Native xAI transport uses the OAuth token as Bearer auth.
-        Ok(vec![("XAI_API_KEY".into(), access_token.to_string())])
-    }
-
-    fn api_key_provider_env(
-        &self,
-        profile: &ConnectProfile,
-    ) -> Result<Vec<(String, String)>, ConnectError> {
-        let Some((key, _)) = resolve_key(profile, self.store)? else {
-            return Ok(Vec::new());
-        };
-        let mut out = profile
-            .api_key_env
-            .iter()
-            .map(|name| (name.clone(), key.clone()))
-            .collect::<Vec<_>>();
-        if let Some(base) = provider_base_url(profile) {
-            out.push((provider_base_env(&profile.id), base));
-        }
-        Ok(out)
-    }
-}
-
-fn provider_base_url(profile: &ConnectProfile) -> Option<String> {
-    Some(profile.base_url.clone())
-        .filter(|base| !base.trim().is_empty())
-        .or_else(|| match profile.id.as_str() {
-            crate::opencode_go::PROFILE_ID => Some(crate::opencode_go::DEFAULT_BASE_URL.into()),
-            crate::opencode_zen::PROFILE_ID => Some(crate::opencode_zen::DEFAULT_BASE_URL.into()),
-            crate::ollama::PROFILE_ID => Some(crate::ollama::DEFAULT_BASE_URL.into()),
-            _ => None,
-        })
-}
-
-fn provider_base_env(profile_id: &str) -> String {
-    match profile_id {
-        crate::opencode_go::PROFILE_ID => crate::opencode_go::API_BASE_ENV.into(),
-        crate::opencode_zen::PROFILE_ID => crate::opencode_zen::API_BASE_ENV.into(),
-        crate::ollama::PROFILE_ID => crate::ollama::API_BASE_ENV.into(),
-        crate::openai::PROFILE_ID => "OPENAI_API_BASE".into(),
-        crate::anthropic::PROFILE_ID => "ANTHROPIC_API_BASE".into(),
-        other => format!("{}_API_BASE", other.to_ascii_uppercase()),
+        fresh_oauth_tokens(&profile, self.credentials.store())
     }
 }
 
 /// True when any live (non-fixture) profile is connected in the user store.
 pub fn has_connected_profile() -> bool {
     let registry = crate::loaded_registry();
-    let store = crate::CredentialStore::user_default();
+    let credentials = Credentials::shared();
     let preferences = crate::PreferenceStore::user_default();
     let svc = ConnectService {
         registry: &registry,
-        store: &store,
+        credentials: &credentials,
         preferences: &preferences,
         active_profile_id: None,
         active_model: None,
@@ -588,10 +506,10 @@ impl ConnectService<'_> {
     pub fn connected_profiles(&self) -> Result<Vec<ConnectProfile>, ConnectError> {
         let mut out = Vec::new();
         for p in self.registry.profiles() {
-            if resolve_connected(p, self.store)?.is_some() {
+            if resolve_connected(p, self.credentials.store())?.is_some() {
                 // Only count OAuth when tokens are non-fixture.
                 if p.auth_mode.is_oauth() {
-                    if let Some(tok) = self.store.get_oauth(&p.id)? {
+                    if let Some(tok) = self.credentials.store().get_oauth(&p.id)? {
                         let at = tok.access_token.trim();
                         if at.is_empty()
                             || at.starts_with("fixture-")
@@ -730,14 +648,14 @@ pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
 pub fn handle_connect_action(
     action: ConnectAction,
     registry: &ConnectRegistry,
-    store: &CredentialStore,
+    credentials: &Credentials,
     preferences: &PreferenceStore,
     active_profile: &mut Option<String>,
     active_model: &mut Option<String>,
 ) -> Result<String, ConnectError> {
     let mut svc = ConnectService {
         registry,
-        store,
+        credentials,
         preferences,
         active_profile_id: active_profile.clone(),
         active_model: active_model.clone(),
@@ -866,7 +784,7 @@ mod tests {
         store.set_api_key("demo", "stored-key").unwrap();
         let svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: Some("demo".into()),
             active_model: Some("demo/model-1".into()),
@@ -896,7 +814,7 @@ mod tests {
         let empty = ConnectRegistry::new();
         let svc = ConnectService {
             registry: &empty,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -916,7 +834,7 @@ mod tests {
                 oauth_fixture: false,
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut active_profile,
             &mut active_model,
@@ -941,7 +859,7 @@ mod tests {
         let open = handle_connect_action(
             ConnectAction::Open,
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut active_profile,
             &mut active_model,
@@ -953,7 +871,7 @@ mod tests {
         let status = handle_connect_action(
             ConnectAction::Status,
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut active_profile,
             &mut active_model,
@@ -966,7 +884,7 @@ mod tests {
                 profile_id: Some("demo".into()),
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut active_profile,
             &mut active_model,
@@ -980,7 +898,7 @@ mod tests {
         let msg = handle_connect_action(
             ConnectAction::Disconnect { profile_id: None },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut active_profile,
             &mut active_model,
@@ -1004,7 +922,7 @@ mod tests {
                 oauth_fixture: false,
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut active_profile,
             &mut active_model,
@@ -1022,7 +940,7 @@ mod tests {
         let reg = api_key_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1058,7 +976,7 @@ mod tests {
                 oauth_fixture: false,
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut ap,
             &mut am,
@@ -1076,7 +994,7 @@ mod tests {
         let oauth_reg = oauth_registry();
         let mut api_svc = ConnectService {
             registry: &api_reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1098,7 +1016,7 @@ mod tests {
 
         let mut oauth_svc = ConnectService {
             registry: &oauth_reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1134,7 +1052,7 @@ mod tests {
                 oauth_fixture: true,
             },
             &reg,
-            &store,
+            &crate::credentials::Credentials::for_test(&store),
             &preferences,
             &mut ap,
             &mut am,
@@ -1166,7 +1084,7 @@ mod tests {
             .unwrap();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1188,7 +1106,7 @@ mod tests {
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1207,7 +1125,7 @@ mod tests {
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1235,7 +1153,7 @@ mod tests {
         let api_reg = api_key_registry();
         let mut api_svc = ConnectService {
             registry: &api_reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1258,7 +1176,7 @@ mod tests {
             .unwrap();
         let mut oauth_svc = ConnectService {
             registry: &oauth_reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1283,7 +1201,7 @@ mod tests {
         let reg = oauth_registry();
         let svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1320,79 +1238,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn provider_env_exports_api_keys_base_urls_and_filters_fixture_oauth() {
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        let mut reg = ConnectRegistry::new();
-        let mut custom = crate::profile::test_spec(
-            "custom",
-            AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
-            vec!["custom/model".into()],
-        );
-        custom.api_key_env = vec!["CUSTOM_KEY".into(), "CUSTOM_ALT".into()];
-        custom.base_url = "https://api.example".into();
-        custom.title = "Custom".into();
-        custom.provider_label = "Custom".into();
-        reg.register(custom);
-        store.set_api_key("custom", "secret").unwrap();
-        let svc = ConnectService {
-            registry: &reg,
-            store: &store,
-            preferences: &preferences,
-            active_profile_id: None,
-            active_model: None,
-        };
-        assert_eq!(
-            svc.provider_env_for_profile("custom").unwrap(),
-            vec![
-                ("CUSTOM_KEY".into(), "secret".into()),
-                ("CUSTOM_ALT".into(), "secret".into()),
-                ("CUSTOM_API_BASE".into(), "https://api.example".into()),
-            ]
-        );
-
-        let oauth_reg = oauth_registry();
-        store
-            .set_oauth(
-                "xai",
-                OauthTokens {
-                    access_token: "fixture-access-token".into(),
-                    refresh_token: None,
-                    expires_at: None,
-                },
-            )
-            .unwrap();
-        let oauth_svc = ConnectService {
-            registry: &oauth_reg,
-            store: &store,
-            preferences: &preferences,
-            active_profile_id: None,
-            active_model: None,
-        };
-        assert!(oauth_svc
-            .provider_env_for_profile("xai")
-            .unwrap()
-            .is_empty());
-        store
-            .set_oauth(
-                "xai",
-                OauthTokens {
-                    access_token: "real-token".into(),
-                    refresh_token: None,
-                    expires_at: None,
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            oauth_svc.provider_env_for_profile("xai").unwrap(),
-            vec![("XAI_API_KEY".into(), "real-token".into())]
-        );
-    }
-
     /// A custom OpenAI-compatible profile shaped like `save_custom_provider`'s.
     fn characterization_custom_profile() -> ConnectProfile {
         let mut custom = crate::profile::test_spec(
@@ -1407,130 +1252,6 @@ mod tests {
         custom.transport = crate::ProviderTransport::OpenaiCompat;
         custom.origin = crate::SpecOrigin::User;
         custom
-    }
-
-    /// Characterization (design stage 1): the exact env pairs each built-in
-    /// and a custom profile export from a stored key or token today.
-    #[test]
-    fn characterize_provider_env_for_every_profile() {
-        let mut reg = crate::builtin_registry();
-        reg.register(characterization_custom_profile());
-        let mut env_names: Vec<&str> = reg
-            .profiles()
-            .iter()
-            .flat_map(|profile| profile.api_key_env.iter().map(String::as_str))
-            .collect();
-        env_names.extend(OAUTH_ENV);
-        env_names.extend(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
-        let _env = EnvGuard::new(&env_names);
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        let svc = ConnectService {
-            registry: &reg,
-            store: &store,
-            preferences: &preferences,
-            active_profile_id: None,
-            active_model: None,
-        };
-        let token = codex_access_token_for_tests();
-        let mut actual = Vec::new();
-        for profile in reg.profiles() {
-            if profile.auth_mode.is_oauth() {
-                let access_token = if profile.id == crate::OPENAI_CODEX_PROFILE_ID {
-                    token.clone()
-                } else {
-                    "oauth-token".into()
-                };
-                store
-                    .set_oauth(
-                        &profile.id,
-                        OauthTokens {
-                            access_token,
-                            refresh_token: None,
-                            expires_at: None,
-                        },
-                    )
-                    .unwrap();
-            } else {
-                store.set_api_key(&profile.id, "stored-key").unwrap();
-            }
-            let pairs = svc.provider_env_for_profile(&profile.id).unwrap();
-            let pairs: Vec<(String, String)> = pairs
-                .into_iter()
-                .map(|(name, value)| {
-                    let value = if value == token {
-                        "<codex token>".into()
-                    } else {
-                        value
-                    };
-                    (name, value)
-                })
-                .collect();
-            actual.push((profile.id.clone(), pairs));
-        }
-        let pairs = |items: &[(&str, &str)]| -> Vec<(String, String)> {
-            items
-                .iter()
-                .map(|(name, value)| (name.to_string(), value.to_string()))
-                .collect()
-        };
-        let expected = vec![
-            ("xai".to_string(), pairs(&[("XAI_API_KEY", "oauth-token")])),
-            (
-                "opencode_go".into(),
-                pairs(&[
-                    ("OPENCODE_API_KEY", "stored-key"),
-                    ("OPENCODE_GO_API_KEY", "stored-key"),
-                    ("OPENCODE_API_BASE", "https://opencode.ai/zen/go/v1"),
-                ]),
-            ),
-            (
-                "opencode_zen".into(),
-                pairs(&[
-                    ("OPENCODE_ZEN_API_KEY", "stored-key"),
-                    ("OPENCODE_API_KEY", "stored-key"),
-                    ("OPENCODE_GO_API_KEY", "stored-key"),
-                    ("OPENCODE_ZEN_API_BASE", "https://opencode.ai/zen/v1"),
-                ]),
-            ),
-            (
-                "openai".into(),
-                pairs(&[
-                    ("OPENAI_API_KEY", "stored-key"),
-                    ("OPENAI_API_BASE", "https://api.openai.com/v1"),
-                ]),
-            ),
-            (
-                "openai_codex".into(),
-                pairs(&[
-                    ("FORGE_CODEX_ACCESS_TOKEN", "<codex token>"),
-                    ("FORGE_CODEX_ACCOUNT_ID", "account-123"),
-                ]),
-            ),
-            (
-                "anthropic".into(),
-                pairs(&[
-                    ("ANTHROPIC_API_KEY", "stored-key"),
-                    ("ANTHROPIC_API_BASE", "https://api.anthropic.com"),
-                ]),
-            ),
-            (
-                "ollama".into(),
-                pairs(&[
-                    ("OLLAMA_API_KEY", "stored-key"),
-                    ("OLLAMA_API_BASE", "http://localhost:11434"),
-                ]),
-            ),
-            (
-                "custom".into(),
-                pairs(&[
-                    ("CUSTOM_KEY", "stored-key"),
-                    ("CUSTOM_API_BASE", "https://custom.example/v1"),
-                ]),
-            ),
-        ];
-        assert_eq!(actual, expected);
     }
 
     /// Characterization (design stage 1): which request each profile's key
@@ -1574,15 +1295,6 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    fn codex_access_token_for_tests() -> String {
-        use base64::Engine;
-        let payload = serde_json::json!({
-            "https://api.openai.com/auth": { "chatgpt_account_id": "account-123" }
-        });
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.to_string());
-        format!("header.{encoded}.signature")
-    }
-
     #[test]
     fn connected_profiles_include_api_keys_and_skip_fixture_oauth() {
         let dir = tempdir().unwrap();
@@ -1604,7 +1316,7 @@ mod tests {
             .unwrap();
         let svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1678,7 +1390,7 @@ mod tests {
         reg.register(openai);
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1710,7 +1422,7 @@ mod tests {
         reg.register(anthropic);
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1746,7 +1458,7 @@ mod tests {
             reg.register(anthropic);
             let mut svc = ConnectService {
                 registry: &reg,
-                store: &store,
+                credentials: &crate::credentials::Credentials::for_test(&store),
                 preferences: &preferences,
                 active_profile_id: None,
                 active_model: None,
@@ -1794,7 +1506,7 @@ mod tests {
 
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1837,7 +1549,7 @@ mod tests {
         reg.register(zen);
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1860,7 +1572,7 @@ mod tests {
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1881,7 +1593,7 @@ mod tests {
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1901,7 +1613,7 @@ mod tests {
         let reg = api_key_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1921,7 +1633,7 @@ mod tests {
         let oauth_reg = oauth_registry();
         let mut oauth_svc = ConnectService {
             registry: &oauth_reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -1972,7 +1684,7 @@ mod tests {
             .unwrap();
         let svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,
@@ -2008,7 +1720,7 @@ mod tests {
         let reg = oauth_registry();
         let mut svc = ConnectService {
             registry: &reg,
-            store: &store,
+            credentials: &crate::credentials::Credentials::for_test(&store),
             preferences: &preferences,
             active_profile_id: None,
             active_model: None,

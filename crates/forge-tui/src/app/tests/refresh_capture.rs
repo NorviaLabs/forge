@@ -42,8 +42,6 @@ impl forge_model::ModelClient for RefreshMotionModel {
             thinking: None,
         })
     }
-
-    fn clear_provider_env(&self) {}
 }
 
 async fn seed_refresh_tasks(app: &mut TuiApp) {

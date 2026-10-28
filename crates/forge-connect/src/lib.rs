@@ -54,10 +54,7 @@ pub use ollama::{
     DEFAULT_BASE_URL as OLLAMA_DEFAULT_BASE_URL, PROFILE_ID as OLLAMA_PROFILE_ID,
 };
 pub use openai::{openai_profile, PROFILE_ID as OPENAI_PROFILE_ID};
-pub use openai_codex::{
-    openai_codex_profile, ACCESS_TOKEN_ENV as OPENAI_CODEX_ACCESS_TOKEN_ENV,
-    ACCOUNT_ID_ENV as OPENAI_CODEX_ACCOUNT_ID_ENV, PROFILE_ID as OPENAI_CODEX_PROFILE_ID,
-};
+pub use openai_codex::{openai_codex_profile, PROFILE_ID as OPENAI_CODEX_PROFILE_ID};
 pub use opencode_go::{
     opencode_go_profile, API_BASE_ENV as OPENCODE_API_BASE_ENV,
     DEFAULT_BASE_URL as OPENCODE_GO_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_GO_PROFILE_ID,

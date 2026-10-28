@@ -253,14 +253,6 @@ pub trait ModelClient: Send + Sync {
         Ok(resp)
     }
 
-    /// Inject provider credentials into the active transport.
-    /// Default: no-op (mock).
-    fn apply_provider_env(&self, _pairs: &[(String, String)]) {}
-
-    /// Clear provider credentials from the transport.
-    /// Default: no-op (mock).
-    fn clear_provider_env(&self) {}
-
     /// Replace the routing snapshot requests resolve through. Default:
     /// no-op (mock).
     fn set_route_table(&self, _table: RouteTable) {}

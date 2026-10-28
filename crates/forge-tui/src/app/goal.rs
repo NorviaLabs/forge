@@ -355,9 +355,6 @@ impl TuiApp {
     /// request reuses the live transcript, so the evaluator sees exactly what
     /// the working model surfaced — nothing more.
     async fn evaluate_goal(&mut self, condition: &str) -> GoalVerdict {
-        if let Some(profile_id) = self.connect.profile.clone() {
-            self.apply_connect_credentials(&profile_id);
-        }
         let mut request = self.session_runtime.build_model_request();
         request.tools.clear();
         request.messages.push(Message::new(

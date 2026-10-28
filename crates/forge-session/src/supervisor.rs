@@ -17,7 +17,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    connect_credentials, open_session_with_model, resolve_journal_dir, NewRepositorySession,
+    open_session_with_model, resolve_journal_dir, route_table, NewRepositorySession,
     RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
     SessionDetailsSnapshot, SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState,
     TranscriptSnapshot, WorktreeOwnership,
@@ -389,10 +389,9 @@ pub enum SupervisorCommand {
     ClearSessionApprovals {
         session_id: SessionId,
     },
-    ApplyProviderEnv {
-        pairs: Vec<(String, String)>,
-    },
-    ClearProviderEnv,
+    /// Rebuild the routing snapshot after a provider definition change (a
+    /// custom profile, a user override, or a manual model was saved).
+    ReloadProviders,
     Refresh,
     Shutdown,
 }
@@ -887,7 +886,7 @@ impl RepositorySupervisor {
             .collect();
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
-        model.apply_provider_env(&connect_credentials());
+        model.set_route_table(route_table());
 
         let mut sessions = Vec::new();
         if let Some(primary) = primary {
@@ -963,7 +962,7 @@ impl RepositorySupervisor {
             .collect();
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
-        model.apply_provider_env(&connect_credentials());
+        model.set_route_table(route_table());
         let mut tasks = control.sessions().await?;
         if tasks.is_empty() {
             let opened = match primary.take() {
@@ -2825,16 +2824,16 @@ async fn execute_command(
             session.clear_session_pattern_allows();
             refresh_actor(&state, &task_actor, &session).await?;
         }
-        SupervisorCommand::ApplyProviderEnv { pairs } => {
-            state.model.apply_provider_env(&pairs);
+        SupervisorCommand::ReloadProviders => {
+            let table = route_table();
+            state.model.set_route_table(table.clone());
             for actor in state.actors.read().await.values() {
-                actor.model.apply_provider_env(&pairs);
-            }
-        }
-        SupervisorCommand::ClearProviderEnv => {
-            state.model.clear_provider_env();
-            for actor in state.actors.read().await.values() {
-                actor.model.clear_provider_env();
+                actor.model.set_route_table(table.clone());
+                // An idle session also takes the new credential env names; a
+                // busy one keeps its snapshot until its next open.
+                if let Ok(mut session) = try_session(actor) {
+                    session.set_route_table(table.clone());
+                }
             }
         }
         SupervisorCommand::Refresh => {
@@ -3973,7 +3972,7 @@ mod tests {
     }
 
     struct CredentialTrackingModel {
-        clear_count: Arc<AtomicUsize>,
+        route_table_sets: Arc<AtomicUsize>,
     }
 
     impl ModelClient for CredentialTrackingModel {
@@ -3994,8 +3993,8 @@ mod tests {
             Box::pin(async { Ok(text_response("ok")) })
         }
 
-        fn clear_provider_env(&self) {
-            self.clear_count.fetch_add(1, Ordering::SeqCst);
+        fn set_route_table(&self, _table: forge_model::RouteTable) {
+            self.route_table_sets.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -4675,7 +4674,7 @@ mod tests {
     async fn clearing_provider_env_reaches_every_session_actor() {
         let temp = TempDir::new().unwrap();
         let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
-        let clear_count = Arc::new(AtomicUsize::new(0));
+        let route_table_sets = Arc::new(AtomicUsize::new(0));
         let mut sessions = Vec::new();
         for (index, name) in ["first", "second"].into_iter().enumerate() {
             let workspace = temp.path().join(name);
@@ -4691,7 +4690,7 @@ mod tests {
                 .display()
                 .to_string();
             let model = Arc::new(CredentialTrackingModel {
-                clear_count: Arc::clone(&clear_count),
+                route_table_sets: Arc::clone(&route_table_sets),
             });
             let session = tracking_session(&cfg, model).await;
             let task = task_for(session.session_id, name, &workspace);
@@ -4721,18 +4720,20 @@ mod tests {
             ..Default::default()
         };
         let model: Arc<dyn ModelClient> = Arc::new(CredentialTrackingModel {
-            clear_count: Arc::clone(&clear_count),
+            route_table_sets: Arc::clone(&route_table_sets),
         });
         let (_supervisor, handle) =
             RepositorySupervisor::spawn(control, lease, sessions, 2, cfg, model)
                 .await
                 .unwrap();
 
+        let before = route_table_sets.load(Ordering::SeqCst);
         handle
-            .command(SupervisorCommand::ClearProviderEnv)
+            .command(SupervisorCommand::ReloadProviders)
             .await
             .unwrap();
-        assert_eq!(clear_count.load(Ordering::SeqCst), 3);
+        // The shared supervisor client and each actor's client.
+        assert!(route_table_sets.load(Ordering::SeqCst) - before >= 3);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -5786,13 +5787,7 @@ mod tests {
             .await
             .unwrap();
         handle
-            .command(SupervisorCommand::ApplyProviderEnv {
-                pairs: vec![("FORGE_TEST_PROVIDER".into(), "1".into())],
-            })
-            .await
-            .unwrap();
-        handle
-            .command(SupervisorCommand::ClearProviderEnv)
+            .command(SupervisorCommand::ReloadProviders)
             .await
             .unwrap();
         handle.command(SupervisorCommand::Refresh).await.unwrap();
@@ -8162,10 +8157,7 @@ mod tests {
                 },
             },
             SupervisorCommand::ClearSessionApprovals { session_id: id },
-            SupervisorCommand::ApplyProviderEnv {
-                pairs: vec![("TEST_KEY".into(), "value".into())],
-            },
-            SupervisorCommand::ClearProviderEnv,
+            SupervisorCommand::ReloadProviders,
             SupervisorCommand::Refresh,
         ];
         assert!(inline.iter().all(|command| {

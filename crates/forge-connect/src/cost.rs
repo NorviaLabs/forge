@@ -162,13 +162,9 @@ fn codex_cost_report(store: &CredentialStore) -> Result<Vec<String>, String> {
         .map(|tokens| tokens.access_token.trim())
         .filter(|token| !token.is_empty())
         .map(str::to_owned)
-        .or_else(|| std::env::var("FORGE_CODEX_ACCESS_TOKEN").ok())
         .ok_or_else(|| "Codex is not connected; use /connect openai_codex".to_string())?;
-    let account_id = std::env::var("FORGE_CODEX_ACCOUNT_ID")
-        .ok()
-        .filter(|id| !id.trim().is_empty())
-        .or_else(|| crate::openai_codex::account_id_from_token(&access_token).ok())
-        .ok_or_else(|| "Codex credentials do not include a ChatGPT account".to_string())?;
+    let account_id = crate::openai_codex::account_id_from_token(&access_token)
+        .map_err(|_| "Codex credentials do not include a ChatGPT account".to_string())?;
 
     let mut response = ureq::get(&codex_usage_url())
         .header("Authorization", &format!("Bearer {access_token}"))
@@ -402,17 +398,27 @@ mod tests {
         assert_eq!(format_duration(90_000), "1d 1h");
     }
 
+    /// A stored ChatGPT login whose token names account `account-123`.
+    fn store_codex_login(store: &CredentialStore) {
+        store
+            .set_oauth(
+                OPENAI_CODEX_PROFILE_ID,
+                crate::OauthTokens {
+                    access_token: "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.signature".into(),
+                    refresh_token: None,
+                    expires_at: None,
+                },
+            )
+            .unwrap();
+    }
+
     #[test]
     fn codex_cost_report_fetches_usage_from_configured_base_url() {
         use crate::test_env::EnvGuard;
         use forge_test_support::mock_http;
         use tempfile::tempdir;
 
-        const ENV: &[&str] = &[
-            crate::openai_codex::API_BASE_ENV,
-            crate::openai_codex::ACCESS_TOKEN_ENV,
-            crate::openai_codex::ACCOUNT_ID_ENV,
-        ];
+        const ENV: &[&str] = &[crate::openai_codex::API_BASE_ENV];
         let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![(
             200,
@@ -423,11 +429,10 @@ mod tests {
             return;
         };
         guard.set(crate::openai_codex::API_BASE_ENV, &base);
-        guard.set(crate::openai_codex::ACCESS_TOKEN_ENV, "access-token");
-        guard.set(crate::openai_codex::ACCOUNT_ID_ENV, "account-123");
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        store_codex_login(&store);
         let report = codex_cost_report(&store).unwrap();
         assert!(report[0].contains("OpenAI Codex (plus plan)"));
         assert!(report.iter().any(|line| line.contains("90% remaining")));
@@ -437,11 +442,7 @@ mod tests {
     fn codex_cost_report_requires_connection() {
         use crate::test_env::EnvGuard;
 
-        const ENV: &[&str] = &[
-            crate::openai_codex::API_BASE_ENV,
-            crate::openai_codex::ACCESS_TOKEN_ENV,
-            crate::openai_codex::ACCOUNT_ID_ENV,
-        ];
+        const ENV: &[&str] = &[crate::openai_codex::API_BASE_ENV];
         let _guard = EnvGuard::new(ENV);
         let dir = tempfile::tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
@@ -455,11 +456,7 @@ mod tests {
         use forge_test_support::mock_http;
         use tempfile::tempdir;
 
-        const ENV: &[&str] = &[
-            crate::openai_codex::API_BASE_ENV,
-            crate::openai_codex::ACCESS_TOKEN_ENV,
-            crate::openai_codex::ACCOUNT_ID_ENV,
-        ];
+        const ENV: &[&str] = &[crate::openai_codex::API_BASE_ENV];
         let guard = EnvGuard::new(ENV);
         let Some(base) = mock_http(vec![(
             200,
@@ -470,11 +467,10 @@ mod tests {
             return;
         };
         guard.set(crate::openai_codex::API_BASE_ENV, &base);
-        guard.set(crate::openai_codex::ACCESS_TOKEN_ENV, "access-token");
-        guard.set(crate::openai_codex::ACCOUNT_ID_ENV, "account-123");
 
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
+        store_codex_login(&store);
         let report = provider_cost_report(
             OPENAI_CODEX_PROFILE_ID,
             "openai-codex/gpt-test",

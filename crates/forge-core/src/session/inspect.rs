@@ -369,20 +369,15 @@ impl AgentSession {
         self.workspace_trusted
     }
 
-    /// Credential env names from the loaded provider profiles. They are
-    /// stripped, with the built-in vendor aliases, from every child process
-    /// the model triggers (shell, background jobs, git).
-    pub fn set_credential_env_names(&mut self, names: Vec<String>) {
+    /// Route the session's model requests through `table`, and strip its
+    /// credential env names (with the built-in vendor aliases) from every
+    /// child process the model triggers (shell, background jobs, git).
+    pub fn set_route_table(&mut self, table: forge_model::RouteTable) {
+        self.set_credential_env_names(table.credential_env_names().to_vec());
+        self.model.set_route_table(table);
+    }
+
+    pub(crate) fn set_credential_env_names(&mut self, names: Vec<String>) {
         self.tool_ctx.credential_env_names = std::sync::Arc::from(names);
-    }
-
-    /// Push provider credentials into the model client (OAuth tokens → worker env).
-    pub fn apply_provider_env(&self, pairs: &[(String, String)]) {
-        self.model.apply_provider_env(pairs);
-    }
-
-    /// Clear provider credentials from the model client and recycle the worker.
-    pub fn clear_provider_env(&self) {
-        self.model.clear_provider_env();
     }
 }

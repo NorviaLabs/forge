@@ -202,12 +202,13 @@ pub(crate) async fn focus_test_app_with_theme(theme_id: &str) -> (TempDir, TuiAp
     // rendering assertions never depend on whichever provider the machine
     // running the suite happens to have connected.
     app.connect.profile = None;
-    app.connect.store = CredentialStore::new(
-        tempfile::TempDir::new()
-            .unwrap()
-            .path()
-            .join("empty-creds.toml"),
-    );
+    app.connect.credentials =
+        std::sync::Arc::new(forge_connect::Credentials::new(CredentialStore::new(
+            tempfile::TempDir::new()
+                .unwrap()
+                .path()
+                .join("empty-creds.toml"),
+        )));
     // Restoring those credentials also rewrites `runtime.provider` and
     // `runtime.model_label`, so a fixture that expects the mock provider must
     // re-assert it. Without this, tests that need a live provider pass on a
@@ -238,12 +239,13 @@ pub(crate) async fn focus_test_app_with_model(model: Arc<dyn ModelClient>) -> (T
         },
     );
     app.connect.profile = None;
-    app.connect.store = CredentialStore::new(
-        tempfile::TempDir::new()
-            .unwrap()
-            .path()
-            .join("empty-creds.toml"),
-    );
+    app.connect.credentials =
+        std::sync::Arc::new(forge_connect::Credentials::new(CredentialStore::new(
+            tempfile::TempDir::new()
+                .unwrap()
+                .path()
+                .join("empty-creds.toml"),
+        )));
     force_mock_provider(&mut app);
     (dir, app)
 }

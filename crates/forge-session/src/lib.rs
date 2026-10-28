@@ -97,50 +97,20 @@ pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
     }
 }
 
-/// Collect stored OAuth / API-key material for the native model client.
-///
-/// Returns the pairs instead of exporting them. `NativeModelClient` reads its
-/// injected map ahead of the process environment, so the client never needed
-/// them in `std::env` — and putting them there handed a copy to every child
-/// process Forge starts, including MCP servers and shell commands.
-///
-/// An explicitly exported variable still wins, which is the precedence
-/// `forge_connect::resolve_key` already uses.
-pub fn connect_credentials() -> Vec<(String, String)> {
-    let reg = forge_connect::loaded_registry();
-    let store = forge_connect::CredentialStore::user_default();
-    let preferences = forge_connect::PreferenceStore::user_default();
-    let svc = forge_connect::ConnectService {
-        registry: &reg,
-        store: &store,
-        preferences: &preferences,
-        active_profile_id: None,
-        active_model: None,
-    };
-    let mut pairs = Vec::new();
-    for profile in reg.profiles() {
-        let Ok(profile_pairs) = svc.provider_env_for_profile(&profile.id) else {
-            continue;
-        };
-        for (name, value) in profile_pairs {
-            let already_exported = std::env::var(&name)
-                .ok()
-                .is_some_and(|existing| !existing.trim().is_empty());
-            if !already_exported {
-                pairs.push((name, value));
-            }
-        }
-    }
-    pairs
+/// The routing snapshot for a session: the loaded provider registry over
+/// the process credentials handle. Credentials are read per request, so a
+/// new key needs no rebuild; a definition change does (`ReloadProviders`).
+pub fn route_table() -> forge_model::RouteTable {
+    forge_connect::resolve(
+        &forge_connect::loaded_registry(),
+        &forge_connect::Credentials::shared(),
+    )
 }
 
 /// Assemble a session from configuration, independent of any frontend.
 pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result<OpenedSession> {
     let model: Arc<dyn ModelClient> =
         Arc::from(client_from_config(cfg).map_err(|e| anyhow::anyhow!(e))?);
-    // After construction, because credentials are resolved per request rather
-    // than at build time.
-    model.apply_provider_env(&connect_credentials());
 
     open_session_with_model(cfg, target, model).await
 }
@@ -215,12 +185,11 @@ async fn open_session_with_model(
         }
     }
 
-    // Provider keys never reach model-triggered child processes. The built-in
-    // vendor aliases are stripped by forge-tools; this adds every key name the
-    // loaded profiles read, which covers custom profiles' `api_key_env`.
-    session.set_credential_env_names(forge_connect::credential_env_names(
-        &forge_connect::loaded_registry(),
-    ));
+    // Requests route through the snapshot, and provider keys never reach
+    // model-triggered child processes: the built-in vendor aliases are
+    // stripped by forge-tools, the snapshot adds every generated name and
+    // every key name the loaded profiles read (custom `api_key_env` too).
+    session.set_route_table(route_table());
 
     let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
     notices.extend(permission_notices);
@@ -295,18 +264,6 @@ mod tests {
                     profile.id
                 );
             }
-        }
-
-        // Tokens exported for OAuth providers do not appear in `api_key_env`.
-        for name in [
-            "XAI_API_KEY",
-            forge_connect::OPENAI_CODEX_ACCESS_TOKEN_ENV,
-            forge_connect::OPENAI_CODEX_ACCOUNT_ID_ENV,
-        ] {
-            assert!(
-                stripped.contains(&name),
-                "`{name}` is exported for an OAuth provider but would not be stripped"
-            );
         }
     }
 

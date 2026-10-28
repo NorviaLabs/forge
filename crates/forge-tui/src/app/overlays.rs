@@ -667,9 +667,6 @@ impl TuiApp {
                     if queued {
                         self.connect.auth_suspended = false;
                         self.connect.profile = profile_id.clone();
-                        if let Some(profile_id) = profile_id.as_deref() {
-                            self.apply_connect_credentials(profile_id);
-                        }
                         self.refresh_connection_chrome();
                     }
                     // The actor can be mid-turn; the pending label is replaced
@@ -762,7 +759,7 @@ impl TuiApp {
             } {
                 Ok(profile) => {
                     let profile_id = profile.id.clone();
-                    self.connect.registry.register(profile);
+                    self.reload_providers();
                     if api_key.trim().is_empty() {
                         self.finish_connect(&profile_id, None, false);
                     } else {
@@ -789,7 +786,7 @@ impl TuiApp {
             OverlayAction::SaveManualModel { profile_id, model } => {
                 match forge_connect::save_manual_model(&profile_id, &model) {
                     Ok(()) => {
-                        self.connect.registry = loaded_registry();
+                        self.reload_providers();
                         self.open_model_picker_after_connect(&profile_id);
                     }
                     Err(message) => {
@@ -1192,9 +1189,15 @@ mod tests {
     async fn overlay_actions_cover_selection_and_creation_fallbacks_without_supervisor() {
         let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
         let credentials = tempfile::tempdir().unwrap();
-        app.connect.store = CredentialStore::new(credentials.path().join("credentials.toml"));
+        app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+            CredentialStore::new(credentials.path().join("credentials.toml")),
+        ));
         app.connect.preferences = PreferenceStore::new(credentials.path().join("preferences.toml"));
-        app.connect.store.set_api_key("openai", "test-key").unwrap();
+        app.connect
+            .credentials
+            .store()
+            .set_api_key("openai", "test-key")
+            .unwrap();
 
         app.apply_overlay_action(OverlayAction::SelectModel {
             provider: "native".into(),
