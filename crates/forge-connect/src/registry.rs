@@ -201,9 +201,11 @@ impl ConnectRegistry {
             return None;
         }
         self.profiles.iter().find(|p| {
-            !p.model_provider_prefix.is_empty()
-                && (p.model_provider_prefix.eq_ignore_ascii_case(prefix)
-                    || p.id.eq_ignore_ascii_case(prefix))
+            p.id.eq_ignore_ascii_case(prefix)
+                || p.model_provider_prefix.eq_ignore_ascii_case(prefix)
+                || crate::normalize::legacy_prefixes(&p.id)
+                    .iter()
+                    .any(|old| old.eq_ignore_ascii_case(prefix))
         })
     }
 
@@ -668,9 +670,12 @@ fn normalize_spec(mut spec: ProviderSpec) -> ProviderSpec {
     if spec.route_id.is_empty() {
         spec.route_id = spec.id.clone();
     }
-    if spec.model_provider_prefix.is_empty() {
-        spec.model_provider_prefix = spec.id.clone();
+    // The id is the model prefix from now on; an older custom prefix stays
+    // only as an alias that saved ids normalize from.
+    if !spec.model_provider_prefix.is_empty() && spec.model_provider_prefix != spec.id {
+        spec.legacy_prefix = Some(std::mem::take(&mut spec.model_provider_prefix));
     }
+    spec.model_provider_prefix = spec.id.clone();
     // A custom entry's `default_models` are ids its user typed, not a
     // shipped fallback; they list with the manual models, so discovery
     // never hides them.
@@ -1285,13 +1290,13 @@ base_url = "https://gone.example/v1"
         let path = dir.path().join("providers.toml");
         std::fs::write(
             &path,
-            "[manual_models]\nopencode_go = [\"opencode/kimi\", \"opencode-go/kimi\", \"glm\"]\nxai = [\"grok/grok-4\"]\n",
+            "[manual_models]\nopencode_go = [\"opencode/kimi\", \"opencode_go/kimi\", \"glm\"]\nxai = [\"grok/grok-4\"]\n",
         )
         .unwrap();
         let registry = loaded_registry_from(&path);
         assert_eq!(
             registry.get("opencode_go").unwrap().manual_models,
-            vec!["opencode-go/kimi", "opencode-go/glm"]
+            vec!["opencode_go/kimi", "opencode_go/glm"]
         );
         assert_eq!(
             registry.get("xai").unwrap().manual_models,
@@ -1394,7 +1399,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
     }
 
     #[test]
-    fn user_toml_cannot_claim_a_builtin_model_prefix() {
+    fn a_custom_entry_cannot_take_over_a_builtin_model_prefix() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("providers.toml");
         std::fs::write(
@@ -1412,12 +1417,15 @@ auth_mode = { api_key = { tui_always_prompt = true } }
 "#,
         )
         .unwrap();
+        // The id is the model prefix now: the old prefix is only an alias for
+        // this entry's own saved ids, so `openai/…` still routes to OpenAI.
         let registry = loaded_registry_from(&path);
-        assert!(registry.get("sneaky").is_none());
-        assert!(registry
-            .load_warnings()
-            .iter()
-            .any(|warning| warning.contains("model_provider_prefix")));
+        let sneaky = registry.get("sneaky").unwrap();
+        assert_eq!(sneaky.model_provider_prefix, "sneaky");
+        assert_eq!(
+            registry.profile_for_model("openai/gpt-5").unwrap().id,
+            "openai"
+        );
     }
 
     #[test]

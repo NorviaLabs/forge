@@ -363,9 +363,14 @@ pub struct ProviderSpec {
     pub billing_note: String,
     #[serde(default, skip_serializing_if = "EffortFamily::is_none")]
     pub effort_family: EffortFamily,
-    /// Legacy model-id prefix; equal to `id` for new custom profiles.
+    /// The model-id prefix, always the profile id once loaded. A custom
+    /// entry's older value is kept in `legacy_prefix` for normalization.
     #[serde(default)]
     pub model_provider_prefix: String,
+    /// A custom entry's former `model_provider_prefix`, when it differed
+    /// from its id: saved model ids under it still normalize to the id.
+    #[serde(skip)]
+    pub legacy_prefix: Option<String>,
     /// Display group for profiles that are one provider with several
     /// offerings (e.g. `openai` API key vs. ChatGPT sign-in). Equal to `id`
     /// for providers with only one offering.
@@ -439,6 +444,7 @@ impl ProviderSpec {
             billing_note: String::new(),
             effort_family: EffortFamily::None,
             model_provider_prefix: String::new(),
+            legacy_prefix: None,
             provider: String::new(),
             provider_label: String::new(),
             label: String::new(),

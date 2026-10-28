@@ -14,7 +14,7 @@ pub struct ModelSelection {
     pub route_id: String,
     /// Dispatch/route family, e.g. `"native"`.
     pub provider: String,
-    /// Full canonical catalog id, e.g. `"openai-codex/gpt-5.6-luna"`. Never
+    /// Full canonical catalog id, e.g. `"openai_codex/gpt-5.6-luna"`. Never
     /// truncated or re-derived from a substring of user input.
     pub model: String,
     /// The connect profile that owns this route, when known.

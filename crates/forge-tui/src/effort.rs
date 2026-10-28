@@ -270,7 +270,7 @@ mod tests {
             .join(", ");
         std::fs::write(
             cache.path(),
-            format!("registry_effort_ready = true\n[registry_effort]\n\"{model}\" = [{listed}]\n"),
+            format!("version = 2\nregistry_effort_ready = true\n[registry_effort]\n\"{model}\" = [{listed}]\n"),
         )
         .unwrap();
     }

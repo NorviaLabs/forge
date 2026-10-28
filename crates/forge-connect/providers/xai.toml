@@ -16,14 +16,13 @@ api_key_env = [
 ]
 wire = "chat-completions"
 attach = "bearer"
-default_models = ["xai/grok-3"]
+default_models = ["grok-3"]
 models_dev_providers = ["xai"]
 auth_url = "https://auth.x.ai"
 import_aliases = ["xai"]
 billing_url = "https://console.x.ai/"
 billing_note = "xAI does not expose account balance through the connected OAuth token."
 effort_family = "xai"
-model_provider_prefix = "xai"
 route_id = "xai-api"
 catalog_mode = "live+registry"
 

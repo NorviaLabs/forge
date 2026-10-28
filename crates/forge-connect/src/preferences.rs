@@ -85,7 +85,12 @@ impl PreferenceStore {
                 (Some(profile_id), Some(model))
                     if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
                 {
-                    Some((profile_id.to_string(), model.to_string()))
+                    // Saved before the id became the model prefix? Read it in the
+                    // current form; the next save writes that form.
+                    Some((
+                        profile_id.to_string(),
+                        crate::normalize::normalize_saved_model_id(model),
+                    ))
                 }
                 _ => None,
             },
@@ -95,7 +100,7 @@ impl PreferenceStore {
     pub fn set_last_selection(&self, profile_id: &str, model: &str) -> Result<(), StoreError> {
         let mut file = self.load();
         file.last_profile_id = Some(profile_id.trim().to_string());
-        file.last_model = Some(model.trim().to_string());
+        file.last_model = Some(crate::normalize::normalize_saved_model_id(model));
         self.save(&file)
     }
 
@@ -164,7 +169,10 @@ impl PreferenceStore {
                 (Some(profile_id), Some(model))
                     if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
                 {
-                    Some((profile_id.to_string(), model.to_string()))
+                    Some((
+                        profile_id.to_string(),
+                        crate::normalize::normalize_saved_model_id(model),
+                    ))
                 }
                 _ => None,
             },
@@ -314,7 +322,7 @@ mod tests {
         let prefs = PreferenceStore::new(dir.path().join("p.toml"));
         // A corrupt/legacy pair: the xAI profile with an OpenCode model id.
         prefs
-            .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
+            .set_last_selection("xai", "opencode_go/deepseek-v4.1-flash")
             .unwrap();
 
         let selection = prefs
@@ -323,7 +331,7 @@ mod tests {
             .unwrap();
         assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
         assert_eq!(selection.route_id, "opencode-go");
-        assert_eq!(selection.model, "opencode-go/deepseek-v4.1-flash");
+        assert_eq!(selection.model, "opencode_go/deepseek-v4.1-flash");
     }
 
     #[test]
@@ -331,7 +339,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let prefs = PreferenceStore::new(dir.path().join("p.toml"));
         prefs
-            .set_last_selection("opencode_go", "opencode-go/deepseek-v4.1-flash")
+            .set_last_selection("opencode_go", "opencode_go/deepseek-v4.1-flash")
             .unwrap();
 
         let selection = prefs
@@ -347,7 +355,7 @@ mod tests {
         let registry = crate::loaded_registry();
         assert_eq!(
             registry
-                .profile_for_model("opencode-go/deepseek-v4.1-flash")
+                .profile_for_model("opencode_go/deepseek-v4.1-flash")
                 .map(|spec| spec.id.as_str()),
             Some("opencode_go")
         );
@@ -366,7 +374,7 @@ mod tests {
         );
 
         prefs
-            .set_last_selection("openai_codex", "openai-codex/gpt-5.6-luna")
+            .set_last_selection("openai_codex", "openai_codex/gpt-5.6-luna")
             .unwrap();
         prefs.set_last_effort("high").unwrap();
 
@@ -377,7 +385,7 @@ mod tests {
             Some(ModelSelection {
                 route_id: "openai-chatgpt".into(),
                 provider: "native".into(),
-                model: "openai-codex/gpt-5.6-luna".into(),
+                model: "openai_codex/gpt-5.6-luna".into(),
                 profile_id: Some("openai_codex".into()),
                 effort: "high".into(),
             })

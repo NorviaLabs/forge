@@ -22,7 +22,7 @@ mod tests {
         assert!(profile
             .default_models
             .iter()
-            .all(|model| model.starts_with("openai-codex/")));
+            .all(|model| model.starts_with("openai_codex/")));
     }
 
     #[test]

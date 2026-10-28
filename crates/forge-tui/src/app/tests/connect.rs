@@ -675,12 +675,13 @@ async fn restore_uses_the_model_provider_prefix_over_a_stale_saved_profile() {
         restored.session_runtime.active_route_id, "opencode-go",
         "route must follow the model, not the stale saved profile"
     );
+    // The saved `opencode-go/` id is read in its current form.
     assert_eq!(
         restored.session_runtime.active_model,
-        "opencode-go/deepseek-v4.1-flash"
+        "opencode_go/deepseek-v4.1-flash"
     );
     let request = restored.session_runtime.build_model_request();
-    assert_eq!(request.model, "opencode-go/deepseek-v4.1-flash");
+    assert_eq!(request.model, "opencode_go/deepseek-v4.1-flash");
     assert_eq!(request.route_id.as_deref(), Some("opencode-go"));
 }
 

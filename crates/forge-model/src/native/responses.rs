@@ -22,14 +22,13 @@ pub(super) async fn complete_chatgpt(
     target: Target,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let model = target.model.as_str();
     let aliases = tool_aliases(&req);
     // The ChatGPT backend-api Codex endpoint rejects inline
     // `input[].content[].cache_control` markers, so request_body never emits
     // them. It still accepts the top-level cache affinity key used by the
     // Responses API; omitting that key lets identical prefixes be routed to
     // different cache shards and sharply lowers the observed hit rate.
-    let body = request_body(client, &req, model, &aliases);
+    let body = request_body(client, &req, &target.bare_model, &aliases);
     let request_id = Uuid::new_v4().to_string();
     // Cache routing on the Codex backend is conversation-scoped. Keep that
     // identity stable across every model step; only the client request id is
@@ -300,7 +299,7 @@ pub(super) fn request_body(
         })
         .collect();
     let mut body = json!({
-        "model": model.trim_start_matches("openai-codex/"),
+        "model": model,
         "store": false,
         "stream": true,
         "instructions": if instructions.is_empty() {
@@ -672,7 +671,7 @@ mod tests {
         let _ = client;
         let aliases = tool_aliases(&request);
 
-        let body = request_body(&client, &request, &request.model, &aliases);
+        let body = request_body(&client, &request, "gpt-test", &aliases);
 
         assert_eq!(body["model"], "gpt-test");
         assert_eq!(body["instructions"], "system prompt");

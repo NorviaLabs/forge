@@ -19,7 +19,7 @@ const LEGACY_PREFIXES: &[(&str, &[&str])] = &[
 ];
 
 /// Old prefixes and aliases read as `profile_id`.
-pub(crate) fn legacy_prefixes(profile_id: &str) -> &'static [&'static str] {
+pub fn legacy_prefixes(profile_id: &str) -> &'static [&'static str] {
     LEGACY_PREFIXES
         .iter()
         .find(|(id, _)| *id == profile_id)
@@ -46,7 +46,11 @@ pub(crate) fn env_profile_id(id: &str) -> String {
 /// `meta-llama/Llama-3.3-70B` stays whole for a custom profile.
 pub(crate) fn normalize_model(spec: &ProviderSpec, model: &str) -> String {
     let model = model.trim();
-    let own = [spec.id.as_str(), spec.model_provider_prefix.as_str()];
+    let own = [
+        spec.id.as_str(),
+        spec.model_provider_prefix.as_str(),
+        spec.legacy_prefix.as_deref().unwrap_or(""),
+    ];
     let bare = own
         .iter()
         .chain(legacy_prefixes(&spec.id))
@@ -58,6 +62,21 @@ pub(crate) fn normalize_model(spec: &ProviderSpec, model: &str) -> String {
         })
         .unwrap_or(model);
     format!("{}/{bare}", spec.model_provider_prefix)
+}
+
+/// A saved `<prefix>/<model>` id in its current form: an old built-in
+/// prefix or alias (`openai-codex/`, `grok/`, …) becomes that profile's id.
+/// Other ids are returned unchanged.
+pub fn normalize_saved_model_id(model: &str) -> String {
+    let model = model.trim();
+    let Some((prefix, bare)) = model.split_once('/') else {
+        return model.to_string();
+    };
+    LEGACY_PREFIXES
+        .iter()
+        .find(|(_, prefixes)| prefixes.contains(&prefix))
+        .map(|(id, _)| format!("{id}/{bare}"))
+        .unwrap_or_else(|| model.to_string())
 }
 
 /// Normalize a model list in place, dropping empties and duplicates.
@@ -99,10 +118,10 @@ mod tests {
     #[test]
     fn models_lose_one_own_prefix_and_take_the_current_one() {
         let go = crate::opencode_go::opencode_go_profile();
-        assert_eq!(normalize_model(&go, "opencode/kimi"), "opencode-go/kimi");
-        assert_eq!(normalize_model(&go, "opencode-go/kimi"), "opencode-go/kimi");
-        assert_eq!(normalize_model(&go, "opencode_go/kimi"), "opencode-go/kimi");
-        assert_eq!(normalize_model(&go, "kimi"), "opencode-go/kimi");
+        assert_eq!(normalize_model(&go, "opencode/kimi"), "opencode_go/kimi");
+        assert_eq!(normalize_model(&go, "opencode-go/kimi"), "opencode_go/kimi");
+        assert_eq!(normalize_model(&go, "opencode_go/kimi"), "opencode_go/kimi");
+        assert_eq!(normalize_model(&go, "kimi"), "opencode_go/kimi");
         let xai = crate::xai::xai_grok_profile();
         assert_eq!(normalize_model(&xai, "grok/grok-3"), "xai/grok-3");
 
@@ -124,6 +143,23 @@ mod tests {
             normalize_models(&custom, &["a".into(), "my-llm/a".into(), " ".into()]),
             vec!["my-llm/a"]
         );
+    }
+
+    #[test]
+    fn saved_ids_under_old_prefixes_read_as_the_profile_id() {
+        assert_eq!(
+            normalize_saved_model_id("openai-codex/gpt-5"),
+            "openai_codex/gpt-5"
+        );
+        assert_eq!(
+            normalize_saved_model_id("opencode/kimi"),
+            "opencode_go/kimi"
+        );
+        assert_eq!(normalize_saved_model_id("opencode-zen/x"), "opencode_zen/x");
+        assert_eq!(normalize_saved_model_id("grok/grok-4"), "xai/grok-4");
+        assert_eq!(normalize_saved_model_id("openai/gpt-5"), "openai/gpt-5");
+        assert_eq!(normalize_saved_model_id("my-llm/org/m"), "my-llm/org/m");
+        assert_eq!(normalize_saved_model_id("bare"), "bare");
     }
 
     #[test]

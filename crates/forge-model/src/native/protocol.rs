@@ -43,9 +43,19 @@ pub(super) fn prompt_projection(
 ) -> serde_json::Value {
     match wire {
         WireKind::AnthropicMessages => anthropic_messages::prompt_projection(client, req),
-        WireKind::Responses => crate::prompt_wire::prompt_object_from_body(
-            responses::request_body(client, req, &req.model, &responses::tool_aliases(req)),
-        ),
+        WireKind::Responses => {
+            // The wire takes the bare model id.
+            let bare = req
+                .model
+                .split_once('/')
+                .map_or(req.model.as_str(), |(_, m)| m);
+            crate::prompt_wire::prompt_object_from_body(responses::request_body(
+                client,
+                req,
+                bare,
+                &responses::tool_aliases(req),
+            ))
+        }
         WireKind::ChatCompletions => crate::prompt_wire::openai_compat_prompt_cached(req, client),
     }
 }

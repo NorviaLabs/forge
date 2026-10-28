@@ -151,8 +151,14 @@ pub struct CatalogLimits {
     pub output: usize,
 }
 
+/// The catalog cache's layout. Model ids are prefixed with the profile id
+/// from version 2; a file of another version loads empty, forcing a refetch.
+const CATALOG_FORMAT_VERSION: u32 = 2;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct CatalogFile {
+    #[serde(default)]
+    version: u32,
     /// profile_id → fetched provider/model ids
     #[serde(default)]
     models: BTreeMap<String, Vec<String>>,
@@ -228,7 +234,8 @@ impl ModelCatalogCache {
     fn read_file(path: &Path) -> CatalogFile {
         fs::read_to_string(path)
             .ok()
-            .and_then(|text| toml::from_str(&text).ok())
+            .and_then(|text| toml::from_str::<CatalogFile>(&text).ok())
+            .filter(|file| file.version == CATALOG_FORMAT_VERSION)
             .unwrap_or_default()
     }
 
@@ -240,7 +247,9 @@ impl ModelCatalogCache {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let text = toml::to_string_pretty(file)?;
+        let mut file_out = file.clone();
+        file_out.version = CATALOG_FORMAT_VERSION;
+        let text = toml::to_string_pretty(&file_out)?;
         crate::atomic::write_atomic(&self.path, text.as_bytes(), None)?;
         *self.file.borrow_mut() = file.clone();
         Ok(())
@@ -558,8 +567,8 @@ fn image_input_route_aliases(model_id: &str) -> Vec<String> {
         return Vec::new();
     };
     match prefix {
-        "openai" => vec![format!("openai-codex/{rest}")],
-        "openai-codex" => vec![format!("openai/{rest}")],
+        "openai" => vec![format!("openai_codex/{rest}")],
+        "openai_codex" => vec![format!("openai/{rest}")],
         _ => Vec::new(),
     }
 }
@@ -1245,7 +1254,7 @@ mod tests {
 
         fs::write(
             &path,
-            "[models]\nopenai = [\"openai/external\"]\n\n[fetched_at]\nopenai = 1\n",
+            "version = 2\n\n[models]\nopenai = [\"openai/external\"]\n\n[fetched_at]\nopenai = 1\n",
         )
         .unwrap();
 
@@ -1617,7 +1626,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("k.toml"));
         let profile = crate::openai_codex::openai_codex_profile();
         let mut registry = BTreeMap::new();
-        registry.insert(profile.id.clone(), vec!["openai-codex/not-entitled".into()]);
+        registry.insert(profile.id.clone(), vec!["openai_codex/not-entitled".into()]);
         cache
             .put_registry(
                 registry,
@@ -1631,7 +1640,7 @@ mod tests {
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert!(entries
             .iter()
-            .all(|entry| entry.id != "openai-codex/not-entitled"));
+            .all(|entry| entry.id != "openai_codex/not-entitled"));
     }
 
     #[test]
@@ -1815,7 +1824,7 @@ mod tests {
         go.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&go, Some("go-test")).unwrap(),
-            vec!["opencode-go/gpt-4.1-mini"]
+            vec!["opencode_go/gpt-4.1-mini"]
         );
 
         let mut zen = crate::opencode_zen::opencode_zen_profile();
@@ -1827,7 +1836,7 @@ mod tests {
         zen.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&zen, Some("zen-test")).unwrap(),
-            vec!["opencode-zen/claude-sonnet-4"]
+            vec!["opencode_zen/claude-sonnet-4"]
         );
 
         let mut xai = crate::xai::xai_grok_profile();
@@ -1858,7 +1867,7 @@ mod tests {
         let token = codex_access_token_for_tests();
         assert_eq!(
             fetch_remote_models(&codex, Some(&token)).unwrap(),
-            vec!["openai-codex/gpt-5.6-sol"]
+            vec!["openai_codex/gpt-5.6-sol"]
         );
     }
 
@@ -2122,7 +2131,7 @@ mod tests {
         assert!(!cache.model_accepts_image_input("openai/gpt-4.1-mini"));
         assert!(cache.model_accepts_image_input("openai/gpt-4o"));
         assert!(
-            cache.model_accepts_image_input("openai-codex/gpt-4o"),
+            cache.model_accepts_image_input("openai_codex/gpt-4o"),
             "ChatGPT Codex route must inherit openai models.dev image input"
         );
         assert!(!cache.model_accepts_image_input("unknown/model"));
@@ -2152,7 +2161,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            cache.model_effort_options("openai-codex/gpt-5.2"),
+            cache.model_effort_options("openai_codex/gpt-5.2"),
             Some(vec![
                 "low".into(),
                 "medium".into(),
@@ -2172,7 +2181,7 @@ mod tests {
             })
         );
         assert_eq!(
-            cache.model_limits("openai-codex/gpt-4.1-mini"),
+            cache.model_limits("openai_codex/gpt-4.1-mini"),
             Some(CatalogLimits {
                 context: 128_000,
                 output: 16_384
@@ -2187,9 +2196,9 @@ mod tests {
     #[test]
     fn image_input_aliases_openai_api_and_codex_routes() {
         assert_eq!(
-            image_input_candidates("openai-codex/gpt-5.6-sol"),
+            image_input_candidates("openai_codex/gpt-5.6-sol"),
             vec![
-                "openai-codex/gpt-5.6-sol".to_string(),
+                "openai_codex/gpt-5.6-sol".to_string(),
                 "openai/gpt-5.6-sol".to_string()
             ]
         );
@@ -2204,9 +2213,9 @@ mod tests {
                 BTreeMap::new(),
             )
             .unwrap();
-        assert!(cache.model_accepts_image_input("openai-codex/gpt-5.6-sol"));
+        assert!(cache.model_accepts_image_input("openai_codex/gpt-5.6-sol"));
         assert!(cache.model_accepts_image_input("openai/gpt-5.6-sol"));
-        assert!(!cache.model_accepts_image_input("openai-codex/mystery"));
+        assert!(!cache.model_accepts_image_input("openai_codex/mystery"));
     }
 
     #[test]

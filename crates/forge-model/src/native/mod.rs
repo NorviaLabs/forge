@@ -588,7 +588,7 @@ pub(super) mod tests {
             .unwrap();
         assert_eq!(target.profile_id, "openai_codex");
         assert_eq!(target.bare_model, "gpt-5");
-        assert_eq!(target.model, "openai-codex/gpt-5");
+        assert_eq!(target.model, "openai_codex/gpt-5");
         assert_eq!(wire, WireKind::Responses);
 
         let (target, _) = client

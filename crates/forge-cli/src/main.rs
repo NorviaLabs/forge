@@ -277,14 +277,11 @@ fn resolve_route_id(model: &str, explicit: Option<&str>) -> anyhow::Result<Optio
         .split_once('/')
         .map(|(prefix, _)| prefix)
         .unwrap_or(model);
+    // The profile id is the prefix; old prefixes and aliases still resolve.
     let mut matches = registry
-        .profiles()
-        .iter()
-        .filter(|profile| {
-            profile.model_provider_prefix.eq_ignore_ascii_case(prefix)
-                || profile.id.eq_ignore_ascii_case(prefix)
-        })
+        .profile_for_model(&format!("{prefix}/"))
         .map(|profile| profile.route_id().to_string())
+        .into_iter()
         .collect::<Vec<_>>();
     matches.sort_unstable();
     matches.dedup();

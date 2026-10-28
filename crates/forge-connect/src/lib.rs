@@ -46,6 +46,7 @@ pub use import::{
     discover_logins, discover_logins_in, login_for_profile, xdg_data_home, DiscoveredLogin,
     DiscoveredSecret,
 };
+pub use normalize::normalize_saved_model_id;
 pub use oauth_dispatch::OauthError;
 pub use oauth_rfc8628::{
     try_open_browser, Rfc8628Client, Rfc8628Error, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,

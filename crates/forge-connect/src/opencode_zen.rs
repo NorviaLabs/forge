@@ -33,6 +33,6 @@ mod tests {
         assert!(p
             .default_models
             .iter()
-            .all(|m| m.starts_with("opencode-zen/")));
+            .all(|m| m.starts_with("opencode_zen/")));
     }
 }

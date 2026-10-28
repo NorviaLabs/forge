@@ -59,6 +59,9 @@ fn parse_builtin_specs() -> Vec<ProviderSpec> {
         })
         .map(|mut spec| {
             spec.origin = SpecOrigin::Builtin;
+            // A profile's id is its model prefix; lists are stored bare.
+            spec.model_provider_prefix = spec.id.clone();
+            spec.default_models = crate::normalize::normalize_models(&spec, &spec.default_models);
             spec
         })
         .collect()
