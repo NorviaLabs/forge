@@ -5,6 +5,7 @@ mod atomic;
 mod auth;
 mod catalog;
 mod cost;
+mod credentials;
 mod import;
 mod normalize;
 mod oauth_dispatch;
@@ -18,6 +19,7 @@ mod opencode_zen;
 mod preferences;
 mod profile;
 mod registry;
+mod resolve;
 mod route;
 mod selection;
 mod service;
@@ -32,11 +34,12 @@ mod xai;
 pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
 pub use auth::{AuthMode, OauthPending, OauthTokens};
 pub use catalog::{
-    credential_for_catalog, fetch_remote_models, models_for_picker, refresh_models_dev_registry,
-    refresh_profile_catalog, runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError,
-    CatalogLimits, CatalogSource, ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
+    fetch_remote_models, models_for_picker, refresh_models_dev_registry, refresh_profile_catalog,
+    runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError, CatalogLimits,
+    CatalogSource, ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
+pub use credentials::Credentials;
 pub use import::{
     discover_logins, discover_logins_in, login_for_profile, xdg_data_home, DiscoveredLogin,
     DiscoveredSecret,
@@ -74,6 +77,10 @@ pub use registry::{
     builtin_registry, credential_env_names, loaded_registry, loaded_registry_from,
     save_custom_provider, save_manual_model, update_custom_provider, ConnectRegistry,
 };
+pub use resolve::{
+    env_names_for, resolve, winning_env_var, Credential, CredentialError, CredentialValue,
+    ResolvedProfile, RouteDefinition, RouteTable,
+};
 pub use route::{
     group_routes, normalize_model_id, route_id_for_profile, route_model_id, ModelPickerEntry,
     ModelRoute,
@@ -83,7 +90,7 @@ pub use service::{
     format_connected, handle_connect_action, has_connected_profile, needs_tui_api_key_prompt,
     needs_tui_oauth, parse_connect_args, ConnectAction, ConnectError, ConnectService,
 };
-pub use store::{resolve_connected, resolve_key, CredentialStore, StoreError};
+pub use store::{CredentialStore, StoreError};
 pub use verify::VerifyError;
 pub use xai::{xai_grok_profile, PROFILE_ID as XAI_PROFILE_ID};
 

@@ -221,15 +221,17 @@ pub fn builtin_registry() -> ConnectRegistry {
     r
 }
 
-/// Every credential env name a registry's profiles read (`api_key_env`),
-/// deduplicated in registry order. Sessions strip these from model-triggered
-/// child processes, so custom profiles' key names are covered too.
+/// Every credential env name a registry's profiles read: each key
+/// profile's generated `FORGE_<PROFILE_ID>_API_KEY` and every `api_key_env`
+/// name, deduplicated in registry order. Sessions strip these from
+/// model-triggered child processes, so custom profiles' key names are
+/// covered too.
 pub fn credential_env_names(registry: &ConnectRegistry) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for profile in registry.profiles() {
-        for name in &profile.api_key_env {
-            if !names.contains(name) {
-                names.push(name.clone());
+        for name in crate::resolve::env_names_for(profile).0 {
+            if !names.contains(&name) {
+                names.push(name);
             }
         }
     }

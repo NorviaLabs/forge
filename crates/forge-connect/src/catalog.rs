@@ -576,23 +576,16 @@ fn models_dev_model_is_agent_compatible(model: &serde_json::Value) -> bool {
         .is_some_and(|output| output.iter().any(|m| m.as_str() == Some("text")))
 }
 
-/// Resolve API key for catalog HTTP (env or store). OAuth access token for xAI.
-pub fn credential_for_catalog(profile: &ConnectProfile, store: &CredentialStore) -> Option<String> {
-    if profile.auth_mode.is_oauth() {
-        return store
-            .get_oauth(&profile.id)
-            .ok()
-            .flatten()
-            .map(|t| t.access_token)
-            .filter(|s| {
-                let s = s.trim();
-                !s.is_empty() && !s.starts_with("fixture-") && s != "fixture-access-token"
-            });
-    }
-    resolve_key(&profile.api_key_env, &profile.id, store)
+/// The credential for a catalog request, through the resolver's precedence.
+/// Fixture OAuth tokens and flagged credentials read as absent.
+pub(crate) fn credential_for_catalog(
+    profile: &ConnectProfile,
+    store: &CredentialStore,
+) -> Option<String> {
+    resolve_key(profile, store)
         .ok()
         .flatten()
-        .map(|(k, _)| k)
+        .map(|(key, _)| key)
 }
 
 /// Fetch remote model ids and rewrite to provider/model strings. Network call.

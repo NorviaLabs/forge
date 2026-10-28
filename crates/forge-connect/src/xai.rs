@@ -14,7 +14,8 @@ pub fn xai_grok_profile() -> ProviderSpec {
         title: "xAI Grok".into(),
         description: "Grok via xAI OAuth (not API key); xai/* models".into(),
         auth_mode: AuthMode::xai_oauth(),
-        api_key_env: vec![], // OAuth primary — no API key env for connect UX
+        // An xAI API key in env beats the stored OAuth login (design E3b).
+        api_key_env: vec!["XAI_API_KEY".into(), "GROK_CODE_XAI_API_KEY".into()],
         base_url: "https://api.x.ai/v1".into(),
         default_models: vec!["xai/grok-3".into()],
         models_dev_providers: vec!["xai".into()],
@@ -69,7 +70,7 @@ mod tests {
         assert!(p.auth_mode.is_oauth());
         assert!(p.rejects_api_key_cli());
         assert!(!p.needs_tui_api_key_prompt());
-        assert!(p.api_key_env.is_empty());
+        assert_eq!(p.api_key_env, vec!["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
         assert!(p.default_model().unwrap().starts_with("xai/"));
     }
 

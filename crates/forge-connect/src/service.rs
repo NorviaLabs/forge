@@ -110,7 +110,7 @@ impl<'a> ConnectService<'a> {
     pub fn list_lines(&self) -> Result<Vec<String>, ConnectError> {
         let mut lines = Vec::new();
         for p in self.registry.profiles() {
-            let connected = resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some();
+            let connected = resolve_connected(p, self.store)?.is_some();
             let active = self
                 .active_profile_id
                 .as_deref()
@@ -137,13 +137,13 @@ impl<'a> ConnectService<'a> {
     pub fn status(&self) -> Result<ConnectStatus, ConnectError> {
         let mut connected = Vec::new();
         for p in self.registry.profiles() {
-            if resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some() {
+            if resolve_connected(p, self.store)?.is_some() {
                 connected.push(p.id.clone());
             }
         }
         let key_source = if let Some(ref id) = self.active_profile_id {
             if let Some(p) = self.registry.get(id) {
-                resolve_connected(&p.api_key_env, &p.id, self.store)?
+                resolve_connected(p, self.store)?
             } else {
                 None
             }
@@ -182,7 +182,7 @@ impl<'a> ConnectService<'a> {
 
         let (key, key_source) = if let Some(k) = api_key.map(str::trim).filter(|s| !s.is_empty()) {
             (k.to_string(), KeySource::Provided)
-        } else if let Some((k, src)) = resolve_key(&profile.api_key_env, &profile.id, self.store)? {
+        } else if let Some((k, src)) = resolve_key(&profile, self.store)? {
             (k, src)
         } else if profile.id == crate::ollama::PROFILE_ID {
             // Local Ollama does not require a cloud API key.
@@ -473,41 +473,11 @@ impl<'a> ConnectService<'a> {
         &self,
         profile_id: &str,
     ) -> Result<Option<OauthTokens>, ConnectError> {
-        let Some(tok) = self.store.get_oauth(profile_id)? else {
-            return Ok(None);
-        };
-        let at = tok.access_token.trim();
-        if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
+        if self.store.get_oauth(profile_id)?.is_none() {
             return Ok(None);
         }
-        // Refresh ~5 minutes before expiry (or when already expired).
-        let skew = std::time::Duration::from_secs(5 * 60);
-        if !tok.needs_refresh(skew) {
-            return Ok(Some(tok));
-        }
-        let Some(refresh) = tok
-            .refresh_token
-            .as_deref()
-            .map(str::trim)
-            .filter(|r| !r.is_empty())
-            .map(|s| s.to_string())
-        else {
-            // No refresh token — return existing access token and let upstream fail if expired.
-            return Ok(Some(tok));
-        };
         let profile = self.profile_or_err(profile_id)?;
-        let AuthMode::Oauth { .. } = &profile.auth_mode else {
-            return Ok(Some(tok));
-        };
-        match OauthDispatcher::refresh(&profile, &refresh) {
-            Ok(fresh) => {
-                self.store.set_oauth(profile_id, fresh.clone())?;
-                Ok(Some(fresh))
-            }
-            Err(error) => Err(ConnectError::Oauth(OauthError::Message(format!(
-                "token refresh failed ({error}); run `/connect {profile_id}` again"
-            )))),
-        }
+        fresh_oauth_tokens(&profile, self.store)
     }
 
     pub fn provider_env_for_profile(
@@ -559,7 +529,7 @@ impl<'a> ConnectService<'a> {
         &self,
         profile: &ConnectProfile,
     ) -> Result<Vec<(String, String)>, ConnectError> {
-        let Some((key, _)) = resolve_key(&profile.api_key_env, &profile.id, self.store)? else {
+        let Some((key, _)) = resolve_key(profile, self.store)? else {
             return Ok(Vec::new());
         };
         let mut out = profile
@@ -618,7 +588,7 @@ impl ConnectService<'_> {
     pub fn connected_profiles(&self) -> Result<Vec<ConnectProfile>, ConnectError> {
         let mut out = Vec::new();
         for p in self.registry.profiles() {
-            if resolve_connected(&p.api_key_env, &p.id, self.store)?.is_some() {
+            if resolve_connected(p, self.store)?.is_some() {
                 // Only count OAuth when tokens are non-fixture.
                 if p.auth_mode.is_oauth() {
                     if let Some(tok) = self.store.get_oauth(&p.id)? {
@@ -662,6 +632,49 @@ impl ConnectService<'_> {
             model,
             key_source,
         })
+    }
+}
+
+/// The stored OAuth tokens for `profile`, refreshed first when they expire
+/// within five minutes. Fixture tokens read as absent.
+pub(crate) fn fresh_oauth_tokens(
+    profile: &ConnectProfile,
+    store: &CredentialStore,
+) -> Result<Option<OauthTokens>, ConnectError> {
+    let profile_id = profile.id.as_str();
+    let Some(tok) = store.get_oauth(profile_id)? else {
+        return Ok(None);
+    };
+    let at = tok.access_token.trim();
+    if at.is_empty() || at.starts_with("fixture-") || at == "fixture-access-token" {
+        return Ok(None);
+    }
+    // Refresh ~5 minutes before expiry (or when already expired).
+    let skew = std::time::Duration::from_secs(5 * 60);
+    if !tok.needs_refresh(skew) {
+        return Ok(Some(tok));
+    }
+    let Some(refresh) = tok
+        .refresh_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(|s| s.to_string())
+    else {
+        // No refresh token — return existing access token and let upstream fail if expired.
+        return Ok(Some(tok));
+    };
+    if !profile.effective_auth().is_oauth() {
+        return Ok(Some(tok));
+    }
+    match OauthDispatcher::refresh(profile, &refresh) {
+        Ok(fresh) => {
+            store.set_oauth(profile_id, fresh.clone())?;
+            Ok(Some(fresh))
+        }
+        Err(error) => Err(ConnectError::Oauth(OauthError::Message(format!(
+            "token refresh failed ({error}); run `/connect {profile_id}` again"
+        )))),
     }
 }
 

@@ -355,61 +355,47 @@ impl CredentialStore {
     }
 }
 
-/// Resolve API key: env then file (ApiKey profiles).
-pub fn resolve_key(
-    profile_env_names: &[String],
-    profile_id: &str,
+/// The winning credential for `profile` and where it came from, through the
+/// resolver's precedence (design §3). A missing or flagged credential is
+/// `None`.
+pub(crate) fn resolve_key(
+    profile: &crate::profile::ProviderSpec,
     store: &CredentialStore,
 ) -> Result<Option<(String, KeySource)>, StoreError> {
-    for name in profile_env_names {
-        if let Ok(v) = std::env::var(name) {
-            if !v.trim().is_empty() {
-                return Ok(Some((v, KeySource::Env)));
-            }
-        }
+    use crate::resolve::CredentialError;
+    match crate::resolve::credential_from_store(profile, store, None) {
+        Ok(found) => Ok(found.map(|(value, source)| (value.secret, source))),
+        Err(CredentialError::Missing | CredentialError::AuthRequired) => Ok(None),
+        Err(CredentialError::Store(message)) => Err(StoreError::Io(std::io::Error::other(message))),
     }
-    if let Some(k) = store.get_api_key(profile_id)? {
-        if !k.trim().is_empty() {
-            return Ok(Some((k, KeySource::File)));
-        }
-    }
-    Ok(None)
 }
 
-/// Whether profile has usable credentials (API key path or OAuth tokens).
-pub fn resolve_connected(
-    profile_env_names: &[String],
-    profile_id: &str,
+/// Where a connected profile's credential comes from; `None` when it has
+/// none or its stored credential is flagged.
+pub(crate) fn resolve_connected(
+    profile: &crate::profile::ProviderSpec,
     store: &CredentialStore,
 ) -> Result<Option<KeySource>, StoreError> {
-    if store.needs_authentication(profile_id)? {
-        return Ok(None);
-    }
-    let (has_oauth, has_key) = store.with_file(|file| {
-        (
-            file.oauth.contains_key(profile_id),
-            file.keys
-                .get(profile_id)
-                .is_some_and(|key| !key.trim().is_empty()),
-        )
-    })?;
-    if has_oauth {
-        return Ok(Some(KeySource::Oauth));
-    }
-    for name in profile_env_names {
-        if let Ok(value) = std::env::var(name) {
-            if !value.trim().is_empty() {
-                return Ok(Some(KeySource::Env));
-            }
-        }
-    }
-    Ok(has_key.then_some(KeySource::File))
+    Ok(resolve_key(profile, store)?.map(|(_, source)| source))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A key profile reading only `env` (plus its generated name).
+    fn key_profile(id: &str, env: &[&str]) -> crate::profile::ProviderSpec {
+        let mut spec = crate::profile::test_spec(
+            id,
+            crate::AuthMode::ApiKey {
+                tui_always_prompt: true,
+            },
+            vec![],
+        );
+        spec.api_key_env = env.iter().map(|name| name.to_string()).collect();
+        spec
+    }
 
     /// A profile flagged while its key came from env has nothing stored, yet
     /// disconnecting it must still drop the flag.
@@ -479,9 +465,11 @@ mod tests {
             store.get_api_key("custom").unwrap().as_deref(),
             Some("secret")
         );
-        assert!(resolve_connected(&[], "custom", &store).unwrap().is_none());
+        let _env = crate::test_env::EnvGuard::new(&["FORGE_CUSTOM_API_KEY"]);
+        let custom = key_profile("custom", &[]);
+        assert!(resolve_connected(&custom, &store).unwrap().is_none());
         store.set_api_key("custom", "replacement").unwrap();
-        assert!(resolve_connected(&[], "custom", &store).unwrap().is_some());
+        assert!(resolve_connected(&custom, &store).unwrap().is_some());
     }
 
     #[test]
@@ -516,8 +504,9 @@ mod tests {
         assert_eq!(t.access_token, "at");
         assert_eq!(t.refresh_token.as_deref(), Some("rt"));
         assert!(store.is_connected("xai").unwrap());
+        let _env = crate::test_env::EnvGuard::new(&["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
         assert_eq!(
-            resolve_connected(&[], "xai", &store).unwrap(),
+            resolve_connected(&crate::xai::xai_grok_profile(), &store).unwrap(),
             Some(KeySource::Oauth)
         );
     }
@@ -560,10 +549,10 @@ mod tests {
     fn resolve_prefers_env() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
-        store.set_api_key("xai", "from-file").unwrap();
-        let guard = crate::test_env::EnvGuard::new(&["FORGE_TEST_XAI_KEY"]);
+        store.set_api_key("demo", "from-file").unwrap();
+        let guard = crate::test_env::EnvGuard::new(&["FORGE_TEST_XAI_KEY", "FORGE_DEMO_API_KEY"]);
         guard.set("FORGE_TEST_XAI_KEY", "from-env");
-        let r = resolve_key(&["FORGE_TEST_XAI_KEY".into()], "xai", &store)
+        let r = resolve_key(&key_profile("demo", &["FORGE_TEST_XAI_KEY"]), &store)
             .unwrap()
             .unwrap();
         assert_eq!(r.0, "from-env");
@@ -744,32 +733,32 @@ mod tests {
     #[test]
     fn resolve_key_prefers_the_environment_then_falls_back_to_the_file() {
         const KEY: &str = "FORGE_TEST_STORE_RESOLVE_KEY";
-        let guard = crate::test_env::EnvGuard::new(&[KEY]);
+        let guard = crate::test_env::EnvGuard::new(&[KEY, "FORGE_DEMO_API_KEY"]);
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
-        let names = vec![KEY.to_string()];
+        let demo = key_profile("demo", &[KEY]);
 
         // Neither source has anything.
-        assert_eq!(resolve_key(&names, "xai", &store).unwrap(), None);
+        assert_eq!(resolve_key(&demo, &store).unwrap(), None);
 
         // File only.
-        store.set_api_key("xai", "from-file").unwrap();
+        store.set_api_key("demo", "from-file").unwrap();
         assert_eq!(
-            resolve_key(&names, "xai", &store).unwrap(),
+            resolve_key(&demo, &store).unwrap(),
             Some(("from-file".to_string(), KeySource::File))
         );
 
         // The environment wins when both are present.
         guard.set(KEY, "from-env");
         assert_eq!(
-            resolve_key(&names, "xai", &store).unwrap(),
+            resolve_key(&demo, &store).unwrap(),
             Some(("from-env".to_string(), KeySource::Env))
         );
 
         // A blank environment value is ignored rather than masking the file.
         guard.set(KEY, "   ");
         assert_eq!(
-            resolve_key(&names, "xai", &store).unwrap(),
+            resolve_key(&demo, &store).unwrap(),
             Some(("from-file".to_string(), KeySource::File))
         );
     }
