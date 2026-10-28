@@ -164,7 +164,9 @@ pub fn effort(
 /// its profile from the loaded registry by prefix or legacy alias. A model
 /// no profile serves has no adjustable effort.
 pub fn effort_for_model(model: &str) -> EffortSupport {
-    let (prefix, bare) = model.split_once('/').unwrap_or(("openai", model));
+    let Some((prefix, bare)) = model.split_once('/') else {
+        return EffortSupport::none(EffortLevel::Medium);
+    };
     let registry = crate::loaded_registry();
     let profile = registry.profiles().iter().find(|profile| {
         profile.id == prefix

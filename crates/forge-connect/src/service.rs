@@ -185,12 +185,9 @@ impl<'a> ConnectService<'a> {
             (k.to_string(), KeySource::Provided)
         } else if let Some((k, src)) = resolve_key(&profile, self.credentials.store())? {
             (k, src)
-        } else if profile.id == crate::ollama::PROFILE_ID {
-            // Local Ollama does not require a cloud API key.
-            (
-                crate::ollama::LOCAL_PLACEHOLDER_KEY.to_string(),
-                KeySource::Provided,
-            )
+        } else if profile.effective_auth().kind == crate::AuthKind::ApiKeyOptional {
+            // A key-optional profile (a local server) connects without one.
+            (OPTIONAL_KEY_PLACEHOLDER.to_string(), KeySource::Provided)
         } else {
             return Err(ConnectError::MissingKey(profile.id.clone()));
         };
@@ -300,7 +297,8 @@ impl<'a> ConnectService<'a> {
         &mut self,
         pending: &OauthPending,
     ) -> Result<Option<ConnectOutcome>, ConnectError> {
-        if pending.profile_id != "xai" && pending.client_id == "stub" {
+        // An offline stub session has nothing to poll.
+        if pending.client_id == "stub" {
             return Ok(None);
         }
         match OauthDispatcher::poll(pending)? {
@@ -571,6 +569,10 @@ pub(crate) fn fresh_oauth_tokens(
         )))),
     }
 }
+
+/// Stored for a key-optional profile connected without a key; servers that
+/// need no key ignore it.
+const OPTIONAL_KEY_PLACEHOLDER: &str = "local";
 
 /// Check a key before it is saved (design §5): its length against
 /// `min_key_len`, then the probe of the profile's catalog kind unless
@@ -1149,7 +1151,8 @@ mod tests {
         let pending = svc.start_oauth("xai").unwrap();
         assert_eq!(pending.profile_id, "xai");
         assert!(pending.operator_instructions().contains("xAI"));
-        assert!(svc.poll_oauth_once(&pending).is_err());
+        // A stub session has nothing to poll, for any provider.
+        assert!(matches!(svc.poll_oauth_once(&pending), Ok(None)));
         assert!(svc
             .complete_oauth_device_flow(&pending, std::time::Duration::from_millis(1))
             .unwrap_err()

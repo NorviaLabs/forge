@@ -63,7 +63,7 @@ pub(super) fn prompt_projection(
 /// The prompt-cache namespace for `wire`.
 pub(super) fn cache_key(wire: WireKind) -> &'static str {
     match wire {
-        WireKind::AnthropicMessages => "anthropic",
+        WireKind::AnthropicMessages => "anthropic_messages",
         WireKind::Responses => "codex",
         WireKind::ChatCompletions => "openai_compat",
     }

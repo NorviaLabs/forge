@@ -9,8 +9,6 @@ pub const PROFILE_ID: &str = crate::builtin::profile_ids::OLLAMA;
 /// Default local Ollama OpenAI-compatible base.
 pub const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 pub const API_BASE_ENV: &str = "OLLAMA_API_BASE";
-/// Stored / exported placeholder when no optional key is set (Ollama ignores it).
-pub const LOCAL_PLACEHOLDER_KEY: &str = "ollama";
 
 /// The embedded built-in definition (`providers/*.toml`).
 pub fn ollama_profile() -> ProviderSpec {

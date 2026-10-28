@@ -756,7 +756,7 @@ pub(super) mod tests {
         };
         assert_eq!(
             client.prompt_transport_key(&request("anthropic/claude")),
-            "anthropic"
+            "anthropic_messages"
         );
         assert_eq!(
             client.prompt_transport_key(&request("openai_codex/gpt-5")),

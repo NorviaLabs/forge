@@ -460,19 +460,12 @@ pub fn refresh_models_dev_registry(
                     }
                     if let Some(model_limits) = models_dev_limits(model) {
                         limits.insert(id.clone(), model_limits);
-                        // ChatGPT Codex and the OpenAI API share models.dev's
-                        // `openai` row; stamp both route prefixes.
-                        for alias in image_input_route_aliases(&id) {
-                            limits.insert(alias, model_limits);
-                        }
                     }
                     if models_dev_image_input(model) {
+                        // Each profile stamps rows under its own prefix, so a
+                        // profile sharing models.dev's `openai` row (ChatGPT)
+                        // gets its own copy through `models_dev_providers`.
                         image_input.insert(id.clone());
-                        // ChatGPT Codex and the OpenAI API share models.dev's
-                        // `openai` row; stamp both route prefixes.
-                        for alias in image_input_route_aliases(&id) {
-                            image_input.insert(alias);
-                        }
                     }
                     let effort = models_dev_effort_options(model);
                     insert_effort_metadata(&mut effort_by_model, &id, effort);
@@ -511,9 +504,7 @@ fn models_dev_limits(model: &serde_json::Value) -> Option<CatalogLimits> {
 }
 
 fn image_input_candidates(model_id: &str) -> Vec<String> {
-    let mut ids = vec![model_id.to_string()];
-    ids.extend(image_input_route_aliases(model_id));
-    ids
+    vec![model_id.to_string()]
 }
 
 fn metadata_id_candidates(model_id: &str) -> Vec<String> {
@@ -525,10 +516,7 @@ fn insert_effort_metadata(
     model_id: &str,
     values: Vec<String>,
 ) {
-    effort.insert(model_id.to_string(), values.clone());
-    for alias in image_input_route_aliases(model_id) {
-        effort.insert(alias, values.clone());
-    }
+    effort.insert(model_id.to_string(), values);
 }
 
 fn models_dev_effort_options(model: &serde_json::Value) -> Vec<String> {
@@ -560,17 +548,6 @@ fn models_dev_effort_options(model: &serde_json::Value) -> Vec<String> {
         }
     }
     values
-}
-
-fn image_input_route_aliases(model_id: &str) -> Vec<String> {
-    let Some((prefix, rest)) = model_id.split_once('/') else {
-        return Vec::new();
-    };
-    match prefix {
-        "openai" => vec![format!("openai_codex/{rest}")],
-        "openai_codex" => vec![format!("openai/{rest}")],
-        _ => Vec::new(),
-    }
 }
 
 fn models_dev_image_input(model: &serde_json::Value) -> bool {
@@ -2110,7 +2087,13 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
-        let profiles = vec![openai_profile(), crate::xai::xai_grok_profile()];
+        // ChatGPT shares models.dev's `openai` row through its own
+        // `models_dev_providers`, so it stamps that row under its prefix.
+        let profiles = vec![
+            openai_profile(),
+            crate::openai_codex::openai_codex_profile(),
+            crate::xai::xai_grok_profile(),
+        ];
         cache
             .save(&CatalogFile {
                 registry_fetched_at: Some(ModelCatalogCache::now_secs()),
@@ -2191,31 +2174,6 @@ mod tests {
         assert_eq!(cache.model_limits("openai/gpt-4o"), None);
         assert_eq!(cache.model_limits("unknown/model"), None);
         assert_eq!(cache.model_limits(""), None);
-    }
-
-    #[test]
-    fn image_input_aliases_openai_api_and_codex_routes() {
-        assert_eq!(
-            image_input_candidates("openai_codex/gpt-5.6-sol"),
-            vec![
-                "openai_codex/gpt-5.6-sol".to_string(),
-                "openai/gpt-5.6-sol".to_string()
-            ]
-        );
-        let dir = tempdir().unwrap();
-        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
-        cache
-            .put_registry(
-                BTreeMap::new(),
-                BTreeMap::new(),
-                BTreeMap::new(),
-                BTreeSet::from(["openai/gpt-5.6-sol".into()]),
-                BTreeMap::new(),
-            )
-            .unwrap();
-        assert!(cache.model_accepts_image_input("openai_codex/gpt-5.6-sol"));
-        assert!(cache.model_accepts_image_input("openai/gpt-5.6-sol"));
-        assert!(!cache.model_accepts_image_input("openai_codex/mystery"));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! profile each one belongs to. It is also the source of the reserved ids a
 //! custom profile may not take.
 
-use crate::profile::ProviderSpec;
+use crate::profile::{ProviderSpec, WireKind};
 
 /// `(profile id, old prefixes read as that profile)`.
 const LEGACY_PREFIXES: &[(&str, &[&str])] = &[
@@ -109,6 +109,16 @@ pub fn normalize_saved_model_id(model: &str) -> String {
         .find(|(_, prefixes)| prefixes.contains(&prefix))
         .map(|(id, _)| format!("{id}/{bare}"))
         .unwrap_or_else(|| model.to_string())
+}
+
+/// The wire a legacy `transport` value maps to.
+pub(crate) fn wire_from_legacy_transport(transport: &str) -> Option<WireKind> {
+    match transport {
+        "openai-compat" => Some(WireKind::ChatCompletions),
+        "anthropic" => Some(WireKind::AnthropicMessages),
+        "codex" => Some(WireKind::Responses),
+        _ => None,
+    }
 }
 
 /// Normalize a model list in place, dropping empties and duplicates.

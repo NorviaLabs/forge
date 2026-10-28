@@ -25,7 +25,7 @@ impl PromptTransport {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::OpenaiCompat => "openai_compat",
-            Self::Anthropic => "anthropic",
+            Self::Anthropic => "anthropic_messages",
             Self::Codex => "codex",
             Self::Mock => "mock",
         }

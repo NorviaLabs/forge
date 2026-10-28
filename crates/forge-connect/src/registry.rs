@@ -560,8 +560,12 @@ fn check_custom_keys(value: &toml::Value) -> Result<(), String> {
             ))
         }
     }
-    match table.get("transport").and_then(toml::Value::as_str) {
-        None | Some("openai-compat" | "anthropic") => {}
+    match table
+        .get("transport")
+        .and_then(toml::Value::as_str)
+        .map(crate::normalize::wire_from_legacy_transport)
+    {
+        None | Some(Some(WireKind::ChatCompletions | WireKind::AnthropicMessages)) => {}
         Some(_) => {
             return Err(
                 "user providers may only set transport = \"openai-compat\" or \"anthropic\"".into(),
@@ -627,7 +631,7 @@ fn normalize_spec(mut spec: ProviderSpec) -> ProviderSpec {
         spec.wire = spec
             .legacy_transport
             .as_deref()
-            .and_then(crate::profile::wire_from_legacy_transport);
+            .and_then(crate::normalize::wire_from_legacy_transport);
     }
     // Consumed: the raw legacy values are not part of the loaded profile.
     spec.legacy_auth_mode = None;

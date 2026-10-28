@@ -113,16 +113,6 @@ pub(crate) fn auth_from_legacy_mode(mode: &toml::Value) -> Option<AuthSpec> {
     }))
 }
 
-/// The wire a legacy `transport` value maps to.
-pub(crate) fn wire_from_legacy_transport(transport: &str) -> Option<WireKind> {
-    match transport {
-        "openai-compat" => Some(WireKind::ChatCompletions),
-        "anthropic" => Some(WireKind::AnthropicMessages),
-        "codex" => Some(WireKind::Responses),
-        _ => None,
-    }
-}
-
 /// A built-in field the user may override in `[provider_overrides.<id>]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

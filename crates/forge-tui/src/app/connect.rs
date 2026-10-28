@@ -431,8 +431,7 @@ impl TuiApp {
             // Only switch the active model when it still looks like the forge default
             // (don't clobber an explicit --model / test runtime label).
             let cur = self.runtime.model_label.as_str();
-            let looks_default =
-                cur.is_empty() || cur == "openai/gpt-4.1-mini" || cur == "m" || cur == "mock";
+            let looks_default = cur.is_empty() || cur == "m" || cur == "mock";
             if looks_default {
                 let saved_model = saved_selection
                     .as_ref()
