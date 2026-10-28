@@ -6,6 +6,7 @@ mod auth;
 mod catalog;
 mod cost;
 mod credentials;
+pub mod effort;
 mod import;
 mod normalize;
 mod oauth_dispatch;

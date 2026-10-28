@@ -150,6 +150,7 @@ pub(super) struct Target {
     credential: Option<CredentialValue>,
     static_headers: Vec<StaticHeader>,
     session_header: Option<SessionHeaderKind>,
+    definition: forge_connect::RouteDefinition,
 }
 
 /// User agent OpenCode's gateway expects with its session header.
@@ -165,6 +166,15 @@ fn opencode_session_id(req: &ModelRequest) -> &str {
 }
 
 impl Target {
+    /// The effort levels this model takes (`forge_connect::effort`).
+    pub(super) fn effort_support(&self) -> forge_connect::effort::EffortSupport {
+        forge_connect::effort::effort(
+            &self.definition,
+            &self.bare_model,
+            &forge_connect::ModelCatalogCache::user_default(),
+        )
+    }
+
     /// Add the profile's fixed headers, its session header, and the
     /// credential per its `attach`. A missing credential fails before
     /// sending unless the profile's key is optional.
@@ -292,6 +302,7 @@ impl NativeModelClient {
                 credential: value,
                 static_headers: definition.static_headers.clone(),
                 session_header: definition.session_header,
+                definition: definition.clone(),
             },
             wire,
         ))

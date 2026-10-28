@@ -28,13 +28,7 @@ impl ReasoningEffort {
         // gets exercised without the user having to configure it by hand.
         // This costs real reasoning tokens and latency on every new session
         // by default; revisit before shipping.
-        let options = Self::options_for_model(model);
-        let family = family_default(model);
-        if options.contains(&family) {
-            family
-        } else {
-            preferred_default(&options).unwrap_or(family)
-        }
+        model_effort(model).default
     }
 
     /// Display label for the picker UI. Differs from `Display`/the wire
@@ -83,10 +77,11 @@ impl ReasoningEffort {
     /// back to the last-known built-in family lists only when that row is
     /// missing (offline / first run).
     pub fn options_for_model(model: &str) -> Vec<Self> {
-        match catalog_effort_options(model) {
-            Some(options) if options.is_empty() => vec![family_default(model)],
-            Some(options) => options,
-            None => fallback_options_for_model(model),
+        let support = model_effort(model);
+        if support.options.is_empty() {
+            vec![support.default]
+        } else {
+            support.options
         }
     }
 
@@ -108,10 +103,7 @@ impl ReasoningEffort {
     }
 
     pub fn model_supports_effort(model: &str) -> bool {
-        match catalog_effort_options(model) {
-            Some(options) => options.len() > 1,
-            None => fallback_model_supports_effort(model),
-        }
+        model_effort(model).options.len() > 1
     }
 }
 
@@ -121,7 +113,7 @@ struct EffortCatalogMemo {
     path: PathBuf,
     modified: Option<SystemTime>,
     len: u64,
-    by_model: HashMap<String, Option<Vec<ReasoningEffort>>>,
+    by_model: HashMap<String, ModelEffort>,
 }
 
 fn effort_catalog_memo() -> &'static Mutex<EffortCatalogMemo> {
@@ -145,18 +137,33 @@ fn catalog_file_fingerprint(path: &std::path::Path) -> (Option<SystemTime>, u64)
     }
 }
 
-fn parse_catalog_effort_values(values: Vec<String>) -> Vec<ReasoningEffort> {
-    values
-        .into_iter()
-        .filter_map(|value| value.parse::<ReasoningEffort>().ok())
-        .filter(|effort| *effort != ReasoningEffort::Auto)
-        .collect()
+/// A model's effort levels and starting level, from
+/// `forge_connect::effort` (the one rule set the transports also use).
+#[derive(Debug, Clone)]
+struct ModelEffort {
+    options: Vec<ReasoningEffort>,
+    default: ReasoningEffort,
 }
 
-/// Catalog lookups sit on the footer render path (`display_label` every
-/// frame). Re-reading and parsing `model-catalog.toml` there blows the
-/// allocation budget, so memoize by process env + file fingerprint.
-fn catalog_effort_options(model: &str) -> Option<Vec<ReasoningEffort>> {
+impl From<forge_connect::effort::EffortLevel> for ReasoningEffort {
+    fn from(level: forge_connect::effort::EffortLevel) -> Self {
+        use forge_connect::effort::EffortLevel;
+        match level {
+            EffortLevel::Minimal => Self::Minimal,
+            EffortLevel::Low => Self::Low,
+            EffortLevel::Medium => Self::Medium,
+            EffortLevel::High => Self::High,
+            EffortLevel::XHigh => Self::XHigh,
+            EffortLevel::Max => Self::Max,
+        }
+    }
+}
+
+/// Effort lookups sit on the footer render path (`display_label` every
+/// frame). Resolving the profile and re-reading `model-catalog.toml` there
+/// blows the allocation budget, so memoize by process env + catalog file
+/// fingerprint.
+fn model_effort(model: &str) -> ModelEffort {
     let home = std::env::var("HOME").ok();
     let xdg_config = std::env::var("XDG_CONFIG_HOME").ok();
     let mut memo = effort_catalog_memo()
@@ -188,94 +195,15 @@ fn catalog_effort_options(model: &str) -> Option<Vec<ReasoningEffort>> {
         memo.by_model.clear();
     }
 
-    let value = cache
-        .model_effort_options(model)
-        .map(parse_catalog_effort_values);
+    let support = forge_connect::effort::effort_for_model(model);
+    let value = ModelEffort {
+        options: support.options.into_iter().map(Into::into).collect(),
+        default: support.default.into(),
+    };
     memo.by_model.insert(model.to_string(), value.clone());
     value
 }
 
-fn preferred_default(options: &[ReasoningEffort]) -> Option<ReasoningEffort> {
-    for candidate in [
-        ReasoningEffort::Medium,
-        ReasoningEffort::Low,
-        ReasoningEffort::High,
-    ] {
-        if options.contains(&candidate) {
-            return Some(candidate);
-        }
-    }
-    options.first().copied()
-}
-
-fn family_default(model: &str) -> ReasoningEffort {
-    if model.to_ascii_lowercase().starts_with("anthropic/") {
-        ReasoningEffort::Low
-    } else {
-        ReasoningEffort::Medium
-    }
-}
-
-fn fallback_options_for_model(model: &str) -> Vec<ReasoningEffort> {
-    use ReasoningEffort::*;
-    if !fallback_model_supports_effort(model) {
-        return vec![family_default(model)];
-    }
-    let model = model.to_ascii_lowercase();
-    if model.starts_with("openai-codex/") {
-        return vec![Minimal, Low, Medium, High, XHigh, Max];
-    }
-    if model.starts_with("anthropic/") {
-        let model_id = model.trim_start_matches("anthropic/");
-        let mut options = vec![Low, Medium, High];
-        if !(model_id.contains("4-6") || model_id.contains("opus-4-5")) {
-            options.push(XHigh);
-        }
-        return options;
-    }
-    vec![Minimal, Low, Medium, High, XHigh]
-}
-
-fn fallback_model_supports_effort(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    let model_id = model
-        .split_once('/')
-        .map(|(_, id)| id)
-        .unwrap_or(model.as_str());
-
-    if model.starts_with("openai-codex/") || model.starts_with("opencode-") {
-        return true;
-    }
-    if model.starts_with("openai/")
-        && ["gpt-5", "o1", "o3", "o4"]
-            .iter()
-            .any(|prefix| model_id.starts_with(prefix))
-    {
-        return true;
-    }
-    if (model.starts_with("xai/") || model.starts_with("grok/"))
-        && ["grok-4.3", "grok-4.5", "grok-4.20", "grok-4.6"]
-            .iter()
-            .any(|marker| model_id.contains(marker))
-    {
-        return true;
-    }
-    if model.starts_with("anthropic/")
-        && [
-            "sonnet-5",
-            "opus-4-8",
-            "opus-4-7",
-            "opus-4-6",
-            "sonnet-4-6",
-            "opus-4-5",
-        ]
-        .iter()
-        .any(|marker| model_id.contains(marker))
-    {
-        return true;
-    }
-    false
-}
 impl fmt::Display for ReasoningEffort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {

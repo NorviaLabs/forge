@@ -54,6 +54,7 @@ pub(super) async fn complete(
     apply_reasoning_effort(
         &mut body,
         model,
+        &target.effort_support(),
         req.reasoning_effort.as_deref(),
         req.thinking_enabled,
     );
@@ -490,6 +491,7 @@ fn finalize_tool_calls(
 fn apply_reasoning_effort(
     body: &mut Value,
     model: &str,
+    support: &forge_connect::effort::EffortSupport,
     reasoning_effort: Option<&str>,
     thinking_enabled: bool,
 ) {
@@ -511,27 +513,10 @@ fn apply_reasoning_effort(
     } else if effort == "max" {
         effort = "xhigh".into();
     }
-    let supported = catalog_supports_openai_effort(model).unwrap_or_else(|| {
-        let model_id = model.split_once('/').map(|(_, id)| id).unwrap_or(model);
-        model.starts_with("opencode-")
-            || (model.starts_with("openai/")
-                && ["gpt-5", "o1", "o3", "o4"]
-                    .iter()
-                    .any(|prefix| model_id.starts_with(prefix)))
-            || ((model.starts_with("xai/") || model.starts_with("grok/"))
-                && ["grok-4.3", "grok-4.5", "grok-4.20", "grok-4.6"]
-                    .iter()
-                    .any(|marker| model_id.contains(marker)))
-    });
+    let supported = support.supported();
     if supported {
         body["reasoning_effort"] = Value::String(effort);
     }
-}
-
-fn catalog_supports_openai_effort(model: &str) -> Option<bool> {
-    forge_connect::ModelCatalogCache::user_default()
-        .model_effort_options(model)
-        .map(|options| !options.is_empty())
 }
 
 #[cfg(test)]
@@ -616,7 +601,14 @@ mod tests {
     #[test]
     fn thinking_off_sends_none_effort() {
         let mut body = json!({});
-        apply_reasoning_effort(&mut body, "openai/gpt-5", Some("high"), false);
+        let support = forge_connect::effort::EffortSupport {
+            options: vec![
+                forge_connect::effort::EffortLevel::Low,
+                forge_connect::effort::EffortLevel::High,
+            ],
+            default: forge_connect::effort::EffortLevel::Low,
+        };
+        apply_reasoning_effort(&mut body, "openai/gpt-5", &support, Some("high"), false);
         assert!(body.get("reasoning_effort").is_none());
     }
 

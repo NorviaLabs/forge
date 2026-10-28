@@ -26,11 +26,6 @@ pub(super) fn messages_endpoint(base_url: &str) -> String {
     }
 }
 
-/// The bare model id the wire expects, dropping Forge's provider prefix.
-fn wire_model_id(model: &str) -> &str {
-    model.split_once('/').map(|(_, id)| id).unwrap_or(model)
-}
-
 /// POST a Messages request and stream the reply. Used by the Anthropic
 /// profile and by OpenCode's Messages-compatible models; they differ only in
 /// base URL, `attach`, and headers, which the target carries.
@@ -40,7 +35,6 @@ pub(super) async fn complete(
     target: Target,
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
-    let model = target.model.as_str();
     let (system, messages) = messages_body(&req, Some(client));
     let mut body = json!({
         "model": target.bare_model,
@@ -69,7 +63,12 @@ pub(super) async fn complete(
         apply_anthropic_prompt_cache(&mut body);
     }
     let reasoning_effort = req.reasoning_effort.as_deref();
-    apply_reasoning_settings(&mut body, model, reasoning_effort, req.thinking_enabled);
+    apply_reasoning_settings(
+        &mut body,
+        &target.effort_support(),
+        reasoning_effort,
+        req.thinking_enabled,
+    );
 
     let request = client
         .http
@@ -400,48 +399,31 @@ fn finalize_tool_uses(
 
 fn apply_reasoning_settings(
     body: &mut Value,
-    model: &str,
+    support: &forge_connect::effort::EffortSupport,
     reasoning_effort: Option<&str>,
     thinking_enabled: bool,
 ) {
+    use forge_connect::effort::EffortLevel;
     if !thinking_enabled {
         body["thinking"] = json!({"type": "disabled"});
     }
     let Some(raw_effort) = reasoning_effort else {
         return;
     };
-    let mut effort = raw_effort.trim().to_ascii_lowercase();
-    if effort.is_empty() || effort == "auto" {
+    let Some(mut effort) = EffortLevel::parse(raw_effort) else {
+        return;
+    };
+    if !support.supported() {
         return;
     }
-    if effort == "minimal" {
-        effort = "low".into();
+    if effort == EffortLevel::Minimal {
+        effort = EffortLevel::Low;
     }
-    let model_id = wire_model_id(model);
-    let supported = catalog_supports_anthropic_effort(model).unwrap_or_else(|| {
-        [
-            "sonnet-5",
-            "opus-4-8",
-            "opus-4-7",
-            "opus-4-6",
-            "sonnet-4-6",
-            "opus-4-5",
-        ]
-        .iter()
-        .any(|marker| model_id.contains(marker))
-    });
-    if supported {
-        if effort == "xhigh" && (model_id.contains("4-6") || model_id.contains("opus-4-5")) {
-            effort = "high".into();
-        }
-        body["output_config"] = json!({"effort": effort});
+    // A model without `xhigh` (Claude 4.6, Opus 4.5) takes its highest level.
+    if effort >= EffortLevel::XHigh && !support.options.contains(&effort) {
+        effort = EffortLevel::High;
     }
-}
-
-fn catalog_supports_anthropic_effort(model: &str) -> Option<bool> {
-    forge_connect::ModelCatalogCache::user_default()
-        .model_effort_options(model)
-        .map(|options| !options.is_empty())
+    body["output_config"] = json!({"effort": effort.as_str()});
 }
 
 #[cfg(test)]
@@ -455,12 +437,14 @@ mod tests {
     #[test]
     fn thinking_off_sends_disabled_mode() {
         let mut body = json!({});
-        apply_reasoning_settings(
-            &mut body,
-            "anthropic/claude-sonnet-4-6",
-            Some("high"),
-            false,
+        let support = forge_connect::effort::effort(
+            &forge_connect::RouteDefinition::from_spec(&forge_connect::anthropic_profile()),
+            "claude-sonnet-4-6",
+            &forge_connect::ModelCatalogCache::new(
+                std::env::temp_dir().join("forge-no-catalog.json"),
+            ),
         );
+        apply_reasoning_settings(&mut body, &support, Some("high"), false);
         assert_eq!(body["thinking"]["type"], "disabled");
         assert_eq!(body["output_config"]["effort"], "high");
     }
