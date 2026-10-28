@@ -77,12 +77,20 @@ impl CatalogError {
     }
 
     /// The credential was refused — re-authenticating is the fix.
+    /// No usable credential: none was given, or the provider returned 401.
+    /// A 403 refuses the request, not the credential (design §5).
     pub fn is_auth_failure(&self) -> bool {
         match self {
             Self::CredentialRequired(_) => true,
-            Self::Http { status, .. } => *status == 401 || *status == 403,
+            Self::Http { status, .. } => *status == 401,
             _ => false,
         }
+    }
+
+    /// The provider rejected the credential that was sent (HTTP 401). Only
+    /// this flags a stored credential `auth_required`.
+    pub fn rejected_credential(&self) -> bool {
+        matches!(self, Self::Http { status: 401, .. })
     }
 
     /// Transient — a retry may succeed without user action.

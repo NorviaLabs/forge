@@ -103,10 +103,13 @@ pub enum Overlay {
         error: Option<String>,
     },
     ConnectCustom {
+        /// Provider id, base URL, model, API key. Row 4 is the protocol.
         fields: [String; 4],
         selected: usize,
         error: Option<String>,
         editing: bool,
+        /// Chat-completions or Anthropic Messages; fixed once saved.
+        wire: forge_connect::WireKind,
     },
     ConnectManualModel {
         profile_id: String,
@@ -1286,10 +1289,8 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
-            Self::ConnectCustom {
-                fields, selected, ..
-            } => {
-                *selected = (*selected as i32 + delta).rem_euclid(fields.len() as i32) as usize;
+            Self::ConnectCustom { selected, .. } => {
+                *selected = (*selected as i32 + delta).rem_euclid(CUSTOM_FORM_ROWS as i32) as usize;
             }
             Self::GitCommitSuggest { selected } => {
                 let n = GIT_COMMIT_SUGGEST.len() as i32;
@@ -1549,6 +1550,7 @@ pub enum OverlayAction {
         model: String,
         api_key: String,
         editing: bool,
+        wire: forge_connect::WireKind,
     },
     RefreshModels,
     AddManualModel,
@@ -1583,19 +1585,29 @@ pub(crate) fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
     }
 }
 
+/// The custom-provider form: four text rows, then the protocol toggle.
+const CUSTOM_FORM_ROWS: usize = 5;
+const CUSTOM_PROTOCOL_ROW: usize = 4;
+
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
     if let Overlay::ConnectCustom {
         fields,
         selected,
         error,
         editing,
+        wire,
     } = overlay
     {
+        use forge_connect::WireKind;
+        let rows = CUSTOM_FORM_ROWS;
+        let on_protocol = *selected == CUSTOM_PROTOCOL_ROW;
+        // The id is fixed once saved, and so is the protocol.
+        let locked = *editing && (*selected == 0 || on_protocol);
         match key {
             Key::Esc => return OverlayAction::Close,
-            Key::Tab | Key::Down => *selected = (*selected + 1) % fields.len(),
-            Key::BackTab | Key::Up => *selected = (*selected + fields.len() - 1) % fields.len(),
-            Key::Enter if *selected < fields.len() - 1 => *selected += 1,
+            Key::Tab | Key::Down => *selected = (*selected + 1) % rows,
+            Key::BackTab | Key::Up => *selected = (*selected + rows - 1) % rows,
+            Key::Enter if *selected < rows - 1 => *selected += 1,
             Key::Enter => {
                 return OverlayAction::SaveCustomProvider {
                     id: fields[0].clone(),
@@ -1603,26 +1615,26 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     model: fields[2].clone(),
                     api_key: fields[3].clone(),
                     editing: *editing,
+                    wire: *wire,
                 }
             }
+            Key::Left | Key::Right | Key::Char(' ') if on_protocol && !locked => {
+                *wire = match wire {
+                    WireKind::AnthropicMessages => WireKind::ChatCompletions,
+                    _ => WireKind::AnthropicMessages,
+                };
+                *error = None;
+            }
+            _ if locked || on_protocol => {}
             Key::Char(c) if !c.is_control() => {
-                if *editing && *selected == 0 {
-                    return OverlayAction::None;
-                }
                 fields[*selected].push(c);
                 *error = None;
             }
             Key::Paste(data) => {
-                if *editing && *selected == 0 {
-                    return OverlayAction::None;
-                }
                 fields[*selected].extend(data.chars().filter(|c| !c.is_control()));
                 *error = None;
             }
             Key::Backspace => {
-                if *editing && *selected == 0 {
-                    return OverlayAction::None;
-                }
                 fields[*selected].pop();
                 *error = None;
             }
@@ -3840,8 +3852,9 @@ impl Widget for OverlayWidget<'_> {
                 selected,
                 error,
                 editing,
+                wire,
             } => {
-                let r = centered_content_rect(area, 78, 19, 19);
+                let r = centered_content_rect(area, 78, 22, 22);
                 clear_modal(r, buf);
                 let labels = [
                     "Provider ID (e.g. my-provider)",
@@ -3850,7 +3863,7 @@ impl Widget for OverlayWidget<'_> {
                     "API key (stored securely; leave empty to keep existing key)",
                 ];
                 let mut lines = vec![
-                    Line::from("OpenAI-compatible endpoint · models discovered after saving"),
+                    Line::from("Custom endpoint · models discovered after saving"),
                     Line::from(""),
                 ];
                 for (i, label) in labels.iter().enumerate() {
@@ -3874,6 +3887,31 @@ impl Widget for OverlayWidget<'_> {
                     ));
                     lines.push(Line::from(""));
                 }
+                let on_protocol = *selected == CUSTOM_PROTOCOL_ROW;
+                lines.push(Line::styled(
+                    if *editing {
+                        "Protocol"
+                    } else {
+                        "Protocol (←/→ or Space to switch)"
+                    },
+                    theme::dim(),
+                ));
+                lines.push(Line::styled(
+                    format!(
+                        "{}{}",
+                        if on_protocol { "> " } else { "  " },
+                        match wire {
+                            forge_connect::WireKind::AnthropicMessages => "Anthropic Messages",
+                            _ => "OpenAI chat-completions",
+                        }
+                    ),
+                    if on_protocol {
+                        theme::focused_selection_style()
+                    } else {
+                        theme::text()
+                    },
+                ));
+                lines.push(Line::from(""));
                 lines.push(Line::from(error.as_deref().unwrap_or("")));
                 lines.push(Line::from("Tab / ↑↓ field · Enter next / save · Esc back"));
                 Paragraph::new(lines)
@@ -5778,6 +5816,7 @@ mod tests {
             selected: 0,
             error: None,
             editing: false,
+            wire: forge_connect::WireKind::ChatCompletions,
         };
         for (value, next) in [
             ("my-provider", Key::Tab),
@@ -5795,12 +5834,19 @@ mod tests {
         handle_overlay_key(&mut overlay, Key::Paste("secret-key".into()));
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+        // The protocol row toggles, then Enter saves.
+        handle_overlay_key(&mut overlay, Key::Right);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::SaveCustomProvider {
                 id: "my-provider".into(),
                 base_url: "https://api.example.com/v1".into(),
                 model: "model-a".into(),
                 api_key: "secret-key".into(),
                 editing: false,
+                wire: forge_connect::WireKind::AnthropicMessages,
             }
         );
         assert_eq!(
@@ -5816,11 +5862,12 @@ mod tests {
             selected: 0,
             error: None,
             editing: false,
+            wire: forge_connect::WireKind::ChatCompletions,
         };
         overlay.move_sel(-1);
         assert!(matches!(
             overlay,
-            Overlay::ConnectCustom { selected: 3, .. }
+            Overlay::ConnectCustom { selected: 4, .. }
         ));
         overlay.move_sel(1);
         assert!(matches!(
@@ -5841,6 +5888,7 @@ mod tests {
             selected: 1,
             error: Some("Provider ID already exists".into()),
             editing: false,
+            wire: forge_connect::WireKind::ChatCompletions,
         };
         let area = Rect::new(0, 0, 90, 30);
         let mut buf = Buffer::empty(area);

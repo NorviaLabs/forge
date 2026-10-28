@@ -1488,12 +1488,10 @@ impl TuiApp {
                     active_profile_id: None,
                     active_model: None,
                 };
-                svc.connected_profiles().ok().and_then(|v| {
-                    v.iter()
-                        .find(|p| p.id == "xai")
-                        .cloned()
-                        .or_else(|| v.into_iter().next())
-                })
+                // No provider is preferred: the first connected one by id.
+                svc.connected_profiles()
+                    .ok()
+                    .and_then(|v| v.into_iter().min_by(|a, b| a.id.cmp(&b.id)))
             };
             if let Some(p) = restored {
                 self.connect.profile = Some(p.id.clone());

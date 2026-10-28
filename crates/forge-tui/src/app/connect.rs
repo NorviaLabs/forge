@@ -1011,6 +1011,14 @@ impl TuiApp {
     }
 
     pub(super) fn begin_oauth_flow(&mut self, profile_id: &str) {
+        // A declared env key beats a stored login (design E3b); say so, so
+        // signing in is not mistaken for what the requests use.
+        if let Some(var) = forge_connect::winning_env_var(&self.connect.registry, profile_id) {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                format!("env key `${var}`; login unused"),
+            );
+        }
         let mut svc = ConnectService {
             registry: &self.connect.registry,
             credentials: &self.connect.credentials,
@@ -1155,6 +1163,13 @@ impl TuiApp {
                 self.status_state.message = msg.lines().next().unwrap_or_default().to_string();
                 self.refresh_connection_ui();
                 self.finish_connect_flow(profile_id);
+                // Saved after a probe that neither accepted nor rejected it.
+                if msg.contains("not verified") {
+                    self.set_feedback(
+                        FeedbackSeverity::Warn,
+                        "key saved · not verified (the provider did not confirm it)",
+                    );
+                }
             }
             Err(e) => {
                 let err = e.to_string();
@@ -1206,12 +1221,7 @@ impl TuiApp {
                 svc.connected_profiles().ok().and_then(|connected| {
                     connected
                         .iter()
-                        .find(|p| {
-                            p.model_provider_prefix == prefix
-                                || p.id == prefix
-                                || (prefix == "opencode-go" && p.id == "opencode_go")
-                                || (prefix == "opencode-zen" && p.id == "opencode_zen")
-                        })
+                        .find(|p| p.model_provider_prefix == prefix || p.id == prefix)
                         .map(|p| p.id.clone())
                 })
             }
@@ -1406,7 +1416,9 @@ impl TuiApp {
                 Err(error) => {
                     let message = if error.is_auth_failure() {
                         self.connect.auth_required.insert(id.clone());
-                        self.report_catalog_auth(&id, true);
+                        if error.rejected_credential() {
+                            self.report_catalog_auth(&id, true);
+                        }
                         self.invalidate_connected();
                         "Authentication required · select the provider to retry or edit credentials"
                             .to_string()

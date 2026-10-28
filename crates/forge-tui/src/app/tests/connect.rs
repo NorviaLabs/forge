@@ -1812,3 +1812,80 @@ async fn selecting_a_model_on_a_connected_route_clears_the_not_connected_hint() 
     );
     assert!(!app.input.hint.contains("/connect"), "{}", app.input.hint);
 }
+
+/// Serve one request with `status` and an empty body; returns the base URL.
+fn status_server(status: u16) -> Option<String> {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").ok()?;
+    let address = listener.local_addr().ok()?;
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(
+                format!("HTTP/1.1 {status} test\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                    .as_bytes(),
+            );
+        }
+    });
+    Some(format!("http://{address}"))
+}
+
+/// Design §5 in the TUI: a key the provider rejects (401) writes nothing; a
+/// probe that neither accepts nor rejects it (404) saves it as not verified.
+#[tokio::test]
+async fn connect_probe_outcomes_decide_what_is_saved() {
+    let (_dir, mut app) = focus_test_app().await;
+    let cred_dir = tempfile::tempdir().unwrap();
+    let store_path = cred_dir.path().join("credentials.toml");
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(store_path.clone()),
+    ));
+    app.connect.preferences = PreferenceStore::new(cred_dir.path().join("preferences.toml"));
+    let Some(rejected) = status_server(401) else {
+        return;
+    };
+    let Some(missing) = status_server(404) else {
+        return;
+    };
+    let store = CredentialStore::new(store_path);
+    let mut openai = forge_connect::openai_profile();
+
+    openai.base_url = rejected;
+    app.connect.registry.register(openai.clone());
+    app.try_connect_api_key(OPENAI_PROFILE_ID, Some("sk-rejected-0123456789".into()));
+    assert_eq!(store.get_api_key(OPENAI_PROFILE_ID).unwrap(), None);
+
+    openai.base_url = missing;
+    app.connect.registry.register(openai);
+    app.try_connect_api_key(OPENAI_PROFILE_ID, Some("sk-unverified-0123456789".into()));
+    assert_eq!(
+        store.get_api_key(OPENAI_PROFILE_ID).unwrap().as_deref(),
+        Some("sk-unverified-0123456789")
+    );
+    assert!(
+        app.status_state.message.contains("not verified"),
+        "{}",
+        app.status_state.message
+    );
+    assert!(!store.needs_authentication(OPENAI_PROFILE_ID).unwrap());
+}
+
+/// A 403 refuses a request, not the credential: it never flags the stored
+/// key `auth_required`; only a 401 does.
+#[test]
+fn a_403_is_not_a_rejected_credential() {
+    let forbidden = forge_connect::CatalogError::Http {
+        label: "models".into(),
+        status: 403,
+        body: None,
+    };
+    assert!(!forbidden.is_auth_failure());
+    assert!(!forbidden.rejected_credential());
+    let unauthorized = forge_connect::CatalogError::Http {
+        label: "models".into(),
+        status: 401,
+        body: None,
+    };
+    assert!(unauthorized.rejected_credential());
+}

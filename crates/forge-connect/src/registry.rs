@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthMode;
 use crate::profile::{
-    AuthKind, AuthPrompt, AuthSpec, CatalogMode, EditableField, ProviderSpec, ProviderTransport,
-    SpecOrigin, WireKind,
+    AuthKind, AuthPrompt, AuthSpec, CatalogMode, EditableField, ProviderSpec, SpecOrigin, WireKind,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -74,10 +73,12 @@ fn update_custom_provider_to(
     model: &str,
 ) -> Result<ProviderSpec, String> {
     let registry = loaded_registry_from(path);
+    // Custom providers, and built-ins whose definition lists `base_url` as
+    // editable (Ollama), take a `[provider_overrides]` base URL.
     let profile = registry
         .get(id)
-        .filter(|profile| profile.is_user())
-        .ok_or("unknown custom provider")?;
+        .filter(|profile| profile.is_user() || profile.editable.contains(&EditableField::BaseUrl))
+        .ok_or("this provider's base URL cannot be edited")?;
     check_base_url(base_url)?;
     let original = std::fs::read_to_string(path).map_err(|_| "cannot read providers file")?;
     let section = format!(
@@ -250,9 +251,15 @@ pub fn user_providers_path() -> PathBuf {
         .join("providers.toml")
 }
 
-/// Append a custom OpenAI-compatible provider to the user registry, without secrets.
-pub fn save_custom_provider(id: &str, base_url: &str, model: &str) -> Result<ProviderSpec, String> {
-    save_custom_provider_to(&user_providers_path(), id, base_url, model)
+/// Append a custom provider (chat-completions or Anthropic Messages) to the
+/// user registry, without secrets.
+pub fn save_custom_provider(
+    id: &str,
+    base_url: &str,
+    model: &str,
+    wire: WireKind,
+) -> Result<ProviderSpec, String> {
+    save_custom_provider_to(&user_providers_path(), id, base_url, model, wire)
 }
 
 fn save_custom_provider_to(
@@ -260,7 +267,14 @@ fn save_custom_provider_to(
     id: &str,
     base_url: &str,
     model: &str,
+    wire: WireKind,
 ) -> Result<ProviderSpec, String> {
+    if !matches!(
+        wire,
+        WireKind::ChatCompletions | WireKind::AnthropicMessages
+    ) {
+        return Err("custom providers use chat-completions or anthropic-messages".into());
+    }
     check_profile_id(id)?;
     if crate::normalize::is_reserved_id(id) {
         return Err("id is reserved by a built-in provider".into());
@@ -273,7 +287,11 @@ fn save_custom_provider_to(
     let spec = ProviderSpec {
         id: id.into(),
         title: id.into(),
-        description: "Custom OpenAI-compatible provider".into(),
+        description: match wire {
+            WireKind::AnthropicMessages => "Custom Anthropic-compatible provider",
+            _ => "Custom OpenAI-compatible provider",
+        }
+        .into(),
         // The §1.1 fields plus the legacy `auth_mode`, `transport`,
         // `model_provider_prefix`, `route_id` and `catalog_mode`, which stay
         // until stage 8 so an older binary can still read the entry.
@@ -285,7 +303,7 @@ fn save_custom_provider_to(
             prompt: AuthPrompt::Tui,
             ..AuthSpec::default()
         }),
-        wire: Some(WireKind::ChatCompletions),
+        wire: Some(wire),
         base_url: base_url.into(),
         // The typed model is the user's own pick, so it lists with the
         // manual models and discovery never hides it.
@@ -305,7 +323,7 @@ fn save_custom_provider_to(
         provider_label: id.into(),
         route_id: id.into(),
         catalog_mode: CatalogMode::Live,
-        transport: ProviderTransport::OpenaiCompat,
+        transport: wire.into(),
         origin: SpecOrigin::User,
         ..ProviderSpec::blank()
     };
@@ -558,20 +576,21 @@ fn check_custom_keys(value: &toml::Value) -> Result<(), String> {
             }
         }
     }
-    // `anthropic-messages` is a §1.1 custom wire, but requests reach a custom
-    // endpoint only through the chat-completions route until the resolver
-    // (stage 4) gives every wire a per-profile endpoint and key.
     match table.get("wire").and_then(toml::Value::as_str) {
-        None | Some("chat-completions") => {}
+        None | Some("chat-completions" | "anthropic-messages") => {}
         Some(other) => {
             return Err(format!(
-                "custom providers may only use wire = \"chat-completions\", not \"{other}\""
+                "custom providers may use wire = \"chat-completions\" or \"anthropic-messages\", not \"{other}\""
             ))
         }
     }
     match table.get("transport").and_then(toml::Value::as_str) {
-        None | Some("openai-compat") => {}
-        Some(_) => return Err("user providers may only set transport = \"openai-compat\"".into()),
+        None | Some("openai-compat" | "anthropic") => {}
+        Some(_) => {
+            return Err(
+                "user providers may only set transport = \"openai-compat\" or \"anthropic\"".into(),
+            )
+        }
     }
     if let Some(mode) = table.get("auth_mode") {
         if mode.get("api_key").is_none() {
@@ -718,8 +737,13 @@ fn validate_user_spec(registry: &ConnectRegistry, spec: &ProviderSpec) -> Result
             spec.id
         ));
     }
-    if spec.effective_wire() != WireKind::ChatCompletions {
-        return Err("user providers may only set transport = \"openai-compat\"".into());
+    if !matches!(
+        spec.effective_wire(),
+        WireKind::ChatCompletions | WireKind::AnthropicMessages
+    ) {
+        return Err(
+            "user providers may only set transport = \"openai-compat\" or \"anthropic\"".into(),
+        );
     }
     if spec.effective_auth().is_oauth() {
         return Err("user providers cannot use oauth".into());
@@ -769,7 +793,7 @@ fn validate_user_spec(registry: &ConnectRegistry, spec: &ProviderSpec) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::test_spec;
+    use crate::profile::{test_spec, ProviderTransport};
     use tempfile::tempdir;
 
     #[test]
@@ -778,7 +802,14 @@ mod tests {
         let path = dir.path().join("providers.toml");
         let original = "# Keep invalid entry\n[[providers]]\nid = 'broken'\n";
         std::fs::write(&path, original).unwrap();
-        save_custom_provider_to(&path, "working", "https://example.com/v1", "").unwrap();
+        save_custom_provider_to(
+            &path,
+            "working",
+            "https://example.com/v1",
+            "",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
         let registry = loaded_registry_from(&path);
         assert!(registry.get("working").is_some());
         assert_eq!(registry.load_warnings().len(), 1);
@@ -789,7 +820,14 @@ mod tests {
     fn manual_models_persist_for_builtin_and_custom_providers() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("providers.toml");
-        save_custom_provider_to(&path, "custom", "https://example.com/v1", "").unwrap();
+        save_custom_provider_to(
+            &path,
+            "custom",
+            "https://example.com/v1",
+            "",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
         for id in ["openai", "custom"] {
             save_manual_model_to(&path, id, "org/model").unwrap();
             save_manual_model_to(&path, id, "org/model").unwrap();
@@ -807,7 +845,14 @@ mod tests {
     fn editing_endpoint_retains_provider_and_manual_models() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("providers.toml");
-        save_custom_provider_to(&path, "custom", "https://old.example/v1", "org/manual").unwrap();
+        save_custom_provider_to(
+            &path,
+            "custom",
+            "https://old.example/v1",
+            "org/manual",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
         update_custom_provider_to(&path, "custom", "https://new.example/v1", "second").unwrap();
         let spec =
             update_custom_provider_to(&path, "custom", "https://final.example/v1", "").unwrap();
@@ -829,8 +874,14 @@ mod tests {
             ("second", "second/model", "second/model"),
             ("third", "org/model", "third/org/model"),
         ] {
-            let spec =
-                save_custom_provider_to(&path, id, "http://localhost:8080/v1", model).unwrap();
+            let spec = save_custom_provider_to(
+                &path,
+                id,
+                "http://localhost:8080/v1",
+                model,
+                crate::WireKind::ChatCompletions,
+            )
+            .unwrap();
             assert_eq!(spec.default_model(), Some(expected));
             assert_eq!(spec.catalog_mode, CatalogMode::Live);
             assert_eq!(spec.transport, ProviderTransport::OpenaiCompat);
@@ -864,6 +915,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             "sail-research",
             "https://api.sailresearch.com/v1",
             "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            crate::WireKind::ChatCompletions,
         )
         .unwrap();
         let registry = loaded_registry_from(&path);
@@ -880,7 +932,14 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         let dir = tempdir().unwrap();
         let path = dir.path().join("providers.toml");
         for id in ["", "UPPER", "with space", "../escape", "a/b", "café"] {
-            assert!(save_custom_provider_to(&path, id, "https://example.com", "m").is_err());
+            assert!(save_custom_provider_to(
+                &path,
+                id,
+                "https://example.com",
+                "m",
+                crate::WireKind::ChatCompletions
+            )
+            .is_err());
         }
         for url in [
             "",
@@ -898,11 +957,19 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             "https://example.com/a b",
         ] {
             assert!(
-                save_custom_provider_to(&path, "demo", url, "m").is_err(),
+                save_custom_provider_to(&path, "demo", url, "m", crate::WireKind::ChatCompletions)
+                    .is_err(),
                 "{url}"
             );
         }
-        assert!(save_custom_provider_to(&path, "demo", "https://example.com", "demo/").is_err());
+        assert!(save_custom_provider_to(
+            &path,
+            "demo",
+            "https://example.com",
+            "demo/",
+            crate::WireKind::ChatCompletions
+        )
+        .is_err());
         for id in [
             "openai",
             "openai-chatgpt",
@@ -910,7 +977,14 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             "opencode",
             "ollama_chat",
         ] {
-            assert!(save_custom_provider_to(&path, id, "https://example.com", "m").is_err());
+            assert!(save_custom_provider_to(
+                &path,
+                id,
+                "https://example.com",
+                "m",
+                crate::WireKind::ChatCompletions
+            )
+            .is_err());
         }
         assert!(!path.exists());
     }
@@ -919,7 +993,14 @@ auth_mode = { api_key = { tui_always_prompt = true } }
     fn custom_provider_preserves_contents_and_rejects_duplicates() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("providers.toml");
-        save_custom_provider_to(&path, "existing", "https://example.com", "m").unwrap();
+        save_custom_provider_to(
+            &path,
+            "existing",
+            "https://example.com",
+            "m",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
         let original = format!(
             "# My providers\n{}# Keep this trailing comment",
             std::fs::read_to_string(&path)
@@ -928,10 +1009,24 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         );
         std::fs::write(&path, &original).unwrap();
         for id in ["existing", "reserved"] {
-            assert!(save_custom_provider_to(&path, id, "https://example.com", "m").is_err());
+            assert!(save_custom_provider_to(
+                &path,
+                id,
+                "https://example.com",
+                "m",
+                crate::WireKind::ChatCompletions
+            )
+            .is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
-        save_custom_provider_to(&path, "new", "https://example.com/v1", "new/m").unwrap();
+        save_custom_provider_to(
+            &path,
+            "new",
+            "https://example.com/v1",
+            "new/m",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
         assert!(std::fs::read_to_string(&path)
             .unwrap()
             .starts_with(&original));
@@ -946,9 +1041,63 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         let path = dir.path().join("providers.toml");
         for text in ["not toml = [", "providers = []"] {
             std::fs::write(&path, text).unwrap();
-            assert!(save_custom_provider_to(&path, "demo", "https://example.com", "m").is_err());
+            assert!(save_custom_provider_to(
+                &path,
+                "demo",
+                "https://example.com",
+                "m",
+                crate::WireKind::ChatCompletions
+            )
+            .is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
         }
+    }
+
+    #[test]
+    fn only_editable_builtin_fields_can_be_edited() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(&path, "").unwrap();
+        let ollama =
+            update_custom_provider_to(&path, "ollama", "http://10.0.0.5:11434", "").unwrap();
+        assert_eq!(ollama.base_url, "http://10.0.0.5:11434");
+        assert!(update_custom_provider_to(&path, "openai", "https://evil.example/v1", "").is_err());
+        assert!(loaded_registry_from(&path).load_warnings().is_empty());
+    }
+
+    #[test]
+    fn a_custom_anthropic_messages_provider_saves_and_resolves() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        let spec = save_custom_provider_to(
+            &path,
+            "claude-proxy",
+            "https://proxy.example/v1",
+            "claude-sonnet-4-6",
+            WireKind::AnthropicMessages,
+        )
+        .unwrap();
+        let registry = loaded_registry_from(&path);
+        assert!(
+            registry.load_warnings().is_empty(),
+            "{:?}",
+            registry.load_warnings()
+        );
+        assert_eq!(registry.get("claude-proxy"), Some(&spec));
+        let definition = crate::RouteDefinition::from_spec(&spec);
+        assert_eq!(definition.wire, WireKind::AnthropicMessages);
+        assert_eq!(definition.attach, crate::Attach::XApiKey);
+        assert_eq!(definition.base_url, "https://proxy.example");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("transport = \"anthropic\""), "{text}");
+        assert!(save_custom_provider_to(
+            &path,
+            "nope",
+            "https://x.example",
+            "",
+            WireKind::Responses
+        )
+        .is_err());
     }
 
     #[test]

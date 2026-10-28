@@ -72,6 +72,7 @@ fn an_entry_saved_by_this_writer_reloads() {
         "my-llm",
         "https://llm.example.com/v1",
         "meta-llama/Llama-3.3-70B",
+        WireKind::ChatCompletions,
     )
     .unwrap();
     let registry = loaded_registry();

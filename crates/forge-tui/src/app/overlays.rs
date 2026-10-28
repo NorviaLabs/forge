@@ -744,6 +744,7 @@ impl TuiApp {
                     selected: 0,
                     error: None,
                     editing: false,
+                    wire: forge_connect::WireKind::ChatCompletions,
                 });
             }
             OverlayAction::SaveCustomProvider {
@@ -752,10 +753,11 @@ impl TuiApp {
                 model,
                 api_key,
                 editing,
+                wire,
             } => match if editing {
                 forge_connect::update_custom_provider(&id, &base_url, &model)
             } else {
-                forge_connect::save_custom_provider(&id, &base_url, &model)
+                forge_connect::save_custom_provider(&id, &base_url, &model, wire)
             } {
                 Ok(profile) => {
                     let profile_id = profile.id.clone();
@@ -799,7 +801,13 @@ impl TuiApp {
             OverlayAction::EditProvider => {
                 if let Some(profile_id) = self.picker_route() {
                     if let Some(profile) = self.connect.registry.get(&profile_id) {
-                        if profile.is_user() {
+                        // Custom providers, and built-ins with an editable
+                        // base URL, open the edit form.
+                        if profile.is_user()
+                            || profile
+                                .editable
+                                .contains(&forge_connect::EditableField::BaseUrl)
+                        {
                             self.overlay = Some(Overlay::ConnectCustom {
                                 fields: [
                                     profile.id.clone(),
@@ -810,6 +818,7 @@ impl TuiApp {
                                 selected: 1,
                                 error: None,
                                 editing: true,
+                                wire: profile.effective_wire(),
                             });
                         } else if profile.auth_mode.is_oauth() {
                             self.begin_oauth_flow(&profile_id);
@@ -1086,6 +1095,7 @@ mod tests {
             model: "model-a".into(),
             api_key: String::new(),
             editing: false,
+            wire: forge_connect::WireKind::ChatCompletions,
         })
         .await
         .unwrap();
