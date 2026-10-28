@@ -1,6 +1,7 @@
-mod anthropic;
-mod codex;
-mod openai;
+mod anthropic_messages;
+mod chat_completions;
+mod protocol;
+mod responses;
 
 #[cfg(test)]
 mod test_support {
@@ -381,15 +382,7 @@ impl ModelClient for NativeModelClient {
         tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, ModelError> {
         let (target, wire) = self.target_for(&req).await?;
-        match wire {
-            WireKind::AnthropicMessages => anthropic::complete(self, req, target, tx).await,
-            // The ChatGPT flavor owns its own Responses endpoint and headers.
-            WireKind::Responses if target.attach == Attach::BearerAccountId => {
-                codex::complete(self, req, target, tx).await
-            }
-            WireKind::Responses => openai::complete_responses(self, req, target, tx).await,
-            WireKind::ChatCompletions => openai::complete(self, req, target, tx).await,
-        }
+        protocol::complete(self, req, target, wire, tx).await
     }
 
     fn set_route_table(&self, table: RouteTable) {
@@ -397,45 +390,11 @@ impl ModelClient for NativeModelClient {
     }
 
     fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
-        match self.wire_for_request(req) {
-            WireKind::AnthropicMessages => {
-                let (system, messages) = anthropic::messages_body(req, Some(self));
-                let mut body = serde_json::json!({ "messages": messages });
-                if !system.is_empty() {
-                    body["system"] = serde_json::Value::String(system);
-                }
-                if !req.tools.is_empty() {
-                    body["tools"] = serde_json::Value::Array(
-                        req.tools
-                            .iter()
-                            .map(|tool| {
-                                serde_json::json!({
-                                    "name": tool.name,
-                                    "description": tool.description,
-                                    "input_schema": tool.input_schema
-                                })
-                            })
-                            .collect(),
-                    );
-                }
-                if req.prompt_cache {
-                    crate::prompt_cache::apply_anthropic_prompt_cache(&mut body);
-                }
-                crate::prompt_wire::prompt_object_from_body(body)
-            }
-            WireKind::Responses => crate::prompt_wire::prompt_object_from_body(
-                codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
-            ),
-            WireKind::ChatCompletions => crate::prompt_wire::openai_compat_prompt_cached(req, self),
-        }
+        protocol::prompt_projection(self, req, self.wire_for_request(req))
     }
 
     fn prompt_transport_key(&self, req: &ModelRequest) -> &'static str {
-        match self.wire_for_request(req) {
-            WireKind::AnthropicMessages => "anthropic",
-            WireKind::Responses => "codex",
-            WireKind::ChatCompletions => "openai_compat",
-        }
+        protocol::cache_key(self.wire_for_request(req))
     }
 }
 

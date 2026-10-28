@@ -191,6 +191,33 @@ fn anthropic_payload_content(
     Value::Array(parts)
 }
 
+/// The compared prompt (system, messages, tools) as this protocol sends it.
+pub(super) fn prompt_projection(client: &NativeModelClient, req: &ModelRequest) -> Value {
+    let (system, messages) = messages_body(req, Some(client));
+    let mut body = json!({ "messages": messages });
+    if !system.is_empty() {
+        body["system"] = Value::String(system);
+    }
+    if !req.tools.is_empty() {
+        body["tools"] = Value::Array(
+            req.tools
+                .iter()
+                .map(|tool| {
+                    json!({
+                        "name": tool.name,
+                        "description": tool.description,
+                        "input_schema": tool.input_schema
+                    })
+                })
+                .collect(),
+        );
+    }
+    if req.prompt_cache {
+        apply_anthropic_prompt_cache(&mut body);
+    }
+    crate::prompt_wire::prompt_object_from_body(body)
+}
+
 pub(super) fn messages_body(
     req: &ModelRequest,
     client: Option<&NativeModelClient>,
