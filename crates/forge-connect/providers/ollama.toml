@@ -1,0 +1,30 @@
+# Built-in provider definitions (ollama), embedded at compile time.
+# Fields: `ProviderSpec` in src/profile.rs.
+
+[[providers]]
+id = "ollama"
+title = "Ollama (local)"
+label = "Local"
+provider = "ollama"
+provider_label = "Ollama"
+description = "Local Ollama models — no API key required (ollama/*)"
+base_url = "http://localhost:11434"
+base_url_env = ["OLLAMA_API_BASE"]
+api_key_env = ["OLLAMA_API_KEY"]
+editable = ["base_url"]
+wire = "chat-completions"
+attach = "bearer"
+default_models = []
+models_dev_providers = []
+auth_url = "https://ollama.com/download"
+billing_note = "Cost: local inference; no provider quota or wallet balance."
+model_provider_prefix = "ollama"
+route_id = "ollama"
+catalog_mode = "live"
+
+[providers.auth]
+kind = "api-key-optional"
+prompt = "never"
+
+[providers.catalog]
+kind = "ollama-tags"

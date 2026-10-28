@@ -1,0 +1,63 @@
+# Built-in provider definitions (openai), embedded at compile time.
+# Fields: `ProviderSpec` in src/profile.rs.
+
+[[providers]]
+id = "openai"
+title = "OpenAI"
+label = "API"
+provider = "openai"
+provider_label = "OpenAI"
+description = "OpenAI API key — openai/* models"
+base_url = "https://api.openai.com/v1"
+base_url_env = ["OPENAI_API_BASE"]
+api_key_env = ["OPENAI_API_KEY"]
+wire = "chat-completions"
+attach = "bearer"
+default_models = ["openai/gpt-4.1-mini"]
+models_dev_providers = ["openai"]
+auth_url = "https://platform.openai.com/api-keys"
+guidance = "Create a key at https://platform.openai.com/api-keys."
+min_key_len = 16
+billing_url = "https://platform.openai.com/usage"
+billing_note = "OpenAI does not expose wallet balance through the API key API."
+effort_family = "openai"
+model_provider_prefix = "openai"
+route_id = "openai-api"
+catalog_mode = "live+registry"
+
+[providers.auth]
+kind = "api-key"
+
+[providers.catalog]
+filter = "chat"
+kind = "openai-models"
+
+[[providers]]
+id = "openai_codex"
+title = "OpenAI Codex subscription"
+label = "ChatGPT"
+provider = "openai"
+provider_label = "OpenAI"
+description = "Use a ChatGPT plan through Forge's own device login"
+base_url = "https://chatgpt.com/backend-api"
+base_url_env = ["FORGE_CODEX_API_BASE"]
+api_key_env = []
+wire = "responses"
+attach = "bearer-account-id"
+default_models = ["openai-codex/gpt-5.6-sol"]
+models_dev_providers = ["openai"]
+auth_url = "https://auth.openai.com/codex/device"
+import_aliases = ["openai"]
+effort_family = "openai"
+model_provider_prefix = "openai-codex"
+route_id = "openai-chatgpt"
+catalog_mode = "live+registry"
+
+[providers.auth]
+client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+flavor = "chatgpt"
+kind = "oauth-device"
+prompt = "browser"
+
+[providers.catalog]
+kind = "chatgpt-models"

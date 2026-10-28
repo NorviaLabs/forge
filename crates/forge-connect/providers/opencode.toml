@@ -1,0 +1,111 @@
+# Built-in provider definitions (opencode), embedded at compile time.
+# Fields: `ProviderSpec` in src/profile.rs.
+
+[[providers]]
+id = "opencode_go"
+title = "OpenCode Go"
+label = "Go"
+provider = "opencode"
+provider_label = "OpenCode"
+description = "OpenCode Go coding models — API key required (TUI prompts)"
+base_url = "https://opencode.ai/zen/go/v1"
+base_url_env = [
+    "OPENCODE_API_BASE",
+    "OPENCODE_GO_API_BASE",
+]
+api_key_env = [
+    "OPENCODE_API_KEY",
+    "OPENCODE_GO_API_KEY",
+]
+wire = "chat-completions"
+attach = "bearer"
+session_header = "opencode"
+default_models = ["opencode-go/gpt-4.1-mini"]
+models_dev_providers = ["opencode-go"]
+auth_url = "https://opencode.ai/auth"
+import_aliases = [
+    "opencode-go",
+    "opencode_go",
+]
+guidance = "Get a key from https://opencode.ai/auth (OpenCode Zen → subscribe to Go → copy API key)."
+min_key_len = 16
+billing_url = "https://opencode.ai/"
+billing_note = "OpenCode does not currently expose wallet balance through its model API."
+model_provider_prefix = "opencode-go"
+route_id = "opencode-go"
+catalog_mode = "live+registry"
+
+[providers.auth]
+kind = "api-key"
+
+[providers.catalog]
+kind = "openai-models"
+
+[[providers.wire_overrides]]
+models = [
+    "muse-spark-1.2-contributor*",
+    "muse-spark-1.3-contributor*",
+    "grok-4.6",
+    "gpt-5.6-luna",
+]
+wire = "responses"
+
+[[providers.wire_overrides]]
+models = [
+    "union-alpha",
+    "minimax-m3",
+    "minimax-m2.7",
+    "minimax-m2.5",
+    "qwen3.8-max",
+    "qwen3.8-flash",
+    "qwen3.7-max",
+    "qwen3.7-plus",
+    "qwen3.6-plus",
+]
+wire = "anthropic-messages"
+
+[[providers]]
+id = "opencode_zen"
+title = "OpenCode Zen"
+label = "Zen"
+provider = "opencode"
+provider_label = "OpenCode"
+description = "OpenCode Zen model catalog — API key required (TUI prompts)"
+base_url = "https://opencode.ai/zen/v1"
+base_url_env = ["OPENCODE_ZEN_API_BASE"]
+api_key_env = [
+    "OPENCODE_ZEN_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENCODE_GO_API_KEY",
+]
+credential_from = "opencode_go"
+wire = "chat-completions"
+attach = "bearer"
+session_header = "opencode"
+default_models = ["opencode-zen/gpt-4.1-mini"]
+models_dev_providers = ["opencode"]
+auth_url = "https://opencode.ai/auth"
+guidance = "Get a key from https://opencode.ai/auth (Zen billing / API keys)."
+min_key_len = 16
+billing_url = "https://opencode.ai/"
+billing_note = "OpenCode does not currently expose wallet balance through its model API."
+model_provider_prefix = "opencode-zen"
+route_id = "opencode-zen"
+catalog_mode = "live+registry"
+
+[providers.auth]
+kind = "api-key"
+
+[providers.catalog]
+kind = "openai-models"
+
+[[providers.wire_overrides]]
+models = [
+    "muse-spark-1.2-contributor*",
+    "muse-spark-1.3-contributor*",
+]
+wire = "responses"
+
+[[providers.wire_overrides]]
+models = ["union-alpha"]
+wire = "anthropic-messages"

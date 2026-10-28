@@ -3,6 +3,7 @@
 mod anthropic;
 mod atomic;
 mod auth;
+pub mod builtin;
 mod catalog;
 mod cost;
 mod credentials;

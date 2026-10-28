@@ -1,0 +1,36 @@
+# Built-in provider definitions (anthropic), embedded at compile time.
+# Fields: `ProviderSpec` in src/profile.rs.
+
+[[providers]]
+id = "anthropic"
+title = "Anthropic"
+label = "API"
+provider = "anthropic"
+provider_label = "Anthropic"
+description = "Anthropic API key — anthropic/* (Claude) models"
+base_url = "https://api.anthropic.com"
+base_url_env = ["ANTHROPIC_API_BASE"]
+api_key_env = ["ANTHROPIC_API_KEY"]
+wire = "anthropic-messages"
+attach = "x-api-key"
+default_models = ["anthropic/claude-sonnet-4-20250514"]
+models_dev_providers = ["anthropic"]
+auth_url = "https://console.anthropic.com/settings/keys"
+import_aliases = ["anthropic"]
+guidance = "Create a key at https://console.anthropic.com/settings/keys."
+min_key_len = 16
+billing_url = "https://console.anthropic.com/settings/billing"
+billing_note = "Anthropic does not expose remaining credits through the API key API."
+model_provider_prefix = "anthropic"
+route_id = "anthropic-api"
+catalog_mode = "live+registry"
+
+[providers.auth]
+kind = "api-key"
+
+[providers.catalog]
+kind = "anthropic-models"
+
+[[providers.static_headers]]
+name = "anthropic-beta"
+value = "interleaved-thinking-2025-05-14"
