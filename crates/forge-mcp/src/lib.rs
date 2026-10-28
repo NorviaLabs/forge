@@ -794,9 +794,22 @@ impl McpManager {
         errors
     }
 
-    pub async fn register_into(&self, registry: &mut ToolRegistry) -> Result<(), McpError> {
-        for (sid, client) in &self.clients {
-            let tools = client.list_tools().await?;
+    /// Register every connected server's tools. A server whose `tools/list`
+    /// fails is skipped and reported (`"<id>: <error>"`), so one broken server
+    /// never hides the tools of the others.
+    pub async fn register_into(&self, registry: &mut ToolRegistry) -> Vec<String> {
+        let mut errors = Vec::new();
+        let mut ids: Vec<&String> = self.clients.keys().collect();
+        ids.sort();
+        for sid in ids {
+            let client = &self.clients[sid];
+            let tools = match client.list_tools().await {
+                Ok(tools) => tools,
+                Err(e) => {
+                    errors.push(format!("{sid}: {e}"));
+                    continue;
+                }
+            };
             let filter = self.tool_filters.get(sid);
             let admitted = tools.len();
             let mut registered = 0usize;
@@ -827,7 +840,7 @@ impl McpManager {
                 warn!(server = %sid, "enabled_tools matched none of this server's tools");
             }
         }
-        Ok(())
+        errors
     }
 }
 
@@ -1082,6 +1095,52 @@ done
 
     #[tokio::test]
     #[cfg(unix)]
+    async fn a_server_whose_tool_list_fails_does_not_hide_the_others() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let broken = tempfile::tempdir().unwrap();
+        let script = broken.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"boom"}}'
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        // Sorted before "fixture", so it is listed first.
+        let mut broken_cfg = fixture_cfg(&broken);
+        broken_cfg.id = "aaa-broken".into();
+
+        let working = fixture_server_two_tools();
+        let mut manager = McpManager::new();
+        assert!(manager
+            .connect_all(&[broken_cfg, fixture_cfg(&working)])
+            .await
+            .is_empty());
+
+        let mut registry = ToolRegistry::new();
+        let errors = manager.register_into(&mut registry).await;
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("aaa-broken: "), "{errors:?}");
+        let names = registry.names();
+        assert!(names.contains(&"mcp:fixture:echo".to_string()), "{names:?}");
+        assert!(names.contains(&"mcp:fixture:ping".to_string()), "{names:?}");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
     async fn enabled_tools_narrows_what_register_into_registers() {
         let directory = fixture_server_two_tools();
         let mut cfg = fixture_cfg(&directory);
@@ -1091,7 +1150,7 @@ done
         assert!(manager.connect_all(&[cfg]).await.is_empty());
 
         let mut registry = ToolRegistry::new();
-        manager.register_into(&mut registry).await.unwrap();
+        assert!(manager.register_into(&mut registry).await.is_empty());
         let names = registry.names();
         assert!(names.contains(&"mcp:fixture:echo".to_string()));
         assert!(
@@ -1111,7 +1170,7 @@ done
         assert!(manager.connect_all(&[cfg]).await.is_empty());
 
         let mut registry = ToolRegistry::new();
-        manager.register_into(&mut registry).await.unwrap();
+        assert!(manager.register_into(&mut registry).await.is_empty());
         let names = registry.names();
         assert!(names.contains(&"mcp:fixture:echo".to_string()));
         assert!(!names.contains(&"mcp:fixture:ping".to_string()));
@@ -1373,7 +1432,7 @@ done
         assert!(manager.connect_all(&[cfg]).await.is_empty());
 
         let mut registry = ToolRegistry::new();
-        manager.register_into(&mut registry).await.unwrap();
+        assert!(manager.register_into(&mut registry).await.is_empty());
         assert!(registry.names().contains(&"mcp:fixture:echo".to_string()));
 
         let ctx = ToolContext::new(std::env::current_dir().unwrap());
@@ -1410,7 +1469,7 @@ done
         assert!(errors[0].starts_with("missing:"));
 
         let mut registry = ToolRegistry::new();
-        manager.register_into(&mut registry).await.unwrap();
+        assert!(manager.register_into(&mut registry).await.is_empty());
         assert!(registry.names().is_empty());
     }
 
@@ -1777,7 +1836,7 @@ done
             .await
             .is_empty());
         let mut registry = ToolRegistry::new();
-        manager.register_into(&mut registry).await.unwrap();
+        assert!(manager.register_into(&mut registry).await.is_empty());
         let fetch = registry.get("mcp:fixture:fetch").unwrap();
         let tolerant = registry.get("mcp:fixture:tolerant").unwrap();
         let ctx = |id: &str| ToolContext::new(workspace.path().to_path_buf()).with_tool_call_id(id);

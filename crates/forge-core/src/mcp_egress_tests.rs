@@ -117,7 +117,7 @@ async fn session_with_sandboxed_server(
     let errors = manager.connect_all_in_workspace(&[cfg], dir).await;
     assert!(errors.is_empty(), "{errors:?}");
     let mut tools = ToolRegistry::new();
-    manager.register_into(&mut tools).await.unwrap();
+    assert!(manager.register_into(&mut tools).await.is_empty());
     let mut session = AgentSession::create(
         LoopConfig {
             workspace: dir.to_path_buf(),

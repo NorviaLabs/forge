@@ -156,7 +156,9 @@ async fn open_session_with_model(
         for e in errors {
             notices.push(format!("mcp: {e}"));
         }
-        let _ = mgr.register_into(&mut tools).await;
+        for e in mgr.register_into(&mut tools).await {
+            notices.push(format!("mcp: {e}"));
+        }
         forge_mcp::install_search_tools(&mut tools);
     }
 

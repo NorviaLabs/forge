@@ -2336,7 +2336,10 @@ pub fn sanitize_final_answer_text(text: &str) -> String {
         if let Some(end) = after.find('}') {
             rest = &after[end + 1..];
         } else {
-            // Unclosed marker: drop remainder of control token only.
+            // Unterminated marker, e.g. output truncated mid-annotation.
+            // Rewind to the marker so the tail is emitted once: the prefix
+            // was already pushed above.
+            rest = &rest[start..];
             break;
         }
     }
@@ -5524,7 +5527,7 @@ mod helper_coverage_tests {
         );
         assert_eq!(
             sanitize_final_answer_text("kept \\confidence{unfinished"),
-            "kept kept \\confidence{unfinished"
+            "kept \\confidence{unfinished"
         );
         assert_eq!(wrap("one two three", 5), vec!["one", "two", "three"]);
 

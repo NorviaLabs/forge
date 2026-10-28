@@ -32,8 +32,9 @@ file use a scripted fixture server; they are not part of the contract surface.
   full namespaced name, remote name, and configured side-effect class.
 - `McpManager`: `new`, `with_egress_policy`, `with_egress_shared`,
   `egress_shared`, `connect_all`, `connect_all_in_workspace`,
-  `register_into(&mut ToolRegistry)`. `connect_all*` returns per-server error
-  strings.
+  `register_into(&mut ToolRegistry)`. `connect_all*` and `register_into`
+  return per-server error strings (`"<id>: <error>"`); the session shows
+  them as `mcp:` startup notices.
 - `SearchToolsTool` and `install_search_tools(&mut ToolRegistry)`.
 
 ## Invariants
@@ -54,7 +55,8 @@ file use a scripted fixture server; they are not part of the contract surface.
   `ToolError::SandboxDenied` naming the first host; a successful call is
   returned unchanged.
 - `enabled_tools`/`disabled_tools` filter on the server's unnamespaced tool name.
-- `register_into` is all-or-nothing per server on `list_tools` failure; it
+- `register_into` visits servers in id order. A server whose `list_tools`
+  fails is skipped and reported; the other servers still register. It
   registers each admitted tool and warns when an explicit `enabled_tools` list
   matches none.
 - `search_tools` is registered only when at least one `mcp:` tool exists, uses

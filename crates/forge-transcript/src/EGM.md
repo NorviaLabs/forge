@@ -72,7 +72,8 @@ mutates the session.
   preserved.
 - `sanitize_final_answer_text` removes only known structural control
   envelopes (e.g. `\confidence{…}`), never filters phrases; an unclosed marker
-  is left in place, so no surrounding text is dropped.
+  is left in place and the text before it appears once, so no surrounding
+  text is dropped or repeated.
 - `wrap` measures terminal cell width (`unicode-width`), breaks at whitespace,
   splits words wider than the whole line rather than overflowing, clamps width
   to at least 1, and returns `[""]` for empty input.
