@@ -669,7 +669,10 @@ impl SupervisorState {
     async fn inherited_model(&self) -> (String, String, Option<String>) {
         let candidates: Vec<SessionId> = self.actors.read().await.keys().cloned().collect();
         if candidates.is_empty() {
-            return (self.cfg.model.model.clone(), String::new(), None);
+            return {
+                let (model, profile) = crate::starting_model(&self.cfg);
+                (model, profile, None)
+            };
         }
         let selected = self.control.selected().await.ok().flatten();
         let primary = self
@@ -689,11 +692,17 @@ impl SupervisorState {
             .or_else(|| primary.filter(|id| candidates.contains(id)))
             .or_else(|| candidates.first().copied())
         else {
-            return (self.cfg.model.model.clone(), String::new(), None);
+            return {
+                let (model, profile) = crate::starting_model(&self.cfg);
+                (model, profile, None)
+            };
         };
         let actor = self.actors.read().await.get(&id).cloned();
         let Some(actor) = actor else {
-            return (self.cfg.model.model.clone(), String::new(), None);
+            return {
+                let (model, profile) = crate::starting_model(&self.cfg);
+                (model, profile, None)
+            };
         };
         // Lock-free: the snapshot carries the same model selection the
         // session holds, so creating a session never waits out another
@@ -705,7 +714,10 @@ impl SupervisorState {
                 details.active_profile_id.clone(),
                 details.reasoning_effort.clone(),
             ),
-            None => (self.cfg.model.model.clone(), String::new(), None),
+            None => {
+                let (model, profile) = crate::starting_model(&self.cfg);
+                (model, profile, None)
+            }
         }
     }
 }
@@ -869,8 +881,8 @@ impl RepositorySupervisor {
                         branch,
                         ownership: WorktreeOwnership::Primary,
                         slot: Some(1),
-                        model_id: cfg.model.model.clone(),
-                        profile_id: String::new(),
+                        model_id: crate::starting_model(cfg).0,
+                        profile_id: crate::starting_model(cfg).1,
                         reasoning_effort: None,
                     },
                     None,
@@ -4085,7 +4097,10 @@ mod tests {
 
     async fn scripted_session_with(cfg: &Config, responses: Vec<ModelResponse>) -> AgentSession {
         let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(responses));
-        open_session_with_model(cfg, SessionTarget::New, model)
+        // A mock config never reads the user's saved model selection.
+        let mut cfg = cfg.clone();
+        cfg.model.mock = true;
+        open_session_with_model(&cfg, SessionTarget::New, model)
             .await
             .unwrap()
             .session
@@ -7761,7 +7776,7 @@ mod tests {
             resolved_workspace: repo.path().to_path_buf(),
             workspace_root: Some(repo.path().display().to_string()),
             model: forge_config::ModelConfig {
-                provider: forge_config::ModelProviderKind::Mock,
+                mock: true,
                 ..Default::default()
             },
             ..Default::default()
@@ -7857,7 +7872,7 @@ mod tests {
         };
         cfg.journal.path = dir.path().join("journal").display().to_string();
         let mut session = scripted_session(&cfg, "resumed answer").await;
-        assert!(session.active_model.is_empty());
+        assert_eq!(session.active_model, "mock");
 
         let task = task_for(session.session_id, "resumed", dir.path());
         let mut stored = task.clone();
@@ -7896,7 +7911,7 @@ mod tests {
             resolved_workspace: repo.path().to_path_buf(),
             workspace_root: Some(repo.path().display().to_string()),
             model: forge_config::ModelConfig {
-                provider: forge_config::ModelProviderKind::Mock,
+                mock: true,
                 ..Default::default()
             },
             ..Default::default()
@@ -7932,7 +7947,7 @@ mod tests {
             resolved_workspace: linked.path.clone(),
             workspace_root: Some(linked.path.display().to_string()),
             model: forge_config::ModelConfig {
-                provider: forge_config::ModelProviderKind::Mock,
+                mock: true,
                 ..Default::default()
             },
             ..Default::default()

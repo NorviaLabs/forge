@@ -68,7 +68,7 @@ pub use opencode_zen::{
 };
 pub use preferences::PreferenceStore;
 pub use profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogSpec,
     ConnectOutcome, ConnectProfile, ConnectStatus, EditableField, EffortFamily, KeySource,
     OauthFlavor, ProviderSpec, SessionHeaderKind, SpecOrigin, StaticHeader, VerifyKind, VerifySpec,
     WireKind, WireOverride,

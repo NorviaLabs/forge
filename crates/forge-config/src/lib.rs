@@ -67,92 +67,13 @@ pub enum ConfigError {
 /// changes in a way older builds cannot safely ignore.
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
-/// Native Rust is the production backend; mock is offline CI only.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelProviderKind {
-    Native,
-    Mock,
-}
-
-/// Result of parsing a provider string, including optional model-id migration prefix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParsedProvider {
-    pub kind: ModelProviderKind,
-    /// If set, prefix model id as `{prefix}/{model}` when model has no `/`.
-    pub model_prefix: Option<&'static str>,
-    /// True when the input used a Phase 1 native provider name.
-    pub migrated_from_native: bool,
-}
-
-impl ModelProviderKind {
-    pub fn parse(s: &str) -> Result<Self, ConfigError> {
-        Ok(Self::parse_with_migration(s)?.kind)
-    }
-
-    /// Accept legacy names while routing live models through native Rust.
-    pub fn parse_with_migration(s: &str) -> Result<ParsedProvider, ConfigError> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "native" | "litellm" => Ok(ParsedProvider {
-                kind: Self::Native,
-                model_prefix: None,
-                migrated_from_native: false,
-            }),
-            "mock" => Ok(ParsedProvider {
-                kind: Self::Mock,
-                model_prefix: None,
-                migrated_from_native: false,
-            }),
-            "openai_compatible" | "openai" | "openai-compatible" => Ok(ParsedProvider {
-                kind: Self::Native,
-                model_prefix: Some("openai"),
-                migrated_from_native: true,
-            }),
-            "anthropic" => Ok(ParsedProvider {
-                kind: Self::Native,
-                model_prefix: Some("anthropic"),
-                migrated_from_native: true,
-            }),
-            "xai" | "grok" => Ok(ParsedProvider {
-                kind: Self::Native,
-                model_prefix: Some("xai"),
-                migrated_from_native: true,
-            }),
-            other => Err(ConfigError::InvalidProvider(other.to_string())),
-        }
-    }
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Mock => "mock",
-        }
-    }
-}
-
-/// Apply provider-prefix migration for deprecated provider-specific config.
-pub fn migrate_model_id(model: &str, prefix: Option<&str>) -> String {
-    let Some(prefix) = prefix else {
-        return model.to_string();
-    };
-    if model.contains('/') {
-        model.to_string()
-    } else {
-        format!("{prefix}/{model}")
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
-    pub provider: ModelProviderKind,
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base_url: Option<String>,
-    /// Dev-only; prefer env. Never logged by callers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key: Option<String>,
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
+    /// Use the offline mock client (tests and CI). Set only in code.
+    #[serde(skip)]
+    pub mock: bool,
 }
 
 fn default_request_timeout() -> u64 {
@@ -162,11 +83,8 @@ fn default_request_timeout() -> u64 {
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {
-            provider: ModelProviderKind::Native,
-            model: String::new(),
-            base_url: None,
-            api_key: None,
             request_timeout_secs: default_request_timeout(),
+            mock: false,
         }
     }
 }
@@ -671,6 +589,10 @@ pub struct Config {
     /// Surfaced as startup notices so a refused key is never silently dropped.
     #[serde(skip)]
     pub refused_project_keys: Vec<String>,
+    /// `[model]` keys a config file set that no longer do anything (the
+    /// provider and model are chosen with /connect and saved preferences).
+    #[serde(skip)]
+    pub removed_model_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -698,6 +620,7 @@ impl Default for Config {
             tools: ToolsConfig::default(),
             resolved_workspace: cwd,
             refused_project_keys: Vec::new(),
+            removed_model_keys: Vec::new(),
         }
     }
 }
@@ -728,9 +651,6 @@ impl ConfigScope {
 pub struct ConfigOverrides {
     pub config_path: Option<PathBuf>,
     pub workspace: Option<PathBuf>,
-    pub model_provider: Option<String>,
-    pub model_id: Option<String>,
-    pub api_key: Option<String>,
     pub journal_path: Option<String>,
 }
 
@@ -761,6 +681,12 @@ impl Config {
                      config, or pass --config <path> to trust this file explicitly."
                 )
             })
+            .chain(self.removed_model_keys.iter().map(|key| {
+                format!(
+                    "ignored `model.{key}` in forge.toml: choose the provider and model with \
+                     /connect; keys and endpoints live in credentials.toml and providers.toml."
+                )
+            }))
             .collect()
     }
 
@@ -900,7 +826,16 @@ impl ConfigFile {
             // Provider, model id, base URL, and API key are not config. The
             // provider spec registry + credentials.toml are the source of
             // truth. Only the request timeout remains a process setting.
-            let _ = (m.provider, m.model, m.base_url, m.api_key);
+            for (key, set) in [
+                ("provider", m.provider.is_some()),
+                ("model", m.model.is_some()),
+                ("base_url", m.base_url.is_some()),
+                ("api_key", m.api_key.is_some()),
+            ] {
+                if set && !cfg.removed_model_keys.iter().any(|k| k == key) {
+                    cfg.removed_model_keys.push(key.into());
+                }
+            }
             if let Some(timeout) = m.request_timeout_secs {
                 cfg.model.request_timeout_secs = timeout.max(1);
             }
@@ -1115,7 +1050,7 @@ mod tests {
         .unwrap();
         let mut cfg = Config::default();
         merge_file(&mut cfg, &path, ConfigScope::Trusted).expect("unversioned config must load");
-        assert!(cfg.model.model.is_empty());
+        assert_eq!(cfg.removed_model_keys, ["provider", "model"]);
     }
 
     /// An explicit current version is accepted.
@@ -1130,7 +1065,8 @@ mod tests {
         .unwrap();
         let mut cfg = Config::default();
         merge_file(&mut cfg, &path, ConfigScope::Trusted).unwrap();
-        assert!(cfg.model.model.is_empty());
+        assert_eq!(cfg.removed_model_keys, ["model"]);
+        assert!(cfg.refused_key_notices()[0].contains("model.model"));
     }
 
     /// A newer file is refused rather than silently truncated: TOML drops unknown
@@ -1151,8 +1087,8 @@ mod tests {
             matches!(err, ConfigError::UnsupportedSchemaVersion { found, .. } if found == future),
             "expected an unsupported-version error, got {err:?}"
         );
-        assert_ne!(
-            cfg.model.model, "from-the-future",
+        assert!(
+            cfg.removed_model_keys.is_empty(),
             "a refused file must not have been partially applied"
         );
     }
@@ -1255,8 +1191,6 @@ mod tests {
         let _g = EnvGuard::clear_forge_env();
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert!(cfg.workspace_root().is_absolute() || cfg.workspace_root() == Path::new("."));
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
         assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
@@ -1296,8 +1230,7 @@ theme = "light"
         })
         .unwrap();
 
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert!(cfg.model.model.is_empty(), "model id is not a config field");
+        assert!(cfg.removed_model_keys.iter().any(|key| key == "model"));
         assert_eq!(cfg.model.request_timeout_secs, 60);
         assert_eq!(cfg.journal.path, "my-sessions");
         assert_eq!(cfg.mcp.servers.len(), 1);
@@ -1334,8 +1267,6 @@ args = ["-c", "exfiltrate"]
         parse(HOSTILE_PROJECT_TOML).apply(&mut cfg, ConfigScope::UntrustedProject);
 
         // Refused: these grant code execution or redirect credentials.
-        assert_eq!(cfg.model.base_url, None, "base_url must not be honoured");
-        assert_eq!(cfg.model.api_key, None, "api_key must not be honoured");
         assert!(cfg.mcp.servers.is_empty(), "no server may be spawned");
         assert_eq!(
             cfg.workspace_root, None,
@@ -1344,7 +1275,6 @@ args = ["-c", "exfiltrate"]
         assert_eq!(cfg.journal.path, default_journal_path());
 
         // Model selection is not a config field; timeout still applies.
-        assert!(cfg.model.model.is_empty());
         assert_eq!(cfg.model.request_timeout_secs, 42);
 
         let mut refused = cfg.refused_project_keys.clone();
@@ -1357,8 +1287,6 @@ args = ["-c", "exfiltrate"]
         let mut cfg = Config::default();
         parse(HOSTILE_PROJECT_TOML).apply(&mut cfg, ConfigScope::Trusted);
 
-        assert_eq!(cfg.model.base_url, None, "base_url is not a config field");
-        assert_eq!(cfg.model.api_key, None, "api_key is not a config field");
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert!(cfg.refused_project_keys.is_empty());
     }
@@ -1389,7 +1317,9 @@ args = ["-c", "exfiltrate"]
         let mut cfg = Config::default();
         parse(HOSTILE_PROJECT_TOML).apply(&mut cfg, ConfigScope::UntrustedProject);
         let notices = cfg.refused_key_notices();
-        assert_eq!(notices.len(), 3);
+        // Three refused privileged keys, plus the removed `[model]` keys the
+        // hostile file also sets (provider, base_url, api_key).
+        assert_eq!(notices.len(), 3 + cfg.removed_model_keys.len());
         for key in ["journal", "mcp.servers", "workspace_root"] {
             assert!(
                 notices.iter().any(|notice| notice.contains(key)),
@@ -1421,86 +1351,7 @@ model = "claude-sonnet"
             ..Default::default()
         })
         .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert!(cfg.model.model.is_empty());
-    }
-
-    #[test]
-    fn migrate_model_id_skips_when_already_slashed() {
-        assert_eq!(
-            migrate_model_id("anthropic/claude", Some("anthropic")),
-            "anthropic/claude"
-        );
-        assert_eq!(
-            migrate_model_id("claude", Some("anthropic")),
-            "anthropic/claude"
-        );
-        assert_eq!(migrate_model_id("gpt-5", None), "gpt-5");
-    }
-
-    #[test]
-    fn provider_parse_accepts_legacy_aliases_and_reports_canonical_names() {
-        for (raw, prefix, migrated) in [
-            ("native", None, false),
-            ("litellm", None, false),
-            ("openai_compatible", Some("openai"), true),
-            ("openai-compatible", Some("openai"), true),
-            ("openai", Some("openai"), true),
-            ("anthropic", Some("anthropic"), true),
-            ("xai", Some("xai"), true),
-            ("grok", Some("xai"), true),
-        ] {
-            let parsed = ModelProviderKind::parse_with_migration(raw).unwrap();
-            assert_eq!(parsed.kind, ModelProviderKind::Native);
-            assert_eq!(parsed.model_prefix, prefix);
-            assert_eq!(parsed.migrated_from_native, migrated);
-        }
-        assert_eq!(ModelProviderKind::Mock.as_str(), "mock");
-        assert_eq!(ModelProviderKind::Native.as_str(), "native");
-    }
-
-    #[test]
-    fn env_overrides_file() {
-        let g = EnvGuard::clear_forge_env();
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        fs::write(
-            &path,
-            r#"
-[model]
-provider = "litellm"
-model = "from-file"
-"#,
-        )
-        .unwrap();
-
-        g.set("FORGE_MODEL_ID", "openai/from-env");
-        let cfg = Config::load(ConfigOverrides {
-            config_path: Some(path),
-            ..Default::default()
-        })
-        .unwrap();
-
-        assert!(
-            cfg.model.model.is_empty(),
-            "FORGE_MODEL_ID is not a selection path"
-        );
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-    }
-
-    #[test]
-    fn cli_overrides_env() {
-        let g = EnvGuard::clear_forge_env();
-        g.set("FORGE_MODEL_PROVIDER", "litellm");
-        g.set("FORGE_MODEL_ID", "from-env");
-        let cfg = Config::load(ConfigOverrides {
-            model_provider: Some("mock".into()),
-            model_id: Some("mock".into()),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert!(cfg.model.model.is_empty());
+        assert_eq!(cfg.removed_model_keys, ["provider", "model"]);
     }
 
     #[test]
@@ -1509,18 +1360,6 @@ model = "from-file"
         g.set("FORGE_MODEL_REQUEST_TIMEOUT_SECS", "42");
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
         assert_eq!(cfg.model.request_timeout_secs, 42);
-    }
-
-    #[test]
-    fn invalid_provider_errors() {
-        let _g = EnvGuard::clear_forge_env();
-        // Provider is not a config/override field; a bogus value is ignored.
-        let cfg = Config::load(ConfigOverrides {
-            model_provider: Some("nope".into()),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
     }
 
     #[test]
@@ -1929,25 +1768,6 @@ max_query_chars = 0
     }
 
     #[test]
-    fn model_provider_kind_parse_discards_migration_metadata() {
-        assert_eq!(
-            ModelProviderKind::parse("native").unwrap(),
-            ModelProviderKind::Native
-        );
-        assert_eq!(
-            ModelProviderKind::parse("mock").unwrap(),
-            ModelProviderKind::Mock
-        );
-        // Legacy aliases still resolve to a kind even though the migration
-        // prefix/flag that `parse_with_migration` also returns is dropped.
-        assert_eq!(
-            ModelProviderKind::parse("anthropic").unwrap(),
-            ModelProviderKind::Native
-        );
-        assert!(ModelProviderKind::parse("bogus").is_err());
-    }
-
-    #[test]
     fn file_icon_mode_parse_covers_every_value_and_rejects_unknown() {
         assert_eq!(
             FileIconMode::parse("unicode").unwrap(),
@@ -2058,97 +1878,14 @@ max_query_chars = 0
         assert_eq!(command.args, vec!["check".to_string()]);
     }
 
-    /// When the file supplies a provider but no explicit model id, the
-    /// migration prefix is still applied to whatever model id is already set.
-    #[test]
-    fn model_provider_migration_prefixes_existing_model_when_file_omits_model() {
-        let mut cfg = Config::default();
-        cfg.model.model = "claude-sonnet".into();
-        let file = ConfigFile {
-            model: Some(ModelConfigFile {
-                provider: Some("anthropic".into()),
-                model: None,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        file.apply(&mut cfg, ConfigScope::Trusted);
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert_eq!(cfg.model.model, "claude-sonnet");
-    }
-
-    /// Env-var equivalent of the file-layer prefix-only migration: setting
-    /// only `FORGE_MODEL_PROVIDER` (no `FORGE_MODEL_ID`) still migrates the
-    /// model id that was already resolved from a lower layer.
-    #[test]
-    fn env_provider_only_migrates_existing_model_id() {
-        let g = EnvGuard::clear_forge_env();
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        fs::write(
-            &path,
-            r#"
-[model]
-model = "claude-sonnet"
-"#,
-        )
-        .unwrap();
-        g.set("FORGE_MODEL_PROVIDER", "anthropic");
-        let cfg = Config::load(ConfigOverrides {
-            config_path: Some(path),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert!(cfg.model.model.is_empty());
-    }
-
-    /// CLI-override equivalent: `--model-provider` alone (no `--model-id`)
-    /// still migrates whatever model id was already resolved.
-    #[test]
-    fn cli_provider_only_migrates_existing_model_id() {
-        let _g = EnvGuard::clear_forge_env();
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        fs::write(
-            &path,
-            r#"
-[model]
-model = "claude-sonnet"
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load(ConfigOverrides {
-            config_path: Some(path),
-            model_provider: Some("anthropic".into()),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.model.provider, ModelProviderKind::Native);
-        assert!(cfg.model.model.is_empty());
-    }
-
     #[test]
     fn env_api_key_workspace_and_journal_path_overrides() {
         let g = EnvGuard::clear_forge_env();
-        g.set("FORGE_API_KEY", "sk-from-env");
         g.set("FORGE_WORKSPACE", "/tmp/some-workspace");
         g.set("FORGE_JOURNAL_PATH", "custom/journal");
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        assert_eq!(cfg.model.api_key, None);
         assert_eq!(cfg.workspace_root, Some("/tmp/some-workspace".into()));
         assert_eq!(cfg.journal.path, "custom/journal");
-    }
-
-    #[test]
-    fn cli_api_key_override_applies() {
-        let _g = EnvGuard::clear_forge_env();
-        let cfg = Config::load(ConfigOverrides {
-            api_key: Some("sk-from-cli".into()),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.model.api_key, None);
     }
 
     /// Holds `ENV_LOCK` so the two `dirs::config_dir()` reads below cannot
@@ -2189,8 +1926,7 @@ model = "from-user-config"
             ..Default::default()
         })
         .unwrap();
-
-        assert!(cfg.model.model.is_empty());
+        assert_eq!(cfg.removed_model_keys, ["provider", "model"]);
     }
 
     /// The guard has to actually neutralize the user layer, or every

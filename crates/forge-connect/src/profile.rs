@@ -2,22 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Where a spec's model list and capability metadata come from.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CatalogMode {
-    /// Live provider `/models` entitles; models.dev supplies effort/image/cost.
-    #[serde(rename = "live+registry")]
-    #[default]
-    LiveRegistry,
-    /// models.dev metadata only. Never entitlement.
-    Registry,
-    /// Live provider `/models` only.
-    Live,
-    /// `default_models` on the spec. No metadata.
-    Static,
-}
-
 /// How requests are encoded and responses parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -136,16 +120,6 @@ pub(crate) fn wire_from_legacy_transport(transport: &str) -> Option<WireKind> {
         "anthropic" => Some(WireKind::AnthropicMessages),
         "codex" => Some(WireKind::Responses),
         _ => None,
-    }
-}
-
-/// The legacy `transport` value for a wire, which writers still emit until
-/// stage 8 so an older binary can read the entry.
-pub(crate) fn legacy_transport_for(wire: WireKind) -> &'static str {
-    match wire {
-        WireKind::ChatCompletions => "openai-compat",
-        WireKind::AnthropicMessages => "anthropic",
-        WireKind::Responses => "codex",
     }
 }
 
@@ -289,9 +263,8 @@ pub enum SpecOrigin {
 
 /// One provider offering Forge can connect and run.
 ///
-/// Renamed fields keep their old TOML names as aliases, and through stage 7
-/// they are written under the old names too, so an older binary still reads
-/// entries this one saves.
+/// Renamed fields still read their old TOML names (aliases); writers emit
+/// only the current names.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderSpec {
     pub id: String,
@@ -314,10 +287,7 @@ pub struct ProviderSpec {
     /// Built-in profile whose credential slot this one shares.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_from: Option<String>,
-    #[serde(
-        rename(serialize = "default_base_url", deserialize = "base_url"),
-        alias = "default_base_url"
-    )]
+    #[serde(alias = "default_base_url")]
     pub base_url: String,
     /// Built-in fields a `[provider_overrides.<id>]` table may change.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -363,9 +333,10 @@ pub struct ProviderSpec {
     pub billing_note: String,
     #[serde(default, skip_serializing_if = "EffortFamily::is_none")]
     pub effort_family: EffortFamily,
-    /// The model-id prefix, always the profile id once loaded. A custom
-    /// entry's older value is kept in `legacy_prefix` for normalization.
-    #[serde(default)]
+    /// The model-id prefix, always the profile id once loaded. Read from
+    /// old entries only; a custom entry's older value is kept in
+    /// `legacy_prefix` for normalization.
+    #[serde(default, skip_serializing)]
     pub model_provider_prefix: String,
     /// A custom entry's former `model_provider_prefix`, when it differed
     /// from its id: saved model ids under it still normalize to the id.
@@ -374,30 +345,16 @@ pub struct ProviderSpec {
     /// Display group for profiles that are one provider with several
     /// offerings (e.g. `openai` API key vs. ChatGPT sign-in). Equal to `id`
     /// for providers with only one offering.
-    #[serde(
-        default,
-        rename(serialize = "vendor_id", deserialize = "provider"),
-        alias = "vendor_id"
-    )]
+    #[serde(default, alias = "vendor_id")]
     pub provider: String,
     /// Group display name for the collapsed picker row, e.g. "OpenAI", the
     /// same value repeated across every profile sharing a `provider`.
-    #[serde(
-        default,
-        rename(serialize = "vendor_label", deserialize = "provider_label"),
-        alias = "vendor_label"
-    )]
+    #[serde(default, alias = "vendor_label")]
     pub provider_label: String,
     /// This profile's short label under its provider, e.g. "API key",
     /// "ChatGPT", "Go", "Zen". Empty for providers with one offering.
-    #[serde(
-        default,
-        rename(serialize = "route_label", deserialize = "label"),
-        alias = "route_label"
-    )]
+    #[serde(default, alias = "route_label")]
     pub label: String,
-    #[serde(default)]
-    pub catalog_mode: CatalogMode,
     /// The legacy `transport` value, read only; `normalize_spec` maps it
     /// into `wire`.
     #[serde(default, rename = "transport", skip_serializing)]
@@ -445,7 +402,6 @@ impl ProviderSpec {
             provider: String::new(),
             provider_label: String::new(),
             label: String::new(),
-            catalog_mode: CatalogMode::LiveRegistry,
             legacy_transport: None,
             origin: SpecOrigin::Builtin,
         }

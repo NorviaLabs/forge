@@ -19,7 +19,6 @@ models_dev_providers = []
 auth_url = "https://ollama.com/download"
 billing_note = "Cost: local inference; no provider quota or wallet balance."
 route_id = "ollama"
-catalog_mode = "live"
 
 [providers.auth]
 kind = "api-key-optional"

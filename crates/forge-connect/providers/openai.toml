@@ -22,7 +22,6 @@ billing_url = "https://platform.openai.com/usage"
 billing_note = "OpenAI does not expose wallet balance through the API key API."
 effort_family = "openai"
 route_id = "openai-api"
-catalog_mode = "live+registry"
 
 [providers.auth]
 kind = "api-key"
@@ -49,7 +48,6 @@ auth_url = "https://auth.openai.com/codex/device"
 import_aliases = ["openai"]
 effort_family = "openai"
 route_id = "openai-chatgpt"
-catalog_mode = "live+registry"
 
 [providers.auth]
 client_id = "app_EMoamEEZ73f0CkXaXp7hrann"

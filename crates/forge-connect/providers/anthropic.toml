@@ -22,7 +22,6 @@ min_key_len = 16
 billing_url = "https://console.anthropic.com/settings/billing"
 billing_note = "Anthropic does not expose remaining credits through the API key API."
 route_id = "anthropic-api"
-catalog_mode = "live+registry"
 
 [providers.auth]
 kind = "api-key"

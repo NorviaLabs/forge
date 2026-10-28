@@ -85,15 +85,19 @@ fn an_entry_saved_by_this_writer_reloads() {
     assert_eq!(saved.manual_models, vec!["my-llm/meta-llama/Llama-3.3-70B"]);
 
     let text = std::fs::read_to_string(find_providers_file(dir.path())).unwrap();
-    // Legacy keys stay until stage 8 so an older binary can read the entry.
-    for key in [
-        "auth_mode",
-        "transport = \"openai-compat\"",
-        "model_provider_prefix = \"my-llm\"",
-        "default_base_url",
-        "wire = \"chat-completions\"",
-    ] {
+    // Writers emit only the current schema: no legacy keys or old names.
+    for key in ["base_url = ", "wire = \"chat-completions\""] {
         assert!(text.contains(key), "missing `{key}` in:\n{text}");
+    }
+    for legacy in [
+        "auth_mode",
+        "transport",
+        "model_provider_prefix",
+        "default_base_url",
+        "vendor_id",
+        "catalog_mode",
+    ] {
+        assert!(!text.contains(legacy), "legacy `{legacy}` in:\n{text}");
     }
     assert!(!text.contains("api_key ="), "{text}");
 }

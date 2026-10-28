@@ -26,7 +26,7 @@ use std::sync::{
 };
 
 use async_trait::async_trait;
-use forge_config::{Config, ModelProviderKind};
+use forge_config::Config;
 use forge_types::{Message, ModelResponse, ModelStreamEvent, ToolDescriptor};
 use thiserror::Error;
 
@@ -268,18 +268,15 @@ pub trait ModelClient: Send + Sync {
 
 /// Build the native production client or the offline mock.
 pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelError> {
-    match cfg.model.provider {
-        ModelProviderKind::Mock => Ok(Box::new(MockModelClient::script(vec![ModelResponse {
+    if cfg.model.mock {
+        return Ok(Box::new(MockModelClient::script(vec![ModelResponse {
             text: "mock idle — configure a response script in tests".into(),
             tool_calls: vec![],
             usage: None,
             thinking: None,
-        }]))),
-        ModelProviderKind::Native => {
-            let client = NativeModelClient::from_config(cfg)?;
-            Ok(Box::new(client))
-        }
+        }])));
     }
+    Ok(Box::new(NativeModelClient::from_config(cfg)?))
 }
 
 #[cfg(test)]
@@ -386,7 +383,7 @@ mod tests {
     #[test]
     fn factory_mock() {
         let mut cfg = Config::default();
-        cfg.model.provider = ModelProviderKind::Mock;
+        cfg.model.mock = true;
         let c = client_from_config(&cfg).unwrap();
         // type erased — just ensure constructs
         let _ = c;

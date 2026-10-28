@@ -107,6 +107,21 @@ pub fn route_table() -> forge_model::RouteTable {
     )
 }
 
+/// The `(model, profile id)` a new session starts on: `mock` for the offline
+/// client, else the last selection saved in `preferences.toml` (in its
+/// current form), else none.
+pub fn starting_model(cfg: &Config) -> (String, String) {
+    if cfg.model.mock {
+        return ("mock".into(), String::new());
+    }
+    forge_connect::PreferenceStore::user_default()
+        .last_selection_struct(&forge_connect::loaded_registry())
+        .ok()
+        .flatten()
+        .map(|selection| (selection.model, selection.profile_id.unwrap_or_default()))
+        .unwrap_or_default()
+}
+
 /// Assemble a session from configuration, independent of any frontend.
 pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result<OpenedSession> {
     let model: Arc<dyn ModelClient> =
@@ -172,14 +187,18 @@ async fn open_session_with_model(
             source.fork().await.map_err(|e| anyhow::anyhow!(e))?
         }
     };
-    if !cfg.model.model.is_empty() {
-        session.set_active_model(cfg.model.model.clone());
+    // A session that has no model yet starts on the last selection (a
+    // resumed or forked one keeps its own).
+    let (start_model, start_profile) = starting_model(cfg);
+    if session.model_selection().model.is_empty() && !start_model.is_empty() {
+        session.set_active_model(start_model.clone());
+        session.set_active_profile_id(start_profile);
         let cache = forge_connect::ModelCatalogCache::user_default();
-        session.set_image_input_supported(cache.model_accepts_image_input(&cfg.model.model));
+        session.set_image_input_supported(cache.model_accepts_image_input(&start_model));
         // Compaction reads the model's real context window from the registry
         // cache. An unknown id keeps `CompactionPolicy`'s conservative
         // default rather than claiming a window Forge cannot verify.
-        if let Some(limits) = cache.model_limits(&cfg.model.model) {
+        if let Some(limits) = cache.model_limits(&start_model) {
             session
                 .set_context_window(limits.context, (limits.output > 0).then_some(limits.output));
         }
@@ -320,8 +339,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         let temp = TempDir::new().unwrap();
         init_repo(temp.path());
         let mut cfg = Config::default();
-        cfg.model.provider = forge_config::ModelProviderKind::Mock;
-        cfg.model.model = "mock".into();
+        cfg.model.mock = true;
         cfg.resolved_workspace = temp.path().to_path_buf();
         cfg.workspace_root = Some(temp.path().display().to_string());
 

@@ -183,15 +183,14 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
         ..Default::default()
     })
     .map_err(|e| anyhow::anyhow!(e))?;
-    let mut cfg = cfg;
-    // Config files intentionally do not select the active model. The bench
-    // command takes that selection explicitly so a run is reproducible.
-    cfg.model.model = args.model.clone();
+    // Config never selects the model. The bench command takes it explicitly
+    // so a run is reproducible.
     let profile_id = resolve_profile_id(&args.model)?;
 
     let opened = open_session(&cfg, SessionTarget::New).await?;
     let notices = opened.notices;
     let mut session = opened.session;
+    session.set_active_model(args.model.clone());
     session.set_active_profile_id(profile_id.clone());
     session.set_reasoning_effort(Some(args.effort.clone()));
 
@@ -282,9 +281,6 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     let overrides = ConfigOverrides {
         config_path: None,
         workspace: None,
-        model_provider: None,
-        model_id: None,
-        api_key: None,
         journal_path: None,
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
@@ -379,9 +375,6 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     let cfg = Config::load(ConfigOverrides {
         config_path: None,
         workspace: None,
-        model_provider: None,
-        model_id: None,
-        api_key: None,
         journal_path: None,
     })
     .map_err(|e| anyhow::anyhow!(e))?;

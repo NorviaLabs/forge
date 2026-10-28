@@ -32,7 +32,6 @@ min_key_len = 16
 billing_url = "https://opencode.ai/"
 billing_note = "OpenCode does not currently expose wallet balance through its model API."
 route_id = "opencode-go"
-catalog_mode = "live+registry"
 
 [providers.auth]
 kind = "api-key"
@@ -89,7 +88,6 @@ min_key_len = 16
 billing_url = "https://opencode.ai/"
 billing_note = "OpenCode does not currently expose wallet balance through its model API."
 route_id = "opencode-zen"
-catalog_mode = "live+registry"
 
 [providers.auth]
 kind = "api-key"

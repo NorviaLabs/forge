@@ -4,7 +4,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::profile::{
-    AuthKind, AuthPrompt, AuthSpec, CatalogMode, EditableField, ProviderSpec, SpecOrigin, WireKind,
+    AuthKind, AuthPrompt, AuthSpec, EditableField, ProviderSpec, SpecOrigin, WireKind,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -284,9 +284,6 @@ fn save_custom_provider_to(
             _ => "Custom OpenAI-compatible provider",
         }
         .into(),
-        // The §1.1 fields plus the legacy `auth_mode`, `transport`,
-        // `model_provider_prefix`, `route_id` and `catalog_mode`, which stay
-        // until stage 8 so an older binary can still read the entry.
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKey,
             prompt: AuthPrompt::Tui,
@@ -310,7 +307,6 @@ fn save_custom_provider_to(
         model_provider_prefix: id.into(),
         provider: id.into(),
         provider_label: id.into(),
-        catalog_mode: CatalogMode::Live,
         origin: SpecOrigin::User,
         ..ProviderSpec::blank()
     };
@@ -333,20 +329,8 @@ fn save_custom_provider_to(
     }
     let registry = loaded_registry_from(path);
     validate_user_spec(&registry, &spec)?;
-    // The legacy `auth_mode` and `transport` keys are written until stage 8
-    // so an older binary can still read the entry.
-    let mut entry =
+    let entry =
         toml::Value::try_from(&spec).map_err(|err| format!("cannot serialize provider: {err}"))?;
-    if let Some(table) = entry.as_table_mut() {
-        table.insert(
-            "auth_mode".into(),
-            toml::toml! { api_key = { tui_always_prompt = true } }.into(),
-        );
-        table.insert(
-            "transport".into(),
-            crate::profile::legacy_transport_for(wire).into(),
-        );
-    }
     let mut file = toml::Table::new();
     file.insert("providers".into(), toml::Value::Array(vec![entry]));
     let addition = format!(
@@ -877,7 +861,6 @@ mod tests {
             )
             .unwrap();
             assert_eq!(spec.default_model(), Some(expected));
-            assert_eq!(spec.catalog_mode, CatalogMode::Live);
             assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
             assert!(spec.needs_tui_api_key_prompt());
             assert!(spec.is_user());
@@ -1079,7 +1062,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         assert_eq!(definition.attach, crate::Attach::XApiKey);
         assert_eq!(definition.base_url, "https://proxy.example");
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("transport = \"anthropic\""), "{text}");
+        assert!(text.contains("wire = \"anthropic-messages\""), "{text}");
         assert!(save_custom_provider_to(
             &path,
             "nope",

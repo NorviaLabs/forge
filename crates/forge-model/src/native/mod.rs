@@ -130,7 +130,6 @@ mod sse_tests {
 
 pub struct NativeModelClient {
     http: reqwest::Client,
-    default_model: String,
     /// The routing snapshot. Dispatch clones the `Arc` and drops the guard
     /// before any await, so an in-flight turn keeps its snapshot.
     routes: RwLock<RouteTable>,
@@ -227,7 +226,6 @@ impl NativeModelClient {
         // one-off calls) routes through the registry and the process handle.
         Ok(Self {
             http,
-            default_model: cfg.model.model.clone(),
             routes: RwLock::new(forge_connect::resolve(
                 &forge_connect::loaded_registry(),
                 &Credentials::shared(),
@@ -237,11 +235,7 @@ impl NativeModelClient {
     }
 
     fn model_for(&self, req: &ModelRequest) -> Result<String, ModelError> {
-        let model = if req.model.trim().is_empty() {
-            self.default_model.trim()
-        } else {
-            req.model.trim()
-        };
+        let model = req.model.trim();
         if model.is_empty() {
             return Err(ModelError::Other("model id is required".into()));
         }
