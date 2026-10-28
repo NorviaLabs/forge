@@ -219,8 +219,8 @@ fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> R
         return Err(LAYOUT.into());
     }
     let table = entry.as_table_mut().ok_or(LAYOUT)?;
+    upgrade_legacy_keys(table, id)?;
     table.insert("title".into(), details.title.trim().into());
-    table.remove("route_label");
     if details.label.trim().is_empty() {
         table.remove("label");
     } else {
@@ -243,6 +243,52 @@ fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> R
         .ok_or(LAYOUT)?;
     check_custom_keys(rewritten)?;
     write_checked(path, &original, &updated)
+}
+
+/// Rewrite a raw custom entry in the current schema: renamed fields take
+/// their current names and legacy keys are converted or dropped, so a
+/// rewritten entry never carries `transport`, `auth_mode`, `route_id`, or
+/// `catalog_mode`. An older custom `model_provider_prefix` stays, since saved
+/// model ids still normalize from it.
+fn upgrade_legacy_keys(table: &mut toml::Table, id: &str) -> Result<(), String> {
+    for (old, new) in [
+        ("default_base_url", "base_url"),
+        ("vendor_id", "provider"),
+        ("vendor_label", "provider_label"),
+        ("route_label", "label"),
+    ] {
+        if let Some(value) = table.remove(old) {
+            table.entry(new).or_insert(value);
+        }
+    }
+    if let Some(transport) = table.remove("transport") {
+        if !table.contains_key("wire") {
+            let wire = transport
+                .as_str()
+                .and_then(crate::normalize::wire_from_legacy_transport)
+                .ok_or("this provider's transport cannot be converted")?;
+            table.insert(
+                "wire".into(),
+                toml::Value::try_from(wire).map_err(|_| "cannot serialize provider")?,
+            );
+        }
+    }
+    // Custom providers only use key auth (`check_custom_keys`).
+    if table.remove("auth_mode").is_some() && !table.contains_key("auth") {
+        let mut auth = toml::Table::new();
+        auth.insert("kind".into(), "api-key".into());
+        table.insert("auth".into(), toml::Value::Table(auth));
+    }
+    table.remove("route_id");
+    table.remove("catalog_mode");
+    if table
+        .get("model_provider_prefix")
+        .and_then(toml::Value::as_str)
+        == Some(id)
+    {
+        table.remove("model_provider_prefix");
+    }
+    Ok(())
 }
 
 fn replace_section(path: &Path, original: &str, section: &str, body: &str) -> Result<(), String> {
@@ -1039,6 +1085,48 @@ mod tests {
         assert_eq!(
             registry.get("first").unwrap().effective_auth().kind,
             crate::AuthKind::ApiKey
+        );
+    }
+
+    #[test]
+    fn editing_details_writes_a_legacy_entry_in_the_current_schema() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            "[[providers]]\napi_key_env = []\ncatalog_mode = \"live\"\ndefault_base_url = \"https://api.legacy.example/v1\"\nid = \"legacy\"\nmodel_provider_prefix = \"legacy\"\nroute_id = \"legacy\"\ntitle = \"Legacy\"\ntransport = \"openai-compat\"\n\n[providers.auth_mode.api_key]\ntui_always_prompt = true\n",
+        )
+        .unwrap();
+        let details = ProviderDetails {
+            title: "Legacy".into(),
+            label: "Team".into(),
+            api_key_env: vec!["LEGACY_API_KEY".into()],
+        };
+        let spec = update_custom_provider_to(
+            &path,
+            "legacy",
+            "https://api.legacy.example/v1",
+            "",
+            Some(&details),
+        )
+        .unwrap();
+        assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
+        assert_eq!(spec.effective_auth().kind, crate::AuthKind::ApiKey);
+        let text = std::fs::read_to_string(&path).unwrap();
+        for legacy in [
+            "transport",
+            "auth_mode",
+            "route_id",
+            "catalog_mode",
+            "default_base_url",
+            "model_provider_prefix",
+        ] {
+            assert!(!text.contains(legacy), "legacy `{legacy}` in:\n{text}");
+        }
+        assert!(text.contains("wire = \"chat-completions\""), "{text}");
+        assert!(
+            loaded_registry_from(&path).load_warnings().is_empty(),
+            "{text}"
         );
     }
 
