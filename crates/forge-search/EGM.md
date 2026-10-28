@@ -13,7 +13,7 @@ all logic lives in `src/`.
 
 - Child component contract: [`./src/EGM.md`](./src/EGM.md) — `WorkspaceIndex`,
   `WorkspaceIndexOptions`, `SearchError`, `merge_search_results`,
-  `score_quick_open`/`rerank_quick_open_hits`, and the result types
+  `score_quick_open`, and the result types
   (`FileSearchHit`, `GrepSearchHit`, `FindResponse`, `GrepResponse`,
   `MergedSearch`, `GrepQueryMode`).
 
@@ -21,7 +21,8 @@ all logic lives in `src/`.
 
 - Every query waits for the initial scan; a slow scan surfaces as
   `SearchError::ScanTimeout`, never as partial results.
-- `relevance` is normalized against the top hit of the same result set.
+- `relevance` is normalized against the top hit of the same result set; for
+  grep it is present only in fuzzy mode.
 - Path/include filters are applied before pagination.
 
 ## Side Effects

@@ -3,8 +3,11 @@
 ## Overview
 
 Every Rust crate in the Forge workspace (the 19 members listed in the root
-`Cargo.toml`). Each crate directory holds only `Cargo.toml`, except
-`forge-tui`, which also has a `build.rs`. Each crate links to the contract
+`Cargo.toml`). Each crate directory holds `Cargo.toml` and `src/`, plus a few
+non-Rust extras: `forge-tui` has a `build.rs` and `themes/` (the built-in
+`forge-dark.toml` and `forge-light.toml`), and `forge-connect` has
+`providers/` (the five built-in provider definitions embedded with
+`include_str!`). Each crate links to the contract
 for its `src/` directory. `tests/` directories hold integration tests only and
 have no contracts.
 
@@ -15,7 +18,9 @@ Application boundary:
 - forge-cli: [./forge-cli/EGM.md](./forge-cli/EGM.md) - The `forge` binary.
   Handles clap argv, resume/continue/fork, headless `bench`, and the hidden
   `__egress-connect` helper. The TUI acquires the repository lease before
-  opening the primary session; `bench` writes only a journal and takes none.
+  opening the primary session, falling back to a lease-less session when
+  runtime storage or lease setup fails; `bench` writes only a journal and
+  takes none.
 - forge-tui: [./forge-tui/EGM.md](./forge-tui/EGM.md) - The full-screen
   ratatui UI: `TuiApp`, the event loop, overlays, connect/model picker, editor,
   explorer, and widgets. `ExitCode` 0..4 is a process contract.

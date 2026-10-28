@@ -21,8 +21,9 @@ dev-dependency by tests in other crates.
 ## Invariants
 
 - The HTTP mock is a real socket server, so it works for both blocking and
-  async clients; responses are served in the given order, one per accepted
-  connection.
+  async clients; responses are consumed in the given order, one per accepted
+  connection. A connection whose request cannot be read consumes its scripted
+  response without sending it, so later connections get later responses.
 - Helper names and behavior are stable across crates; changing a fixture must
   keep every dependent test's assumptions valid.
 - Git fixtures use a deterministic initial branch (`main`) and committer

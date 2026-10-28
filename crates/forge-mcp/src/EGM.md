@@ -76,7 +76,9 @@ file use a scripted fixture server; they are not part of the contract surface.
 - Kills the child's process group and deletes its private temp directory on
   drop.
 - Starts an egress endpoint that can reach the network and logs `mcp:<server>`
-  connections; mutates shared egress state (call labels, denied-host queue).
+  connections to the session's shared event log; call labels and the
+  denied-host queue it mutates are per-server, not the session-shared
+  `EgressShared`.
 - Mutates the supplied `ToolRegistry` (`register_into`,
   `register_static_mcp`, `install_search_tools`).
 - Emits `tracing` warnings on sandbox/egress degradation, skipped tools, and

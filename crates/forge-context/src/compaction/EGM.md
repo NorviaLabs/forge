@@ -62,9 +62,10 @@ lives in `forge-core`'s session module.
   versions, and validates required sections.
 - `Checkpoint::render` is deterministic: canonical section order, only populated
   sections.
-- `plan_compaction` requires every protected fact to survive:
-  a non-empty protected-fact set with no `user_constraints` section yields
-  `MissingProtectedFacts`.
+- `plan_compaction` checks only that protected facts have a home: a
+  non-empty protected-fact set with no `user_constraints` section yields
+  `MissingProtectedFacts`. Individual facts are not checked against the
+  checkpoint.
 - A previous checkpoint in the stable prefix is removed, not stacked; repeated
   compaction merges state.
 - Candidates are accepted only when strictly smaller than the input and at or
@@ -72,14 +73,16 @@ lives in `forge-core`'s session module.
   otherwise `NotSmaller`/`StillOversized`/`NothingToCompact` is returned and no
   context is mutated.
 - Tail selection never opens on a tool result and never separates a tool call
-  from its results; it prefers to start on a user message and may overshoot the
+  from its results. A valid start is a user message or a tool-call-free
+  assistant message; it backs up one extra message only when the start is an
+  assistant reply directly following its user request, and may overshoot the
   token target to reach a valid boundary.
 - Policy arithmetic: trigger is `min(window * 0.85, usable_context)`;
-  compaction is considered when current tokens plus the expected turn exceed
-  the trigger; tail target is `clamp(window * 0.12, 16K, 64K)` capped at
-  `window / 3`.
-- Protected facts are truncated to 600 characters and the most recent 24 are
-  supplied to the compaction prompt.
+  compaction is considered when current tokens plus the expected turn reach
+  or exceed the trigger; tail target is `clamp(window * 0.12, 16K, 64K)`
+  capped at `window / 3`.
+- Protected facts longer than 600 characters keep the first 600 plus a `…`
+  marker, and the most recent 24 are supplied to the compaction prompt.
 - `SessionContextState` records how the projection was derived, never a copy of
   canonical history.
 

@@ -72,8 +72,12 @@ through `lib.rs` re-exports.
   alternate screen, mouse capture, bracketed paste, keyboard enhancement flags
   — and restores it on quit, error, and panic. While the TUI is live, stdout is
   owned by the renderer.
-- Run time: reads and writes session/journal state and user-level input
-  history on disk (paths resolved by `forge-session` / `forge-config`).
+- Run time: reads and writes session/journal state on disk through
+  `forge-session`, and UI/runtime state through `forge_storage`
+  (`LocalRuntimeStorage` / `RuntimeStorage`).
+- Run time: persists user-level input history to
+  `forge_storage::forge_data_dir()/input-history.json`; the
+  `FORGE_INPUT_HISTORY_PATH` env var overrides that path.
 - Run time: may spawn PTYs, subprocesses, and background async tasks on the
   operator's behalf; see [`./src/EGM.md`](./src/EGM.md) for the ownership split.
 

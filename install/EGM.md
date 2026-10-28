@@ -20,7 +20,8 @@ package and has no build step; the scripts are executed directly.
 `forge-installer.sh` environment inputs:
 
 - `FORGE_REPOSITORY` (default `NorviaLabs/forge`),
-- `FORGE_VERSION` (default: latest release tag from the GitHub API),
+- `FORGE_VERSION` (default: the first `tag_name` returned by the GitHub API
+  `releases?per_page=20` list, which may be a pre-release),
 - `FORGE_INSTALL_DIR` (default `$HOME/.local/bin`),
 - `FORGE_SKIP_DEPS` (non-empty skips sandbox dependency installation).
 
@@ -42,7 +43,8 @@ if any case fails.
 ## Invariants
 
 - The shell installer runs under `set -eu` and requires `curl` and `tar`
-  up front; unsupported platform pairs fail with a message on stderr.
+  up front; unsupported platform pairs fail with a message on stderr. It also
+  requires `sha256sum` or `shasum`, checked only after both downloads.
 - The archive is only extracted and copied after the recorded SHA-256 matches
   the downloaded tree; a missing checksum entry or mismatch aborts the install.
 - Downloads use HTTPS with TLS 1.2 minimum (`--proto '=https' --tlsv1.2`).
@@ -59,13 +61,14 @@ if any case fails.
 - The Windows script never installs a binary and never returns success, because
   no sandbox backend exists for native Windows.
 - The test harness isolates `PATH` per case (stub dir plus a sanitized system
-  mirror with the simulated tools removed), so absence is controlled by the
-  test rather than the host.
+  mirror). The mirror removes only `bwrap`, `socat`, `apt-get`, `pacman`, and
+  `apk`; a host `dnf`, `yum`, or `zypper` stays on `PATH`.
 
 ## Side Effects
 
-- Network: queries the GitHub releases API and downloads the release archive
-  and `SHA256SUMS` from `github.com`.
+- Network: queries the GitHub releases API (only when `FORGE_VERSION` is
+  unset or empty) and downloads the release archive and `SHA256SUMS` from
+  `github.com`.
 - Disk: creates a temp directory, extracts the archive, creates
   `FORGE_INSTALL_DIR`, and writes/chmods `$FORGE_INSTALL_DIR/forge`.
 - System: on Linux, may run the host package manager as root/sudo to install

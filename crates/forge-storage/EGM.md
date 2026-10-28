@@ -14,21 +14,26 @@ source code at this level: all logic lives in `src/`.
 - Child component contract: [`./src/EGM.md`](./src/EGM.md) — public symbols
   re-exported from `src/lib.rs` (`RuntimeStorage`, `LocalRuntimeStorage`,
   `RepositoryRuntimeStorage`, `RuntimeDataKind`, `StorageMode`,
-  `RuntimeIdentity`, `StorageError`, `EXCLUDE_PATTERN`, git topology, exclude,
-  migration, and the public `worktree` module).
+  `RuntimeIdentity`, `StorageError`, `EXCLUDE_PATTERN`, `forge_data_dir`, git
+  topology, exclude, migration, and the public `worktree` module).
+- `forge_data_dir() -> Option<PathBuf>` — the application-data root:
+  `$FORGE_DATA_DIR` when set and non-empty, else `<platform data dir>/forge`.
+  The repo's `.cargo/config.toml` sets `FORGE_DATA_DIR` to `target/forge-data`
+  for `cargo test`/`cargo run`; an exported value still wins.
 
 ## Invariants
 
 - Runtime state is resolved through `RuntimeStorage` only; the exclude pattern
   covers `/.forge/local/` and never the project-owned remainder of `.forge/`.
-- Worktree cleanup never discards uncommitted work unless the caller uses the
-  explicit `remove_dirty_worktree` opt-in.
+- The `remove_clean_worktree*` helpers never discard uncommitted work (they
+  refuse with `Dirty`). `remove_worktree` and its alias `remove_dirty_worktree`
+  always pass `--force` and discard it. No removal deletes the branch.
 
 ## Side Effects
 
 - Spawns `git` subprocesses, creates runtime directories (mode `0700` on Unix),
-  writes the repository-local Git exclude file, moves legacy runtime files, and
-  creates/removes git worktrees and branches. See [`./src/EGM.md`](./src/EGM.md).
+  writes the repository-local Git exclude file, moves legacy runtime files,
+  creates/removes git worktrees, and creates (never deletes) branches. See [`./src/EGM.md`](./src/EGM.md).
 
 ## Notes
 

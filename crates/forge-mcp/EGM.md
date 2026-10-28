@@ -37,15 +37,18 @@ All code lives in `src/lib.rs`.
   time) and bounded by a 10-second I/O timeout.
 - Tool side-effect class comes from the server's configured class, never
   assumed `Read`; unknown config falls back to `Exec`.
-- No secrets are read or written by this crate; server env comes from config.
+- Servers inherit the full parent environment by design (servers commonly
+  need API keys from it), sandboxed or not; provider credentials are not
+  stripped. Sandboxed servers only get the egress proxy variables added.
 
 ## Side Effects
 
 - Spawns external MCP server processes (stdio) and kills their whole process
   group on drop of the client.
 - Creates and removes a private temp directory per sandboxed server.
-- Listens on a per-server egress proxy endpoint while a sandboxed server lives
-  and records denied hosts in the shared session egress state.
+- Listens on a per-server egress proxy endpoint while a sandboxed server lives.
+  The endpoint shares the session's egress policy and event log, but refused
+  hosts land in that server's own denied-host queue.
 - Registers tools into the caller's `ToolRegistry` and sends JSON-RPC over the
   child's stdin/stdout.
 

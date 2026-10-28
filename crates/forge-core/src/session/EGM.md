@@ -64,7 +64,7 @@ from the crate root and can therefore reach them.
     `image_input_supported`, `set_reasoning_effort`, `reasoning_effort`,
     `set_thinking_enabled`, `thinking_enabled`, `set_approve_all`,
     `approve_all`, `set_workspace_trusted`, `workspace_trusted`,
-    `apply_provider_env`, `clear_provider_env`.
+    `set_route_table`.
 
 ## Invariants
 
@@ -79,7 +79,9 @@ from the crate root and can therefore reach them.
 - Grant decisions validate the payload shape before applying; redaction markers
   disqualify a pattern grant.
 - A turn that has not produced runtime evidence is never marked `Completed`;
-  the completion evaluator decides from tool/file/git evidence.
+  the completion evaluator decides from tool/file/git evidence. The exception
+  is `yield_current_turn_for_queue`, which moves straight to `Completed`
+  (`QueueYield`) to hand off to the queue.
 - Validation failures consume a per-turn budget and are retried only within it.
 - Read-only, idempotent, `parallel_safe` calls may run concurrently (max 8);
   everything else runs serially.
@@ -97,13 +99,16 @@ from the crate root and can therefore reach them.
 - `set_approve_all(on)` stores `on && workspace_trusted` and returns whether
   the request was honored (`approve_all == on`), so it returns `false` only when
   enabling on an untrusted workspace.
-- Tool authorization goes through the private `authorize_tool_call` policy
-  point, which audits every decision; approve-all upgrades only `Hitl` to
-  `Allow` and never overrides a `Deny`. The explicit unconfined retry audits
-  its own decision (`explicit_unconfined_retry`). Two unaudited
-  `governance.authorize` calls only narrow: the parallel-read pre-check
-  (the call is still authorized and audited when it starts) and the
-  re-check after a HITL approval (fail-closed on a changed policy).
+- When governance is enabled, tool authorization goes through the private
+  `authorize_tool_call` policy point, which queues an audit row for every
+  decision (written at the next durable point, e.g. `publish_tool_result`);
+  approve-all upgrades only `Hitl` to `Allow` and never overrides a `Deny`.
+  The explicit unconfined retry bypasses it and audits its own decision
+  (`explicit_unconfined_retry`). The other, unaudited `governance.authorize`
+  calls only narrow: the parallel-read pre-check (the call is still
+  authorized and audited when it starts) and the re-checks after a HITL
+  approval of the call and of an unconfined retry request (fail-closed on a
+  changed policy). With `enable_governance` off, no authorization runs.
 - `resume` and in-place `resume_session` both close out the replayed
   session's unfinished background tasks (`reconcile_orphaned_background_tasks`):
   nothing runs them after a restart or a session switch, so they are marked
@@ -119,8 +124,10 @@ from the crate root and can therefore reach them.
 - Spawns and cancels subagent sessions and background tasks.
 - Starts/adopts the egress proxy, installs host grants, and drains egress
   events.
-- Sets and clears provider credential environment variables for child
-  processes.
+- Strips the route table's provider credential environment variable names
+  from child processes (`set_route_table`); it never sets them.
+- `apply_grant_decision` appends allow rules to the user's personal
+  permissions file for `AllowHostAlways` and `AllowPatternAlways`.
 - Emits `TurnEvent`s and audit entries.
 
 ## Verification

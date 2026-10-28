@@ -60,20 +60,23 @@ mutates the session.
 
 ## Invariants
 
-- `from_messages` starts from messages only: system prompts are skipped and
-  tool cards are reconstructed by matching `ToolCall.id`; evaluation/repair
-  turns produce evaluator or repair items rather than plain assistant text.
+- `from_messages` starts from messages only (its `&[TurnEvent]` argument is
+  ignored, so `from_session` drops `session.events`): system prompts are
+  skipped and tool cards are reconstructed by matching `ToolCall.id`;
+  evaluation/repair turns produce evaluator or repair items rather than plain
+  assistant text.
 - `TurnKey` is never persisted; resume rebuilds keys from session identity plus
   the user-message ordinal, so restored turns simply carry no ephemeral timing.
 - `turn_boundaries` returns indices of `ChatItem::User`; `is_in_latest_turn`
   returns true when no turn has started (only brand/home items).
 - `group_routine_activity` collapses only consecutive routine items of the same
-  category; every non-routine item passes through unchanged and order is
-  preserved.
+  category and preserves order. A `Thinking` item that arrives while a group is
+  pending joins that group (folded into its detail as a `note: …` line) rather
+  than splitting it; every other non-routine item passes through unchanged.
 - `sanitize_final_answer_text` removes only known structural control
   envelopes (e.g. `\confidence{…}`), never filters phrases; an unclosed marker
   is left in place and the text before it appears once, so no surrounding
-  text is dropped or repeated.
+  text is dropped or repeated; the result is trimmed.
 - `wrap` measures terminal cell width (`unicode-width`), breaks at whitespace,
   splits words wider than the whole line rather than overflowing, clamps width
   to at least 1, and returns `[""]` for empty input.
@@ -81,8 +84,8 @@ mutates the session.
   seconds where the format promises whole units.
 - `Verdict::glyph`/`headline` and `AgentRowState::word`/`is_terminal` are total
   functions over their enums; terminal states are the completed/failed family.
-- `parse_verdict` returns evidence lines that exclude blank lines and internal
-  `fff:` debug lines.
+- `parse_verdict` returns evidence lines that exclude blank lines; it does not
+  filter internal `fff:` debug lines.
 - Presentation structs are plain data (no hidden references to the session),
   so callers may retain or re-render them freely.
 

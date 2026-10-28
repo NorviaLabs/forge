@@ -25,16 +25,23 @@ wiring. It composes `forge-model`, `forge-tools`, `forge-context`,
   and grant/compaction transaction types. The full list is in
   [src/EGM.md](./src/EGM.md).
 - Re-exported compaction vocabulary from `forge-context` (`Checkpoint`,
-  `CompactionPolicy`, `SessionContextState`, telemetry types).
+  `CompactionPolicy`, `CompactionError`, `CompactionTrigger`,
+  `ProtectedFact`/`ProtectedFactKind`, `SessionContextState`, telemetry types).
 
 ## Invariants
 
 - `ActiveTaskState` is the single source of truth for task/wait state; one
   foreground task per session.
-- A turn is `Completed` only on runtime evidence, never on model text alone.
-- Every tool call is authorized at one audited policy point before it runs.
+- A turn is `Completed` only on runtime evidence, never on model text alone,
+  except that a read-only turn completes once the model has replied and a
+  queue yield completes the turn without consulting the evaluator.
+- With governance enabled, every tool call is authorized at one audited policy
+  point before it runs; a few unaudited re-checks may only narrow a decision.
+  With `enable_governance` off, no authorization runs.
 - Each durable event is journaled before its side effect; resume replays the
-  journal and reconciles incomplete intents.
+  journal and reconciles incomplete intents. Audit rows are the exception:
+  they are queued in memory and written at the next durable point (e.g. a
+  tool result), so an authorization row lands after the tool has run.
 - Compaction is transactional and never fails the user's turn.
 
 ## Side Effects

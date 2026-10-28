@@ -24,10 +24,13 @@ one wire and in-memory representation.
 
 - Persisted and wire-visible enums use `snake_case` serialization; renames are
   forbidden where journals already contain the old tag (`SessionStatus` keeps
-  `"session_status"`).
+  `"session_status"`). Exception: `WaitReason` has no `rename_all`, so its
+  variant tags serialize in PascalCase (`Approval`, `MissingConfiguration`).
 - Types are `serde`-round-trippable unless explicitly documented otherwise;
   additive fields that need compatibility use `#[serde(default)]`.
-- ID newtypes wrap `u64`/`Uuid` and are never reinterpreted across domains.
+- `TaskId`, `AttemptId`, `QueueItemId`, and `BackgroundTaskId` are `u64`
+  newtypes and are never reinterpreted across domains. `SessionId` is a plain
+  `Uuid` type alias, so the type system does not enforce this for it.
 - Helpers (`strip_protocol_markers`, `title_from_prompt`,
   `session_name_from_prompt`, `is_readonly_git_subcommand`, image inspection)
   are pure and allocation-bounded.
@@ -36,7 +39,8 @@ one wire and in-memory representation.
 
 ## Side Effects
 
-- None: no filesystem, network, subprocess, clock, or global mutable state.
+- No filesystem, network, subprocess, or global mutable state. The only clock
+  read is `ProgressDocument::new`, which stamps `updated_at` with `Utc::now()`.
 
 ## Verification
 

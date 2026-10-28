@@ -64,9 +64,11 @@ read-only git subcommand list shared across crates.
 - `strip_protocol_markers` removes only structural envelopes, never prose; an
   unterminated marker rewinds so the tail is emitted exactly once and no text
   is duplicated or dropped.
-- `title_from_prompt` keeps at most `TITLE_MAX_TOKENS` normalized tokens and
-  the result never exceeds `TITLE_MAX_CHARS` characters; filler words do not
-  count toward the token budget.
+- `title_from_prompt` draws at most `TITLE_MAX_WORDS` (4) words from the first
+  sentence, skipping filler words so they do not count toward that budget
+  (all-filler input falls back to the literal opening). The survivors are
+  kebab-cased to at most `TITLE_MAX_TOKENS` (4) normalized tokens, and the
+  result never exceeds `TITLE_MAX_CHARS` characters.
 - `TaskLifecycle` is authoritative for UI busy/waiting state; consumers must
   not derive their own lifecycle from streaming flags.
 - `Message.outcome`/`ToolOutput.outcome` are the recorded result; an absent
@@ -83,8 +85,11 @@ read-only git subcommand list shared across crates.
   session-cache snapshot rather than the original file; bytes are never stored
   on the type.
 - `inspect_image` is header-only (no decode), recognizes PNG/JPEG/GIF/WebP,
-  and rejects inputs above `MAX_IMAGE_BYTES` or with mismatched headers;
-  `sniff_allowed_image` is the cheap prefix check.
+  and rejects empty input, inputs above `MAX_IMAGE_BYTES`, and inputs whose
+  signature matches none of the four formats. A PNG signature with a short or
+  non-`IHDR` header, or a JPEG `FF D8 FF` prefix with no SOF segment, is
+  accepted with `width`/`height` of `None`; `sniff_allowed_image` is the
+  cheap prefix check.
 - `is_readonly_git_subcommand` matches on the subcommand alone: `status`,
   `diff`, `log`, `show`, `branch`, `rev-parse`, `ls-files`, `blame` (exact,
   case-sensitive match; callers lowercase first); everything
@@ -93,8 +98,9 @@ read-only git subcommand list shared across crates.
 
 ## Side Effects
 
-- None. All functions are pure; image inspection reads only the supplied byte
-  slice.
+- All functions are pure except `ProgressDocument::new`, which reads the wall
+  clock (`Utc::now()`) for `updated_at`; image inspection reads only the
+  supplied byte slice.
 
 ## Verification
 

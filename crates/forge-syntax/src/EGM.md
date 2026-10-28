@@ -66,17 +66,20 @@ highlighting, and a bounded memoisation cache. Files:
 - The cache key holds the full source text (not a hash) to rule out collisions
   that would render visibly wrong colors, and includes the theme, so a theme
   switch cannot serve stale colors.
-- Cache entries are bounded by total segment bytes (4 MiB cap) and evicted
-  least-recently-used first; stats and entry accounting stay consistent on
-  eviction.
+- Cache entries are bounded by total segment bytes (text plus a fixed
+  per-segment overhead, 4 MiB cap) and evicted least-recently-used first;
+  stats and entry accounting stay consistent on eviction. The keys' `lang`
+  and `code` strings are not charged, so retained memory can exceed the cap.
 - The cache is global and mutex-protected because async highlighting can
   migrate across worker threads; the lock is never held during parsing.
 - Returned `Arc<Vec<...>>` values are shared immutably; callers must not expect
   ownership.
 - `detect_language` caps JSON-shape probing (`MAX_JSON_DETECT_BYTES`) so a huge
   `{`/`[`-delimited block is not parsed on every render.
-- `get_parser` expects a valid grammar binding and panics otherwise; callers
-  must pass a real language (not `Unknown`).
+- `get_parser` panics if the grammar binding is invalid.
+  `SyntaxLanguage::Unknown.tree_sitter()` returns the Rust grammar, so
+  `get_parser(Unknown)` silently yields a Rust parser; callers should pass a
+  real language.
 
 ## Side Effects
 

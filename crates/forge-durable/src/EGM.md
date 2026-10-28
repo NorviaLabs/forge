@@ -31,7 +31,8 @@ table that is a record only — replay never reads it.
   `model_responses`, `events`, `pending_hitl`, `queue_items`,
   `background_tasks`, `subagent_workspaces`, `last_prompt_hash`,
   `last_prompt_bytes`, `cache_epoch`, `last_cache_transport`, `context_state`,
-  `compaction_count`, plus constructors/helpers on the type.
+  `compaction_count`; no public constructors or helpers (only a private
+  `empty`).
 - Private (not exported): `ReplayCheckpoint`, the serialized checkpoint
   payload with `last_seq`, and `REPLAY_CHECKPOINT_INTERVAL` (256).
 - `RestoredQueueItem { id, text, created_at, status }`,
@@ -52,8 +53,10 @@ table that is a record only — replay never reads it.
   corrupted, because replay re-derives state from events rather than trusting
   the file blindly.
 - The pool uses exactly one connection, so appends are serialized.
-- Every 256th `seq` requests a replay checkpoint; the request is best-effort
-  (`try_send` on a depth-1 channel) and its failure is ignored.
+- Every 256th `seq` written through `append` requests a replay checkpoint;
+  the request is best-effort (`try_send` on a depth-1 channel) and its failure
+  is ignored. `append_tool_intents`/`append_tool_results` insert rows in their
+  own transaction and never request a checkpoint.
 - Checkpoints are accepted only when their stored `seq` matches
   `ReplayCheckpoint.last_seq`; otherwise replay starts from an empty state and
   all events are read.
@@ -76,7 +79,8 @@ table that is a record only — replay never reads it.
 ## Side Effects
 
 - Creates the journal directory and `<session_id>.db` (plus SQLite WAL/SHM
-  files); writes/deletes rows during checkpoint maintenance.
+  files); checkpoint maintenance only upserts `replay_checkpoints` (a newer
+  `seq` replaces an older one) and never deletes rows.
 - Spawns a named `forge-checkpoint` thread with its own current-thread Tokio
   runtime and its own single-connection pool on first checkpoint need.
 - Reads directory metadata via `read_dir`/`metadata`.

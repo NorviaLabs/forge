@@ -40,7 +40,9 @@ or host); `audit.rs` is the shared in-memory decision log.
 
 - `authorize` order is fixed: ACL deny → explicit pattern deny (`Hitl`) →
   HITL membership by tool name/glob, side-effect class, or destructive git
-  (`reset --hard`, `clean -f/--force`) → pattern allow → `Hitl`.
+  (`reset --hard`, `clean -f/--force`, worktree-touching `restore`,
+  `checkout` with `--`/`-f`/`--force`/`-m`/`--merge`/`--ours`/`--theirs`,
+  `switch -f/--force/--discard-changes`) → pattern allow → `Hitl`.
 - A pattern `deny` is honoured even for tools that are not otherwise gated,
   so a user-written carve-out cannot be silently dropped when defaults change.
 - `grant_covers` mirrors `authorize`'s allow/deny ordering and returns false
@@ -51,10 +53,15 @@ or host); `audit.rs` is the shared in-memory decision log.
   process-local.
 - `allow_suggested_pattern_for_session` remembers nothing when
   `suggest_pattern` yields no rule that could match the call again.
-- Pattern rules never apply to a call whose subject has unquoted control or
-  expansion syntax, so a compound command cannot inherit a prefix permission.
+- Shell-tool pattern rules with an argument pattern never apply to a call
+  whose subject has unquoted control or expansion syntax, so a compound
+  command cannot inherit a prefix permission. A bare tool rule (no argument
+  pattern, e.g. `bash`) matches every call to that exact tool, compound
+  commands included.
 - Shell-equivalent tool names (`bash`, `sh`, `exec`, `background_run`,
-  `exec_command`, …) share one command subject and canonical `bash(...)` rule.
+  `exec_command`, …) share one command subject and canonical `bash(...)` rule
+  for rules with an argument pattern; a bare tool rule matches only its exact
+  tool name and is not unified across them.
 - ACL matching is last-match-wins; no rules means deny.
 - `redact_args` replaces values whose key contains `key`, `token`, or `secret`
   (case-insensitive) with `"[REDACTED]"`, recursively through objects/arrays.

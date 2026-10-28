@@ -12,7 +12,7 @@ Crate root for configuration. No source code at this level: all logic lives in
 ## Notes
 
 - This crate must not depend on session, tool, or UI crates; it only describes settings and persists user-global preference files.
-- Trust decisions made here are consumed by `forge-session` (workspace trust gate) and `forge-cli` (launch/setup flow).
+- Trust decisions made here are consumed by `forge-session` (workspace trust gate), `forge-cli` (launch/setup flow), and `forge-tui` (setup, approvals, and commands).
 
 ## Interface
 
@@ -20,7 +20,7 @@ Crate root for configuration. No source code at this level: all logic lives in
 
 ## Invariants
 
-- Layer order is defaults < user config < project `forge.toml` < env < CLI overrides; an auto-discovered project file is untrusted and cannot set `workspace_root`, `mcp.servers`, `model.base_url`, or `model.api_key`.
+- Layer order is defaults < user config < project `forge.toml` < env < CLI overrides; an auto-discovered project file is untrusted and cannot set `workspace_root`, `journal`, or `mcp.servers`. No layer sets `[model] provider/model/base_url/api_key`; they are only recorded as removed keys.
 - Config files with a `version` newer than `CONFIG_SCHEMA_VERSION` are refused, never partially loaded.
 - Workspace `.forge/permissions.toml` may only add deny rules; allow rules come from the user-global file.
 

@@ -32,13 +32,17 @@ The crate root is a thin facade; all implementation lives in `src/`.
   a single default-styled span covering the whole input.
 - Grammar and highlight-query support is fixed at compile time by the
   tree-sitter grammar crates listed in `Cargo.toml`; adding a language requires
-  a grammar dependency, a `SyntaxLanguage` variant, a query source, and an
+  a grammar dependency, a `SyntaxLanguage` variant, a `tree_sitter()` arm, an
+  entry in the language list that seeds the query map in `queries.rs` (a
+  variant missing there panics on first highlight), a query source, and an
   extension/shebang entry.
 
 ## Side Effects
 
-- A process-global, lock-protected highlight cache (bounded by total bytes,
-  LRU-evicted) retains computed segments for the life of the process.
+- A process-global, lock-protected highlight cache (bounded by segment bytes,
+  LRU-evicted) retains computed segments for the life of the process. Each
+  entry's key also holds the full source text, which the budget does not
+  count.
 - No filesystem writes, network calls, or subprocesses.
 
 ## Verification

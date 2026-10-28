@@ -10,7 +10,8 @@ progress documents are written under the centralized runtime-storage resolver
 
 ## Interface
 
-- `ContextEngine` — `new(workspace, session_id)`, `usage_ratio`,
+- `ContextEngine` — public fields `config`, `workspace`, `session_id`,
+  `goal`; `new(workspace, session_id)`, `usage_ratio`,
   `offload_tool_output`, `maybe_offload_tool_content`, `image_cache_dir`,
   `progress_path`, `write_progress`, `read_progress`, `load_agents_md`,
   `load_skills`, `skill_count`, `refresh_skills`.
@@ -42,7 +43,10 @@ Subdirectory:
 - When `offload_dir`/`progress_path` retain their defaults, resolution routes
   through `LocalRuntimeStorage`; explicit overrides are respected verbatim.
 - `progress_path()` performs no I/O; `write_progress` creates parent
-  directories and establishes storage exclusion/fallback first.
+  directories and establishes storage exclusion/fallback first. By contrast,
+  `image_cache_dir()` and offload resolve the default offload base through
+  `LocalRuntimeStorage::path_for`, which creates the cache directory and
+  initializes runtime storage.
 - Skill discovery reads `.agents/skills/*/SKILL.md` in the workspace and the
   global skills directory (`FORGE_GLOBAL_SKILLS_DIR` overrides
   `~/.agents/skills`), sorts by name, and lets project skills win on collisions.
@@ -54,7 +58,9 @@ Subdirectory:
 
 ## Side Effects
 
-- Creates directories and writes offloaded tool bodies to disk.
+- Creates directories and writes offloaded tool bodies to disk; resolving the
+  default offload base (including from `image_cache_dir()`) creates the
+  runtime-storage cache directory and triggers its lazy setup.
 - Writes and reads the progress document.
 - Reads `AGENTS.md` and every discovered `SKILL.md` from the workspace and the
   global skills directory.

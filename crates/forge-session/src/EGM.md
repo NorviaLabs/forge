@@ -3,7 +3,7 @@
 ## Overview
 
 Frontend-independent session assembly and multi-session coordination. This
-crate turns a `Config` into a ready `AgentSession` (credentials, MCP servers,
+crate turns a `Config` into a ready `AgentSession` (route table, MCP servers,
 journal directory, governance), and owns the repository-level roster: an
 exclusive lease, a SQLite control database, per-session actors behind a
 command/event API, and immutable per-frame snapshots for frontends.
@@ -15,7 +15,7 @@ command/event API, and immutable per-frame snapshots for frontends.
 - `SessionTarget::{New, Resume(SessionId), Fork(SessionId)}`.
 - `OpenedSession { session: AgentSession, notices: Vec<String> }`.
 - `resolve_journal_dir(&Config) -> (PathBuf, Vec<String>)`.
-- `connect_credentials() -> Vec<(String, String)>`.
+- `route_table() -> forge_model::RouteTable` — the routing snapshot: `forge_connect::resolve` over `loaded_registry()` and `Credentials::shared()`. Used by `open_session` and by the supervisor (including `ReloadProviders`).
 - `open_session(&Config, SessionTarget) -> anyhow::Result<OpenedSession>`.
 - `starting_model(&Config) -> (model, profile_id)`: `("mock", "")` when `cfg.model.mock`; otherwise the last selection saved in `preferences.toml`, or empty. A new session with no model starts on it; a resumed or forked session keeps its own. Supervisor model inheritance falls back to it.
 - Re-export: `forge_storage::RepositoryRuntimeStorage`.
@@ -49,7 +49,7 @@ command/event API, and immutable per-frame snapshots for frontends.
 - `SessionRuntimeSnapshot { task, session, transcript, details, queued_prompts, interrupted_prompts }`.
 - `SupervisorEvent` (`#[non_exhaustive]`): `Roster`, `SessionUpdated(Box<_>)`, `Stream`, `Attention`, `GoalStatus`, `GoalNotice`, `Selected`, `Error`, `TrustRequired`.
 - `QueuedPromptId::{Durable(u64), Session(QueueItemId)}`.
-- `SupervisorCommand` (`#[non_exhaustive]`): creation/attach/archive/rename/pin/removal, `TrustWorkspace`, prompt submission and queue control, goal commands, `ContinueTurn`, `ForkSession`, `ResumeSession`, `CloseSession`, `CloseAllSessions`, `StopTurn`, `ResolveApproval`, `DecideApproval`, `ResolveQuestion`, `SelectSession`, `SetModel`, `SetThinking`, `SetApproveAll`, `SetCapabilities`, `PollSession`, `CompactContext`, background-task cancel/approve commands, `GrantEgressHost`, `AllowSessionPattern`, `ClearSessionApprovals`, `ApplyProviderEnv`, `ClearProviderEnv`, `Refresh`, `Shutdown`.
+- `SupervisorCommand` (`#[non_exhaustive]`): creation/attach/archive/rename/pin/removal, `TrustWorkspace`, prompt submission and queue control, goal commands, `ContinueTurn`, `ForkSession`, `ResumeSession`, `CloseSession`, `CloseAllSessions`, `StopTurn`, `ResolveApproval`, `DecideApproval`, `ResolveQuestion`, `SelectSession`, `SetModel`, `SetThinking`, `SetApproveAll`, `SetCapabilities`, `PollSession`, `CompactContext`, background-task cancel/approve commands, `GrantEgressHost`, `AllowSessionPattern`, `ClearSessionApprovals`, `ReloadProviders`, GitHub issue commands (`CreateIssuePullRequest`, `RefreshIssuePullRequest`, `ApplyIssuePullRequestFeedback`), `Refresh`, `Shutdown`.
 - `SupervisorHandle::{command, submit, try_command, subscribe}`.
 - `RepositorySupervisorError` — `Control`, `Loop`, `Assembly`, `Model`, `Storage`, `Worktree`, `NoActor`, `Closed`, `Contention`, `Retiring`, `Command`.
 - `RepositoryBootstrap::{acquire, lease_owner, session, recover_interrupted_creations, open_with_primary}`.
@@ -61,10 +61,10 @@ command/event API, and immutable per-frame snapshots for frontends.
 - The exclusive lease is taken before any session is created; the CLI acquires it, opens the primary session, then hands both to `open_with_primary`.
 - Governance pattern rules: a repo-scope `allow` rule is never honored (only `deny` from the workspace file is merged); deny always wins.
 - `resolve_journal_dir` treats `cfg.journal.path == default_journal_path()` as "unconfigured" and routes through `RepositoryRuntimeStorage` (`.forge/local/sessions` in a repo, app-data otherwise, emitting fallback notices). An explicit non-default path is honored as-is; relative paths anchor to the main worktree.
-- Credentials are injected into the model client, never exported into `std::env`; variables already exported in the environment win over the stored value.
-- `open_session` composes: refused-key notices, one shared egress state created before MCP servers start, MCP connect failures as `"mcp: {e}"` notices, journal resolution notices, permission-file notices, and model capability/context-window metadata from `ModelCatalogCache` (an unknown model keeps the conservative default).
+- Credentials are never exported into `std::env`: they are resolved per request through `forge_connect::Credentials::shared()` inside the route table, so a new key needs no rebuild; a provider definition change needs `ReloadProviders`.
+- `open_session` composes: refused-key notices, one shared egress state created before MCP servers start, MCP connect and `register_into` failures as `"mcp: {e}"` notices, journal resolution notices, permission-file notices, the route table, and — only for a session with no model yet and a non-empty `starting_model` — image-input capability and context-window metadata from `ModelCatalogCache` (an unknown model keeps the conservative default). Resumed or forked sessions keep their own model and get no metadata here.
 - Archive is refused while a session is `Queued`, `Running`, or `Waiting` (`archive_allowed`); untrusted sessions refuse to run (`TrustRequired`); `Retained` is a distinct, operator-visible end state from `Archived`.
-- `RepositorySupervisor` recovers interrupted managed creations on startup, cancels stale ones, and only removes a worktree when it is clean.
+- `RepositoryBootstrap::recover_interrupted_creations` (which the caller must invoke explicitly; `RepositorySupervisor` does not) cancels stale managed creations and only removes a worktree when it is clean.
 - Headless approval semantics: `Ask` stops the turn and returns `ApprovalRequired`; `DenyAll` denies; `ApproveAll` approves governance prompts, grants a denied network host once per turn (a repeated host is denied with a note), and never approves sandbox escalation (`UNCONFINED_REFUSED_UNDER_APPROVE_ALL`). A turn is bounded at 64 approval rounds.
 - `SessionSnapshot::capture` is the authoritative per-frame view (including `lifecycle`); the transcript is deliberately excluded and must come from `TranscriptSnapshot`.
 - `TranscriptSnapshot::refresh` copies only when the fingerprint (`storage_id`, lengths, tail sizes) changes, and bumps `revision` at most once per real change. `from_messages` sets `events` empty and requires a caller-supplied `revision` distinct from the snapshot it replaces.
@@ -76,10 +76,11 @@ command/event API, and immutable per-frame snapshots for frontends.
 ## Side Effects
 
 - Creates directories and files: control dir, `sessions.db` (SQLite, WAL, `synchronous=NORMAL`, 1 connection), `owner.lock`, journal dirs, attachments.
-- Mutates the `sessions`, `repository_state`, `pending_operations`, and queue tables; adopts a legacy `tasks` table by renaming it.
-- Spawns a background supervisor task per session with up to `DEFAULT_MAX_CONCURRENCY` (4) concurrent turns, plus per-turn cancellation tokens; broadcasts events on a Tokio broadcast channel.
+- Mutates the `sessions`, `repository_state`, `pending_operations`, and queue tables; adopts a legacy `tasks` table by renaming it, and renames a legacy `tasks.db` (plus `-wal`/`-shm`) to `sessions.db` before opening.
+- Spawns one command-loop task per supervisor and a driver task per running turn, bounded by a shared `Semaphore` of `max_concurrency` permits (`DEFAULT_MAX_CONCURRENCY` = 4), plus per-turn cancellation tokens; broadcasts events on a Tokio broadcast channel.
 - Starts MCP server processes (`connect_all_in_workspace`) and installs search tools.
-- Runs git operations through `forge_storage` (worktree create/remove/list) and `git` subprocesses.
+- Runs git operations through `forge_storage` (worktree create/remove/list); spawns no `git` subprocess itself outside tests.
+- GitHub issue commands push branches and create or query pull requests and checks through `forge_workspace::gh` on `spawn_blocking`.
 - Writes trust state and session model/route selections; writes goal state files.
 - Reads the user config, permissions files, credential and preference stores.
 - Network egress is possible through MCP servers and the model client.

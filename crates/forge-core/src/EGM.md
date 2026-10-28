@@ -5,8 +5,9 @@
 Agent-loop orchestration. `AgentSession` owns the transcript, the durable
 journal adapter, the tool registry, the model client, governance, context
 engine, lifecycle state, queue, background-task registry, compaction state, and
-token accounting. Sibling modules implement the individual concerns; the
-session's inherent methods live in `session/`.
+token accounting. Sibling modules implement the individual concerns; most of
+the session's inherent methods live in `session/`, and a few live beside the
+concern they drive (listed below).
 
 ## Interface
 
@@ -20,7 +21,7 @@ session's inherent methods live in `session/`.
 - Turn coordination (`turn.rs`): `TurnCoordinator::run` (private).
 - Model streaming (`stream.rs`): `ModelStepAccumulator`,
   `accumulate_stream_event`, `merge_streamed_response`, `stream_turn_event`,
-  `observe_stream_event`.
+  `observe_stream_event`; `AgentSession::run_model_step_with_stream`.
 - Lifecycle (`lifecycle.rs`): `ActiveTaskState`, `TransitionReason`,
   `TransitionError`; legal-transition table.
 - Completion evidence (`completion.rs`): `TaskExpectation`,
@@ -34,7 +35,10 @@ session's inherent methods live in `session/`.
   `BackgroundShellExecution`, `BackgroundChildExecution`,
   `BackgroundApprovalRequest`, `DescendantWorktree` (re-exported).
   `BackgroundTaskOutcome` is `pub` in the private module but not re-exported.
-- Subagents (`subagent.rs`): `SubagentSpec`, `SubagentOutcome`.
+  `AgentSession` methods: `spawn_background_shell`, `poll_background_tasks`,
+  `descendant_worktrees`, `retire_resources`, `resolve_subagent_hitl`.
+- Subagents (`subagent.rs`): `SubagentSpec`, `SubagentOutcome`;
+  `AgentSession::spawn_subagent`.
 - Agent coordination (`agent_coordinator.rs`): `AgentCoordinator`,
   `AgentCoordinatorConfig`, `AgentCoordinatorError`, `AgentStatus`,
   `AgentActivity`, `AgentSnapshot`, `AgentWaitResult`.
@@ -43,7 +47,9 @@ session's inherent methods live in `session/`.
   `egress_policy_for_workspace` (re-exported). `start_egress` and
   `start_egress_with_shared` are `pub` inside the private module and are not
   re-exported, so they are crate-internal.
-- Audit (`audit.rs`): durable `SessionAudit` queue (crate-private).
+- Audit (`audit.rs`): durable `SessionAudit` queue (crate-private); public
+  `AgentSession::audit_events`, which flushes queued rows and returns the
+  session's durable audit trail.
 - Resume (`resume.rs`): journaled tool replay and incomplete-intent
   reconciliation (methods on `AgentSession`).
 - Prompt/helpers (`helpers.rs`): public `session_messages`,
@@ -73,12 +79,16 @@ Subdirectory:
   new task/attempt.
 - A turn is `Completed` only when runtime evidence satisfies the classified
   `TaskExpectation`; model text alone is never sufficient, and `Unclassifiable`
-  never resolves to `Completed`.
+  never resolves to `Completed`. Exceptions: for `TaskExpectation::ReadOnly`
+  an assistant response is the evidence, and `yield_current_turn_for_queue`
+  moves to `Completed` (`QueueYield`) without consulting the evaluator.
 - Background-task registry state is not itself durable; callers must journal
   lifecycle transitions before or alongside mutating it.
 - Subagents share the parent's model client and tool registry but get their own
-  session id, journal, context engine, workspace worktree, and cancellation
-  token; writer subagents are serialized per workspace root.
+  session id, journal, context engine, and cancellation token. Non-read-only
+  subagents also get their own workspace worktree; `AgentMode::ReadOnly`
+  subagents run in the repository root. Writer subagents are serialized per
+  workspace root.
 - Queue item ids are stable and monotonic across restore; visible length counts
   only `Queued`/`Promoting`.
 - Egress is empty/deny-by-default unless the personal permission file allows a
@@ -88,13 +98,20 @@ Subdirectory:
 - `IsolatedTask` polls its future from the blocking pool so synchronous work
   cannot starve the async executor; dropping/aborting signals the worker and
   aborts the handle.
-- Every tool call is authorized at one policy point
+- With governance enabled, every tool call is authorized at one policy point
   (`AgentSession::authorize_tool_call` in `session/tools.rs`), which applies
-  approve-all only to `Hitl` decisions and writes an audit row for each
-  decision.
-- Per-turn bookkeeping (`TurnState`) is reset by each new user message and is
-  never persisted; resume reconstructs it empty.
+  approve-all only to `Hitl` decisions and queues an audit row for each
+  decision; the row is written at the next durable point (e.g. the tool
+  result). `request_unconfined_retry` bypasses it and audits its own combined
+  decision (`explicit_unconfined_retry`). The remaining direct
+  `governance.authorize` calls are unaudited and only narrow (see
+  [session](./session/EGM.md)). With `enable_governance` off, no
+  authorization runs.
+- Per-turn bookkeeping (`TurnState`) is reset by `start_fresh_attempt` (each
+  new user message, and `TurnCoordinator::run` continuing a `Failed`
+  session) and is never persisted; resume reconstructs it empty.
 - The compaction vocabulary (`CompactionPolicy`, `Checkpoint`,
+  `CompactionError`, `CompactionTrigger`, `ProtectedFact`, `ProtectedFactKind`,
   `SessionContextState`, telemetry) is re-exported here so frontends need only
   depend on `forge-core`.
 

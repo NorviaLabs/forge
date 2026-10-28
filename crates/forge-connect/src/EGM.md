@@ -51,10 +51,11 @@ prefix (`<profile_id>/<model>`).
   (`start`, `start_stub`, `open_url`, `operator_instructions`; carries
   `flavor`).
 - Credential store (`store.rs`): `CredentialStore` (`new`, `user_default`,
-  `path`, `get_api_key`, `set_api_key`, `get_oauth`, `set_oauth`, `clear`,
-  `clear_all`, `is_connected`, `needs_authentication(profile_id)`,
-  `list_profile_ids`), `StoreError`. Crate-internal: `mark_auth_required`,
-  `resolve_key`, `resolve_connected`, `CREDENTIALS_SCHEMA_VERSION`.
+  `path`, `read_count`, `get_api_key`, `set_api_key`, `get_oauth`,
+  `set_oauth`, `clear`, `clear_all`, `is_connected`,
+  `needs_authentication(profile_id)`, `list_profile_ids`), `StoreError`.
+  Crate-internal: `mark_auth_required`, `resolve_key`, `resolve_connected`,
+  `CREDENTIALS_SCHEMA_VERSION`.
 - Credentials handle (`credentials.rs`): `Credentials` (`new`,
   `user_default`, `shared() -> Arc<Self>` process-wide, `store`,
   `slot_for(profile)`, `set_session_key`, `set_api_key`, `set_oauth`,
@@ -78,16 +79,19 @@ prefix (`<profile_id>/<model>`).
 - Effort (`effort.rs`, public module): `EffortLevel` (`Minimal`…`Max`),
   `EffortSupport`, `effort(def, bare_model, catalog)`,
   `effort_for_model(model)` (resolves the profile via the loaded registry).
-- Preferences (`preferences.rs`): `PreferenceStore` — `last_selection`,
+- Preferences (`preferences.rs`): `PreferenceStore` — `new`,
+  `user_default`, `path`, `last_selection`,
   `set_last_selection`, `last_selection_struct(registry)`, `last_effort`,
   `set_last_effort`, `clear_last_selection`, `previous_selection`,
   `previous_effort`, `record_switch`, `quick_switch`.
-- Registry (`registry.rs`): `ConnectRegistry` — `register`, `profiles`,
+- Registry (`registry.rs`): `ConnectRegistry` — `new`, `register`, `profiles`,
   `get` (case-insensitive), `profile_for_model` (id, prefix, or legacy
   prefix), `ids`, `load_warnings`; free functions `builtin_registry`,
   `loaded_registry`, `loaded_registry_from(path)`, `credential_env_names`,
   `save_custom_provider(id, base_url, model, wire) -> Result<ProviderSpec,
-  String>`, `update_custom_provider(id, base_url, model)`,
+  String>`, `update_custom_provider(id, base_url, model, details:
+  Option<&ProviderDetails>) -> Result<ProviderSpec, String>`,
+  `ProviderDetails { title, label, api_key_env }`,
   `save_manual_model(profile_id, model)`; crate-internal
   `user_providers_path` (`<config_dir>/forge/providers.toml`).
 - Service (`service.rs`): `ConnectService { registry, credentials,
@@ -99,8 +103,9 @@ prefix (`<profile_id>/<model>`).
   `ConnectAction`, `ConnectError`, `parse_connect_args`,
   `handle_connect_action`, `has_connected_profile`, `format_connected`,
   `needs_tui_api_key_prompt`, `needs_tui_oauth`.
-- Catalog (`catalog.rs`): `ModelCatalogCache` (`is_fresh`, `get_cached`,
-  `put`, `clear_profile`, `get_registry_cached`, `get_registry_cost`,
+- Catalog (`catalog.rs`): `ModelCatalogCache` (`new`, `user_default`,
+  `path`, `with_ttl`, `is_fresh`, `registry_is_fresh`, `get_cached`, `put`,
+  `clear_profile`, `get_registry_cached`, `get_registry_cost`,
   `model_limits`, `model_accepts_image_input`, `image_input_ready`,
   `model_effort_options`, `model_supports_thinking_off`, `effort_ready`),
   `CatalogEntry`, `CatalogSource`, `CatalogCost`, `CatalogLimits`,
@@ -118,6 +123,10 @@ prefix (`<profile_id>/<model>`).
   `discover_logins`, `discover_logins_in`, `login_for_profile`,
   `xdg_data_home`.
 - Cost/usage (`cost.rs`): `provider_cost_report`.
+- Atomic writes (`atomic.rs`, crate-internal): `write_atomic(path, bytes,
+  mode)` and `write_atomic_checked(.., before_rename)` (temp file in the same
+  directory, synced, renamed over the symlink-resolved target); used by the
+  credential store, preferences, catalog cache, and registry writers.
 - Verification (`verify.rs`): `VerifyError` — typed empty/short/
   unauthorized/rejected/status/malformed/unhealthy/unreachable failures;
   crate-internal probes `probe_openai_models`, `verify_anthropic_key`,
@@ -138,8 +147,10 @@ prefix (`<profile_id>/<model>`).
   panics at first parse (caught by `tests/builtin_providers.rs`).
 - Guard test `tests/no_profile_id_branches.rs` fails on any string literal
   equal to a built-in id (or starting with `<id>/`) in non-test production
-  code across every crate's `src/`; it skips `builtin.rs`, `normalize.rs`,
-  `cfg(test)` items, `*tests.rs` files, and macro bodies.
+  code across every crate's `src/`. It skips any file named `builtin.rs` or
+  `normalize.rs` (in every crate), `*tests.rs` files, any directory named
+  `tests` or `providers`, files that fail to parse, macro bodies, and
+  `cfg(test)` on mod/fn/impl/const/static/struct/use items only.
 - The profile id is the model prefix: on load `model_provider_prefix` is set
   to the id (a custom entry's differing older value is kept as
   `legacy_prefix` for normalization only). `RouteTable::profile_for_request`
@@ -198,18 +209,21 @@ prefix (`<profile_id>/<model>`).
   "stub"`); `complete_oauth_device_flow` errors on one. OAuth flows dispatch
   on `auth.flavor` (`rfc8628` or `chatgpt`), never on profile id.
 - Preferences live in a separate non-sensitive file with no permission gate and
-  no parse cache; saved model ids are normalized to the current prefix on
-  read and write.
+  no parse cache. `set_last_selection`, `last_selection`, and
+  `previous_selection` normalize saved model ids to the current prefix;
+  `record_switch` and `quick_switch` store and return ids as given (trimmed
+  by `record_switch` only).
 - Built-in registry has exactly seven profiles. User `providers.toml` entries
   only add providers: each sets only custom-allowed keys, uses
   `chat-completions` or `anthropic-messages` wire, `api-key` or
   `api-key-optional` auth (no OAuth, no `credential_from`), a checked
   `base_url`, valid `api_key_env` names (uppercase, `_KEY`/`_TOKEN`, not a
   built-in or `FORGE_*_API_KEY` name), and must not reuse an existing or
-  reserved id (`normalize.rs`), env id, prefix, or another provider's
-  label. A custom entry's `default_models` are moved into `manual_models`.
-  Invalid entries, unreadable files, and malformed TOML become
-  `load_warnings` and never hide valid providers. `[manual_models]` extends
+  reserved id (`normalize.rs`), env id, or prefix. Every profile sharing a
+  `provider` must use the same `provider_label`. A custom entry's
+  `default_models` are moved into `manual_models`. Invalid entries,
+  unreadable files, and malformed TOML become `load_warnings` and never hide
+  valid providers. `[manual_models]` extends
   any profile's `manual_models`; `[provider_overrides.<id>] base_url`
   applies to user specs and to built-ins whose `editable` lists `base_url`
   (Ollama); stale overrides warn. Model lists are normalized on load: one
@@ -223,7 +237,11 @@ prefix (`<profile_id>/<model>`).
   writes secrets. The model is stored as a manual model, namespaced
   `<id>/<model>` unless already so.
 - `update_custom_provider` edits user-origin providers and built-ins with
-  editable `base_url` (base URL plus an optional manual model);
+  editable `base_url` (base URL plus an optional manual model). With
+  `details` (custom providers only) it also replaces `title`, `label`, and
+  `api_key_env`; that path checks only the env names' shape, not the
+  built-in/`FORGE_*_API_KEY` reservation, and writes before the reload that
+  can fail with "cannot reload provider";
   `save_manual_model` rejects empty, `/`-terminated, or control-character
   ids and namespaces with the profile's prefix.
 - `CatalogSource::is_runnable` is true only for `Live`, `Cached`, and
@@ -263,10 +281,15 @@ prefix (`<profile_id>/<model>`).
 - Reads and writes `credentials.toml` (creating parent directories, enforcing
   0600; includes the `auth_required` set), `preferences.toml`, and the model
   catalog cache `<config_dir>/forge/model-catalog.toml`.
-- Reads user `providers.toml`; appends custom providers and rewrites only the
+- Reads user `providers.toml`; appends custom providers and rewrites the
   `[manual_models]` / `[provider_overrides.<id>]` sections for manual models
   and endpoint edits (atomic checked write, re-checked against the original
-  before the swap).
+  before the swap). A details edit cuts the provider's `[[providers]]` entry
+  and re-appends a rewritten copy at the end of the file (comments inside it
+  are lost), converting legacy keys (`transport`, `auth_mode`, `route_id`,
+  `catalog_mode`, old field names) to the current schema.
+- `ConnectService::disconnect` also clears the saved last selection in
+  `preferences.toml` when it names the disconnected profile.
 - Reads environment variables for API keys (`FORGE_<ID>_API_KEY`,
   `api_key_env`), base URLs (`FORGE_<ID>_BASE_URL`, `base_url_env`), OAuth
   stub/fixture switches, `FORGE_CONNECT_SKIP_VERIFY`, and the models.dev URL

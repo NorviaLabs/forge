@@ -24,7 +24,6 @@ and never registered for a production session; real providers are added behind
 - `SearchHit { title, url, snippet }`
 - `SearchSecrets { api_key }` with `from_config(&WebSearchConfig)`.
 - `SearchError` — `MissingKey`, `Http`, `Provider`, `Timeout`, `Other`.
-- `build_backend(provider, timeout_ms) -> Arc<dyn SearchBackend>`
 - `format_search_results(query, &[SearchHit]) -> String`
 - `MockSearchBackend` — deterministic test backend.
 
@@ -40,8 +39,11 @@ and never registered for a production session; real providers are added behind
   yields an error `ToolOutput` and never reaches the backend.
 - `site` is appended as `site:<value>` only when non-blank and the query does
   not already contain `site:`; blank values are ignored.
-- Backend output is scanned for the resolved API key; a match is replaced by a
-  redaction error so a secret can never reach the model.
+- Successful backend output is scanned for the resolved API key; a match is
+  replaced by a redaction error. A backend `Err` is returned to the model as
+  `web_search failed: <error>` without that scan.
+- Backend selection (`build_backend`, crate-private) maps only
+  `WebSearchProvider::Mock`; its timeout argument is currently ignored.
 - `side_effect_class()` is `Network`; `idempotent()` is `true`.
 - The mock provider is test-only: `try_new`/`web_search_tool` must never expose
   fabricated results to a production session.
@@ -51,7 +53,9 @@ and never registered for a production session; real providers are added behind
 ## Side Effects
 
 - Reads the configured API-key environment variable at call time.
-- Performs network I/O through the selected `SearchBackend` only.
+- Network I/O could only happen inside a `SearchBackend`; the only backend,
+  `MockSearchBackend`, does none. The tool ignores `ToolContext`, so it does
+  not use the session egress grant/gateway that `web_fetch` uses.
 - No filesystem writes, no process spawning, and no mutation of tool or
   registry state.
 

@@ -26,7 +26,8 @@ contract there).
 
 ## Side Effects
 
-- Outbound provider HTTP traffic and workspace image reads during a request originate only inside the native transports.
+- Outbound provider HTTP traffic originates only inside the native transports.
+- Workspace image files are read by `image::load_image_ref`: from the native transports (through their image cache), and also outside `native/` by the default `ModelClient::prompt_wire` (used by `MockModelClient`, via `prompt_wire::openai_compat_prompt` → `normalize::forge_messages_to_wire_in`), the public `forge_messages_to_wire`, and `apply_missing_image_notes`.
 - `freeze_attachments` copies attachment bytes into a caller-supplied cache directory at message insert.
 - Dispatch is by the model id's provider prefix (`RouteTable::profile_for_request`) and that profile's `wire`, through a `forge_connect::RouteTable` resolved from the loaded registry and the shared `forge_connect::Credentials` handle; no code branches on a built-in provider id (guarded by `crates/forge-connect/tests/no_profile_id_branches.rs`).
 

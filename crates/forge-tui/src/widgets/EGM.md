@@ -47,7 +47,8 @@ Re-exported from `mod.rs`:
   `From<TaskLifecycle>` mapping.
 - `toasts::ToastStack` — single-slot auto-expiring overlay, `TOAST_TIMEOUT` of
   2s, `toast_type_for(FeedbackSeverity)`.
-- `turn_line::{phase_verb, turn_line, TurnLineModel}` and `INTERRUPT_HINT`.
+- `turn_line::{phase_verb, turn_line, TurnLineModel}`; `INTERRUPT_HINT` is
+  not re-exported (reached as `widgets::turn_line::INTERRUPT_HINT`).
 
 Not re-exported: `start` (`pub(crate)`, home splash starters) and
 `git_changes` (`pub mod`, `GitChangeRow`, `GitChangesList`), used through their
@@ -91,8 +92,8 @@ symbols `lib.rs` re-exports (`classify_operator_error`, `session_chrome_rows`,
 ## Side Effects
 
 - Writes only into the `ratatui::Buffer`/`Frame` it is given.
-- `FooterBar` records the x-ranges of the model/effort chips into its
-  `ChipSink` (`RefCell<Option<[(u16,u16);3]>>`) during paint, so pointer
+- `FooterBar` records the x-ranges of the model, effort and notes chips into
+  its `ChipSink` (`RefCell<Option<[(u16,u16);3]>>`) during paint, so pointer
   hit-testing in the app can use last frame's geometry.
 - `InputBar` writes a private probe color (`Color::Indexed(255)`) at the caret to
   locate it; the real draw replaces that style before backend output, so the

@@ -52,7 +52,8 @@ Chrome and painting:
 - `theme_preview` — compact token preview used by the theme picker.
 - `status_glyph` — state markers and text roles.
 - `layout` — top-level splits and the enforced minimum frame.
-- `overlay_layout` — geometry shared by modals and previews.
+- `overlay_layout` — geometry shared by modals and previews, including
+  `centered_rect`.
 - `hints` — one grammar for key hints on modals and prompts (`Hint` tables
   such as `PICKER`, `APPROVAL`, `MOVE_SELECT_CLOSE`).
 - `path_display` — fits long text (paths above all) into fixed columns.
@@ -86,18 +87,25 @@ Workspace and editor:
 - `interactive_terminal` — PTY-backed shell/terminal pane (scrollback capped at
   1024 lines, 64-chunk output queue for backpressure).
 - `terminal` — `TerminalGuard`: restores raw mode, alternate screen, cursor and
-  keyboard flags on normal shutdown, returned errors and panics.
+  keyboard flags on normal shutdown, returned errors and panics. Also
+  `restore_terminal`, `reinit_terminal`, `clear_terminal`, and
+  `render_kitty_image` (writes kitty graphics-protocol image data).
 
 Overlays and setup:
 
 - `overlays` — HITL, slash palette, model picker, session switcher,
-  `OverlayWidget`, `centered_rect`, `Key`, `OverlayAction`. Connect flows
-  include `Overlay::ConnectCustom` (custom OpenAI-compatible provider form,
-  also used to edit a user profile) and `Overlay::ConnectManualModel` (add a
-  model id by hand); the picker emits `OverlayAction::RefreshModels`,
-  `AddManualModel`, `SaveManualModel`, `AddCustomProvider`,
-  `SaveCustomProvider` and `EditProvider`. `Overlay::picker_route` names the
-  route whose models the picker is showing.
+  `OverlayWidget`, `Key`, `OverlayAction`. Connect flows include
+  `Overlay::ConnectCustom` (custom provider form: id, base URL, model, API
+  key, then a protocol row whose `wire: forge_connect::WireKind` toggles
+  `ChatCompletions` / `AnthropicMessages`) and `Overlay::ConnectManualModel`
+  (add a model id by hand). The same form edits a user profile or a built-in
+  whose `editable` includes `BaseUrl`; while editing, the id and protocol rows
+  are locked. `details: Option<[String; 3]>` adds Title, Label and Key env
+  names rows (5-7) for a user profile; `None` hides them. The picker emits
+  `OverlayAction::RefreshModels`, `AddManualModel`, `SaveManualModel`,
+  `AddCustomProvider`, `SaveCustomProvider { .., wire, details }` and
+  `EditProvider`. `Overlay::picker_route` names the route whose models the
+  picker is showing.
 - `command_palette` — palette data and filtering.
 - `model_picker` — model-picker data and route grouping.
 - `setup` — pre-session setup shell (theme, then directory trust).
@@ -123,8 +131,10 @@ Subdirectories:
 - `lib.rs` is the single source of truth for the crate's public surface; a
   module stays private unless `lib.rs` re-exports a symbol from it.
 - Rendering is bottom-up and side-effect free: `conversation`, `markdown`,
-  `mermaid`, `theme*`, and `widgets` compute lines from supplied models and
-  paint into a `ratatui::Buffer`. They never touch the live session.
+  `mermaid`, `theme_preview`, and `widgets` compute lines from supplied models
+  and paint into a `ratatui::Buffer`. They never touch the live session.
+  (`theme` system-appearance detection and `theme_registry` loading do IO;
+  see Side Effects.)
 - Layout minimums are enforced before anything paints: `is_too_small` uses
   `MIN_WIDTH`/`MIN_HEIGHT`; a frame below them renders the too-small notice
   instead of a squeezed layout.
@@ -133,8 +143,10 @@ Subdirectories:
   get structure, not raw SGR effects.
 - `terminal::TerminalGuard` must outlive every draw and input call; it restores
   terminal state on all three exit paths (normal, error, panic).
-- `file_explorer::safe_path` is the confinement boundary — explorer-driven reads
-  and writes resolve through it rather than joining paths ad hoc.
+- `file_explorer::safe_path` confines explorer directory listing (including
+  symlink targets) and `source_viewer` reads to the workspace. Explorer
+  create/rename/delete/move are confined by
+  `forge_workspace::file_ops::WorkspaceFileOps` in `app/files.rs` instead.
 - `validation` caps work: 128 KB parse buffer, 64 failed tests, 5 displayed
   failures (`MAX_FAILED_DISPLAY`), 200-char test names.
 - `interactive_terminal` bounds memory by design: fixed scrollback and a bounded
@@ -153,14 +165,19 @@ Subdirectories:
 - Terminal ownership: `terminal` and `app::shell` mutate process-global terminal
   modes; stdout is exclusively the renderer's while the TUI is live.
 - Clipboard: `clipboard` writes OSC 52 sequences to stdout; `clipboard_image`
-  reads the OS clipboard and decodes image bytes.
+  reads the OS clipboard by spawning `osascript` and `sips` (macOS),
+  `wl-paste` / `xclip` (Linux) or `powershell` (Windows).
 - Notifications: `notify` may write OSC 9 or BEL to the terminal and keeps a
   process-wide mode and focus flag.
-- Filesystem: `file_explorer` reads directory trees and performs create/rename/
-  delete/move through `forge_workspace`; `source_viewer` and the editor read and
-  write workspace files; `history` persists input history to disk.
+- Filesystem: `file_explorer` reads directory trees (create/rename/delete/move
+  live in `app/files.rs` via `forge_workspace::file_ops`); `source_viewer` and
+  the editor read and write workspace files; `history` persists input history
+  to disk; `theme_registry` reads `.toml` themes from `<workspace>/.forge/themes`
+  and the user config dir's `forge/themes`.
 - Processes: `interactive_terminal` spawns a PTY and a child shell; `editor`
-  launches the external editor; `diff_view`/workspace code can invoke git.
+  only resolves `$VISUAL`/`$EDITOR` (the launch is in `app/context.rs`);
+  `theme` spawns `gsettings` / `defaults` / `reg` to detect the system
+  appearance; `diff_view`/workspace code can invoke git.
 - Global state: `git_prefs` installs process-wide flags read by other modules.
 
 ## Verification

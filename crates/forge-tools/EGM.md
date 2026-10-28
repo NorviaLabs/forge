@@ -30,16 +30,18 @@ contract directory.
   runs; validation failures never execute a tool.
 - File tools are confined to the canonical workspace root (plus an optional
   session temp directory) and never write below `.git` or `.forge`.
-- Shell confinement is fail-closed, child processes never inherit provider
-  credentials, and network access is routed through the domain-filtered egress
-  proxy/gateway.
+- Shell confinement is fail-closed, model-triggered child processes never
+  inherit provider credentials (host-side `git credential fill` strips only
+  the fixed names, not the session's custom ones), and network access is
+  routed through the domain-filtered egress proxy/gateway.
 
 ## Side Effects
 
 - Workspace file reads/writes, subprocess spawning (shells, git, PTYs,
   background jobs), loopback egress listeners and Unix sockets, per-session
-  temp directories, and outbound network for `web_fetch`, `web_search`, and
-  network `git`. See the child contract for detail.
+  temp directories, and outbound network for `web_fetch` and network `git`.
+  `web_search` has only a mock backend and is never registered in a session,
+  so it does no network I/O. See the child contract for detail.
 
 ## Verification
 

@@ -16,8 +16,9 @@ it. `mod.rs` declares the submodules and re-exports the public surface.
 Public API (re-exported by `lib.rs`):
 
 - `TuiApp` — the application state machine. Constructed by
-  `new_supervised` / `new_with_startup_resume_picker`; driven by `draw`, the
-  input handlers, and `shell::tick_application`.
+  `new(session, runtime)`, `new_supervised` or
+  `new_with_startup_resume_picker`; driven by `draw`, the input handlers, and
+  `shell::tick_application`.
 - `TuiLaunch` — launch flags: `startup_items: Option<Vec<ResumeSessionItem>>`,
   `onboarding_connect: bool`, `ready_placeholder: bool`.
 - `TuiRuntimeConfig` — immutable launch identity: `model_label`, `provider`,
@@ -72,8 +73,12 @@ Submodules by responsibility:
   cover every input the transcript paint depends on (lifecycle, theme, width,
   pending HITL/question identity, agent state, per-turn summaries, …). A missing
   key field freezes a surface until an unrelated change rebuilds it.
-- Composer submit destination is decided by `input_route::classify_input` from
-  authoritative lifecycle state, never from `busy` or streaming flags.
+- Composer submit destination is chosen by `selected_input_route`. A direct
+  session uses `input_route::classify_input` on the active task; a supervised
+  session branches on `pending_question`, `session_view.lifecycle` and
+  `selected_turn_running()` (the supervisor snapshot's turn state), never the
+  restored `busy` flag. Only for direct sessions does `selected_turn_running()`
+  fall back to `busy_state.is_active()`.
 - Approval state is owned by `app::approvals`; other areas go through `TuiApp`
   methods instead of touching its collections.
 - Child decisions are bound to the displayed parent, child execution and
@@ -100,6 +105,12 @@ Submodules by responsibility:
   wins) and starts only if the picker still shows that route when the first
   one finishes. The refreshed catalog lives in the disk cache, not in a second
   in-memory copy.
+- `OverlayAction::EditProvider` opens `Overlay::ConnectCustom` for a user
+  profile (`details: Some([title, label, api_key_env.join(", ")])`) or a
+  built-in with an editable `BaseUrl` (`details: None`); any other profile
+  goes to the OAuth flow or the API-key prompt. On save, `details` becomes
+  `forge_connect::ProviderDetails` (key env names split on commas, trimmed,
+  empties dropped) and is passed to `update_custom_provider`.
 - Catalog-refresh outcomes are recorded per route in `connect.catalog_errors`;
   an auth failure also marks the route `auth_required` and invalidates the
   connected state. Neither outcome changes the running session's model.
@@ -124,11 +135,14 @@ Submodules by responsibility:
   calls surfaced in the transcript.
 - Processes: git sync/status subprocesses, the external editor (terminal is
   suspended and resumed around it), and the PTY-backed interactive terminal.
-- Concurrency: the model-catalog refresh runs on a plain `std::thread` that
-  reports over a `std::sync::mpsc` channel polled each tick; background tokio
-  tasks cover repo header, progress,
-  repo/git refresh, child agents, and approved HITL tools
-  (`IsolatedTask`); supervisor commands over `SupervisorHandle`.
+- Concurrency: the model-catalog refresh, repo header refresh and GitHub view
+  loading each run on a plain `std::thread` that reports over a
+  `std::sync::mpsc` channel polled each tick. `spawn_blocking` runs the
+  terminal-event reader (`shell::TerminalEventSource`) and the model-stream
+  relay in `turn`. `IsolatedTask` runs model completions, tool application,
+  approved HITL tools, context compaction and `/goal` model calls. Progress
+  (`.forge/progress.json`) is read synchronously on a poll interval.
+  Supervisor commands go over `SupervisorHandle`.
 - Out-of-band notification (`forge-tui::notify`) on background completion.
 
 ## Verification

@@ -42,17 +42,21 @@ This file is the EGM contract index. The human-maintained
   completes only on runtime evidence.
 - Each repository has at most one interactive owner, enforced by an exclusive
   lease on the repository control DB. Headless `forge bench` takes no lease:
-  it writes only a session journal, never the control DB.
+  it writes only a session journal, never the control DB. If runtime storage
+  or lease acquisition fails, the TUI runs one lease-less session instead.
   Runtime data lives under `.forge/local/` (git-excluded) or the platform
   app-data directory.
 - Secrets live only in the 0600 credential store and are never displayed or
   exported to the process env. Connecting a provider never selects a model.
-- Credential precedence for a key provider: `FORGE_<ID>_API_KEY`, then the
-  profile's own env names, then the stored key; an env key also wins over a
-  stored OAuth login. Child processes get these names stripped from their
-  environment (`strip_credentials`).
-- The untrusted project config layer cannot set the workspace root, MCP
-  servers, model base URL, or API key. Workspace permissions are deny-only.
+- Credential precedence for a key provider: a per-process session key typed in
+  the TUI, then `FORGE_<ID>_API_KEY`, then the `credential_from` target's
+  `FORGE_<TARGET>_API_KEY`, then the profile's own env names, then the stored
+  key; an env key also wins over a stored OAuth login. Child processes get
+  these names stripped from their environment (`strip_credentials`).
+- The untrusted project config layer cannot set the workspace root, the
+  journal settings, or MCP servers. No config layer sets the model provider,
+  model id, base URL, or API key (they are only reported as removed keys).
+  Workspace permissions are deny-only.
 - Journal tags and `ExitCode` discriminants are wire/process contracts.
 
 ## Global Side Effects

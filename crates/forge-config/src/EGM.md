@@ -14,7 +14,7 @@ All submodules are private; the crate surface is `lib.rs` plus its `pub use` re-
 `lib.rs`:
 
 - `CONFIG_SCHEMA_VERSION: u32 = 1`.
-- `ConfigError` — `Io`, `Toml`, `InvalidProvider`, `Message`, `UnsupportedSchemaVersion { path, found, supported }`.
+- `ConfigError` — `Io`, `Toml`, `InvalidProvider` (declared but never constructed), `Message`, `UnsupportedSchemaVersion { path, found, supported }`.
 - Sections with `Default`: `ModelConfig { request_timeout_secs (300), mock (serde-skipped; set only in code to use the offline mock client) }`, `JournalConfig { backend: "sqlite", path }`, `McpServerConfig`, `McpSection`, `TuiConfig`, `CommandConfig`, `ValidationConfig`, `WebSearchConfig`, `ToolsConfig`, `AgentConfig`.
 - `default_journal_path() -> ".forge/sessions"`, `expand_sandbox_read_path(raw, home) -> Result<PathBuf, String>`.
 - Enums: `McpSandboxWorkspace{ReadOnly (default), ReadWrite}`, `FileIconMode{Unicode (default), Off}`, `NotifyMode`, `WebSearchProvider`.
@@ -28,26 +28,26 @@ All submodules are private; the crate surface is `lib.rs` plus its `pub use` re-
 
 `theme.rs`: `THEME_SYSTEM`, `THEME_FORGE_DARK`, `THEME_FORGE_LIGHT`, `DEFAULT_THEME_ID`, `ACCENT_STATUS_MIN_HUE_DISTANCE`, `Rgb` (+`to_hsl`), `ThemePalette`, `SyntaxPalette`, `ThemeDefinition`, `parse_hex_color`, `parse_theme_toml`, `parse_theme_preference`, `normalize_theme_id`, `is_system_theme`.
 
-`pane_layout.rs`: `PaneLayoutPreferences { files_width_ratio, conversation_width_ratio, bottom_panel_height_ratio }` (all `Option<f64>`), `PaneLayoutStore::{new, user_default, path, load, save}`.
+`pane_layout.rs`: `PaneLayoutPreferences { files_width_ratio, conversation_width_ratio, bottom_panel_height_ratio }` (all `Option<f64>`), `PaneLayoutStore::{new, user_default, path, load, save, reset}` (`reset` removes `[tui.layout]`).
 
 ## Invariants
 
 - Load order is fixed: defaults < user XDG config < project `forge.toml` < env < CLI overrides. `resolved_workspace` is computed last from `workspace_root`, `--workspace`, and the process cwd.
-- The project layer from an auto-discovered `./forge.toml` is **untrusted**; a path named explicitly via `--config` is trusted. Untrusted layer refuses `workspace_root`, `mcp.servers`, `model.base_url`, and `model.api_key`, recording each in `refused_project_keys` so the caller can surface a notice instead of a silent behaviour change.
+- The project layer from an auto-discovered `./forge.toml` is **untrusted**; a path named explicitly via `--config` is trusted. Untrusted layer refuses `workspace_root`, `journal`, and a non-empty `mcp.servers`, recording each in `refused_project_keys` so the caller can surface a notice instead of a silent behaviour change. `[model] provider/model/base_url/api_key` are ignored from every layer and recorded in `removed_model_keys` instead.
 - A file whose `version` exceeds `CONFIG_SCHEMA_VERSION` is refused, never partially loaded; a file with no `version` reads as version 1.
-- Legacy provider names migrate to `Native`: `litellm`, `openai_compatible`/`openai`/`openai-compatible` (prefix `openai`), `anthropic`, `xai`/`grok`. Unknown providers are an error, never a silent fallback.
 - Permission scopes are not equally trusted: personal file `allow` + `deny` are merged; workspace `.forge/permissions.toml` contributes **deny only** — its `allow` entries are ignored and a diagnostic is emitted, because they would skip approvals.
-- `load_permissions` never fails: unreadable/malformed files produce diagnostics alongside the merged rules.
+- `load_permissions` never fails: malformed files produce diagnostics alongside the merged rules; a missing or unreadable file is skipped silently.
 - Trust is inherited: a path is trusted when it or an ancestor is listed in the user-global `trust.toml`. A canonicalization failure means "not trusted". An unparseable trust file reads as empty rather than erroring.
 - `theme_committed` is an explicit first-install commit; a missing key or a defaulted `forge-dark` does not count as committed.
 - `PaneLayoutPreferences` fields stay `Option` on purpose: missing values keep the renderer's responsive defaults, and malformed/missing files fall back to all-`None` rather than blocking startup.
-- `api_key` is dev-only and must never be logged.
+- Env layer variables: `FORGE_WORKSPACE`, `FORGE_JOURNAL_PATH`, `FORGE_MODEL_REQUEST_TIMEOUT_SECS`, and `FORGE_WEB_SEARCH_{ENABLED,PROVIDER,API_KEY_ENV,MAX_RESULTS,TIMEOUT_MS,REQUIRE_KEY}`. An invalid `FORGE_WEB_SEARCH_PROVIDER` fails the load, while an invalid file-layer provider is ignored; unparseable numeric env values are ignored.
 
 ## Side Effects
 
 - Reads `$XDG_CONFIG_HOME/forge/config.toml` (or platform equivalent), `./forge.toml`, env vars, and the process cwd.
 - Reads `forge/permissions.toml` (user) and `<workspace>/.forge/permissions.toml`.
 - Writes: user `config.toml` (theme commit, smart-commit, and the `[tui.layout]` ratios via `PaneLayoutStore`), user `trust.toml` (trust grants), and user `forge/permissions.toml` (`append_user_allow_rule`). All user files live under the platform config dir (`dirs::config_dir()/forge/`).
+- Malformed files are overwritten, not refused: `persist_committed_theme` and `persist_smart_commit` replace an unparseable `config.toml` with only the `[tui]` table, `append_user_allow_rule` rewrites an unparseable `permissions.toml` with only the new allow rule, and `grant_trust` rewrites an unparseable `trust.toml` with only the new path. `PaneLayoutStore::save`/`reset` instead return an error on a malformed `config.toml`.
 - `Config::default()` performs `env::current_dir()`.
 
 ## Verification

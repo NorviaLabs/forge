@@ -30,33 +30,35 @@ Subdirectories:
     `cancel_session`, `warm_workspace_index`.
   - `ToolContext` — workspace root, session id, principal, image-input gate,
     active model, optional `EgressGrant`, optional `SessionTempDir`,
-    `unconfined_shell`, `tool_call_id`; builders `with_tool_call_id`,
-    `with_session_tmp`, `with_session_id`, `with_unconfined_shell`,
-    `gateway_for_call`, `resolve_path`, `resolve_write_path`.
+    `unconfined_shell`, `tool_call_id`, `credential_env_names`; constructor
+    `new(workspace_root)`; builders `with_credential_env_names`,
+    `with_tool_call_id`, `with_session_tmp`, `with_session_id`,
+    `with_unconfined_shell`; `gateway_for_call`, `resolve_path`,
+    `resolve_write_path`.
   - `SessionTempDir` — per-session temporary directory (0700 on Unix),
     `create`, `path`.
   - `canonical_tool_name`, `canonicalize_tool_call`, `ValidatedToolCall`.
-- Built-ins (`builtins.rs`): `ReadFileTool` (`read_file`, `ReadFileArgs`),
-  `LsTool` (`ls`, `LsArgs`), `WriteFileArgs`, `BashArgs`, `GitArgs`,
-  `BackgroundRunArgs`, `RequestUnconfinedRetryArgs`,
+- Built-ins (`builtins.rs`): `ReadFileTool` (`read_file`), `LsTool` (`ls`),
   `WriteFileTool` (`write_file`), `BashTool` (`bash`), `GitTool` (`git`),
-  `BackgroundRunTool` (`background_run`), `UpdatePlanTool` (`update_plan`),
-  `AskUserQuestionTool` (`ask_user_question`), `RequestUnconfinedRetryTool`
-  (`request_unconfined_retry`), `default_builtins`,
+  `UpdatePlanTool` (`update_plan`), `AskUserQuestionTool`
+  (`ask_user_question`), `default_builtins`,
   `default_builtins_with_web_search`, `run_shell_command`,
   `run_shell_command_observed`, `run_shell_command_with_egress`,
   `run_shell_command_with_egress_and_temp`, `run_shell_command_unconfined`,
   `ShellOutputCapture` (`snapshot`), `ShellOutputSnapshot`,
   `ProcessGroupGuard` (`new`, `kill`, `disarm`),
   `set_process_group`, `PROVIDER_CREDENTIAL_ENV`, `is_provider_credential_env`,
-  `provider_credential_env_names`, `strip_credentials`; `ToolContext::credential_env_names`.
+  `provider_credential_env_names`, `strip_credentials`. The
+  `background_run` and `request_unconfined_retry` tools and every built-in's
+  argument struct are crate-internal (registered via `default_builtins`, not
+  re-exported).
 - Editing: `EditTool` (`edit`) with `EditArgs`; `ApplyPatchTool`
   (`apply_patch`) with `ApplyPatchArgs`.
-- Search/index: `fff_tools` returns `glob`, `grep`, and `edit`; tool structs
-  `FffFindTool`, `FffGrepTool`; argument structs `FffFindArgs`, `GlobArgs`,
-  `FffGrepArgs`, `FffModeArg`; `FastFileState`.
+- Search/index (crate-internal, `fast_file_tools.rs`): `fff_tools` builds
+  the `glob`, `grep`, and `edit` tools over a shared `forge-search` index;
+  none of it is re-exported.
 - Execution: `unified_exec_tools() -> (ExecCommandTool, WriteStdinTool)`
-  (`exec_command`, `write_stdin`), `ExecCommandArgs`, `WriteStdinArgs`.
+  (`exec_command`, `write_stdin`); the argument structs are crate-internal.
 - Agent orchestration tools (`orchestration.rs`): `SpawnAgentTool`,
   `SendMessageTool`, `FollowupTaskTool`, `WaitAgentTool`, `ListAgentsTool`,
   `InterruptAgentTool`, with `SpawnAgentArgs`, `AgentMode`, `AgentMessageArgs`,
@@ -64,8 +66,8 @@ Subdirectories:
 - Skills: `LoadSkillTool` (`load_skill`), `LoadSkillArgs`.
 - Media/fetch: `ViewImageTool` (`view_image`), `ViewImageArgs`;
   `WebFetchTool` (`web_fetch`), `WebFetchArgs`, `web_fetch_tool`.
-- Validation: `validate_args`, `validate_args_with`, `compile_validator`,
-  `validation_error_signature`, `ValidationBudget` (`new`,
+- Validation: `validate_args`, `validation_error_signature`,
+  `ValidationBudget` (`new`,
   `with_default_max`, `record_failure`, `record_failure_with_signature`,
   `reset_turn`).
 - Output shaping: `compress_tool_output`.
@@ -93,8 +95,8 @@ Subdirectories:
   `SANDBOX_DENIED_REASON`, `PRIVATE_ADDRESS_DENIED_REASON`,
   `HOST_DENIED_EXPLANATION`. `EgressShared`/`CallGateway` expose
   `take_private_address_denial` alongside `take_denied_host`/`denied_hosts`.
-- Host identity (`credentials.rs`): `host_identity_env`, `isolated_config_env`,
-  `needs_git_writes`.
+- Host identity (`credentials.rs`, crate-internal): `host_identity_env`,
+  `isolated_config_env`, `needs_git_writes`.
 - Git network policy (`git_network.rs`): `set_egress_connect_exe`.
 
 ## Invariants
@@ -115,20 +117,29 @@ Subdirectories:
 - Confinement is decided at spawn and is fail-closed: if the host can sandbox
   but the policy cannot be built, the call is refused rather than run
   unconfined. `unconfined_shell` is only set for an approved exact retry.
+  The other unconfined path is `run_shell_command_unconfined` (no sandbox, no
+  egress gateway), which the approve-all session mode uses for background
+  shells.
 - The OS sandbox mounts the workspace's `.git` and `.forge` read-only
   (`readonly_subpaths`). `with_git_writable` opens `.git` for git mutation
   commands but always keeps `hooks` and `config` read-only (in `.git` and in
   linked-worktree gitdirs, on both Seatbelt and bubblewrap), because those
   name programs a later unconfined git would execute.
 - Model-triggered child processes never inherit provider credentials: the
-  shell family (bash, background jobs, `exec_command`), the `git` tool, network
-  git (`LocalRepo::git`) all strip `PROVIDER_CREDENTIAL_ENV`, the session's
+  shell family (bash, background jobs, `exec_command`), the `git` tool, and the
+  network-git preflight's local config reads (`LocalRepo::git`) all strip
+  `PROVIDER_CREDENTIAL_ENV`, the session's
   `credential_env_names` (custom `api_key_env` names), and any
   `FORGE_*_API_KEY`. Host-side `git credential fill` (the user's own
   credential helper, cached per host) strips the fixed names and
   `FORGE_*_API_KEY` but not the session's custom names, which do not reach
-  that path. Confined shells also strip
-  host credentials; login shells are not used.
+  that path. Confined shells also strip host credentials
+  (`HOST_CREDENTIAL_ENV`: `GH_TOKEN`, `GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`,
+  ...); login shells are not used. When the egress grant allows a host,
+  `host_identity_env` projects that host's HTTPS identity back in: it runs
+  host-side `git credential fill` (cached per host for the process in
+  `CREDENTIAL_CACHE`) and exposes the result through a spawn-local credential
+  helper/gitconfig and a `{first-label}_TOKEN` variable.
 - `background_run`, `ask_user_question`, `request_unconfined_retry`, and agent
   orchestration tools are intercepted by the agent loop before `call`; their
   `Tool::call` paths are defensive fallbacks.
@@ -141,7 +152,9 @@ Subdirectories:
 - `git` network subcommands are pre-checked against the host allowlist and then
   routed through the call gateway so unseen hosts are still refused.
 - `EgressPolicy` matching: exact host, `*.domain` (subdomains only),
-  `**.domain` (apex and subdomains); a deny always beats an allow.
+  `**.domain` (apex and subdomains), and bare `*` (every host); a deny always
+  beats an allow. Hosts with an empty label (leading `.` or `..`) are never
+  permitted.
 - A host that resolves to a non-public (loopback, private, metadata) address
   is refused with `PRIVATE_ADDRESS_DENIED_REASON` unless an allow pattern names
   that host exactly (or `EgressOptions::allow_private_destinations` is set); wildcard grants
@@ -160,9 +173,16 @@ Subdirectories:
   files for the egress proxy; logs connection events.
 - Reads process environment variables (provider keys, API keys, proxy vars) and
   rewrites the child environment.
-- Creates per-session temporary directories outside the repository.
-- Performs outbound network requests for `web_fetch`, `web_search`, and
-  network-capable `git` commands.
+- Creates per-session temporary directories outside the repository. Every
+  confined spawn also gets a host-identity dir (`xdg-config`, `xdg-cache`,
+  `xdg-state`, and a `gitconfig` file): under the session temp dir when there
+  is one, otherwise at `<workspace>/.forge-host-identity/` inside the
+  workspace.
+- Runs host-side `git credential fill` for granted hosts during confined
+  spawns.
+- Performs outbound network requests for `web_fetch` and network-capable
+  `git` commands. `web_search` has only a mock backend and is never
+  registered in a session, so it does no network I/O.
 - Loads files and images from disk for `read_file`, `ls`, `view_image`, and
   `load_skill`.
 

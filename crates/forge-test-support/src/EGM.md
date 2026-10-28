@@ -17,15 +17,17 @@ repository setup helpers.
 - `MockResponse = (u16, &'static str, Vec<(&'static str, &'static str)>)`
   (status, body, extra headers).
 - `mock_http(responses: Vec<MockResponse>) -> Option<String>`: binds
-  `127.0.0.1:0`, serves one response per accepted connection in order, and
-  returns the `http://host:port` base URL; returns `None` when the host denies
-  binding (treated as "skip this test").
+  `127.0.0.1:0`, consumes one response per accepted connection in order, and
+  returns the `http://host:port` base URL; returns `None` when binding fails
+  with `PermissionDenied` (treated as "skip this test") and panics on any
+  other bind error.
 
 ## Invariants
 
 - The listener thread never panics: a malformed or unreadable request closes
   the connection without a response, so a broken test fails client-side rather
-  than hanging the process.
+  than hanging the process. That request still consumes the next scripted
+  response, which is never served.
 - Requests are read to a full header block (plus any `Content-Length` body)
   with a 5-second read timeout and a 64 KiB header cap; connections are closed
   after each response.
@@ -45,7 +47,8 @@ repository setup helpers.
 - Writes `f.txt` and repository metadata into the supplied directory.
 - Binds a TCP port and spawns a detached listener thread that remains alive
   until its responses are consumed or the process exits.
-- Prints a skip notice to stderr when binding is denied.
+- Prints a skip notice to stderr when binding is denied; panics on any other
+  bind error.
 
 ## Verification
 

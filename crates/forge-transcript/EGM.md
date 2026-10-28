@@ -3,7 +3,8 @@
 ## Overview
 
 Projects a Forge session into a renderable conversation transcript. Messages
-and turn events are reduced to `ChatItem`s, grouped into `ConversationBlock`s,
+and lifecycle status are reduced to `ChatItem`s, grouped into
+`ConversationBlock`s,
 and shaped into `*Presentation` structs; the crate also provides activity
 grouping, verification-command detection, verdict parsing, and text wrapping.
 It has no terminal dependency, which is what lets headless callers project a
@@ -13,9 +14,10 @@ transcript without linking a UI.
 
 - `src`: Component package containing the entire projection
   (`src/lib.rs`). Contract: [`./src/EGM.md`](./src/EGM.md).
-- Reads `forge_core::AgentSession`/`TurnEvent`/`TURN_FAILED_MARKER`,
-  `forge_types` message and outcome types, and uses
-  `forge_tools::tool_invocation` to label tool calls; writes no data back.
+- Reads `forge_core::AgentSession`/`TURN_FAILED_MARKER`, `forge_types`
+  message and outcome types, and uses `forge_tools::tool_invocation` to label
+  tool calls; writes no data back. `forge_core::TurnEvent` appears in the
+  `from_messages` signature, but the events are currently ignored.
 
 ## Interface
 
@@ -25,8 +27,9 @@ transcript without linking a UI.
 
 ## Invariants
 
-- The transcript is a pure projection: the same messages, events, lifecycle
-  status, and `ConversationViewOpts` produce the same items.
+- The transcript is a pure projection: the same messages, lifecycle status,
+  and `ConversationViewOpts` produce the same items (turn events are accepted
+  but not read).
 - Presentation is derived, never persisted. Turn identity (`TurnKey`) is
   computed from session identity plus the 0-based user-message ordinal.
 - System prompts are not shown; user-visible text is stripped of attached

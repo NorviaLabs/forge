@@ -28,19 +28,19 @@ session assembly is delegated to `forge-session`; all rendering to `forge-tui`.
 
 - `forge` with no subcommand and no error always opens the TUI; startup failures print `error: {e:#}` to stderr and exit `ExitCode::Failed`.
 - `--resume <ID>` needs no journal lookup and maps straight to `SessionTarget::Resume`; bare `--resume` picks the most recent journalled session and falls back to `SessionTarget::New` with an explicit notice when none exists.
-- Resume/fork/continue are mutually exclusive by clap declaration; resume and fork are ignored (`SessionTarget::New`) when `decide_launch` says the resume picker is disallowed.
-- Repository ownership precedes session creation: `RepositoryBootstrap::acquire` is attempted before any `open_session`, so a losing process cannot write session state first.
-- The repository lease/bootstrap is skipped (with a startup notice) when `RepositoryRuntimeStorage::new` fails; the TUI then runs in direct mode via `run_tui_with_launch`.
+- Resume/fork/continue are mutually exclusive by clap declaration; resume, continue, and fork are ignored (`SessionTarget::New`) when `decide_launch` says the resume picker is disallowed.
+- In the TUI path, repository ownership precedes session creation: `RepositoryBootstrap::acquire` is attempted before `open_session`, so a losing process cannot write session state first. `run_bench` never calls `acquire`.
+- The repository lease/bootstrap is skipped silently when `RepositoryRuntimeStorage::new` fails, and with a `Sessions unavailable: ...` startup notice when `RepositoryBootstrap::acquire` fails; either way the TUI then runs one lease-less session in direct mode via `run_tui_with_launch`.
 - Resuming or forking a session re-derives config from that session's recorded workspace (`config_for_workspace`); only `New` uses the launch config.
-- `bench` requires a non-empty prompt on stdin and overrides `cfg.model.model` from `--model` because config files never select the active model. `--route-id` must name a registered route, otherwise it bails; otherwise the model prefix is matched against route ids/prefixes and ambiguous matches are refused.
+- `bench` requires a non-empty prompt on stdin and applies `--model` with `session.set_active_model` and the resolved profile with `set_active_profile_id`, because config files never select the active model.
 - `bench` output is a single JSON object on stdout: either `{"status":"approval_required", "policy":"sandboxed", "approval":{...}}` with exit `Failed`, or `{"model","profile_id","effort","response","notices"}` with exit `Success`.
-- `resolve_profile_id` takes the profile id from the model prefix: an old prefix fails with its current name (`old_prefix_hint`), and an unknown prefix fails listing the known provider ids.
+- `resolve_profile_id` takes the profile id from the model prefix via one case-insensitive `registry.get(prefix)`: an old prefix fails with its current name (`old_prefix_hint`), and an unknown prefix fails listing the known provider ids.
 - `__egress-connect` rejects target hosts containing whitespace or control bytes, requires HTTP status `200` from the proxy `CONNECT`, and exits before any tunnel copy otherwise. IPv6 hosts are bracketed.
 - The `__egress-connect` subcommand never appears in `--help` (matched before clap).
 
 ## Side Effects
 
-- Reads stdin (`bench` prompt; `__egress-connect` tunnel bytes) and writes stdout (JSON results, tunnel bytes) and stderr (logs, errors, usage).
+- Reads stdin (`bench` prompt; `__egress-connect` tunnel bytes) and writes stdout (JSON results, tunnel bytes) and stderr (logs, errors, usage). After the TUI exits, `run_tui` prints the token-usage summary and a `To continue this session, run forge --resume <id>` hint to stdout, and `quit all sessions: ...` to stderr on a quit failure.
 - Initializes global tracing, a Tokio runtime, and TUI-global preference installs (`forge_tui::notify::install`, `forge_tui::git_prefs::install`).
 - The TUI path acquires the repository-group lease file and opens/creates the control SQLite database via `RepositoryBootstrap`, and rolls back interrupted managed creations. `bench` takes no lease and writes only its session journal.
 - Creates, resumes, or forks durable sessions and journals, and may create/remove git worktrees through `forge-session`.

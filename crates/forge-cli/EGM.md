@@ -15,7 +15,9 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
   proxy. Details in [./src/EGM.md](./src/EGM.md).
 - Process exit codes are `forge_tui::ExitCode` values (`0` success, `1`
   failed, `2` awaiting HITL, `3` canceled, `4` config error); `__egress-connect`
-  uses its own `0/1/2`.
+  uses its own `0/1/2`. Clap exits on its own first: `2` on an argument error
+  (colliding with awaiting HITL) and `0` for `--help`/`--version`. A Tokio
+  runtime build failure panics.
 - Workspace dependencies: `forge-config`, `forge-connect`, `forge-session`,
   `forge-tui`, `forge-tools`, `forge-types`.
 
@@ -31,7 +33,7 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
 ## Invariants
 
 - The binary is a thin composition layer: it must not reimplement session assembly, governance, or rendering.
-- Repository ownership is acquired before the primary session is created, and both are handed to `forge-session` together.
+- In the TUI path, repository ownership is acquired before the primary session is created, and both are handed to `forge-session` together. If runtime storage or lease acquisition fails, the TUI opens and runs a lease-less session instead; `bench` never takes the lease.
 
 ## Side Effects
 

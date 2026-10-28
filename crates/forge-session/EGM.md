@@ -8,12 +8,12 @@ multi-session supervision. No source code at this level: everything lives in
 
 ## Subdirectories & Boundaries
 
-- `src/`: [./src/EGM.md](./src/EGM.md) — `open_session`, journal resolution, credential injection, SQLite control roster + exclusive lease, headless turn driver, snapshots, and the supervisor command/event API.
+- `src/`: [./src/EGM.md](./src/EGM.md) — `open_session`, journal resolution, route-table assembly, SQLite control roster + exclusive lease, headless turn driver, snapshots, and the supervisor command/event API.
 
 ## Interface
 
 - Session assembly: `SessionTarget`, `OpenedSession`, `open_session`,
-  `resolve_journal_dir`, `connect_credentials`.
+  `resolve_journal_dir`, `route_table`, `starting_model`.
 - Repository control: `RepositoryControl`, `RepositoryLease`,
   `RepositorySession`, and related lifecycle enums.
 - Headless driver: `run_headless`, `ApprovalPolicy`, `ApprovalRequired`.
@@ -26,8 +26,8 @@ multi-session supervision. No source code at this level: everything lives in
 ## Invariants
 
 - One Forge process owns a repository group through an exclusive file lease.
-- Credentials are injected into the model client and never exported into
-  `std::env`.
+- Credentials reach the model client only through the route table
+  (`route_table()`), resolved per request from `forge_connect::Credentials`.
 - Repo-scope `allow` pattern rules are never honored; deny always wins.
 - Headless approve-all never approves sandbox escalation.
 
@@ -35,8 +35,10 @@ multi-session supervision. No source code at this level: everything lives in
 
 - SQLite control database and lease file under the repository control
   directory; session journal directories.
-- Starts MCP server processes; runs git worktree operations; spawns
-  per-session supervisor tasks.
+- Starts MCP server processes; runs git worktree operations; spawns a
+  supervisor command loop plus one driver task per running turn.
+- GitHub issue sessions push branches and create or query pull requests
+  through `forge_workspace::gh` (`git`/`gh` subprocesses).
 - Reads user config, permission files, and credential stores.
 
 ## Notes
