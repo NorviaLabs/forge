@@ -25,6 +25,7 @@ pub fn ollama_profile() -> ProviderSpec {
         api_key_env: vec!["OLLAMA_API_KEY".into()],
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         default_models: vec![],
+        manual_models: vec![],
         models_dev_providers: vec![],
         auth_url: Some("https://ollama.com/download".into()),
         model_provider_prefix: "ollama".into(),

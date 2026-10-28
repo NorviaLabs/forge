@@ -1015,7 +1015,6 @@ pub(super) async fn tick_application(app: &mut TuiApp) -> Result<bool, TuiError>
         editor.refresh_pending_highlights();
     }
     app.tick_render_state();
-    app.warm_catalog_once_connected();
     app.poll_catalog_refresh();
     app.poll_background_tasks().await?;
     app.poll_approved_hitl().await?;

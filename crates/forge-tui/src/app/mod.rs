@@ -17,10 +17,9 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use forge_connect::{
-    handle_connect_action, loaded_registry, models_for_picker, needs_tui_api_key_prompt,
-    needs_tui_oauth, runnable_models_for_picker, ConnectAction, ConnectError, ConnectRegistry,
-    ConnectService, CredentialStore, ModelCatalogCache, ModelSelection, OauthPending,
-    PreferenceStore,
+    handle_connect_action, loaded_registry, needs_tui_api_key_prompt, needs_tui_oauth,
+    runnable_models_for_picker, ConnectAction, ConnectError, ConnectRegistry, ConnectService,
+    CredentialStore, ModelCatalogCache, ModelSelection, OauthPending, PreferenceStore,
 };
 use forge_core::{
     merge_streamed_response, observe_stream_event, AgentSession, ApplyOutcome, IsolatedTask,

@@ -26,6 +26,7 @@ pub fn openai_codex_profile() -> ProviderSpec {
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
         // Entitlement still comes from the live Codex catalog; models.dev
         // only supplies public metadata such as effort and image input.
+        manual_models: vec![],
         models_dev_providers: vec!["openai".into()],
         auth_url: Some("https://auth.openai.com/codex/device".into()),
         model_provider_prefix: "openai-codex".into(),

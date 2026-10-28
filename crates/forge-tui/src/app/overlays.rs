@@ -635,6 +635,11 @@ impl TuiApp {
                 model,
                 profile_id,
             } => {
+                if let Some(id) = profile_id.as_deref() {
+                    if !self.ensure_model_credentials(id) {
+                        return Ok(());
+                    }
+                }
                 // Models is a standalone view (no chained Effort step) —
                 // apply the pick, fall back to a safe effort default for
                 // the new model if the previous one doesn't fit, and close.
@@ -678,6 +683,7 @@ impl TuiApp {
                 }
                 self.apply_model_selection(&provider, &model, profile_id.as_deref());
                 self.resolve_effort_for_model(&model);
+                self.onboarding_connect = false;
                 self.overlay = None;
             }
             OverlayAction::ModelNotInCatalog(model) => {
@@ -735,6 +741,87 @@ impl TuiApp {
             OverlayAction::ConnectUseEnv { profile_id } => {
                 self.try_connect_api_key(&profile_id, None);
             }
+            OverlayAction::AddCustomProvider => {
+                self.overlay = Some(Overlay::ConnectCustom {
+                    fields: Default::default(),
+                    selected: 0,
+                    error: None,
+                    editing: false,
+                });
+            }
+            OverlayAction::SaveCustomProvider {
+                id,
+                base_url,
+                model,
+                api_key,
+                editing,
+            } => match if editing {
+                forge_connect::update_custom_provider(&id, &base_url, &model)
+            } else {
+                forge_connect::save_custom_provider(&id, &base_url, &model)
+            } {
+                Ok(profile) => {
+                    let profile_id = profile.id.clone();
+                    self.connect.registry.register(profile);
+                    if api_key.trim().is_empty() {
+                        self.finish_connect(&profile_id, None, false);
+                    } else {
+                        self.open_api_key_prompt(&profile_id, None);
+                        self.try_connect_api_key(&profile_id, Some(api_key));
+                    }
+                }
+                Err(message) => {
+                    if let Some(Overlay::ConnectCustom { error, .. }) = &mut self.overlay {
+                        *error = Some(message);
+                    }
+                }
+            },
+            OverlayAction::RefreshModels => self.start_catalog_refresh(),
+            OverlayAction::AddManualModel => {
+                if let Some(profile_id) = self.picker_route() {
+                    self.overlay = Some(Overlay::ConnectManualModel {
+                        profile_id,
+                        input: String::new(),
+                        error: None,
+                    });
+                }
+            }
+            OverlayAction::SaveManualModel { profile_id, model } => {
+                match forge_connect::save_manual_model(&profile_id, &model) {
+                    Ok(()) => {
+                        self.connect.registry = loaded_registry();
+                        self.open_model_picker_after_connect(&profile_id);
+                    }
+                    Err(message) => {
+                        if let Some(Overlay::ConnectManualModel { error, .. }) = &mut self.overlay {
+                            *error = Some(message);
+                        }
+                    }
+                }
+            }
+            OverlayAction::EditProvider => {
+                if let Some(profile_id) = self.picker_route() {
+                    if let Some(profile) = self.connect.registry.get(&profile_id) {
+                        if profile.is_user() {
+                            self.overlay = Some(Overlay::ConnectCustom {
+                                fields: [
+                                    profile.id.clone(),
+                                    profile.default_base_url.clone().unwrap_or_default(),
+                                    String::new(),
+                                    String::new(),
+                                ],
+                                selected: 1,
+                                error: None,
+                                editing: true,
+                            });
+                        } else if profile.auth_mode.is_oauth() {
+                            self.begin_oauth_flow(&profile_id);
+                        } else {
+                            self.open_api_key_prompt(&profile_id, None);
+                        }
+                    }
+                }
+            }
             OverlayAction::ConnectPickProfile { profile_id } => {
                 self.overlay = None;
                 self.busy_state.set_phase(BusyPhase::Connect);
@@ -769,13 +856,37 @@ impl TuiApp {
         if self.startup_resume.picker {
             self.exit.request_with_code(ExitCode::Canceled);
         }
+        if let Some(Overlay::ConnectManualModel { profile_id, .. }) = &self.overlay {
+            let id = profile_id.clone();
+            self.open_model_picker_after_connect(&id);
+            return;
+        }
+        if self.onboarding_connect
+            && matches!(
+                self.overlay,
+                Some(Overlay::ConnectModel {
+                    focus: ConnectModelColumn::Models,
+                    ..
+                })
+            )
+        {
+            self.open_connect_picker();
+            return;
+        }
         // Esc pops exactly one interaction level (FORGE-DESIGN §8.1). The
         // API-key screen is one level *below* the provider list, so Esc
         // returns to that list — matching its own footer's "Esc back" —
         // rather than jumping out two levels at once. Only the provider list
         // itself (the top of the picker) is the intentional quit point during
         // first-run onboarding.
-        if matches!(self.overlay, Some(Overlay::ConnectApiKey { .. })) {
+        if matches!(
+            self.overlay,
+            Some(
+                Overlay::ConnectApiKey { .. }
+                    | Overlay::ConnectCustom { .. }
+                    | Overlay::ConnectManualModel { .. }
+            )
+        ) {
             self.open_connect_picker();
             return;
         }
@@ -963,6 +1074,41 @@ mod tests {
     use crate::overlays::{SessionConfirmKind, SessionInputMode};
 
     #[tokio::test]
+    async fn custom_provider_setup_opens_and_cancel_returns_to_providers() {
+        let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        app.apply_overlay_action(OverlayAction::AddCustomProvider)
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConnectCustom { selected: 0, .. })
+        ));
+        app.apply_overlay_action(OverlayAction::SaveCustomProvider {
+            id: "invalid provider id".into(),
+            base_url: "https://example.com/v1".into(),
+            model: "model-a".into(),
+            api_key: String::new(),
+            editing: false,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConnectCustom { error: Some(_), .. })
+        ));
+        app.apply_overlay_action(OverlayAction::Close)
+            .await
+            .unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(Overlay::ConnectModel {
+                focus: ConnectModelColumn::Providers,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
     async fn overlay_actions_cover_local_state_and_safe_rejection_paths() {
         let (dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
         let file = dir.path().join("overlay.txt");
@@ -1045,6 +1191,10 @@ mod tests {
     #[tokio::test]
     async fn overlay_actions_cover_selection_and_creation_fallbacks_without_supervisor() {
         let (_dir, mut app) = crate::app::tests::helpers::focus_test_app().await;
+        let credentials = tempfile::tempdir().unwrap();
+        app.connect.store = CredentialStore::new(credentials.path().join("credentials.toml"));
+        app.connect.preferences = PreferenceStore::new(credentials.path().join("preferences.toml"));
+        app.connect.store.set_api_key("openai", "test-key").unwrap();
 
         app.apply_overlay_action(OverlayAction::SelectModel {
             provider: "native".into(),

@@ -53,6 +53,35 @@ async fn connect_opencode_go_opens_api_key_overlay() {
 }
 
 #[tokio::test]
+async fn refresh_failure_keeps_manual_rows_and_reports_discovery_error() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, mut app) = focus_test_app().await;
+    let credentials = tempfile::tempdir().unwrap();
+    app.connect.store = CredentialStore::new(credentials.path().join("credentials.toml"));
+    app.connect.store.set_api_key("openai", "test-key").unwrap();
+    let mut profile = forge_connect::openai_profile();
+    profile.manual_models = vec!["openai/manual".into()];
+    app.connect.registry.register(profile);
+    app.overlay = Some(model_picker_overlay_with("openai/manual", "openai"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.catalog_fetch.refresh_rx = Some(rx);
+    app.catalog_fetch.refreshing_profile = Some("openai".into());
+    tx.send(Err(forge_connect::CatalogError::Http {
+        label: "models".into(),
+        status: 404,
+        body: None,
+    }))
+    .unwrap();
+    app.poll_catalog_refresh();
+    assert!(
+        matches!(&app.overlay, Some(Overlay::ConnectModel { catalog_error: Some(error), .. }) if error.contains("Discovery unsupported"))
+    );
+    let action = handle_overlay_key(app.overlay.as_mut().unwrap(), OverlayKey::Enter);
+    assert!(matches!(action, OverlayAction::SelectModel { model, .. } if model == "openai/manual"));
+    assert!(!app.connect.store.needs_authentication("openai").unwrap());
+}
+
+#[tokio::test]
 async fn disconnect_clears_credentials_and_prompts_reauth() {
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
@@ -682,7 +711,7 @@ async fn invalid_api_key_error_stays_inside_key_modal() {
 }
 
 #[tokio::test]
-async fn first_connection_auto_selects_a_default_model_and_lands_in_steady_state() {
+async fn first_connection_requires_explicit_model_selection() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
     let cred_dir = tempfile::tempdir().unwrap();
@@ -705,27 +734,17 @@ async fn first_connection_auto_selects_a_default_model_and_lands_in_steady_state
         app.connect.profile, None,
         "must start from a genuinely zero-state, not a leaked real profile"
     );
-    // Simulate what the real connect flow already guarantees by this point:
-    // the credential is persisted and `connect.profile` points at it.
     app.connect
         .store
         .set_api_key("openai", "sk-test-saved-credential")
         .unwrap();
-    app.connect.profile = Some("openai".into());
-
     app.finish_connect_flow("openai");
-
     assert!(
-        app.overlay.is_none(),
-        "first connection must land in steady state, not force the model picker open"
+        matches!(app.overlay, Some(Overlay::ConnectModel { focus: ConnectModelColumn::Models, selected_route: Some(ref id), .. }) if id == "openai")
     );
-    assert_eq!(app.connect.profile.as_deref(), Some("openai"));
-    assert!(!app.runtime.model_label.is_empty());
-    assert!(app.runtime.model_label.starts_with("openai/"));
-    assert_eq!(
-        app.reasoning_effort.value,
-        ReasoningEffort::default_for_model(&app.runtime.model_label)
-    );
+    assert!(app.runtime.model_label.is_empty());
+    assert!(app.connect.profile.is_none());
+    assert!(app.connect.preferences.last_selection().unwrap().is_none());
 }
 
 #[tokio::test]
@@ -754,10 +773,7 @@ async fn second_connection_still_opens_the_model_picker() {
         .unwrap();
     app.connect.profile = Some("openai".into());
     app.finish_connect_flow("openai");
-    assert!(
-        app.overlay.is_none(),
-        "first connection lands in steady state"
-    );
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
 
     app.connect
         .store
@@ -1023,7 +1039,7 @@ async fn bare_model_command_opens_on_models_column() {
 }
 
 #[tokio::test]
-async fn open_connect_picker_opens_immediately_and_starts_background_refresh() {
+async fn open_connect_picker_opens_immediately_without_fetching_unselected_providers() {
     let _home_guard = isolated_home_guard();
     let (_dir, session) = test_session().await;
     let mut app = TuiApp::new(
@@ -1054,8 +1070,8 @@ async fn open_connect_picker_opens_immediately_and_starts_background_refresh() {
         app.overlay
     );
     assert!(
-        app.catalog_fetch.refresh_rx.is_some(),
-        "expected a background catalog refresh to be in flight"
+        app.catalog_fetch.refresh_rx.is_none(),
+        "discovery starts only after selecting a provider"
     );
 }
 
@@ -1083,75 +1099,11 @@ async fn poll_catalog_refresh_is_a_noop_when_nothing_in_flight() {
 }
 
 #[tokio::test]
-async fn warm_catalog_once_connected_is_a_noop_for_the_mock_provider() {
+async fn provider_list_does_not_start_discovery_until_a_route_is_selected() {
     let _home_guard = isolated_home_guard();
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            reduced_motion: false,
-            model_label: "mock".into(),
-            provider: "mock".into(),
-            cwd: PathBuf::from("."),
-            version: "0.12.0".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-
-    app.warm_catalog_once_connected();
-
+    let (_dir, mut app) = focus_test_app().await;
+    app.open_connect_picker();
     assert!(app.catalog_fetch.refresh_rx.is_none());
-    assert!(!app.catalog_fetch.warmed);
-}
-
-#[tokio::test]
-async fn warm_catalog_once_connected_starts_exactly_one_background_refresh() {
-    let _home_guard = isolated_home_guard();
-    let (_dir, session) = test_session().await;
-    let mut app = TuiApp::new(
-        session,
-        TuiRuntimeConfig {
-            reduced_motion: false,
-            model_label: "anthropic/claude-sonnet-4-6".into(),
-            provider: "anthropic".into(),
-            cwd: PathBuf::from("."),
-            version: "0.12.0".into(),
-            startup_notices: Vec::new(),
-            file_icons: FileIconMode::Unicode,
-            theme_id: forge_config::DEFAULT_THEME_ID.to_string(),
-        },
-    );
-    let store_dir = tempfile::TempDir::new().unwrap();
-    app.connect.store = CredentialStore::new(store_dir.path().join("empty-creds.toml"));
-    app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
-    app.connect
-        .store
-        .set_api_key("anthropic", "sk-test-anthropic-credential")
-        .unwrap();
-    app.connect.profile = Some("anthropic".into());
-
-    app.warm_catalog_once_connected();
-    assert!(app.catalog_fetch.warmed);
-    assert!(
-        app.catalog_fetch.refresh_rx.is_some(),
-        "expected the first connected tick to start a background refresh"
-    );
-
-    // Simulate the refresh completing, then tick again — a second connected
-    // tick must not start another one.
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.catalog_fetch.refresh_rx = Some(rx);
-    tx.send(Ok(())).unwrap();
-    app.poll_catalog_refresh();
-    assert!(app.catalog_fetch.refresh_rx.is_none());
-
-    app.warm_catalog_once_connected();
-    assert!(
-        app.catalog_fetch.refresh_rx.is_none(),
-        "warm-once must not fire a second background refresh after the first completes"
-    );
 }
 
 #[tokio::test]
@@ -1176,7 +1128,7 @@ async fn background_catalog_refresh_updates_open_picker_rows_once_complete() {
     app.connect.preferences = PreferenceStore::new(store_dir.path().join("preferences.toml"));
 
     app.open_connect_picker();
-    assert!(app.catalog_fetch.refresh_rx.is_some());
+    assert!(app.catalog_fetch.refresh_rx.is_none());
     app.session_runtime
         .set_active_model("missing-test-provider/missing-test-model");
     app.session_runtime.set_image_input_supported(true);
@@ -1410,7 +1362,7 @@ async fn connecting_makes_the_status_card_agree_with_the_toast() {
     // Prime the cache with the pre-sign-in answer.
     app.connect.connected = Some((std::time::Instant::now(), false));
 
-    app.apply_default_model_for_profile("openai_codex", "connected");
+    app.finish_connect_flow("openai_codex");
 
     assert!(
         app.connect.connected.is_none(),
@@ -1419,26 +1371,15 @@ async fn connecting_makes_the_status_card_agree_with_the_toast() {
 }
 
 #[tokio::test]
-async fn connecting_lands_on_the_profiles_declared_model_not_the_alphabetical_first() {
-    // The picker is sorted for reading, so its first row for a profile is
-    // alphabetical: `gpt-5.4` sorts before `gpt-5.6-*` and used to win.
+async fn connecting_opens_models_without_changing_active_selection() {
     let (_dir, mut app) = focus_test_app().await;
-    let declared = app
-        .connect
-        .registry
-        .get("openai_codex")
-        .and_then(|profile| profile.default_model().map(str::to_string))
-        .expect("the openai-codex profile declares a default");
-
-    app.apply_default_model_for_profile("openai_codex", "connected");
-
-    assert_eq!(
-        app.session_runtime.active_model, declared,
-        "connect must land on the declared default"
-    );
+    let model = app.runtime.model_label.clone();
+    let profile = app.connect.profile.clone();
+    app.finish_connect_flow("openai_codex");
+    assert_eq!(app.runtime.model_label, model);
+    assert_eq!(app.connect.profile, profile);
     assert!(
-        !app.session_runtime.active_model.ends_with("gpt-5.4"),
-        "and specifically not on the alphabetical first"
+        matches!(app.overlay, Some(Overlay::ConnectModel { selected_route: Some(ref id), focus: ConnectModelColumn::Models, .. }) if id == "openai_codex")
     );
 }
 
@@ -1519,9 +1460,12 @@ async fn reusing_a_login_connects_without_a_browser() {
         .expect("tokens were adopted");
     assert_eq!(stored.access_token, "at");
     assert_eq!(stored.refresh_token.as_deref(), Some("rt"));
-    assert_eq!(
-        app.connect.profile.as_deref(),
-        Some(forge_connect::OPENAI_CODEX_PROFILE_ID)
+    assert!(
+        app.connect.profile.is_none(),
+        "reusing credentials must not select a model"
+    );
+    assert!(
+        matches!(app.overlay, Some(Overlay::ConnectModel { selected_route: Some(ref id), .. }) if id == forge_connect::OPENAI_CODEX_PROFILE_ID)
     );
     assert!(
         app.status_state.message.contains("Codex"),

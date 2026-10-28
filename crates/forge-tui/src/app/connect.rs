@@ -39,6 +39,8 @@ pub(crate) struct ConnectionModel {
     /// file is edited outside Forge, which the TTL catches.
     pub(super) connected: Option<(std::time::Instant, bool)>,
     model_cost_cache: Option<ModelCostCache>,
+    catalog_errors: std::collections::HashMap<String, String>,
+    auth_required: HashSet<String>,
 }
 
 impl ConnectionModel {
@@ -53,15 +55,47 @@ impl ConnectionModel {
             oauth_last_poll: None,
             connected: None,
             model_cost_cache: None,
+            catalog_errors: Default::default(),
+            auth_required: Default::default(),
         }
     }
 }
 
 impl TuiApp {
+    pub(super) fn ensure_model_credentials(&mut self, profile_id: &str) -> bool {
+        if self.connect.auth_required.contains(profile_id) || !self.credentials_live_for(profile_id)
+        {
+            if needs_tui_oauth(&self.connect.registry, profile_id) {
+                self.begin_oauth_flow(profile_id);
+            } else {
+                self.open_api_key_prompt(profile_id, Some("Authentication required".into()));
+            }
+            false
+        } else {
+            true
+        }
+    }
     /// Mock provider is always "connected" (offline tests / CI).
     fn is_mock_provider(&self) -> bool {
         self.runtime.provider.eq_ignore_ascii_case("mock")
             || self.runtime.model_label.eq_ignore_ascii_case("mock")
+    }
+
+    /// Report a catalog refresh outcome to the connect service, the only
+    /// writer of the persisted `auth_required` flag.
+    fn report_catalog_auth(&self, profile_id: &str, failed: bool) {
+        let svc = ConnectService {
+            registry: &self.connect.registry,
+            store: &self.connect.store,
+            preferences: &self.connect.preferences,
+            active_profile_id: self.connect.profile.clone(),
+            active_model: Some(self.runtime.model_label.clone()),
+        };
+        let _ = if failed {
+            svc.report_auth_failure(profile_id)
+        } else {
+            svc.report_auth_success(profile_id)
+        };
     }
 
     /// Live credentials still exist for a connect profile id.
@@ -765,19 +799,38 @@ impl TuiApp {
     }
 
     pub(super) fn open_connect_picker(&mut self) {
-        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers, false));
         self.status_state.message = "Choose a provider".into();
-        self.start_catalog_refresh();
+        self.reload_provider_registry();
+        self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Providers, false));
+    }
+
+    pub(super) fn reload_provider_registry(&mut self) {
+        self.connect.registry = loaded_registry();
+        self.invalidate_connected();
+        for warning in self.connect.registry.load_warnings().to_vec() {
+            self.status_state.message = warning.clone();
+            self.set_feedback(FeedbackSeverity::Error, warning.clone());
+            self.push_activity(
+                ActivityKind::Connect,
+                FeedbackSeverity::Error,
+                warning.clone(),
+            );
+            self.push_toast(warning);
+        }
     }
 
     /// Open the persistent footer control's compact picker, focused on
     /// `focus`, without disturbing the conversation underneath.
     pub(super) fn open_connect_picker_compact(&mut self, focus: ConnectModelColumn) {
+        self.reload_provider_registry();
         self.overlay = Some(self.build_connect_model_overlay(focus, true));
-        self.start_catalog_refresh();
+        self.refresh_open_picker_items();
+        if focus == ConnectModelColumn::Models {
+            self.start_catalog_refresh();
+        }
     }
 
-    fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
+    pub(super) fn open_api_key_prompt(&mut self, profile_id: &str, error: Option<String>) {
         let p = self.connect.registry.get(profile_id);
         let title = p
             .map(|x| x.title.clone())
@@ -807,19 +860,11 @@ impl TuiApp {
         self.status_state.message = format!("Connect {profile_id}");
     }
 
-    /// After a successful connect, either land directly in a usable steady
-    /// state (this was the first-ever connected route: auto-select a
-    /// default model + effort so onboarding doesn't force a manual picker,
-    /// matching "select a valid catalog/default model... then transition to
-    /// the normal state") or open the model picker as today (a routine
-    /// additional/re-connect, where browsing models is the deliberate point
-    /// of the action).
+    /// Authentication does not select a model. The user confirms a model separately.
     pub(super) fn finish_connect_flow(&mut self, profile_id: &str) {
-        if self.connected_profile_count() == 1 {
-            self.apply_default_model_for_profile(profile_id, "connected");
-        } else {
-            self.open_model_picker_after_connect(profile_id);
-        }
+        self.connect.auth_required.remove(profile_id);
+        self.invalidate_connected();
+        self.open_model_picker_after_connect(profile_id);
     }
 
     fn connected_profile_count(&self) -> usize {
@@ -833,81 +878,23 @@ impl TuiApp {
         svc.connected_profiles().map(|v| v.len()).unwrap_or(0)
     }
 
-    /// Activate `profile_id` (assumed already connected) as the current
-    /// route and auto-select a model for it, landing in normal steady state
-    /// without a forced next step. Reused by both the post-connect
-    /// completion path (`finish_connect_flow`, `verb: "connected"`) and the
-    /// Providers picker's standalone route-switch action
-    /// (`OverlayAction::SwitchToRoute`, `verb: "active"` — the route was
-    /// already connected in a past session, this is just a switch).
-    ///
-    /// Uses the explicit first-run fallback projection, which can fall back
-    /// to `profile.default_models` even with an empty cache (see
-    /// `models_for_picker` in forge-connect), so this works offline / on a
-    /// cold cache. Falls back to the picker if the
-    /// profile somehow has no usable model at all, rather than stranding
-    /// the user with an empty `active_model`.
-    pub(super) fn apply_default_model_for_profile(&mut self, profile_id: &str, verb: &str) {
-        self.connect.profile = Some(profile_id.to_string());
-        // Credentials just changed. Without this the status card keeps
-        // serving the cached pre-sign-in answer until the TTL lapses, so the
-        // first screen after signing in says "connected" in the toast and
-        // "not connected" on the card at the same time.
-        self.invalidate_connected();
-        // The picker is sorted for reading, so its first row for a profile is
-        // alphabetical — `gpt-5.4` beats `gpt-5.6-*`. Honour the profile's own
-        // declared default when it is actually available, and only fall back
-        // to the first row when it is not.
-        let available: Vec<String> = self
-            .model_picker_items_with_defaults(false)
-            .into_iter()
-            .filter(|item| item.profile_id.as_deref() == Some(profile_id))
-            .map(|item| item.model)
-            .collect();
-        let declared = self
-            .connect
-            .registry
-            .get(profile_id)
-            .and_then(|profile| profile.default_model().map(str::to_string));
-        let model = declared
-            .filter(|declared| available.iter().any(|model| model == declared))
-            .or_else(|| available.first().cloned());
-        let Some(model) = model else {
-            self.open_model_picker_after_connect(profile_id);
-            return;
-        };
-        let effort = ReasoningEffort::default_for_model(&model);
-        self.apply_selection(&ModelSelection {
-            route_id: forge_connect::route_id_for_profile(profile_id),
-            provider: "native".into(),
-            model: model.clone(),
-            profile_id: Some(profile_id.to_string()),
-            effort: effort.to_string(),
-        });
-        self.persist_selection();
-        self.record_deliberate_selection();
-        self.overlay = None;
-        self.onboarding_connect = false;
-        let title = self
-            .connect
-            .registry
-            .get(profile_id)
-            .map(|p| p.title.as_str())
-            .unwrap_or(profile_id);
-        self.set_feedback(
-            FeedbackSeverity::Ok,
-            format!("{title} {verb} · {model} ready"),
-        );
-        self.start_catalog_refresh();
-    }
-
     pub(super) fn open_model_picker_after_connect(&mut self, profile_id: &str) {
+        self.reload_provider_registry();
+        if self.connect.auth_required.contains(profile_id) {
+            if needs_tui_oauth(&self.connect.registry, profile_id) {
+                self.begin_oauth_flow(profile_id);
+            } else {
+                self.open_api_key_prompt(profile_id, Some("Authentication required".into()));
+            }
+            return;
+        }
         let overlay = self.build_connect_model_overlay_scoped(
             ConnectModelColumn::Models,
             false,
             Some(profile_id),
         );
         self.overlay = Some(overlay);
+        self.refresh_open_picker_items();
         let title = self
             .connect
             .registry
@@ -974,20 +961,6 @@ impl TuiApp {
         match &action {
             ConnectAction::Open | ConnectAction::List => {
                 self.open_connect_picker();
-                // Keep the picker as the source of truth for the provider list.
-                let mut model = Some(self.runtime.model_label.clone());
-                if let Ok(msg) = handle_connect_action(
-                    ConnectAction::List,
-                    &self.connect.registry,
-                    &self.connect.store,
-                    &self.connect.preferences,
-                    &mut self.connect.profile,
-                    &mut model,
-                ) {
-                    if let Some(line) = msg.lines().next() {
-                        self.set_feedback(FeedbackSeverity::Info, line);
-                    }
-                }
                 return;
             }
             _ => {}
@@ -1029,15 +1002,14 @@ impl TuiApp {
             &mut model,
         ) {
             Ok(msg) => {
-                if let Some(m) = model {
-                    self.runtime.model_label = m.clone();
-                    self.runtime.provider = "native".into();
-                    self.connect.auth_suspended = false;
-                    self.set_selected_model(m.to_string());
-                    self.sync_model_capabilities();
-                }
-                if let Some(pid) = self.connect.profile.clone() {
-                    self.apply_connect_credentials(&pid);
+                if connect_target.is_none() {
+                    if let Some(m) = model {
+                        self.runtime.model_label = m.clone();
+                        self.runtime.provider = "native".into();
+                        self.connect.auth_suspended = false;
+                        self.set_selected_model(m.to_string());
+                        self.sync_model_capabilities();
+                    }
                 }
                 let lines: Vec<String> = msg.lines().map(|s| s.to_string()).collect();
                 self.status_state.message = lines.first().cloned().unwrap_or_default();
@@ -1060,6 +1032,11 @@ impl TuiApp {
                 self.show_oauth_pending(*pending);
             }
             Err(e) => {
+                if matches!(&e, ConnectError::Verify(error) if error.is_auth_failure()) {
+                    if let Some(id) = &connect_target {
+                        self.connect.auth_required.insert(id.clone());
+                    }
+                }
                 let error = e.to_string();
                 if let Some(profile_id) =
                     connect_target.filter(|id| needs_tui_api_key_prompt(&self.connect.registry, id))
@@ -1096,13 +1073,6 @@ impl TuiApp {
 
     /// After a successful connect: update model, inject credentials, clear OAuth UI.
     fn on_connect_success(&mut self, out: &forge_connect::ConnectOutcome) {
-        self.connect.profile = Some(out.profile_id.clone());
-        self.runtime.model_label = out.model.clone();
-        self.runtime.provider = "native".into();
-        self.connect.auth_suspended = false;
-        self.set_selected_model(out.model.clone());
-        self.sync_model_capabilities();
-        self.apply_connect_credentials(&out.profile_id);
         self.connect.oauth_pending = None;
         self.connect.oauth_last_poll = None;
         self.refresh_connection_ui();
@@ -1234,16 +1204,6 @@ impl TuiApp {
             &mut model,
         ) {
             Ok(msg) => {
-                if let Some(m) = model {
-                    self.runtime.model_label = m.clone();
-                    self.runtime.provider = "native".into();
-                    self.connect.auth_suspended = false;
-                    self.set_selected_model(m.to_string());
-                    self.sync_model_capabilities();
-                }
-                if let Some(pid) = self.connect.profile.clone() {
-                    self.apply_connect_credentials(&pid);
-                }
                 self.status_state.message = msg.lines().next().unwrap_or_default().to_string();
                 self.refresh_connection_ui();
                 self.finish_connect_flow(profile_id);
@@ -1370,7 +1330,14 @@ impl TuiApp {
             active_profile_id: self.connect.profile.clone(),
             active_model: Some(self.runtime.model_label.clone()),
         };
-        let connected = svc.connected_profiles().unwrap_or_default();
+        let mut connected = svc.connected_profiles().unwrap_or_default();
+        if let Some(id) = self.picker_route() {
+            if !connected.iter().any(|profile| profile.id == id) {
+                if let Some(profile) = self.connect.registry.get(&id) {
+                    connected.push(profile.clone());
+                }
+            }
+        }
         if connected.is_empty() {
             self.connect.registry.profiles().to_vec()
         } else {
@@ -1384,31 +1351,13 @@ impl TuiApp {
     ) -> Vec<crate::overlays::ModelItem> {
         // Normal model switching is account-scoped. Do not surface stale
         // caches from every built-in profile before a route is connected.
-        if self.connected_profile_count() == 0 {
+        if self.connected_profile_count() == 0 && self.picker_route().is_none() {
             return Vec::new();
         }
         let profiles = self.picker_profiles();
         let cache = ModelCatalogCache::user_default();
         let entries =
             runnable_models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
-        let mut items = models_from_catalog(&entries);
-        for item in &mut items {
-            if let Some(profile_id) = item.profile_id.as_deref() {
-                item.route_label = self.format_route_label(profile_id);
-            }
-        }
-        items
-    }
-
-    /// Build rows including public/default fallback tiers. Used only when a
-    /// newly connected route needs its first safe model.
-    fn model_picker_items_with_defaults(
-        &self,
-        refresh_stale: bool,
-    ) -> Vec<crate::overlays::ModelItem> {
-        let profiles = self.picker_profiles();
-        let cache = ModelCatalogCache::user_default();
-        let entries = models_for_picker(&profiles, &self.connect.store, &cache, refresh_stale);
         let mut items = models_from_catalog(&entries);
         for item in &mut items {
             if let Some(profile_id) = item.profile_id.as_deref() {
@@ -1431,89 +1380,121 @@ impl TuiApp {
         }
     }
 
-    /// Warm the catalog cache once, the first event-loop tick a connected
-    /// profile is active, so the footer control and picker have live data
-    /// without requiring `/connect`/`/model` first. Deliberately an
-    /// event-loop tick, not `draw()` or app construction: `draw()` must stay
-    /// a side-effect-free projection of state, and firing at construction
-    /// time would race a caller's very first frame (a real cost in tests and
-    /// tools that construct a `TuiApp` and render once, since the spawned
-    /// thread's network I/O has no bound on when it finishes relative to
-    /// that first render).
-    pub(super) fn warm_catalog_once_connected(&mut self) {
-        if self.catalog_fetch.warmed {
-            return;
-        }
-        if !self.is_provider_connected() || self.is_mock_provider() {
-            return;
-        }
-        self.catalog_fetch.warmed = true;
-        self.start_catalog_refresh();
+    pub(super) fn picker_route(&self) -> Option<String> {
+        self.overlay.as_ref().and_then(Overlay::picker_route)
     }
 
-    /// Kick off a background catalog refresh if one isn't already in flight.
-    /// Never blocks: the network I/O runs on a spawned thread (matching
-    /// `poll_repo_header`'s shape) and writes through to the on-disk
-    /// `ModelCatalogCache` as a side effect; `poll_catalog_refresh` (called
-    /// once per event-loop tick, never from `draw()`) picks up completion
-    /// and refreshes any open picker's rows from the now-warm cache.
-    /// Account catalogs are always re-fetched here; the disk cache is only
-    /// the instant-open / offline fallback.
     pub(super) fn start_catalog_refresh(&mut self) {
-        if self.catalog_fetch.refresh_rx.is_some() {
+        let Some(id) = self.picker_route() else {
+            return;
+        };
+        if !self.credentials_live_for(&id) {
             return;
         }
-        let profiles = self.picker_profiles();
+        if self.catalog_fetch.refresh_rx.is_some() {
+            if self.catalog_fetch.refreshing_profile.as_deref() != Some(&id) {
+                self.catalog_fetch.pending_profile = Some(id);
+            }
+            self.refresh_open_picker_items();
+            return;
+        }
+        let Some(profile) = self.connect.registry.get(&id).cloned() else {
+            return;
+        };
         let store_path = self.connect.store.path().to_path_buf();
         let cache_path = ModelCatalogCache::user_default().path().to_path_buf();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let store = CredentialStore::new(store_path);
             let cache = ModelCatalogCache::new(cache_path);
-            models_for_picker(&profiles, &store, &cache, true);
-            let _ = tx.send(Ok(()));
+            let result =
+                forge_connect::refresh_profile_catalog(&profile, &store, &cache).map(|_| ());
+            let _ = tx.send(result);
         });
         self.catalog_fetch.refresh_rx = Some(rx);
+        self.catalog_fetch.refreshing_profile = Some(id.clone());
+        self.connect.catalog_errors.remove(&id);
         if let Some(overlay) = &mut self.overlay {
+            overlay.set_catalog_error(None);
             overlay.set_catalog_loading(true);
         }
     }
 
-    /// Non-blocking poll for a finished background catalog refresh. Safe to
-    /// call every event-loop tick; no-ops while nothing is in flight.
     pub(super) fn poll_catalog_refresh(&mut self) {
         let Some(rx) = self.catalog_fetch.refresh_rx.take() else {
             return;
         };
-        match rx.try_recv() {
-            Ok(_) => {
-                self.sync_model_capabilities();
-                self.refresh_open_picker_items();
-            }
+        let result = match rx.try_recv() {
+            Ok(result) => result,
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 self.catalog_fetch.refresh_rx = Some(rx);
+                return;
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                // Worker panicked or dropped without sending — drop the
-                // handle so the next trigger can retry, and stop showing
-                // "Loading models…" for a refresh that's never coming.
-                if let Some(overlay) = &mut self.overlay {
-                    overlay.set_catalog_loading(false);
+                Err(forge_connect::CatalogError::Message(
+                    "Model refresh stopped; Ctrl-R to retry".into(),
+                ))
+            }
+        };
+        if let Some(id) = self.catalog_fetch.refreshing_profile.take() {
+            match result {
+                Ok(()) => {
+                    self.connect.catalog_errors.remove(&id);
+                    self.connect.auth_required.remove(&id);
+                    self.report_catalog_auth(&id, false);
+                    if self.connect.profile.as_deref() == Some(&id)
+                        && !self.model_picker_items(false).iter().any(|item| {
+                            item.profile_id.as_deref() == Some(&id)
+                                && item.model == self.runtime.model_label
+                        })
+                    {
+                        self.connect.catalog_errors.insert(
+                            id,
+                            "Active model: No longer listed · session unchanged".into(),
+                        );
+                    }
                 }
+                Err(error) => {
+                    let message = if error.is_auth_failure() {
+                        self.connect.auth_required.insert(id.clone());
+                        self.report_catalog_auth(&id, true);
+                        self.invalidate_connected();
+                        "Authentication required · select the provider to retry or edit credentials"
+                            .to_string()
+                    } else if matches!(error.status(), Some(404 | 405 | 501)) {
+                        "Discovery unsupported · Ctrl-A to add a model manually".to_string()
+                    } else {
+                        format!("Model refresh failed: {error} · Ctrl-R retry / Ctrl-A add model")
+                    };
+                    self.connect.catalog_errors.insert(id, message);
+                }
+            }
+        }
+        self.sync_model_capabilities();
+        self.refresh_open_picker_items();
+        if let Some(pending) = self.catalog_fetch.pending_profile.take() {
+            if self.picker_route().as_deref() == Some(&pending) {
+                self.start_catalog_refresh();
             }
         }
     }
 
-    /// Re-read the catalog from the now-warm disk cache and refresh an open
-    /// `ConnectModel` overlay's rows in place, if one is open.
     fn refresh_open_picker_items(&mut self) {
         if !matches!(self.overlay, Some(Overlay::ConnectModel { .. })) {
             return;
         }
+        let route = self.picker_route();
+        let error = route
+            .as_ref()
+            .and_then(|id| self.connect.catalog_errors.get(id))
+            .cloned();
+        let loading = self.catalog_fetch.refresh_rx.is_some()
+            && self.catalog_fetch.refreshing_profile == route;
         let items = self.model_picker_items(false);
         if let Some(overlay) = &mut self.overlay {
             overlay.refresh_model_items(items);
-            overlay.set_catalog_loading(false);
+            overlay.set_catalog_loading(loading);
+            overlay.set_catalog_error(error);
         }
     }
 
@@ -1581,7 +1562,6 @@ impl TuiApp {
             );
             return false;
         }
-        self.connect.profile = Some(profile_id.to_string());
         self.invalidate_connected();
         self.refresh_connection_ui();
         self.status_state.message = format!("Reused the {} sign-in", login.source);

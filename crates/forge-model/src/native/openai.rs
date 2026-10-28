@@ -368,15 +368,47 @@ fn route(client: &NativeModelClient, model: &str) -> Result<Route, ModelError> {
             }
         }
         other => {
-            return Err(ModelError::Provider(format!(
-                "unsupported native model provider prefix `{other}`"
-            )))
+            let registry = forge_connect::loaded_registry();
+            let profile = registry
+                .profile_for_model(model)
+                .filter(|p| p.is_user())
+                .ok_or_else(|| {
+                    ModelError::Provider(format!(
+                        "unsupported native model provider prefix `{other}`"
+                    ))
+                })?;
+            custom_route(client, profile, model_id)?
         }
     };
     if route.api_key.is_none() && !matches!(prefix, "ollama" | "ollama_chat") {
         return Err(ModelError::MissingApiKey);
     }
     Ok(route)
+}
+
+fn custom_route(
+    client: &NativeModelClient,
+    profile: &forge_connect::ProviderSpec,
+    model: &str,
+) -> Result<Route, ModelError> {
+    let env_names: Vec<&str> = profile.api_key_env.iter().map(String::as_str).collect();
+    let api_key = match client.credential(&env_names) {
+        Some(key) => Some(key),
+        None => forge_connect::CredentialStore::user_default()
+            .get_api_key(&profile.id)
+            .map_err(|err| {
+                ModelError::Provider(format!("cannot read custom provider credentials: {err}"))
+            })?,
+    };
+    Ok(Route {
+        base_url: profile
+            .default_base_url
+            .clone()
+            .ok_or_else(|| ModelError::Provider("custom provider requires a base URL".into()))?,
+        api_key,
+        model: model.into(),
+        opencode_session: false,
+    })
 }
 
 fn consume_event(
@@ -720,6 +752,21 @@ mod tests {
             thinking_enabled: true,
             prompt_cache: true,
         }
+    }
+
+    #[test]
+    fn custom_provider_route_uses_endpoint_model_and_credentials() {
+        let client = NativeModelClient::from_config(&Config::default()).unwrap();
+        client.apply_provider_env(&[("CUSTOM_TEST_KEY".into(), "custom-key".into())]);
+        let mut profile = forge_connect::openai_profile();
+        profile.id = "custom-test".into();
+        profile.api_key_env = vec!["CUSTOM_TEST_KEY".into()];
+        profile.default_base_url = Some("https://custom.example/v1".into());
+        let routed = custom_route(&client, &profile, "org/model-a").unwrap();
+        assert_eq!(routed.base_url, "https://custom.example/v1");
+        assert_eq!(routed.model, "org/model-a");
+        assert_eq!(routed.api_key.as_deref(), Some("custom-key"));
+        assert!(!routed.opencode_session);
     }
 
     #[test]

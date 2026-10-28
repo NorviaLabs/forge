@@ -56,6 +56,8 @@ pub(crate) struct CredentialsFile {
     /// profile_id → oauth tokens
     #[serde(default)]
     oauth: BTreeMap<String, OauthTokens>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    auth_required: std::collections::BTreeSet<String>,
     // Interactive selections used to live here too. They are not secrets and
     // they moved to `preferences.rs`; see that module for why. Old files that
     // still carry those keys parse fine — serde ignores them — and shed them
@@ -130,6 +132,7 @@ impl CredentialStore {
 
     pub fn set_api_key(&self, profile_id: &str, key: &str) -> Result<(), StoreError> {
         self.update(|file| {
+            file.auth_required.remove(profile_id);
             file.keys
                 .insert(profile_id.to_string(), key.trim().to_string());
             // Connecting via API key clears oauth for that profile
@@ -144,6 +147,7 @@ impl CredentialStore {
 
     pub fn set_oauth(&self, profile_id: &str, tokens: OauthTokens) -> Result<(), StoreError> {
         self.update(|file| {
+            file.auth_required.remove(profile_id);
             file.oauth.insert(profile_id.to_string(), tokens);
             // OAuth supersedes stored API key for this profile
             file.keys.remove(profile_id);
@@ -151,28 +155,57 @@ impl CredentialStore {
         })
     }
 
+    /// Remove a profile's stored key and tokens. The `auth_required` flag is
+    /// always dropped, even when nothing else was stored (a profile flagged
+    /// while its key came from env must not stay flagged after disconnect).
     pub fn clear(&self, profile_id: &str) -> Result<bool, StoreError> {
         self.update(|file| {
+            let flagged = file.auth_required.remove(profile_id);
             let removed_key = file.keys.remove(profile_id).is_some();
             let removed_oauth = file.oauth.remove(profile_id).is_some();
             let removed = removed_key || removed_oauth;
-            (removed, removed)
+            (removed, removed || flagged)
         })
     }
 
     pub fn clear_all(&self) -> Result<bool, StoreError> {
         self.update(|file| {
             let removed = !file.keys.is_empty() || !file.oauth.is_empty();
+            let flagged = !file.auth_required.is_empty();
             file.keys.clear();
             file.oauth.clear();
-            (removed, removed)
+            file.auth_required.clear();
+            (removed, removed || flagged)
         })
     }
 
     pub fn is_connected(&self, profile_id: &str) -> Result<bool, StoreError> {
         self.with_file(|file| {
-            file.keys.contains_key(profile_id) || file.oauth.contains_key(profile_id)
+            !file.auth_required.contains(profile_id)
+                && (file.keys.contains_key(profile_id) || file.oauth.contains_key(profile_id))
         })
+    }
+
+    /// Set or clear the `auth_required` flag. Only `ConnectService`
+    /// (`report_auth_failure`/`report_auth_success`) calls this, so the flag
+    /// has one writer. A call that would not change the flag writes nothing.
+    pub(crate) fn mark_auth_required(
+        &self,
+        profile_id: &str,
+        required: bool,
+    ) -> Result<(), StoreError> {
+        self.update(|file| {
+            let changed = if required {
+                file.auth_required.insert(profile_id.into())
+            } else {
+                file.auth_required.remove(profile_id)
+            };
+            ((), changed)
+        })
+    }
+
+    pub fn needs_authentication(&self, profile_id: &str) -> Result<bool, StoreError> {
+        self.with_file(|file| file.auth_required.contains(profile_id))
     }
 
     pub fn list_profile_ids(&self) -> Result<Vec<String>, StoreError> {
@@ -349,6 +382,9 @@ pub fn resolve_connected(
     profile_id: &str,
     store: &CredentialStore,
 ) -> Result<Option<KeySource>, StoreError> {
+    if store.needs_authentication(profile_id)? {
+        return Ok(None);
+    }
     let (has_oauth, has_key) = store.with_file(|file| {
         (
             file.oauth.contains_key(profile_id),
@@ -374,6 +410,22 @@ pub fn resolve_connected(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A profile flagged while its key came from env has nothing stored, yet
+    /// disconnecting it must still drop the flag.
+    #[test]
+    fn clearing_drops_the_flag_even_with_nothing_stored() {
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("credentials.toml"));
+        store.mark_auth_required("env-only", true).unwrap();
+        assert!(store.needs_authentication("env-only").unwrap());
+        assert!(!store.clear("env-only").unwrap());
+        assert!(!store.needs_authentication("env-only").unwrap());
+
+        store.mark_auth_required("other", true).unwrap();
+        assert!(!store.clear_all().unwrap());
+        assert!(!store.needs_authentication("other").unwrap());
+    }
 
     /// Unrelated writes from one process never drop each other's change.
     #[test]
@@ -413,6 +465,23 @@ mod tests {
             .unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn rejected_credentials_remain_saved_but_disconnected_across_restart() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        let store = CredentialStore::new(path.clone());
+        store.set_api_key("custom", "secret").unwrap();
+        store.mark_auth_required("custom", true).unwrap();
+        let store = CredentialStore::new(path);
+        assert_eq!(
+            store.get_api_key("custom").unwrap().as_deref(),
+            Some("secret")
+        );
+        assert!(resolve_connected(&[], "custom", &store).unwrap().is_none());
+        store.set_api_key("custom", "replacement").unwrap();
+        assert!(resolve_connected(&[], "custom", &store).unwrap().is_some());
     }
 
     #[test]

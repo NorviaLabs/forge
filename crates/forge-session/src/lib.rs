@@ -333,7 +333,11 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         )
         .unwrap();
         let registry = forge_connect::loaded_registry_from(&path);
-        assert!(registry.get("groq").is_some(), "fixture must load");
+        assert!(
+            registry.get("groq").is_some(),
+            "fixture must load: {:?}",
+            registry.load_warnings()
+        );
         let names = forge_connect::credential_env_names(&registry);
         assert!(names.iter().any(|name| name == "GROQ_API_KEY"));
         assert!(!forge_tools::PROVIDER_CREDENTIAL_ENV.contains(&"GROQ_API_KEY"));

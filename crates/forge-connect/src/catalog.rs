@@ -692,6 +692,29 @@ pub fn fetch_remote_models(
             )?;
             Ok(map_prefix(prefix, raw, |_| true))
         }
+        _ if profile.is_user() && profile.transport == crate::ProviderTransport::OpenaiCompat => {
+            let key = api_key.ok_or_else(|| {
+                CatalogError::CredentialRequired("API key required for catalog".into())
+            })?;
+            let raw = http_get_json_ids(
+                &format!("{base}/models"),
+                &[
+                    ("Authorization", &format!("Bearer {key}")),
+                    ("User-Agent", &ua),
+                ],
+            )?;
+            Ok(raw
+                .into_iter()
+                .filter(|id| !id.trim().is_empty())
+                .map(|id| {
+                    if id.starts_with(&format!("{prefix}/")) {
+                        id
+                    } else {
+                        format!("{prefix}/{id}")
+                    }
+                })
+                .collect())
+        }
         other => Err(CatalogError::UnsupportedProfile(other.to_string())),
     }
 }
@@ -851,47 +874,52 @@ fn http_get_json_ids(url: &str, headers: &[(&str, &str)]) -> Result<Vec<String>,
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
-        let resp = match req.call() {
-            Ok(r) if matches!(r.status().as_u16(), 301 | 302 | 303 | 307 | 308) => {
-                if let Some(loc) = r
-                    .headers()
-                    .get("Location")
-                    .and_then(|v| v.to_str().ok())
-                    .map(str::to_string)
-                {
-                    cur = loc;
-                    continue;
+        let resp =
+            match req.call() {
+                Ok(r) if matches!(r.status().as_u16(), 301 | 302 | 303 | 307 | 308) => {
+                    if let Some(loc) = r
+                        .headers()
+                        .get("Location")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string)
+                    {
+                        let current = cur.parse::<ureq::http::Uri>().ok();
+                        let target = loc.parse::<ureq::http::Uri>().ok();
+                        if !current.as_ref().zip(target.as_ref()).is_some_and(
+                            |(current, target)| {
+                                current.scheme() == target.scheme()
+                                    && current.authority() == target.authority()
+                            },
+                        ) {
+                            return Err(CatalogError::Message(
+                                "catalog redirect changed origin; refusing to forward credentials"
+                                    .into(),
+                            ));
+                        }
+                        cur = loc;
+                        continue;
+                    }
+                    return Err(CatalogError::Http {
+                        label: format!("catalog GET {cur}"),
+                        status: r.status().as_u16(),
+                        body: Some("(missing Location)".into()),
+                    });
                 }
-                return Err(CatalogError::Http {
-                    label: format!("catalog GET {cur}"),
-                    status: r.status().as_u16(),
-                    body: Some("(missing Location)".into()),
-                });
-            }
-            Ok(mut r) if !(200..300).contains(&r.status().as_u16()) => {
-                // Best-effort include small body to help operator debug auth failures.
-                let body = r
-                    .body_mut()
-                    .read_to_string()
-                    .unwrap_or_default()
-                    .chars()
-                    .take(240)
-                    .collect::<String>();
-                let body = body.trim().to_string();
-                return Err(CatalogError::Http {
-                    label: format!("catalog GET {cur}"),
-                    status: r.status().as_u16(),
-                    body: (!body.is_empty()).then_some(body),
-                });
-            }
-            Ok(r) => r,
-            Err(e) => {
-                return Err(CatalogError::Transport {
-                    label: format!("catalog GET {cur}"),
-                    detail: e.to_string(),
-                })
-            }
-        };
+                Ok(r) if !(200..300).contains(&r.status().as_u16()) => {
+                    return Err(CatalogError::Http {
+                        label: format!("catalog GET {cur}"),
+                        status: r.status().as_u16(),
+                        body: None,
+                    });
+                }
+                Ok(r) => r,
+                Err(e) => {
+                    return Err(CatalogError::Transport {
+                        label: format!("catalog GET {cur}"),
+                        detail: e.to_string(),
+                    })
+                }
+            };
 
         let mut resp = resp;
         let body: serde_json::Value =
@@ -1046,12 +1074,6 @@ pub fn refresh_profile_catalog(
 ) -> Result<Vec<String>, CatalogError> {
     let key = credential_for_catalog(profile, store);
     let models = fetch_remote_models(profile, key.as_deref())?;
-    if models.is_empty() {
-        return Err(CatalogError::Message(format!(
-            "catalog for `{}` returned no models",
-            profile.id
-        )));
-    }
     cache.put(&profile.id, models.clone())?;
     Ok(models)
 }
@@ -1107,13 +1129,13 @@ fn profile_picker_entries(
     let live = matches!(
         profile.catalog_mode,
         CatalogMode::Live | CatalogMode::LiveRegistry
-    );
+    ) || profile.is_user();
     if live && refresh_stale {
         if let Ok(models) = refresh_profile_catalog(profile, store, cache) {
             entries.extend(models.into_iter().map(|id| (id, CatalogSource::Live)));
         }
     }
-    if live && entries.is_empty() && !(profile.catalog_mode == CatalogMode::Live && refresh_stale) {
+    if live && entries.is_empty() {
         entries.extend(
             cache
                 .get_cached(&profile.id)
@@ -1150,7 +1172,7 @@ fn profile_picker_entries(
                 .map(|id| (id, CatalogSource::Registry)),
         );
     }
-    if profile.catalog_mode == CatalogMode::Static {
+    if profile.catalog_mode == CatalogMode::Static || profile.is_user() {
         entries.extend(
             profile
                 .default_models
@@ -1167,6 +1189,13 @@ fn profile_picker_entries(
                 .map(|id| (id, CatalogSource::Default)),
         );
     }
+    entries.extend(
+        profile
+            .manual_models
+            .iter()
+            .cloned()
+            .map(|id| (id, CatalogSource::Configured)),
+    );
     entries
 }
 
@@ -1196,6 +1225,66 @@ mod tests {
     use crate::{group_routes, normalize_model_id};
     use forge_test_support::mock_http;
     use tempfile::tempdir;
+
+    #[test]
+    fn custom_discovery_keeps_organization_namespace_and_manual_models() {
+        let Some(url) = mock_http(vec![(200, r#"{"data":[{"id":"org/model"}]}"#, vec![])]) else {
+            return;
+        };
+        let mut profile = openai_profile();
+        profile.id = "custom".into();
+        profile.model_provider_prefix = "custom".into();
+        profile.origin = crate::SpecOrigin::User;
+        profile.catalog_mode = CatalogMode::Live;
+        profile.default_base_url = Some(url);
+        profile.default_models = vec!["custom/manual".into()];
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("keys.toml"));
+        let cache = ModelCatalogCache::new(dir.path().join("models.toml"));
+        store.set_api_key("custom", "secret").unwrap();
+        assert_eq!(
+            refresh_profile_catalog(&profile, &store, &cache).unwrap(),
+            vec!["custom/org/model"]
+        );
+        let entries = runnable_models_for_picker(&[profile], &store, &cache, false);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["custom/org/model", "custom/manual"]
+        );
+    }
+
+    #[test]
+    fn discovery_failure_preserves_cache_and_successful_empty_response_removes_it() {
+        let Some(url) = mock_http(vec![(503, "{}", vec![])]) else {
+            return;
+        };
+        let mut profile = openai_profile();
+        profile.default_base_url = Some(url);
+        profile.manual_models = vec!["openai/manual".into()];
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("keys.toml"));
+        let cache = ModelCatalogCache::new(dir.path().join("models.toml"));
+        store.set_api_key("openai", "secret").unwrap();
+        cache.put("openai", vec!["openai/old".into()]).unwrap();
+        assert!(refresh_profile_catalog(&profile, &store, &cache).is_err());
+        assert_eq!(cache.get_cached("openai"), vec!["openai/old"]);
+        let Some(url) = mock_http(vec![(200, r#"{"data":[]}"#, vec![])]) else {
+            return;
+        };
+        profile.default_base_url = Some(url);
+        refresh_profile_catalog(&profile, &store, &cache).unwrap();
+        assert!(cache.get_cached("openai").is_empty());
+        assert_eq!(
+            runnable_models_for_picker(&[profile], &store, &cache, false)
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["openai/manual"]
+        );
+    }
 
     #[test]
     fn normalize_model_id_variants() {
@@ -1932,7 +2021,7 @@ mod tests {
         let err = http_get_json_ids(&format!("{base}/models"), &[])
             .unwrap_err()
             .to_string();
-        assert!(err.contains("catalog GET"), "{err}");
+        assert!(err.contains("redirect changed origin"), "{err}");
 
         let Some(base) = mock_http(vec![(200, "{not-json", vec![])]) else {
             eprintln!("skipping: this host denies binding a listener");
@@ -1950,7 +2039,11 @@ mod tests {
         let err = http_get_json_ids(&format!("{base}/models"), &[])
             .unwrap_err()
             .to_string();
-        assert!(err.contains("HTTP 400 bad request body"), "{err}");
+        assert!(err.contains("HTTP 400"), "{err}");
+        assert!(
+            !err.contains("bad request body"),
+            "response bodies stay out of errors: {err}"
+        );
     }
 
     #[test]

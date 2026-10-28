@@ -2649,6 +2649,7 @@ fn map_key(key: event::KeyEvent) -> OverlayKey {
         KeyCode::Left => OverlayKey::Left,
         KeyCode::Right => OverlayKey::Right,
         KeyCode::Backspace => OverlayKey::Backspace,
+        KeyCode::Char(c) if key.modifiers.contains(KeyModifiers::CONTROL) => OverlayKey::Ctrl(c),
         KeyCode::Char(c) => OverlayKey::Char(c),
         _ => OverlayKey::Other,
     }

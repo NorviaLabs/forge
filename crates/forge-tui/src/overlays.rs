@@ -88,6 +88,7 @@ pub enum Overlay {
         /// Distinguishes "still loading" from "genuinely no matches" in the
         /// Models column's empty state.
         catalog_loading: bool,
+        catalog_error: Option<String>,
     },
     /// Phase 6.1 — OpenCode Go (and other ApiKey tui_always_prompt profiles)
     ConnectApiKey {
@@ -99,6 +100,17 @@ pub enum Overlay {
         /// Optional hint when env key exists
         env_hint: Option<String>,
         /// Validation/authentication error shown inside the modal.
+        error: Option<String>,
+    },
+    ConnectCustom {
+        fields: [String; 4],
+        selected: usize,
+        error: Option<String>,
+        editing: bool,
+    },
+    ConnectManualModel {
+        profile_id: String,
+        input: String,
         error: Option<String>,
     },
     TrustSession {
@@ -354,6 +366,7 @@ pub struct ProviderRouteRow {
 /// carry it as `routes[0]` and render flat, with no chevron; vendors with
 /// more than one offering render as an expandable header with `routes`
 /// nested underneath — the same affordance the file tree uses.
+/// An empty route list represents the "Add custom provider" action.
 #[derive(Debug, Clone)]
 pub struct ProviderVendorRow {
     pub vendor_id: String,
@@ -487,7 +500,7 @@ pub fn build_provider_rows_with_reuse(
     let current_vendor_id = current_profile_id
         .and_then(|pid| registry.get(pid))
         .map(|p| p.vendor_id.clone());
-    vendor_order
+    let mut rows: Vec<_> = vendor_order
         .into_iter()
         .map(|(vendor_id, label)| {
             let routes = routes_by_vendor.remove(&vendor_id).unwrap_or_default();
@@ -500,7 +513,14 @@ pub fn build_provider_rows_with_reuse(
                 expanded,
             }
         })
-        .collect()
+        .collect();
+    rows.push(ProviderVendorRow {
+        vendor_id: String::new(),
+        label: "+ Add custom provider".into(),
+        routes: Vec::new(),
+        expanded: false,
+    });
+    rows
 }
 
 /// The active vendor/route labels for the picker's box title and Active
@@ -913,15 +933,69 @@ impl Overlay {
             groups,
             selected_route,
             active_profile_id,
+            model_input,
+            model_selected,
             ..
         } = self
         {
+            let selected = {
+                let filtered: Vec<_> = groups
+                    .iter()
+                    .filter(|g| group_matches_input(model_input, g))
+                    .collect();
+                flatten_model_rows(&filtered)
+                    .get(*model_selected)
+                    .and_then(|row| flat_row_item(&filtered, row))
+                    .map(|item| (item.model.clone(), item.profile_id.clone()))
+            };
             *groups = Self::scoped_groups(
                 &items,
                 selected_route.as_deref(),
                 active_profile_id.as_deref(),
             );
             *all_items = items;
+            let filtered: Vec<_> = groups
+                .iter()
+                .filter(|g| group_matches_input(model_input, g))
+                .collect();
+            let rows = flatten_model_rows(&filtered);
+            *model_selected = selected
+                .and_then(|selected| {
+                    rows.iter().position(|row| {
+                        flat_row_item(&filtered, row).is_some_and(|item| {
+                            (item.model.clone(), item.profile_id.clone()) == selected
+                        })
+                    })
+                })
+                .unwrap_or_else(|| (*model_selected).min(rows.len().saturating_sub(1)));
+        }
+    }
+
+    pub(crate) fn set_catalog_error(&mut self, error: Option<String>) {
+        if let Self::ConnectModel { catalog_error, .. } = self {
+            *catalog_error = error;
+        }
+    }
+
+    pub(crate) fn picker_route(&self) -> Option<String> {
+        match self {
+            Self::ConnectModel {
+                providers,
+                provider_cursor,
+                selected_route,
+                focus,
+                ..
+            } => {
+                if *focus == ConnectModelColumn::Providers {
+                    let rows = flatten_provider_rows(providers);
+                    rows.get(*provider_cursor)
+                        .and_then(|row| flat_row_profile(providers, row))
+                        .map(|route| route.profile_id.clone())
+                } else {
+                    selected_route.clone()
+                }
+            }
+            _ => None,
         }
     }
 
@@ -1112,6 +1186,7 @@ impl Overlay {
             active_effort: current_effort,
             focus,
             catalog_loading: false,
+            catalog_error: None,
         }
     }
 
@@ -1211,6 +1286,11 @@ impl Overlay {
 
     pub fn move_sel(&mut self, delta: i32) {
         match self {
+            Self::ConnectCustom {
+                fields, selected, ..
+            } => {
+                *selected = (*selected as i32 + delta).rem_euclid(fields.len() as i32) as usize;
+            }
             Self::GitCommitSuggest { selected } => {
                 let n = GIT_COMMIT_SUGGEST.len() as i32;
                 *selected = (*selected as i32 + delta).rem_euclid(n) as usize;
@@ -1462,6 +1542,21 @@ pub enum OverlayAction {
     ConnectPickProfile {
         profile_id: String,
     },
+    AddCustomProvider,
+    SaveCustomProvider {
+        id: String,
+        base_url: String,
+        model: String,
+        api_key: String,
+        editing: bool,
+    },
+    RefreshModels,
+    AddManualModel,
+    SaveManualModel {
+        profile_id: String,
+        model: String,
+    },
+    EditProvider,
     /// Providers view: picked a route that's already connected but isn't
     /// the currently active one — switch to it and land in usable steady
     /// state (default model + safe effort), without a forced next step.
@@ -1489,6 +1584,90 @@ pub(crate) fn theme_preview_action(overlay: &Overlay) -> OverlayAction {
 }
 
 pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
+    if let Overlay::ConnectCustom {
+        fields,
+        selected,
+        error,
+        editing,
+    } = overlay
+    {
+        match key {
+            Key::Esc => return OverlayAction::Close,
+            Key::Tab | Key::Down => *selected = (*selected + 1) % fields.len(),
+            Key::BackTab | Key::Up => *selected = (*selected + fields.len() - 1) % fields.len(),
+            Key::Enter if *selected < fields.len() - 1 => *selected += 1,
+            Key::Enter => {
+                return OverlayAction::SaveCustomProvider {
+                    id: fields[0].clone(),
+                    base_url: fields[1].clone(),
+                    model: fields[2].clone(),
+                    api_key: fields[3].clone(),
+                    editing: *editing,
+                }
+            }
+            Key::Char(c) if !c.is_control() => {
+                if *editing && *selected == 0 {
+                    return OverlayAction::None;
+                }
+                fields[*selected].push(c);
+                *error = None;
+            }
+            Key::Paste(data) => {
+                if *editing && *selected == 0 {
+                    return OverlayAction::None;
+                }
+                fields[*selected].extend(data.chars().filter(|c| !c.is_control()));
+                *error = None;
+            }
+            Key::Backspace => {
+                if *editing && *selected == 0 {
+                    return OverlayAction::None;
+                }
+                fields[*selected].pop();
+                *error = None;
+            }
+            _ => {}
+        }
+        return OverlayAction::None;
+    }
+    if let Overlay::ConnectManualModel {
+        profile_id,
+        input,
+        error,
+    } = overlay
+    {
+        return match key {
+            Key::Esc => OverlayAction::Close,
+            Key::Enter => OverlayAction::SaveManualModel {
+                profile_id: profile_id.clone(),
+                model: input.clone(),
+            },
+            Key::Char(c) if !c.is_control() => {
+                input.push(c);
+                *error = None;
+                OverlayAction::None
+            }
+            Key::Paste(data) => {
+                input.extend(data.chars().filter(|c| !c.is_control()));
+                *error = None;
+                OverlayAction::None
+            }
+            Key::Backspace => {
+                input.pop();
+                *error = None;
+                OverlayAction::None
+            }
+            _ => OverlayAction::None,
+        };
+    }
+    if matches!(overlay, Overlay::ConnectModel { .. }) {
+        match key {
+            Key::Ctrl('r') => return OverlayAction::RefreshModels,
+            Key::Ctrl('a') => return OverlayAction::AddManualModel,
+            Key::Ctrl('e') => return OverlayAction::EditProvider,
+            _ => {}
+        }
+    }
     match key {
         Key::Esc if matches!(overlay, Overlay::TrustSession { .. }) => {
             if let Overlay::TrustSession { operation_id, .. } = overlay {
@@ -2339,6 +2518,7 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                 active_effort: _,
                 focus,
                 catalog_loading: _,
+                catalog_error: _,
             } => match focus {
                 ConnectModelColumn::Providers => {
                     let rows = flatten_provider_rows(providers);
@@ -2346,6 +2526,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                         return OverlayAction::None;
                     };
                     let vendor = &providers[row.vendor_idx];
+                    if vendor.routes.is_empty() {
+                        return OverlayAction::AddCustomProvider;
+                    }
                     if row.route_idx.is_none() && vendor.routes.len() > 1 {
                         // Multi-route vendor header: toggle expand/collapse in place.
                         let expanded = !vendor.expanded;
@@ -2360,14 +2543,6 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                             profile_id: route.profile_id.clone(),
                         };
                     }
-                    if route.is_current {
-                        // Already the active route — nothing to do.
-                        return OverlayAction::Close;
-                    }
-                    // Providers is a standalone view now (no chained Models
-                    // step) — picking a different connected route must fully
-                    // resolve the session on its own: switch routes and land
-                    // on a valid default model + effort, handled by the app.
                     OverlayAction::SwitchToRoute {
                         profile_id: route.profile_id.clone(),
                     }
@@ -2426,6 +2601,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
                     }
                 }
             },
+            Overlay::ConnectCustom { .. } | Overlay::ConnectManualModel { .. } => {
+                OverlayAction::None
+            }
             Overlay::ConnectApiKey {
                 profile_id,
                 key_input,
@@ -2850,6 +3028,7 @@ pub enum Key {
     Right,
     Backspace,
     Char(char),
+    Ctrl(char),
     /// Bracketed-paste payload (full string at once).
     Paste(String),
     Other,
@@ -3254,6 +3433,7 @@ impl Widget for OverlayWidget<'_> {
                 active_effort,
                 focus,
                 catalog_loading,
+                catalog_error,
                 ..
             } => {
                 // Borders (2) + padding (1) + info row + hint rows (2), plus
@@ -3498,12 +3678,10 @@ impl Widget for OverlayWidget<'_> {
                         let start = window_start_pin_top(*model_selected, rows.len(), visible);
                         let end = (start + visible).min(rows.len());
                         let table_rows: Vec<Row> = if rows.is_empty() {
-                            let msg = if active_profile_id.is_none() {
-                                "Connect a provider first."
-                            } else if *catalog_loading {
+                            let msg = if *catalog_loading {
                                 "Loading models…"
                             } else if model_input.trim().is_empty() {
-                                "No models available yet."
+                                "No discovered models · Ctrl-A to add a model ID."
                             } else {
                                 "No models match this filter."
                             };
@@ -3643,7 +3821,12 @@ impl Widget for OverlayWidget<'_> {
                     ),
                     None => "Active: not connected".to_string(),
                 };
-                Paragraph::new(active_line)
+                let info = catalog_error.as_deref().unwrap_or(if *catalog_loading {
+                    "Refreshing models…"
+                } else {
+                    &active_line
+                });
+                Paragraph::new(info)
                     .style(theme::text())
                     .render(regions[2], buf);
                 Paragraph::new(Line::from(crate::hints::hint_spans(
@@ -3651,6 +3834,69 @@ impl Widget for OverlayWidget<'_> {
                     regions[3].width as usize,
                 )))
                 .render(regions[3], buf);
+            }
+            Overlay::ConnectCustom {
+                fields,
+                selected,
+                error,
+                editing,
+            } => {
+                let r = centered_content_rect(area, 78, 19, 19);
+                clear_modal(r, buf);
+                let labels = [
+                    "Provider ID (e.g. my-provider)",
+                    "Base URL (e.g. https://api.example.com/v1)",
+                    "Model ID (optional; used alongside discovery)",
+                    "API key (stored securely; leave empty to keep existing key)",
+                ];
+                let mut lines = vec![
+                    Line::from("OpenAI-compatible endpoint · models discovered after saving"),
+                    Line::from(""),
+                ];
+                for (i, label) in labels.iter().enumerate() {
+                    lines.push(Line::styled(*label, theme::dim()));
+                    lines.push(Line::styled(
+                        format!(
+                            "{}{}{}",
+                            if i == *selected { "> " } else { "  " },
+                            if i == 3 {
+                                "•".repeat(fields[i].chars().count())
+                            } else {
+                                fields[i].clone()
+                            },
+                            if i == *selected { "█" } else { "" }
+                        ),
+                        if i == *selected {
+                            theme::focused_selection_style()
+                        } else {
+                            theme::text()
+                        },
+                    ));
+                    lines.push(Line::from(""));
+                }
+                lines.push(Line::from(error.as_deref().unwrap_or("")));
+                lines.push(Line::from("Tab / ↑↓ field · Enter next / save · Esc back"));
+                Paragraph::new(lines)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::border())
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
+                            .title(theme::modal_title(if *editing {
+                                "Edit custom provider"
+                            } else {
+                                "Add custom provider"
+                            })),
+                    )
+                    .render(r, buf);
+            }
+            Overlay::ConnectManualModel { input, error, .. } => {
+                let r = centered_content_rect(area, 70, 9, 9);
+                clear_modal(r, buf);
+                Paragraph::new(format!("Model ID (as accepted by the endpoint)\n\n{input}█\n\n{}\nEnter save · Esc back", error.as_deref().unwrap_or("Manual models are kept when discovery refreshes.")))
+                    .block(Block::default().borders(Borders::ALL).border_style(theme::border()).style(theme::panel()).padding(Padding::horizontal(MODAL_PAD_X)).title(theme::modal_title("Add manual model")))
+                    .render(r, buf);
             }
             Overlay::ConnectApiKey {
                 title,
@@ -5503,12 +5749,133 @@ mod tests {
     }
 
     #[test]
+    fn custom_provider_row_opens_setup() {
+        let providers = build_provider_rows_with_reuse(
+            &forge_connect::builtin_registry(),
+            &std::collections::HashSet::new(),
+            None,
+            &[],
+        );
+        let mut overlay = Overlay::connect_model_open(
+            providers,
+            vec![],
+            None,
+            "",
+            ReasoningEffort::default(),
+            ConnectModelColumn::Providers,
+        );
+        overlay.move_sel(-1);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::AddCustomProvider
+        );
+    }
+
+    #[test]
+    fn custom_provider_form_edits_navigates_and_submits() {
+        let mut overlay = Overlay::ConnectCustom {
+            fields: Default::default(),
+            selected: 0,
+            error: None,
+            editing: false,
+        };
+        for (value, next) in [
+            ("my-provider", Key::Tab),
+            ("https://api.example.com/v1", Key::Enter),
+        ] {
+            handle_overlay_key(&mut overlay, Key::Paste(value.into()));
+            assert_eq!(handle_overlay_key(&mut overlay, next), OverlayAction::None);
+        }
+        handle_overlay_key(&mut overlay, Key::Paste("model-a!\n".into()));
+        handle_overlay_key(&mut overlay, Key::Backspace);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+        handle_overlay_key(&mut overlay, Key::Paste("secret-key".into()));
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::SaveCustomProvider {
+                id: "my-provider".into(),
+                base_url: "https://api.example.com/v1".into(),
+                model: "model-a".into(),
+                api_key: "secret-key".into(),
+                editing: false,
+            }
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Esc),
+            OverlayAction::Close
+        );
+    }
+
+    #[test]
+    fn custom_provider_form_move_sel_reaches_every_field() {
+        let mut overlay = Overlay::ConnectCustom {
+            fields: Default::default(),
+            selected: 0,
+            error: None,
+            editing: false,
+        };
+        overlay.move_sel(-1);
+        assert!(matches!(
+            overlay,
+            Overlay::ConnectCustom { selected: 3, .. }
+        ));
+        overlay.move_sel(1);
+        assert!(matches!(
+            overlay,
+            Overlay::ConnectCustom { selected: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn custom_provider_form_renders_fields_and_error() {
+        let overlay = Overlay::ConnectCustom {
+            fields: [
+                "my-provider".into(),
+                "https://example.com/v1".into(),
+                "model-a".into(),
+                "secret-key-never-visible".into(),
+            ],
+            selected: 1,
+            error: Some("Provider ID already exists".into()),
+            editing: false,
+        };
+        let area = Rect::new(0, 0, 90, 30);
+        let mut buf = Buffer::empty(area);
+        OverlayWidget {
+            overlay: &overlay,
+            row_sink: None,
+            hover_row: None,
+        }
+        .render(area, &mut buf);
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(!text.contains("secret-key-never-visible"));
+        for expected in [
+            "Add custom provider",
+            "my-provider",
+            "https://example.com/v1",
+            "model-a",
+            "Provider ID already exists",
+            "Esc back",
+        ] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+    }
+
+    #[test]
     fn build_provider_rows_sorts_vendors_and_groups_multi_offering_ones() {
         let registry = forge_connect::builtin_registry();
         let connected = std::collections::HashSet::new();
         let rows = build_provider_rows_with_reuse(&registry, &connected, None, &[]);
 
-        let labels: Vec<String> = rows.iter().map(|r| r.label.to_ascii_lowercase()).collect();
+        assert_eq!(rows.last().unwrap().label, "+ Add custom provider");
+        let labels: Vec<String> = rows
+            .iter()
+            .filter(|r| !r.routes.is_empty())
+            .map(|r| r.label.to_ascii_lowercase())
+            .collect();
         let mut sorted = labels.clone();
         sorted.sort();
         assert_eq!(labels, sorted, "vendor rows sort alphabetically by label");
@@ -5688,7 +6055,7 @@ mod tests {
     }
 
     #[test]
-    fn providers_column_enter_on_the_already_active_route_just_closes() {
+    fn providers_column_enter_on_the_active_route_browses_its_models() {
         let mut registry = forge_connect::ConnectRegistry::new();
         registry.register(forge_connect::ollama_profile());
         let connected: std::collections::HashSet<String> =
@@ -5704,8 +6071,10 @@ mod tests {
         );
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
-            OverlayAction::Close,
-            "re-picking the already-active route is a no-op close, not a route switch"
+            OverlayAction::SwitchToRoute {
+                profile_id: "ollama".into()
+            },
+            "the current route must use the same browsing flow as every other route"
         );
     }
 
@@ -5744,6 +6113,45 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn catalog_refresh_preserves_highlighted_model_identity() {
+        let item = |id: &str| ModelItem {
+            provider: "native".into(),
+            model: format!("openai/{id}"),
+            profile_id: Some("openai".into()),
+            source: forge_connect::CatalogSource::Cached,
+            route_label: "OpenAI".into(),
+        };
+        let mut overlay = model_overlay(vec![item("b"), item("c")], ConnectModelColumn::Models);
+        handle_overlay_key(&mut overlay, Key::Down);
+        overlay.refresh_model_items(vec![item("a"), item("b"), item("c")]);
+        assert!(
+            matches!(handle_overlay_key(&mut overlay, Key::Enter), OverlayAction::SelectModel { model, .. } if model == "openai/c")
+        );
+        overlay.refresh_model_items(vec![]);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Enter),
+            OverlayAction::None
+        );
+    }
+
+    #[test]
+    fn picker_refresh_add_and_edit_are_explicit_actions() {
+        let mut overlay = model_overlay(vec![], ConnectModelColumn::Models);
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Ctrl('r')),
+            OverlayAction::RefreshModels
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Ctrl('a')),
+            OverlayAction::AddManualModel
+        );
+        assert_eq!(
+            handle_overlay_key(&mut overlay, Key::Ctrl('e')),
+            OverlayAction::EditProvider
+        );
     }
 
     #[test]

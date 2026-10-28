@@ -32,6 +32,7 @@ pub fn opencode_zen_profile() -> ProviderSpec {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         // Fallbacks until live catalog refresh; /model pulls full Zen list after connect.
         default_models: vec!["opencode-zen/gpt-4.1-mini".into()],
+        manual_models: vec![],
         models_dev_providers: vec!["opencode".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
         model_provider_prefix: "opencode-zen".into(),

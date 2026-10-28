@@ -14,6 +14,7 @@ pub fn xai_grok_profile() -> ProviderSpec {
         api_key_env: vec![], // OAuth primary — no API key env for connect UX
         default_base_url: Some("https://api.x.ai/v1".into()),
         default_models: vec!["xai/grok-3".into()],
+        manual_models: vec![],
         models_dev_providers: vec!["xai".into()],
         // Grok Build signs in via auth.x.ai OIDC; device verify page is accounts.x.ai/oauth2/device
         auth_url: Some("https://auth.x.ai".into()),
@@ -75,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn connect_oauth_fixture_sets_model() {
+    fn connect_oauth_fixture_stores_tokens_without_selecting_a_model() {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
@@ -97,10 +98,13 @@ mod tests {
         )
         .unwrap();
         assert!(msg.contains("xAI Grok"));
-        assert!(msg.contains("xai/grok-3"));
+        assert!(msg.contains("choose a model"));
         assert!(msg.contains("oauth"));
         assert!(!msg.contains("fixture-access-token"));
-        assert_eq!(ap.as_deref(), Some("xai"));
+        assert!(
+            ap.is_none() && am.is_none(),
+            "connecting must not select a model"
+        );
         assert!(store.get_oauth("xai").unwrap().is_some());
     }
 

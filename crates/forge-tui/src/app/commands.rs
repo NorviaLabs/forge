@@ -911,6 +911,7 @@ impl TuiApp {
     }
 
     async fn handle_model_command(&mut self) {
+        self.reload_provider_registry();
         self.overlay = Some(self.build_connect_model_overlay(ConnectModelColumn::Models, false));
         self.status_state.message = "pick a model (live catalog when connected)".into();
         self.start_catalog_refresh();

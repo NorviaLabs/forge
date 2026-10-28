@@ -24,6 +24,7 @@ pub fn opencode_go_profile() -> ProviderSpec {
         default_base_url: Some(DEFAULT_BASE_URL.into()),
         // Distinctive prefix avoids hijacking real OpenAI (`openai/gpt-*`) routes.
         default_models: vec!["opencode-go/gpt-4.1-mini".into()],
+        manual_models: vec![],
         models_dev_providers: vec!["opencode-go".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
         model_provider_prefix: "opencode-go".into(),
@@ -196,8 +197,10 @@ mod tests {
         .unwrap();
         assert!(msg.contains("OpenCode Go"));
         assert!(!msg.contains("go-secret-key"));
-        assert_eq!(ap.as_deref(), Some("opencode_go"));
-        assert!(am.as_deref().unwrap().starts_with("opencode-go/"));
+        assert!(
+            ap.is_none() && am.is_none(),
+            "connecting must not select a model"
+        );
     }
 
     #[test]

@@ -197,76 +197,49 @@ impl<'a> ConnectService<'a> {
         // Live-verify when possible so a bad paste fails at connect, not mid-chat.
         // Skip network when offline tests request it.
         if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
-            match profile.id.as_str() {
-                id if id == crate::opencode_go::PROFILE_ID => {
-                    let base = profile
-                        .default_base_url
-                        .as_deref()
-                        .unwrap_or(crate::opencode_go::DEFAULT_BASE_URL);
-                    crate::opencode_go::verify_api_key(&key, base)?;
+            if let Err(error) = verify_profile_key(&profile, &key) {
+                // A refused credential flags any previously stored one as stale too.
+                if error.is_auth_failure() {
+                    self.report_auth_failure(&profile.id)?;
                 }
-                id if id == crate::opencode_zen::PROFILE_ID => {
-                    let base = profile
-                        .default_base_url
-                        .as_deref()
-                        .unwrap_or(crate::opencode_zen::DEFAULT_BASE_URL);
-                    // Zen reuses the Go verification path, so its guidance must be
-                    // relabelled. Still done on the rendered message: doing it properly
-                    // needs Zen-specific guidance threaded through the shared verifier,
-                    // which changes user-facing wording and belongs in its own change.
-                    crate::opencode_go::verify_api_key(&key, base).map_err(|e| {
-                        ConnectError::Message(
-                            e.to_string()
-                                .replace("OpenCode Go", "OpenCode Zen")
-                                .replace("/zen/go", "/zen")
-                                .replace("subscribe to Go", "Zen billing / API keys"),
-                        )
-                    })?;
+                if profile.id != crate::opencode_zen::PROFILE_ID {
+                    return Err(error.into());
                 }
-                id if id == crate::openai::PROFILE_ID => {
-                    let base = profile
-                        .default_base_url
-                        .as_deref()
-                        .unwrap_or(crate::openai::DEFAULT_BASE_URL);
-                    crate::openai::verify_api_key(&key, base)?;
-                }
-                id if id == crate::anthropic::PROFILE_ID => {
-                    let base = profile
-                        .default_base_url
-                        .as_deref()
-                        .unwrap_or(crate::anthropic::DEFAULT_BASE_URL);
-                    crate::anthropic::verify_api_key(&key, base)?;
-                }
-                id if id == crate::ollama::PROFILE_ID => {
-                    let base = profile
-                        .default_base_url
-                        .as_deref()
-                        .unwrap_or(crate::ollama::DEFAULT_BASE_URL);
-                    crate::ollama::verify_reachable(base)?;
-                }
-                _ => {}
+                // Zen reuses the Go verification path, so its guidance must be
+                // relabelled. Still done on the rendered message: doing it properly
+                // needs Zen-specific guidance threaded through the shared verifier,
+                // which changes user-facing wording and belongs in its own change.
+                return Err(ConnectError::Message(
+                    error
+                        .to_string()
+                        .replace("OpenCode Go", "OpenCode Zen")
+                        .replace("/zen/go", "/zen")
+                        .replace("subscribe to Go", "Zen billing / API keys"),
+                ));
             }
         }
 
-        // Always persist for Provided (including Ollama placeholder) so restore works.
         if key_source == KeySource::Provided {
             self.store.set_api_key(&profile.id, &key)?;
         }
+        self.report_auth_success(&profile.id)?;
 
-        // Best-effort live model catalog for /model picker (never fails connect).
-        if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
-            let _ = crate::catalog::refresh_profile_catalog(
-                &profile,
-                self.store,
-                &crate::catalog::ModelCatalogCache::user_default(),
-            );
-        } else {
-            // Offline tests: seed cache from defaults so /model still has rows.
-            let cache = crate::catalog::ModelCatalogCache::user_default();
-            let _ = cache.put(&profile.id, profile.default_models.clone());
-        }
+        self.connection_outcome(&profile, key_source)
+    }
 
-        self.activate(&profile, key_source)
+    /// Record that the provider rejected a profile's stored credential. This
+    /// and [`Self::report_auth_success`] are the only writers of the persisted
+    /// `auth_required` flag.
+    pub fn report_auth_failure(&self, profile_id: &str) -> Result<(), ConnectError> {
+        self.store.mark_auth_required(profile_id, true)?;
+        Ok(())
+    }
+
+    /// Record that a profile's credential worked; clears `auth_required`.
+    /// Writes nothing when the flag was not set.
+    pub fn report_auth_success(&self, profile_id: &str) -> Result<(), ConnectError> {
+        self.store.mark_auth_required(profile_id, false)?;
+        Ok(())
     }
 
     /// Complete OAuth for a profile (tokens provided by fixture or real exchange).
@@ -286,17 +259,7 @@ impl<'a> ConnectService<'a> {
             return Err(ConnectError::Message("OAuth access_token empty".into()));
         }
         self.store.set_oauth(&profile.id, tokens)?;
-        if std::env::var("FORGE_CONNECT_SKIP_VERIFY").is_err() {
-            let _ = crate::catalog::refresh_profile_catalog(
-                &profile,
-                self.store,
-                &crate::catalog::ModelCatalogCache::user_default(),
-            );
-        } else {
-            let cache = crate::catalog::ModelCatalogCache::user_default();
-            let _ = cache.put(&profile.id, profile.default_models.clone());
-        }
-        self.activate(&profile, KeySource::Oauth)
+        self.connection_outcome(&profile, KeySource::Oauth)
     }
 
     /// Start an OAuth device-code session for the selected provider.
@@ -391,11 +354,13 @@ impl<'a> ConnectService<'a> {
                 }
                 // Already have tokens?
                 if let Some(tokens) = self.store.get_oauth(&profile.id)? {
-                    return self.activate(&profile, KeySource::Oauth).map(|mut o| {
-                        let _ = tokens;
-                        o.key_source = KeySource::Oauth;
-                        o
-                    });
+                    return self
+                        .connection_outcome(&profile, KeySource::Oauth)
+                        .map(|mut o| {
+                            let _ = tokens;
+                            o.key_source = KeySource::Oauth;
+                            o
+                        });
                 }
                 if oauth_fixture || std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
                     let tokens = OauthTokens {
@@ -439,7 +404,7 @@ impl<'a> ConnectService<'a> {
         }
         // Reuse stored tokens across sessions (refresh if near expiry).
         match self.ensure_oauth_fresh(&profile.id) {
-            Ok(Some(_)) => return Ok(Ok(self.activate(&profile, KeySource::Oauth)?)),
+            Ok(Some(_)) => return Ok(Ok(self.connection_outcome(&profile, KeySource::Oauth)?)),
             Ok(None) => {}
             Err(_) => {
                 // Refresh failed — try existing non-fixture token once, else re-login.
@@ -450,7 +415,7 @@ impl<'a> ConnectService<'a> {
                         && at != "fixture-access-token"
                         && !tokens.needs_refresh(std::time::Duration::from_secs(0))
                     {
-                        return Ok(Ok(self.activate(&profile, KeySource::Oauth)?));
+                        return Ok(Ok(self.connection_outcome(&profile, KeySource::Oauth)?));
                     }
                 }
             }
@@ -682,27 +647,18 @@ impl ConnectService<'_> {
         })
     }
 
-    fn activate(
+    fn connection_outcome(
         &mut self,
         profile: &ConnectProfile,
         key_source: KeySource,
     ) -> Result<ConnectOutcome, ConnectError> {
-        // Prefer the live catalog, then a configured default, then a provider-scoped
-        // placeholder so connect output is non-empty even before the first refresh.
-        // First-run activation stays on the profile default. Live/registry
-        // catalogs can sort a different model first and should not hijack
-        // the initial selection (for example xAI listing grok-4.20 before grok-3).
+        // Compatibility hint for noninteractive callers, never an active selection.
         let cache = ModelCatalogCache::user_default();
         let model = profile
             .default_model()
             .map(str::to_string)
             .or_else(|| cache.get_cached(&profile.id).into_iter().next())
             .unwrap_or_else(|| format!("{}/default", profile.model_provider_prefix));
-        self.active_profile_id = Some(profile.id.clone());
-        self.active_model = Some(model.clone());
-        // Selection persistence is convenience metadata; never make a successful
-        // credential connection fail because it cannot be written.
-        let _ = self.preferences.set_last_selection(&profile.id, &model);
         Ok(ConnectOutcome {
             profile_id: profile.id.clone(),
             model,
@@ -711,10 +667,31 @@ impl ConnectService<'_> {
     }
 }
 
+fn verify_profile_key(profile: &ConnectProfile, key: &str) -> Result<(), VerifyError> {
+    let base = |default: &'static str| profile.default_base_url.as_deref().unwrap_or(default);
+    match profile.id.as_str() {
+        id if id == crate::opencode_go::PROFILE_ID => {
+            crate::opencode_go::verify_api_key(key, base(crate::opencode_go::DEFAULT_BASE_URL))
+        }
+        id if id == crate::opencode_zen::PROFILE_ID => {
+            crate::opencode_go::verify_api_key(key, base(crate::opencode_zen::DEFAULT_BASE_URL))
+        }
+        id if id == crate::openai::PROFILE_ID => {
+            crate::openai::verify_api_key(key, base(crate::openai::DEFAULT_BASE_URL))
+        }
+        id if id == crate::anthropic::PROFILE_ID => {
+            crate::anthropic::verify_api_key(key, base(crate::anthropic::DEFAULT_BASE_URL))
+        }
+        id if id == crate::ollama::PROFILE_ID => {
+            crate::ollama::verify_reachable(base(crate::ollama::DEFAULT_BASE_URL))
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn format_connected(outcome: &ConnectOutcome, title: &str) -> String {
     format!(
-        "Connected {title} · model {} · key_source={}",
-        outcome.model,
+        "Connected {title} · choose a model · key_source={}",
         outcome.key_source.as_str()
     )
 }
@@ -774,8 +751,6 @@ pub fn handle_connect_action(
             })?;
             let title = profile.title.clone();
             let out = svc.connect(&profile_id, api_key.as_deref(), oauth_fixture)?;
-            *active_profile = Some(out.profile_id.clone());
-            *active_model = Some(out.model.clone());
             Ok(format_connected(&out, &title))
         }
         ConnectAction::Disconnect { profile_id } => {
@@ -1048,8 +1023,9 @@ mod tests {
             store.get_api_key("demo").unwrap().as_deref(),
             Some("secret")
         );
-        assert_eq!(svc.active_profile_id.as_deref(), Some("demo"));
-        assert_eq!(svc.active_model.as_deref(), Some("demo/model-1"));
+        assert!(svc.active_profile_id.is_none());
+        assert!(preferences.last_selection().unwrap().is_none());
+        assert!(svc.active_model.is_none());
     }
 
     #[test]
@@ -1150,7 +1126,9 @@ mod tests {
         )
         .unwrap();
         assert!(msg.contains("oauth") || msg.contains("xAI"));
-        assert_eq!(am.as_deref(), Some("xai/grok-3"));
+        assert!(am.is_none());
+        assert!(ap.is_none());
+        assert!(preferences.last_selection().unwrap().is_none());
         assert!(store.get_oauth("xai").unwrap().is_some());
         assert!(!msg.contains("fixture-access-token"));
     }
@@ -1180,7 +1158,7 @@ mod tests {
         };
         let outcome = svc.connect("xai", None, false).unwrap();
         assert_eq!(outcome.key_source, KeySource::Oauth);
-        assert_eq!(svc.active_profile_id.as_deref(), Some("xai"));
+        assert!(svc.active_profile_id.is_none());
     }
 
     #[test]
@@ -1504,7 +1482,10 @@ mod tests {
             .connect_api_key("openai", Some("sk-valid-key-for-tests"))
             .unwrap();
         assert_eq!(outcome.key_source, KeySource::Provided);
-        assert_eq!(svc.active_profile_id.as_deref(), Some("openai"));
+        assert!(
+            svc.active_profile_id.is_none(),
+            "connecting must not select a model"
+        );
     }
 
     #[test]
@@ -1534,6 +1515,50 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ConnectError::Verify(_)));
         assert!(err.to_string().contains("unauthorized"));
+    }
+
+    #[test]
+    fn connect_api_key_rejection_flags_stale_key_and_server_errors_save_nothing() {
+        use forge_test_support::mock_http;
+
+        let dir = tempdir().unwrap();
+        let store = CredentialStore::new(dir.path().join("c.toml"));
+        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
+        store
+            .set_api_key("anthropic", "sk-ant-old-key-for-tests")
+            .unwrap();
+        let Some(rejected) = mock_http(vec![(401, "bad key", vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        let Some(unavailable) = mock_http(vec![(503, "down", vec![])]) else {
+            return;
+        };
+        for (base, auth_failure) in [(unavailable, false), (rejected, true)] {
+            let mut reg = ConnectRegistry::new();
+            let mut anthropic = crate::anthropic::anthropic_profile();
+            anthropic.default_base_url = Some(base);
+            reg.register(anthropic);
+            let mut svc = ConnectService {
+                registry: &reg,
+                store: &store,
+                preferences: &preferences,
+                active_profile_id: None,
+                active_model: None,
+            };
+            assert!(svc
+                .connect_api_key("anthropic", Some("sk-ant-new-key-for-tests"))
+                .is_err());
+            assert_eq!(
+                store.get_api_key("anthropic").unwrap().as_deref(),
+                Some("sk-ant-old-key-for-tests"),
+                "a key that failed verification must not replace the stored one"
+            );
+            assert_eq!(
+                store.needs_authentication("anthropic").unwrap(),
+                auth_failure
+            );
+        }
     }
 
     #[test]
@@ -1574,13 +1599,16 @@ mod tests {
             .connect_api_key("opencode_go", Some("go-valid-key-for-tests"))
             .unwrap();
         assert_eq!(go_outcome.key_source, KeySource::Provided);
-        assert_eq!(svc.active_profile_id.as_deref(), Some("opencode_go"));
+        assert!(
+            svc.active_profile_id.is_none(),
+            "connecting must not select a model"
+        );
 
         svc.active_profile_id = None;
         svc.active_model = None;
         let ollama_outcome = svc.connect_api_key("ollama", None).unwrap();
         assert_eq!(ollama_outcome.key_source, KeySource::Provided);
-        assert_eq!(svc.active_profile_id.as_deref(), Some("ollama"));
+        assert!(svc.active_profile_id.is_none());
     }
 
     #[test]
@@ -1613,7 +1641,10 @@ mod tests {
             .connect_api_key("opencode_zen", Some("zen-valid-key-for-tests"))
             .unwrap();
         assert_eq!(outcome.key_source, KeySource::Provided);
-        assert_eq!(svc.active_profile_id.as_deref(), Some("opencode_zen"));
+        assert!(
+            svc.active_profile_id.is_none(),
+            "connecting must not select a model"
+        );
     }
 
     #[test]
@@ -1790,7 +1821,7 @@ mod tests {
         };
         let outcome = svc.poll_oauth_once(&pending).unwrap().unwrap();
         assert_eq!(outcome.key_source, KeySource::Oauth);
-        assert_eq!(svc.active_profile_id.as_deref(), Some("xai"));
+        assert!(svc.active_profile_id.is_none());
     }
 
     #[test]

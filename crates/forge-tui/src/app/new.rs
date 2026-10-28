@@ -240,8 +240,9 @@ impl TuiApp {
             hover_option: None,
             hover_resize: None,
             catalog_fetch: CatalogFetchState {
+                refreshing_profile: None,
+                pending_profile: None,
                 refresh_rx: None,
-                warmed: false,
             },
             // 0 until the first draw: "unknown", which the explorer toggle
             // treats as "don't refuse" rather than guessing a width.
@@ -487,8 +488,9 @@ impl TuiApp {
             hover_option: None,
             hover_resize: None,
             catalog_fetch: CatalogFetchState {
+                refreshing_profile: None,
+                pending_profile: None,
                 refresh_rx: None,
-                warmed: false,
             },
             last_frame_width: 0,
             pane_resize: PaneResizeState::new(pane_layout_store_for_workspace(&repo_header_cwd)),

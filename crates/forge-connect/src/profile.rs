@@ -45,6 +45,8 @@ pub enum SpecOrigin {
 pub struct ProviderSpec {
     pub id: String,
     pub title: String,
+    /// Optional display text; user provider files may omit it.
+    #[serde(default)]
     pub description: String,
     pub auth_mode: AuthMode,
     /// Env vars for ApiKey mode (first present wins). Empty for pure OAuth profiles.
@@ -53,6 +55,8 @@ pub struct ProviderSpec {
     pub default_base_url: Option<String>,
     #[serde(default)]
     pub default_models: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub manual_models: Vec<String>,
     /// models.dev provider ids used for public model metadata and fallbacks.
     ///
     /// A Forge transport may have a distinct id: the ChatGPT Codex subscription
@@ -176,6 +180,7 @@ pub(crate) fn test_spec(
         api_key_env: vec!["DEMO_KEY".into()],
         default_base_url: Some("https://example.test".into()),
         default_models,
+        manual_models: vec![],
         models_dev_providers: vec![],
         auth_url: None,
         model_provider_prefix: id.into(),

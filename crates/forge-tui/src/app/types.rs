@@ -2280,12 +2280,10 @@ pub(crate) struct ProgressState {
 /// through the channel, so there is never a second in-memory catalog that
 /// could drift from the disk cache `models_for_picker` already owns.
 pub(crate) struct CatalogFetchState {
-    pub(crate) refresh_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
-    /// Set once the first background refresh has ever been kicked off this
-    /// session, so the lazy first-render warm-up in `draw()` (see
-    /// `footer_has_compact_control`) fires at most once per app lifetime —
-    /// every later refresh is triggered explicitly by opening a picker.
-    pub(crate) warmed: bool,
+    pub(crate) refresh_rx:
+        Option<std::sync::mpsc::Receiver<Result<(), forge_connect::CatalogError>>>,
+    pub(crate) refreshing_profile: Option<String>,
+    pub(crate) pending_profile: Option<String>,
 }
 
 #[cfg(test)]

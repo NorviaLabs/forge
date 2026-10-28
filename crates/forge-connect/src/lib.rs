@@ -68,7 +68,8 @@ pub use profile::{
     ProviderTransport, SpecOrigin,
 };
 pub use registry::{
-    builtin_registry, credential_env_names, loaded_registry, loaded_registry_from, ConnectRegistry,
+    builtin_registry, credential_env_names, loaded_registry, loaded_registry_from,
+    save_custom_provider, save_manual_model, update_custom_provider, ConnectRegistry,
 };
 pub use route::{
     group_routes, normalize_model_id, route_id_for_profile, route_model_id, ModelPickerEntry,

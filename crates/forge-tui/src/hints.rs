@@ -84,7 +84,13 @@ pub const MOVE_SELECT_CLOSE: &[Hint] = &[("↑↓", "move"), ("Enter", "select")
 /// standalone column (providers, models, or effort) since the modal
 /// restructure, so there is no section to switch between — advertising one
 /// would fail the displayed-hints-match-routing invariant.
-pub const PICKER: &[Hint] = &[("↑↓", "move"), ("Enter", "select"), ("Esc", "close")];
+pub const PICKER: &[Hint] = &[
+    ("Enter", "select"),
+    ("Esc", "back"),
+    ("Ctrl-R", "refresh"),
+    ("Ctrl-A", "add model"),
+    ("Ctrl-E", "edit"),
+];
 pub const APPROVAL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
 /// A child agent's inline request while its card holds focus. The decision
 /// pair is the child's (`a`/`d`), the same letters the Tasks view uses for the
