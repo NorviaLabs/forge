@@ -460,13 +460,12 @@ impl<'a> ConnectService<'a> {
     }
 }
 
-/// True when any live (non-fixture) profile is connected in the user store.
-pub fn has_connected_profile() -> bool {
-    let registry = crate::loaded_registry();
+/// True when any live (non-fixture) profile in `registry` is connected.
+pub fn has_connected_profile(registry: &ConnectRegistry) -> bool {
     let credentials = Credentials::shared();
     let preferences = crate::PreferenceStore::user_default();
     let svc = ConnectService {
-        registry: &registry,
+        registry,
         credentials: &credentials,
         preferences: &preferences,
         active_profile_id: None,

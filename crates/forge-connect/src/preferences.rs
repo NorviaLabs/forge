@@ -101,11 +101,13 @@ impl PreferenceStore {
 
     /// Compose the last provider/model/effort selection into one
     /// `ModelSelection`, when a complete selection was recorded.
-    pub fn last_selection_struct(&self) -> Result<Option<ModelSelection>, StoreError> {
+    pub fn last_selection_struct(
+        &self,
+        registry: &crate::ConnectRegistry,
+    ) -> Result<Option<ModelSelection>, StoreError> {
         let Some((profile_id, model)) = self.last_selection()? else {
             return Ok(None);
         };
-        let registry = crate::loaded_registry();
         // The model id carries its provider prefix; a saved profile that
         // disagrees with it is stale and would otherwise pair a foreign model
         // with the wrong route. The model wins, with the saved profile as the
@@ -315,7 +317,10 @@ mod tests {
             .set_last_selection("xai", "opencode-go/deepseek-v4.1-flash")
             .unwrap();
 
-        let selection = prefs.last_selection_struct().unwrap().unwrap();
+        let selection = prefs
+            .last_selection_struct(&crate::builtin_registry())
+            .unwrap()
+            .unwrap();
         assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
         assert_eq!(selection.route_id, "opencode-go");
         assert_eq!(selection.model, "opencode-go/deepseek-v4.1-flash");
@@ -329,7 +334,10 @@ mod tests {
             .set_last_selection("opencode_go", "opencode-go/deepseek-v4.1-flash")
             .unwrap();
 
-        let selection = prefs.last_selection_struct().unwrap().unwrap();
+        let selection = prefs
+            .last_selection_struct(&crate::builtin_registry())
+            .unwrap()
+            .unwrap();
         assert_eq!(selection.profile_id.as_deref(), Some("opencode_go"));
         assert_eq!(selection.route_id, "opencode-go");
     }
@@ -350,7 +358,12 @@ mod tests {
     fn last_selection_struct_composes_profile_model_and_effort() {
         let dir = tempdir().unwrap();
         let prefs = PreferenceStore::new(dir.path().join("p.toml"));
-        assert_eq!(prefs.last_selection_struct().unwrap(), None);
+        assert_eq!(
+            prefs
+                .last_selection_struct(&crate::builtin_registry())
+                .unwrap(),
+            None
+        );
 
         prefs
             .set_last_selection("openai_codex", "openai-codex/gpt-5.6-luna")
@@ -358,7 +371,9 @@ mod tests {
         prefs.set_last_effort("high").unwrap();
 
         assert_eq!(
-            prefs.last_selection_struct().unwrap(),
+            prefs
+                .last_selection_struct(&crate::builtin_registry())
+                .unwrap(),
             Some(ModelSelection {
                 route_id: "openai-chatgpt".into(),
                 provider: "native".into(),

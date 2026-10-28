@@ -310,7 +310,9 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
 
     let cwd = cfg.workspace_root().to_path_buf();
     let trusted_at_start = is_trusted(&cwd);
-    let provider_connected = forge_connect::has_connected_profile();
+    // One provider registry for the launch decisions below.
+    let registry = forge_connect::loaded_registry();
+    let provider_connected = forge_connect::has_connected_profile(&registry);
     let decision = decide_launch(
         cfg.tui.theme_committed,
         trusted_at_start,
@@ -403,17 +405,16 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     })
     .map_err(|e| anyhow::anyhow!(e))?;
     let last = forge_connect::PreferenceStore::user_default()
-        .last_selection_struct()
+        .last_selection_struct(&registry)
         .ok()
         .flatten()
         .filter(|selection| {
-            let registry = forge_connect::loaded_registry();
             selection
                 .profile_id
                 .as_deref()
                 .and_then(|id| registry.get(id))
                 .is_some()
-                && forge_connect::has_connected_profile()
+                && provider_connected
         });
     forge_tui::notify::install(cfg.tui.notify);
     forge_tui::git_prefs::install(cfg.tui.smart_commit);

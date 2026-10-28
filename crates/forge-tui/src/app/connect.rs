@@ -403,7 +403,8 @@ impl TuiApp {
             // wrong wire, and every call fails until the user re-picks the model
             // — which is the only other path that sets it. The route follows the
             // profile, not the model, so it is restored either way below.
-            let restored_route = forge_connect::route_id_for_profile(&profile.id);
+            let restored_route =
+                forge_connect::route_id_for_profile(&self.connect.registry, &profile.id);
             match self.selected_runtime() {
                 SelectedRuntime::Direct => {
                     if let Some(session) = self.session_runtime.as_mut() {
@@ -444,7 +445,9 @@ impl TuiApp {
                             .connect
                             .profile
                             .as_deref()
-                            .map(forge_connect::route_id_for_profile)
+                            .map(|id| {
+                                forge_connect::route_id_for_profile(&self.connect.registry, id)
+                            })
                             .unwrap_or_default(),
                         provider: "native".into(),
                         model: model.to_string(),
@@ -475,7 +478,10 @@ impl TuiApp {
                         self.connect.profile = Some(profile.id.clone());
                     } else {
                         self.apply_selection(&ModelSelection {
-                            route_id: forge_connect::route_id_for_profile(&profile.id),
+                            route_id: forge_connect::route_id_for_profile(
+                                &self.connect.registry,
+                                &profile.id,
+                            ),
                             provider: "native".into(),
                             model,
                             profile_id: Some(profile.id.clone()),
@@ -684,7 +690,10 @@ impl TuiApp {
             Ok(Some((profile_id, model, effort))) => {
                 self.connect.auth_suspended = false;
                 self.apply_selection(&ModelSelection {
-                    route_id: forge_connect::route_id_for_profile(&profile_id),
+                    route_id: forge_connect::route_id_for_profile(
+                        &self.connect.registry,
+                        &profile_id,
+                    ),
                     provider: "native".into(),
                     model: model.clone(),
                     profile_id: Some(profile_id.clone()),
@@ -765,7 +774,14 @@ impl TuiApp {
     }
 
     pub(super) fn reload_provider_registry(&mut self) {
-        self.connect.registry = loaded_registry();
+        let registry = loaded_registry();
+        // `providers.toml` was edited outside Forge: the session's routing
+        // snapshot follows, so a provider the picker shows is one requests
+        // can reach. Unchanged definitions rebuild nothing.
+        if registry.profiles() != self.connect.registry.profiles() {
+            self.reload_providers();
+        }
+        self.connect.registry = registry;
         self.invalidate_connected();
         for warning in self.connect.registry.load_warnings().to_vec() {
             self.status_state.message = warning.clone();
@@ -1232,7 +1248,7 @@ impl TuiApp {
         self.apply_selection(&ModelSelection {
             route_id: resolved_profile_id
                 .as_deref()
-                .map(forge_connect::route_id_for_profile)
+                .map(|id| forge_connect::route_id_for_profile(&self.connect.registry, id))
                 .unwrap_or_default(),
             provider: provider.to_string(),
             model: model.to_string(),

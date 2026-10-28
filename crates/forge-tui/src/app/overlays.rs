@@ -650,7 +650,7 @@ impl TuiApp {
                 if let SelectedRuntime::Supervised(session_id) = self.selected_runtime() {
                     let route_id = profile_id
                         .as_deref()
-                        .map(forge_connect::route_id_for_profile)
+                        .map(|id| forge_connect::route_id_for_profile(&self.connect.registry, id))
                         .unwrap_or_default();
                     let queued = self.submit_session_command_tracked(
                         forge_session::SupervisorCommand::SetModel {
