@@ -3,7 +3,10 @@
 //! No cloud API key required. Connect checks that the Ollama daemon is reachable.
 
 use crate::auth::AuthMode;
-use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
+use crate::profile::{
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, EditableField,
+    ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
+};
 use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "ollama";
@@ -23,19 +26,32 @@ pub fn ollama_profile() -> ProviderSpec {
             tui_always_prompt: false,
         },
         api_key_env: vec!["OLLAMA_API_KEY".into()],
-        default_base_url: Some(DEFAULT_BASE_URL.into()),
+        base_url: DEFAULT_BASE_URL.into(),
         default_models: vec![],
-        manual_models: vec![],
         models_dev_providers: vec![],
         auth_url: Some("https://ollama.com/download".into()),
         model_provider_prefix: "ollama".into(),
-        vendor_id: PROFILE_ID.into(),
-        vendor_label: "Ollama".into(),
-        route_label: "Local".into(),
+        provider: PROFILE_ID.into(),
+        provider_label: "Ollama".into(),
+        label: "Local".into(),
         route_id: "ollama".into(),
         catalog_mode: CatalogMode::Live,
         transport: ProviderTransport::OpenaiCompat,
+        auth: Some(AuthSpec {
+            kind: AuthKind::ApiKeyOptional,
+            prompt: AuthPrompt::Never,
+            ..AuthSpec::default()
+        }),
+        base_url_env: vec![API_BASE_ENV.into()],
+        editable: vec![EditableField::BaseUrl],
+        wire: Some(WireKind::ChatCompletions),
+        attach: Some(Attach::Bearer),
+        catalog: CatalogSpec {
+            kind: Some(CatalogKind::OllamaTags),
+            filter: None,
+        },
         origin: SpecOrigin::Builtin,
+        ..ProviderSpec::blank()
     }
 }
 
@@ -110,7 +126,7 @@ mod tests {
         assert_eq!(p.id, "ollama");
         assert!(!p.needs_tui_api_key_prompt());
         assert!(p.default_models.is_empty());
-        assert!(p.default_base_url.as_deref().unwrap().contains("11434"));
+        assert!(p.base_url.contains("11434"));
     }
 
     #[test]

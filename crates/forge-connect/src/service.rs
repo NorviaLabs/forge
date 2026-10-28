@@ -347,46 +347,45 @@ impl<'a> ConnectService<'a> {
         oauth_fixture: bool,
     ) -> Result<ConnectOutcome, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        match &profile.auth_mode {
-            AuthMode::Oauth { .. } => {
-                if api_key.map(str::trim).filter(|s| !s.is_empty()).is_some() {
-                    return Err(ConnectError::OauthRejectsApiKey(profile.id));
-                }
-                // Already have tokens?
-                if let Some(tokens) = self.store.get_oauth(&profile.id)? {
-                    return self
-                        .connection_outcome(&profile, KeySource::Oauth)
-                        .map(|mut o| {
-                            let _ = tokens;
-                            o.key_source = KeySource::Oauth;
-                            o
-                        });
-                }
-                if oauth_fixture || std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
-                    let tokens = OauthTokens {
-                        access_token: "fixture-access-token".into(),
-                        refresh_token: Some("fixture-refresh".into()),
-                        expires_at: None,
-                    };
-                    return self.connect_oauth(&profile.id, tokens);
-                }
-                // Optional: power-user inject after browser login
-                if let Ok(at) = std::env::var("FORGE_XAI_OAUTH_ACCESS_TOKEN") {
-                    if !at.trim().is_empty() && profile.id == "xai" {
-                        return self.connect_oauth(
-                            &profile.id,
-                            OauthTokens {
-                                access_token: at,
-                                refresh_token: std::env::var("FORGE_XAI_OAUTH_REFRESH_TOKEN").ok(),
-                                expires_at: None,
-                            },
-                        );
-                    }
-                }
-                let pending = self.start_oauth(&profile.id)?;
-                Err(ConnectError::OauthDevicePending(Box::new(pending)))
+        if profile.effective_auth().is_oauth() {
+            if api_key.map(str::trim).filter(|s| !s.is_empty()).is_some() {
+                return Err(ConnectError::OauthRejectsApiKey(profile.id));
             }
-            AuthMode::ApiKey { .. } => self.connect_api_key(&profile.id, api_key),
+            // Already have tokens?
+            if let Some(tokens) = self.store.get_oauth(&profile.id)? {
+                return self
+                    .connection_outcome(&profile, KeySource::Oauth)
+                    .map(|mut o| {
+                        let _ = tokens;
+                        o.key_source = KeySource::Oauth;
+                        o
+                    });
+            }
+            if oauth_fixture || std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok() {
+                let tokens = OauthTokens {
+                    access_token: "fixture-access-token".into(),
+                    refresh_token: Some("fixture-refresh".into()),
+                    expires_at: None,
+                };
+                return self.connect_oauth(&profile.id, tokens);
+            }
+            // Optional: power-user inject after browser login
+            if let Ok(at) = std::env::var("FORGE_XAI_OAUTH_ACCESS_TOKEN") {
+                if !at.trim().is_empty() && profile.id == "xai" {
+                    return self.connect_oauth(
+                        &profile.id,
+                        OauthTokens {
+                            access_token: at,
+                            refresh_token: std::env::var("FORGE_XAI_OAUTH_REFRESH_TOKEN").ok(),
+                            expires_at: None,
+                        },
+                    );
+                }
+            }
+            let pending = self.start_oauth(&profile.id)?;
+            Err(ConnectError::OauthDevicePending(Box::new(pending)))
+        } else {
+            self.connect_api_key(&profile.id, api_key)
         }
     }
 
@@ -576,9 +575,8 @@ impl<'a> ConnectService<'a> {
 }
 
 fn provider_base_url(profile: &ConnectProfile) -> Option<String> {
-    profile
-        .default_base_url
-        .clone()
+    Some(profile.base_url.clone())
+        .filter(|base| !base.trim().is_empty())
         .or_else(|| match profile.id.as_str() {
             crate::opencode_go::PROFILE_ID => Some(crate::opencode_go::DEFAULT_BASE_URL.into()),
             crate::opencode_zen::PROFILE_ID => Some(crate::opencode_zen::DEFAULT_BASE_URL.into()),
@@ -668,7 +666,11 @@ impl ConnectService<'_> {
 }
 
 fn verify_profile_key(profile: &ConnectProfile, key: &str) -> Result<(), VerifyError> {
-    let base = |default: &'static str| profile.default_base_url.as_deref().unwrap_or(default);
+    let base = |default: &'static str| {
+        Some(profile.base_url.as_str())
+            .filter(|base| !base.trim().is_empty())
+            .unwrap_or(default)
+    };
     match profile.id.as_str() {
         id if id == crate::opencode_go::PROFILE_ID => {
             crate::opencode_go::verify_api_key(key, base(crate::opencode_go::DEFAULT_BASE_URL))
@@ -798,7 +800,7 @@ mod tests {
             vec!["demo/model-1".into()],
         );
         spec.title = "Demo".into();
-        spec.vendor_label = "Demo".into();
+        spec.provider_label = "Demo".into();
         spec.api_key_env = vec!["DEMO_API_KEY".into()];
         spec.auth_url = Some("https://example.com".into());
         r.register(spec);
@@ -812,7 +814,7 @@ mod tests {
         spec.title = "xAI Grok".into();
         spec.api_key_env = vec![];
         spec.auth_url = Some("https://auth.x.ai".into());
-        spec.vendor_label = "xAI Grok".into();
+        spec.provider_label = "xAI Grok".into();
         r.register(spec);
         r
     }
@@ -1319,9 +1321,9 @@ mod tests {
             vec!["custom/model".into()],
         );
         custom.api_key_env = vec!["CUSTOM_KEY".into(), "CUSTOM_ALT".into()];
-        custom.default_base_url = Some("https://api.example".into());
+        custom.base_url = "https://api.example".into();
         custom.title = "Custom".into();
-        custom.vendor_label = "Custom".into();
+        custom.provider_label = "Custom".into();
         reg.register(custom);
         store.set_api_key("custom", "secret").unwrap();
         let svc = ConnectService {
@@ -1388,7 +1390,7 @@ mod tests {
             vec!["custom/model".into()],
         );
         custom.api_key_env = vec!["CUSTOM_KEY".into()];
-        custom.default_base_url = Some("https://custom.example/v1".into());
+        custom.base_url = "https://custom.example/v1".into();
         custom.transport = crate::ProviderTransport::OpenaiCompat;
         custom.origin = crate::SpecOrigin::User;
         custom
@@ -1532,7 +1534,7 @@ mod tests {
             ]) else {
                 return;
             };
-            profile.default_base_url = Some(url);
+            profile.base_url = url;
             let result = verify_profile_key(&profile, "sk-characterization-key-0123456789");
             let sent: Vec<String> = requests.try_iter().collect();
             actual.push((profile.id.clone(), result.is_ok(), sent));
@@ -1628,15 +1630,15 @@ mod tests {
             go.title = "Go".into();
             go.api_key_env = vec![];
             go.model_provider_prefix = "o".into();
-            go.vendor_id = "opencode".into();
-            go.vendor_label = "OpenCode".into();
-            go.route_label = "Go".into();
+            go.provider = "opencode".into();
+            go.provider_label = "OpenCode".into();
+            go.label = "Go".into();
             r.register(go);
             let mut xai =
                 crate::profile::test_spec("xai", AuthMode::xai_oauth(), vec!["xai/m".into()]);
             xai.title = "Grok".into();
             xai.api_key_env = vec![];
-            xai.vendor_label = "Grok".into();
+            xai.provider_label = "Grok".into();
             r.register(xai);
             r
         };
@@ -1659,7 +1661,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        openai.default_base_url = Some(mock_url);
+        openai.base_url = mock_url;
         reg.register(openai);
         let mut svc = ConnectService {
             registry: &reg,
@@ -1691,7 +1693,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        anthropic.default_base_url = Some(mock_url);
+        anthropic.base_url = mock_url;
         reg.register(anthropic);
         let mut svc = ConnectService {
             registry: &reg,
@@ -1727,7 +1729,7 @@ mod tests {
         for (base, auth_failure) in [(unavailable, false), (rejected, true)] {
             let mut reg = ConnectRegistry::new();
             let mut anthropic = crate::anthropic::anthropic_profile();
-            anthropic.default_base_url = Some(base);
+            anthropic.base_url = base;
             reg.register(anthropic);
             let mut svc = ConnectService {
                 registry: &reg,
@@ -1766,7 +1768,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        go.default_base_url = Some(mock_url);
+        go.base_url = mock_url;
         reg.register(go);
 
         let mut ollama = crate::ollama::ollama_profile();
@@ -1774,7 +1776,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        ollama.default_base_url = Some(mock_url);
+        ollama.base_url = mock_url;
         reg.register(ollama);
 
         let mut svc = ConnectService {
@@ -1818,7 +1820,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        zen.default_base_url = Some(mock_url);
+        zen.base_url = mock_url;
         reg.register(zen);
         let mut svc = ConnectService {
             registry: &reg,

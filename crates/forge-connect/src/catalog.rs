@@ -600,12 +600,7 @@ pub fn fetch_remote_models(
     profile: &ConnectProfile,
     api_key: Option<&str>,
 ) -> Result<Vec<String>, CatalogError> {
-    let base = profile
-        .default_base_url
-        .as_deref()
-        .unwrap_or("")
-        .trim()
-        .trim_end_matches('/');
+    let base = profile.base_url.trim().trim_end_matches('/');
     let prefix = profile.model_provider_prefix.as_str();
     let ua = format!("forge-connect/{}", env!("CARGO_PKG_VERSION"));
 
@@ -1236,7 +1231,7 @@ mod tests {
         profile.model_provider_prefix = "custom".into();
         profile.origin = crate::SpecOrigin::User;
         profile.catalog_mode = CatalogMode::Live;
-        profile.default_base_url = Some(url);
+        profile.base_url = url;
         profile.default_models = vec!["custom/manual".into()];
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("keys.toml"));
@@ -1262,7 +1257,7 @@ mod tests {
             return;
         };
         let mut profile = openai_profile();
-        profile.default_base_url = Some(url);
+        profile.base_url = url;
         profile.manual_models = vec!["openai/manual".into()];
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("keys.toml"));
@@ -1274,7 +1269,7 @@ mod tests {
         let Some(url) = mock_http(vec![(200, r#"{"data":[]}"#, vec![])]) else {
             return;
         };
-        profile.default_base_url = Some(url);
+        profile.base_url = url;
         refresh_profile_catalog(&profile, &store, &cache).unwrap();
         assert!(cache.get_cached("openai").is_empty());
         assert_eq!(
@@ -1576,7 +1571,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        profile.default_base_url = Some(mock_url);
+        profile.base_url = mock_url;
 
         let entries = models_for_picker(&[profile], &store, &cache, true);
         assert_eq!(
@@ -1885,7 +1880,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        openai.default_base_url = Some(mock_url);
+        openai.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&openai, Some("sk-test")).unwrap(),
             vec!["openai/gpt-4.1-mini"]
@@ -1897,7 +1892,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        go.default_base_url = Some(mock_url);
+        go.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&go, Some("go-test")).unwrap(),
             vec!["opencode-go/gpt-4.1-mini"]
@@ -1909,7 +1904,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        zen.default_base_url = Some(mock_url);
+        zen.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&zen, Some("zen-test")).unwrap(),
             vec!["opencode-zen/claude-sonnet-4"]
@@ -1924,7 +1919,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        xai.default_base_url = Some(mock_url);
+        xai.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&xai, Some("xai-token")).unwrap(),
             vec!["xai/grok-code-fast"]
@@ -1939,7 +1934,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        codex.default_base_url = Some(mock_url);
+        codex.base_url = mock_url;
         let token = codex_access_token_for_tests();
         assert_eq!(
             fetch_remote_models(&codex, Some(&token)).unwrap(),
@@ -1977,7 +1972,7 @@ mod tests {
             ]) else {
                 return;
             };
-            profile.default_base_url = Some(url);
+            profile.base_url = url;
             let key = if profile.id == crate::OPENAI_CODEX_PROFILE_ID {
                 token.as_str()
             } else {
@@ -2034,7 +2029,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        anthropic.default_base_url = Some(mock_url);
+        anthropic.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&anthropic, Some("sk-ant-test")).unwrap(),
             vec!["anthropic/claude-sonnet-4-20250514"]
@@ -2049,7 +2044,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        ollama.default_base_url = Some(mock_url);
+        ollama.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&ollama, None).unwrap(),
             vec!["ollama/qwen2.5-coder:latest"]
@@ -2063,7 +2058,7 @@ mod tests {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        ollama_fallback.default_base_url = Some(mock_url);
+        ollama_fallback.base_url = mock_url;
         assert_eq!(
             fetch_remote_models(&ollama_fallback, None).unwrap(),
             vec!["ollama/llama3.2"]

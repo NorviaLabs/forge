@@ -475,18 +475,18 @@ pub fn build_provider_rows_with_reuse(
     let mut routes_by_vendor: std::collections::BTreeMap<String, Vec<ProviderRouteRow>> =
         std::collections::BTreeMap::new();
     for p in registry.profiles() {
-        if !vendor_order.iter().any(|(id, _)| id == &p.vendor_id) {
-            vendor_order.push((p.vendor_id.clone(), p.vendor_label.clone()));
+        if !vendor_order.iter().any(|(id, _)| id == &p.provider) {
+            vendor_order.push((p.provider.clone(), p.provider_label.clone()));
         }
         routes_by_vendor
-            .entry(p.vendor_id.clone())
+            .entry(p.provider.clone())
             .or_default()
             .push(ProviderRouteRow {
                 profile_id: p.id.clone(),
-                label: if p.route_label.is_empty() {
+                label: if p.label.is_empty() {
                     p.title.clone()
                 } else {
-                    p.route_label.clone()
+                    p.label.clone()
                 },
                 connected: connected.contains(&p.id),
                 is_current: current_profile_id == Some(p.id.as_str()),
@@ -499,7 +499,7 @@ pub fn build_provider_rows_with_reuse(
     vendor_order.sort_by_key(|(_, label)| label.to_ascii_lowercase());
     let current_vendor_id = current_profile_id
         .and_then(|pid| registry.get(pid))
-        .map(|p| p.vendor_id.clone());
+        .map(|p| p.provider.clone());
     let mut rows: Vec<_> = vendor_order
         .into_iter()
         .map(|(vendor_id, label)| {
@@ -5370,7 +5370,7 @@ mod tests {
                         model: m.clone(),
                         profile_id: Some(p.id.clone()),
                         source: forge_connect::CatalogSource::Default,
-                        route_label: p.vendor_label.clone(),
+                        route_label: p.provider_label.clone(),
                     });
                 }
             }

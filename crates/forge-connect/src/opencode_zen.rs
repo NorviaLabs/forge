@@ -5,7 +5,10 @@
 //! Native routing maps `opencode-zen/<id>` to the Zen OpenAI-compatible endpoint.
 
 use crate::auth::AuthMode;
-use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
+use crate::profile::{
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
+    ProviderTransport, SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
+};
 
 pub const PROFILE_ID: &str = "opencode_zen";
 
@@ -29,20 +32,48 @@ pub fn opencode_zen_profile() -> ProviderSpec {
             "OPENCODE_API_KEY".into(),
             "OPENCODE_GO_API_KEY".into(),
         ],
-        default_base_url: Some(DEFAULT_BASE_URL.into()),
+        base_url: DEFAULT_BASE_URL.into(),
         // Fallbacks until live catalog refresh; /model pulls full Zen list after connect.
         default_models: vec!["opencode-zen/gpt-4.1-mini".into()],
-        manual_models: vec![],
         models_dev_providers: vec!["opencode".into()],
         auth_url: Some("https://opencode.ai/auth".into()),
         model_provider_prefix: "opencode-zen".into(),
-        vendor_id: "opencode".into(),
-        vendor_label: "OpenCode".into(),
-        route_label: "Zen".into(),
+        provider: "opencode".into(),
+        provider_label: "OpenCode".into(),
+        label: "Zen".into(),
         route_id: "opencode-zen".into(),
         catalog_mode: CatalogMode::LiveRegistry,
         transport: ProviderTransport::OpenaiCompat,
+        auth: Some(AuthSpec {
+            kind: AuthKind::ApiKey,
+            prompt: AuthPrompt::Tui,
+            ..AuthSpec::default()
+        }),
+        base_url_env: vec![API_BASE_ENV.into()],
+        credential_from: Some(crate::opencode_go::PROFILE_ID.into()),
+        wire: Some(WireKind::ChatCompletions),
+        wire_overrides: vec![
+            WireOverride {
+                models: vec![
+                    "muse-spark-1.2-contributor*".into(),
+                    "muse-spark-1.3-contributor*".into(),
+                ],
+                wire: WireKind::Responses,
+            },
+            WireOverride {
+                models: vec!["union-alpha".into()],
+                wire: WireKind::AnthropicMessages,
+            },
+        ],
+        attach: Some(Attach::Bearer),
+        session_header: Some(SessionHeaderKind::Opencode),
+        catalog: CatalogSpec {
+            kind: Some(CatalogKind::OpenaiModels),
+            filter: None,
+        },
+        billing_url: "https://opencode.ai/".into(),
         origin: SpecOrigin::Builtin,
+        ..ProviderSpec::blank()
     }
 }
 
@@ -55,8 +86,8 @@ mod tests {
         let p = opencode_zen_profile();
         assert_eq!(p.id, "opencode_zen");
         assert!(p.needs_tui_api_key_prompt());
-        assert!(p.default_base_url.as_deref().unwrap().ends_with("/zen/v1"));
-        assert!(!p.default_base_url.as_deref().unwrap().contains("/go/"));
+        assert!(p.base_url.ends_with("/zen/v1"));
+        assert!(!p.base_url.contains("/go/"));
         assert!(p
             .default_models
             .iter()

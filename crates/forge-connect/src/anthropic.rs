@@ -1,7 +1,10 @@
 //! Anthropic connect profile — API key (`anthropic/*`).
 
 use crate::auth::AuthMode;
-use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
+use crate::profile::{
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
+    ProviderTransport, SpecOrigin, StaticHeader, WireKind,
+};
 use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "anthropic";
@@ -16,19 +19,37 @@ pub fn anthropic_profile() -> ProviderSpec {
             tui_always_prompt: true,
         },
         api_key_env: vec!["ANTHROPIC_API_KEY".into()],
-        default_base_url: Some(DEFAULT_BASE_URL.into()),
+        base_url: DEFAULT_BASE_URL.into(),
         default_models: vec!["anthropic/claude-sonnet-4-20250514".into()],
-        manual_models: vec![],
         models_dev_providers: vec!["anthropic".into()],
         auth_url: Some("https://console.anthropic.com/settings/keys".into()),
         model_provider_prefix: "anthropic".into(),
-        vendor_id: PROFILE_ID.into(),
-        vendor_label: "Anthropic".into(),
-        route_label: "API".into(),
+        provider: PROFILE_ID.into(),
+        provider_label: "Anthropic".into(),
+        label: "API".into(),
         route_id: "anthropic-api".into(),
         catalog_mode: CatalogMode::LiveRegistry,
         transport: ProviderTransport::Anthropic,
+        auth: Some(AuthSpec {
+            kind: AuthKind::ApiKey,
+            prompt: AuthPrompt::Tui,
+            ..AuthSpec::default()
+        }),
+        base_url_env: vec!["ANTHROPIC_API_BASE".into()],
+        wire: Some(WireKind::AnthropicMessages),
+        attach: Some(Attach::XApiKey),
+        static_headers: vec![StaticHeader {
+            name: "anthropic-beta".into(),
+            value: "interleaved-thinking-2025-05-14".into(),
+        }],
+        catalog: CatalogSpec {
+            kind: Some(CatalogKind::AnthropicModels),
+            filter: None,
+        },
+        import_aliases: vec!["anthropic".into()],
+        billing_url: "https://console.anthropic.com/settings/billing".into(),
         origin: SpecOrigin::Builtin,
+        ..ProviderSpec::blank()
     }
 }
 

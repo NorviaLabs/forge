@@ -2,6 +2,10 @@
 
 use base64::Engine;
 
+use crate::profile::{
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogSpec, EffortFamily, OauthFlavor,
+    WireKind,
+};
 use crate::{AuthMode, CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
 
 pub const PROFILE_ID: &str = "openai_codex";
@@ -22,21 +26,37 @@ pub fn openai_codex_profile() -> ProviderSpec {
             auth_server: AUTH_SERVER.into(),
         },
         api_key_env: vec![],
-        default_base_url: Some(DEFAULT_BASE_URL.into()),
+        base_url: DEFAULT_BASE_URL.into(),
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
         // Entitlement still comes from the live Codex catalog; models.dev
         // only supplies public metadata such as effort and image input.
-        manual_models: vec![],
         models_dev_providers: vec!["openai".into()],
         auth_url: Some("https://auth.openai.com/codex/device".into()),
         model_provider_prefix: "openai-codex".into(),
-        vendor_id: "openai".into(),
-        vendor_label: "OpenAI".into(),
-        route_label: "ChatGPT".into(),
+        provider: "openai".into(),
+        provider_label: "OpenAI".into(),
+        label: "ChatGPT".into(),
         route_id: "openai-chatgpt".into(),
         catalog_mode: CatalogMode::LiveRegistry,
         transport: ProviderTransport::Codex,
+        auth: Some(AuthSpec {
+            kind: AuthKind::OauthDevice,
+            flavor: Some(OauthFlavor::Chatgpt),
+            client_id: Some(crate::oauth_openai_codex::CLIENT_ID.into()),
+            prompt: AuthPrompt::Browser,
+            ..AuthSpec::default()
+        }),
+        base_url_env: vec![API_BASE_ENV.into()],
+        wire: Some(WireKind::Responses),
+        attach: Some(Attach::BearerAccountId),
+        catalog: CatalogSpec {
+            kind: Some(CatalogKind::ChatgptModels),
+            filter: None,
+        },
+        import_aliases: vec!["openai".into()],
+        effort_family: EffortFamily::Openai,
         origin: SpecOrigin::Builtin,
+        ..ProviderSpec::blank()
     }
 }
 

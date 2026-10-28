@@ -183,8 +183,8 @@ impl TuiApp {
         let Some(profile) = self.connect.registry.get(profile_id) else {
             return (None, None);
         };
-        let route = (!profile.route_label.is_empty()).then(|| profile.route_label.clone());
-        (Some(profile.vendor_label.clone()), route)
+        let route = (!profile.label.is_empty()).then(|| profile.label.clone());
+        (Some(profile.provider_label.clone()), route)
     }
 
     /// Drop a stale `connect.profile` if credentials were cleared out-of-band.

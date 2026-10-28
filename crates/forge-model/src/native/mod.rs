@@ -235,12 +235,12 @@ impl ModelClient for NativeModelClient {
     ) -> Result<ModelResponse, ModelError> {
         let model = self.model_for(&req)?;
         let model = canonical_model_for_route(req.route_id.as_deref(), &model);
-        match transport_for_route(req.route_id.as_deref()) {
-            forge_connect::ProviderTransport::Anthropic => {
+        match wire_for_route(req.route_id.as_deref()) {
+            forge_connect::WireKind::AnthropicMessages => {
                 anthropic::complete(self, req, &model, tx).await
             }
-            forge_connect::ProviderTransport::Codex => codex::complete(self, req, &model, tx).await,
-            forge_connect::ProviderTransport::OpenaiCompat => {
+            forge_connect::WireKind::Responses => codex::complete(self, req, &model, tx).await,
+            forge_connect::WireKind::ChatCompletions => {
                 openai::complete(self, req, &model, tx).await
             }
         }
@@ -259,8 +259,8 @@ impl ModelClient for NativeModelClient {
     }
 
     fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
-        match transport_for_route(req.route_id.as_deref()) {
-            forge_connect::ProviderTransport::Anthropic => {
+        match wire_for_route(req.route_id.as_deref()) {
+            forge_connect::WireKind::AnthropicMessages => {
                 let (system, messages) = anthropic::messages_body(req, Some(self));
                 let mut body = serde_json::json!({ "messages": messages });
                 if !system.is_empty() {
@@ -285,20 +285,20 @@ impl ModelClient for NativeModelClient {
                 }
                 crate::prompt_wire::prompt_object_from_body(body)
             }
-            forge_connect::ProviderTransport::Codex => crate::prompt_wire::prompt_object_from_body(
+            forge_connect::WireKind::Responses => crate::prompt_wire::prompt_object_from_body(
                 codex::request_body(self, req, &req.model, &codex::tool_aliases(req)),
             ),
-            forge_connect::ProviderTransport::OpenaiCompat => {
+            forge_connect::WireKind::ChatCompletions => {
                 crate::prompt_wire::openai_compat_prompt_cached(req, self)
             }
         }
     }
 
     fn prompt_transport_key(&self, req: &ModelRequest) -> &'static str {
-        match transport_for_route(req.route_id.as_deref()) {
-            forge_connect::ProviderTransport::Anthropic => "anthropic",
-            forge_connect::ProviderTransport::Codex => "codex",
-            forge_connect::ProviderTransport::OpenaiCompat => "openai_compat",
+        match wire_for_route(req.route_id.as_deref()) {
+            forge_connect::WireKind::AnthropicMessages => "anthropic",
+            forge_connect::WireKind::Responses => "codex",
+            forge_connect::WireKind::ChatCompletions => "openai_compat",
         }
     }
 }
@@ -311,11 +311,11 @@ fn spec_for_route(route_id: &str) -> Option<forge_connect::ProviderSpec> {
         .cloned()
 }
 
-fn transport_for_route(route_id: Option<&str>) -> forge_connect::ProviderTransport {
+fn wire_for_route(route_id: Option<&str>) -> forge_connect::WireKind {
     route_id
         .and_then(spec_for_route)
-        .map(|spec| spec.transport)
-        .unwrap_or(forge_connect::ProviderTransport::OpenaiCompat)
+        .map(|spec| spec.effective_wire())
+        .unwrap_or(forge_connect::WireKind::ChatCompletions)
 }
 
 fn canonical_model_for_route(route_id: Option<&str>, model: &str) -> String {

@@ -1,7 +1,10 @@
 //! OpenAI connect profile — API key (`openai/*`).
 
 use crate::auth::AuthMode;
-use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
+use crate::profile::{
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
+    EffortFamily, ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
+};
 use crate::verify::VerifyError;
 
 pub const PROFILE_ID: &str = "openai";
@@ -16,19 +19,33 @@ pub fn openai_profile() -> ProviderSpec {
             tui_always_prompt: true,
         },
         api_key_env: vec!["OPENAI_API_KEY".into()],
-        default_base_url: Some(DEFAULT_BASE_URL.into()),
+        base_url: DEFAULT_BASE_URL.into(),
         default_models: vec!["openai/gpt-4.1-mini".into()],
-        manual_models: vec![],
         models_dev_providers: vec!["openai".into()],
         auth_url: Some("https://platform.openai.com/api-keys".into()),
         model_provider_prefix: "openai".into(),
-        vendor_id: "openai".into(),
-        vendor_label: "OpenAI".into(),
-        route_label: "API".into(),
+        provider: "openai".into(),
+        provider_label: "OpenAI".into(),
+        label: "API".into(),
         route_id: "openai-api".into(),
         catalog_mode: CatalogMode::LiveRegistry,
         transport: ProviderTransport::OpenaiCompat,
+        auth: Some(AuthSpec {
+            kind: AuthKind::ApiKey,
+            prompt: AuthPrompt::Tui,
+            ..AuthSpec::default()
+        }),
+        base_url_env: vec!["OPENAI_API_BASE".into()],
+        wire: Some(WireKind::ChatCompletions),
+        attach: Some(Attach::Bearer),
+        catalog: CatalogSpec {
+            kind: Some(CatalogKind::OpenaiModels),
+            filter: Some(CatalogFilter::Chat),
+        },
+        billing_url: "https://platform.openai.com/settings/organization/billing/overview".into(),
+        effort_family: EffortFamily::Openai,
         origin: SpecOrigin::Builtin,
+        ..ProviderSpec::blank()
     }
 }
 

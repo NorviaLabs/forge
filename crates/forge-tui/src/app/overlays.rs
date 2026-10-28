@@ -806,7 +806,7 @@ impl TuiApp {
                             self.overlay = Some(Overlay::ConnectCustom {
                                 fields: [
                                     profile.id.clone(),
-                                    profile.default_base_url.clone().unwrap_or_default(),
+                                    profile.base_url.clone(),
                                     String::new(),
                                     String::new(),
                                 ],

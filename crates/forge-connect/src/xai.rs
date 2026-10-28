@@ -1,7 +1,10 @@
 //! xAI Grok connect profile — OAuth (PROV-01 / Phase 6.1).
 
 use crate::auth::AuthMode;
-use crate::profile::{CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
+use crate::profile::{
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, EffortFamily,
+    OauthFlavor, ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
+};
 
 pub const PROFILE_ID: &str = "xai";
 
@@ -12,20 +15,41 @@ pub fn xai_grok_profile() -> ProviderSpec {
         description: "Grok via xAI OAuth (not API key); xai/* models".into(),
         auth_mode: AuthMode::xai_oauth(),
         api_key_env: vec![], // OAuth primary — no API key env for connect UX
-        default_base_url: Some("https://api.x.ai/v1".into()),
+        base_url: "https://api.x.ai/v1".into(),
         default_models: vec!["xai/grok-3".into()],
-        manual_models: vec![],
         models_dev_providers: vec!["xai".into()],
         // Grok Build signs in via auth.x.ai OIDC; device verify page is accounts.x.ai/oauth2/device
         auth_url: Some("https://auth.x.ai".into()),
         model_provider_prefix: "xai".into(),
-        vendor_id: PROFILE_ID.into(),
-        vendor_label: "xAI".into(),
-        route_label: "API".into(),
+        provider: PROFILE_ID.into(),
+        provider_label: "xAI".into(),
+        label: "API".into(),
         route_id: "xai-api".into(),
         catalog_mode: CatalogMode::LiveRegistry,
         transport: ProviderTransport::OpenaiCompat,
+        auth: Some(AuthSpec {
+            kind: AuthKind::OauthDevice,
+            flavor: Some(OauthFlavor::Rfc8628),
+            issuer: Some(crate::oauth_xai::DEFAULT_ISSUER.into()),
+            client_id: Some(crate::oauth_xai::DEFAULT_CLIENT_ID.into()),
+            scopes: crate::oauth_xai::DEFAULT_SCOPES
+                .split_whitespace()
+                .map(Into::into)
+                .collect(),
+            prompt: AuthPrompt::Browser,
+        }),
+        base_url_env: vec!["XAI_API_BASE".into()],
+        wire: Some(WireKind::ChatCompletions),
+        attach: Some(Attach::Bearer),
+        catalog: CatalogSpec {
+            kind: Some(CatalogKind::OpenaiModels),
+            filter: None,
+        },
+        import_aliases: vec!["xai".into()],
+        billing_url: "https://console.x.ai/".into(),
+        effort_family: EffortFamily::Xai,
         origin: SpecOrigin::Builtin,
+        ..ProviderSpec::blank()
     }
 }
 

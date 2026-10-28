@@ -6,6 +6,7 @@ mod auth;
 mod catalog;
 mod cost;
 mod import;
+mod normalize;
 mod oauth_dispatch;
 mod oauth_openai_codex;
 mod oauth_xai;
@@ -64,8 +65,10 @@ pub use opencode_zen::{
 };
 pub use preferences::PreferenceStore;
 pub use profile::{
-    CatalogMode, ConnectOutcome, ConnectProfile, ConnectStatus, KeySource, ProviderSpec,
-    ProviderTransport, SpecOrigin,
+    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
+    ConnectOutcome, ConnectProfile, ConnectStatus, EditableField, EffortFamily, KeySource,
+    OauthFlavor, ProviderSpec, ProviderTransport, SessionHeaderKind, SpecOrigin, StaticHeader,
+    VerifyKind, VerifySpec, WireKind, WireOverride,
 };
 pub use registry::{
     builtin_registry, credential_env_names, loaded_registry, loaded_registry_from,
@@ -98,6 +101,109 @@ pub(crate) fn register_builtin_profiles(registry: &mut ConnectRegistry) {
 mod tests {
     use super::*;
 
+    /// The §1.1 fields each built-in fills (design §1.2 and the env table).
+    #[test]
+    fn builtin_schema_fields() {
+        let r = builtin_registry();
+        let shape = |id: &str| {
+            let p = r.get(id).unwrap();
+            let auth = p.effective_auth();
+            (
+                p.effective_wire(),
+                auth.kind,
+                auth.flavor,
+                p.attach,
+                p.catalog.kind,
+                p.base_url_env.clone(),
+                p.effort_family,
+            )
+        };
+        let env = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            shape("openai"),
+            (
+                WireKind::ChatCompletions,
+                AuthKind::ApiKey,
+                None,
+                Some(Attach::Bearer),
+                Some(CatalogKind::OpenaiModels),
+                env(&["OPENAI_API_BASE"]),
+                EffortFamily::Openai,
+            )
+        );
+        assert_eq!(
+            shape("openai_codex"),
+            (
+                WireKind::Responses,
+                AuthKind::OauthDevice,
+                Some(OauthFlavor::Chatgpt),
+                Some(Attach::BearerAccountId),
+                Some(CatalogKind::ChatgptModels),
+                env(&["FORGE_CODEX_API_BASE"]),
+                EffortFamily::Openai,
+            )
+        );
+        assert_eq!(
+            shape("anthropic"),
+            (
+                WireKind::AnthropicMessages,
+                AuthKind::ApiKey,
+                None,
+                Some(Attach::XApiKey),
+                Some(CatalogKind::AnthropicModels),
+                env(&["ANTHROPIC_API_BASE"]),
+                EffortFamily::None,
+            )
+        );
+        assert_eq!(
+            shape("xai"),
+            (
+                WireKind::ChatCompletions,
+                AuthKind::OauthDevice,
+                Some(OauthFlavor::Rfc8628),
+                Some(Attach::Bearer),
+                Some(CatalogKind::OpenaiModels),
+                env(&["XAI_API_BASE"]),
+                EffortFamily::Xai,
+            )
+        );
+        assert_eq!(
+            shape("ollama"),
+            (
+                WireKind::ChatCompletions,
+                AuthKind::ApiKeyOptional,
+                None,
+                Some(Attach::Bearer),
+                Some(CatalogKind::OllamaTags),
+                env(&["OLLAMA_API_BASE"]),
+                EffortFamily::None,
+            )
+        );
+        assert_eq!(
+            shape("opencode_go").5,
+            env(&["OPENCODE_API_BASE", "OPENCODE_GO_API_BASE"])
+        );
+        assert_eq!(shape("opencode_zen").5, env(&["OPENCODE_ZEN_API_BASE"]));
+        assert_eq!(
+            r.get("ollama").unwrap().editable,
+            vec![EditableField::BaseUrl]
+        );
+        assert_eq!(
+            r.get("opencode_zen").unwrap().credential_from.as_deref(),
+            Some("opencode_go")
+        );
+        for id in ["opencode_go", "opencode_zen"] {
+            assert_eq!(
+                r.get(id).unwrap().session_header,
+                Some(SessionHeaderKind::Opencode)
+            );
+        }
+        // Today's `auth_mode` still agrees with the new `auth` table.
+        for p in r.profiles() {
+            assert_eq!(p.effective_auth().to_auth_mode(), p.auth_mode, "{}", p.id);
+        }
+    }
+
     #[test]
     fn builtin_auth_modes() {
         let r = builtin_registry();
@@ -109,12 +215,6 @@ mod tests {
         assert!(r.get("anthropic").unwrap().needs_tui_api_key_prompt());
         assert!(!r.get("ollama").unwrap().needs_tui_api_key_prompt());
         assert_eq!(r.profiles().len(), 7);
-        assert!(r
-            .get("opencode_zen")
-            .unwrap()
-            .default_base_url
-            .as_deref()
-            .unwrap()
-            .contains("/zen/v1"));
+        assert!(r.get("opencode_zen").unwrap().base_url.contains("/zen/v1"));
     }
 }

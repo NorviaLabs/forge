@@ -60,12 +60,11 @@ impl TuiApp {
         if self.selected_session_model().is_some() {
             let route_id = self.selected_active_route_id();
             if let Some(profile) = self.connect.registry.get_by_route(&route_id) {
-                let route_label =
-                    (!profile.route_label.is_empty()).then(|| profile.route_label.clone());
+                let route_label = (!profile.label.is_empty()).then(|| profile.label.clone());
                 return (
                     profile.id.clone(),
                     Some(profile.id.clone()),
-                    Some(profile.vendor_label.clone()),
+                    Some(profile.provider_label.clone()),
                     route_label,
                 );
             }

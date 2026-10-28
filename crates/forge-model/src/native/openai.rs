@@ -401,9 +401,8 @@ fn custom_route(
             })?,
     };
     Ok(Route {
-        base_url: profile
-            .default_base_url
-            .clone()
+        base_url: Some(profile.base_url.clone())
+            .filter(|base| !base.trim().is_empty())
             .ok_or_else(|| ModelError::Provider("custom provider requires a base URL".into()))?,
         api_key,
         model: model.into(),
@@ -754,6 +753,42 @@ mod tests {
         }
     }
 
+    /// The OpenCode profiles' `wire_overrides` (forge-connect) carry the same
+    /// per-model routing as this transport's tables, which a later stage
+    /// deletes in their favour.
+    #[test]
+    fn opencode_wire_overrides_match_the_routing_tables() {
+        use forge_connect::WireKind;
+        let go = forge_connect::opencode_go_profile();
+        let zen = forge_connect::opencode_zen_profile();
+        let mut samples: Vec<&str> = OPENCODE_GO_MESSAGES_MODELS
+            .iter()
+            .chain(OPENCODE_GO_RESPONSES_MODELS)
+            .copied()
+            .collect();
+        samples.extend([
+            "muse-spark-1.2-contributor",
+            "muse-spark-1.3-contributor-preview",
+            "muse-spark-1.1",
+            "gpt-4.1-mini",
+            "kimi-k2",
+        ]);
+        for (profile, prefix) in [(&go, "opencode-go"), (&zen, "opencode-zen")] {
+            for bare in &samples {
+                let model = format!("{prefix}/{bare}");
+                let today =
+                    if is_opencode_responses_model(&model) || opencode_go_responses_model(&model) {
+                        WireKind::Responses
+                    } else if opencode_messages_model(&model) {
+                        WireKind::AnthropicMessages
+                    } else {
+                        WireKind::ChatCompletions
+                    };
+                assert_eq!(profile.wire_for_model(bare), today, "{model}");
+            }
+        }
+    }
+
     #[test]
     fn custom_provider_route_uses_endpoint_model_and_credentials() {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
@@ -761,7 +796,7 @@ mod tests {
         let mut profile = forge_connect::openai_profile();
         profile.id = "custom-test".into();
         profile.api_key_env = vec!["CUSTOM_TEST_KEY".into()];
-        profile.default_base_url = Some("https://custom.example/v1".into());
+        profile.base_url = "https://custom.example/v1".into();
         let routed = custom_route(&client, &profile, "org/model-a").unwrap();
         assert_eq!(routed.base_url, "https://custom.example/v1");
         assert_eq!(routed.model, "org/model-a");
