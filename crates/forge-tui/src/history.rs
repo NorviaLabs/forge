@@ -58,9 +58,8 @@ impl HistoryStore {
             .map(PathBuf::from)
             .or_else(|| {
                 Some(
-                    dirs::data_dir()
+                    forge_storage::forge_data_dir()
                         .unwrap_or_else(|| PathBuf::from("."))
-                        .join("forge")
                         .join("input-history.json"),
                 )
             })

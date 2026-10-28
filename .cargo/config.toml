@@ -1,0 +1,6 @@
+# Keep test and dev runs out of the user's real application-data directory:
+# `cargo test` creates many throwaway workspaces outside Git, whose runtime
+# data would otherwise land in e.g. ~/Library/Application Support/forge.
+# An explicitly exported FORGE_DATA_DIR still wins.
+[env]
+FORGE_DATA_DIR = { value = "target/forge-data", relative = true }

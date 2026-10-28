@@ -426,12 +426,14 @@ Common environment variables are:
 ```text
 FORGE_WORKSPACE
 FORGE_JOURNAL_PATH
+FORGE_DATA_DIR
 FORGE_MODEL_REQUEST_TIMEOUT_SECS
 ```
 
 Forge stores session journals in repository-local runtime storage when
 possible, or in the platform application-data directory outside a Git
-repository. Runtime data is not source code and should not be committed.
+repository. `FORGE_DATA_DIR` replaces that directory; `cargo test` and
+`cargo run` in this repository set it to `target/forge-data`. Runtime data is not source code and should not be committed.
 
 ### MCP servers
 

@@ -227,6 +227,17 @@ pub struct LocalRuntimeStorage {
     migration_report: RefCell<Vec<MigrationRecord>>,
 }
 
+/// Forge's application-data directory: `$FORGE_DATA_DIR` when set and
+/// nonempty, else `<platform data dir>/forge`. The workspace's
+/// `.cargo/config.toml` points it into `target/` for `cargo test` and
+/// `cargo run`, so test workspaces never land in the user's real directory.
+pub fn forge_data_dir() -> Option<PathBuf> {
+    match std::env::var_os("FORGE_DATA_DIR") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => dirs::data_dir().map(|base| base.join("forge")),
+    }
+}
+
 impl LocalRuntimeStorage {
     /// Detection happens here, but nothing is created on disk yet —
     /// `ensure_ready`/`root`/`path_for` are the lazy-initialization points.
@@ -289,8 +300,8 @@ impl LocalRuntimeStorage {
     }
 
     fn app_data_root(&self) -> Result<PathBuf, StorageError> {
-        let base = dirs::data_dir().ok_or(StorageError::NoAppDataDir)?;
-        let root = base.join("forge").join(self.identity.as_str());
+        let base = forge_data_dir().ok_or(StorageError::NoAppDataDir)?;
+        let root = base.join(self.identity.as_str());
         std::fs::create_dir_all(&root)?;
         set_restrictive_permissions(&root);
         Ok(root)
@@ -381,9 +392,7 @@ impl RuntimeStorage for LocalRuntimeStorage {
                 .as_deref()?
                 .join(".forge")
                 .join("local"),
-            StorageMode::ApplicationData => {
-                dirs::data_dir()?.join("forge").join(self.identity.as_str())
-            }
+            StorageMode::ApplicationData => forge_data_dir()?.join(self.identity.as_str()),
         };
         Some(root.join(kind.subdir()))
     }
@@ -599,7 +608,7 @@ mod tests {
     /// that exercise the ApplicationData fallback cannot run on hosts where
     /// it is not.
     fn application_data_writable() -> bool {
-        let Some(base) = dirs::data_dir() else {
+        let Some(base) = forge_data_dir() else {
             return false;
         };
         let probe = base.join("forge-storage-write-probe");
