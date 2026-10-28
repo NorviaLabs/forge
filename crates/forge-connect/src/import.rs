@@ -140,7 +140,7 @@ fn from_codex(home: &Path) -> Vec<DiscoveredLogin> {
 
     if let Some(access) = non_empty(root.pointer("/tokens/access_token")) {
         out.push(DiscoveredLogin {
-            profile_id: crate::openai_codex::PROFILE_ID.into(),
+            profile_id: crate::builtin::profile_ids::OPENAI_CODEX.into(),
             source: "Codex".into(),
             account: account.clone(),
             path: path.clone(),
@@ -157,7 +157,7 @@ fn from_codex(home: &Path) -> Vec<DiscoveredLogin> {
     }
     if let Some(key) = non_empty(root.get("OPENAI_API_KEY")) {
         out.push(DiscoveredLogin {
-            profile_id: crate::openai::PROFILE_ID.into(),
+            profile_id: crate::builtin::profile_ids::OPENAI.into(),
             source: "Codex".into(),
             account,
             path,
@@ -252,7 +252,7 @@ fn from_grok(home: &Path) -> Vec<DiscoveredLogin> {
             continue;
         };
         out.push(DiscoveredLogin {
-            profile_id: crate::xai::PROFILE_ID.into(),
+            profile_id: crate::builtin::profile_ids::XAI.into(),
             source: "Grok".into(),
             // Grok records the signed-in email, which is the clearest possible
             // answer to "whose session am I about to reuse".
@@ -286,7 +286,7 @@ mod tests {
         );
 
         let found = discover_logins(home.path());
-        let login = login_for_profile(&found, crate::openai_codex::PROFILE_ID).unwrap();
+        let login = login_for_profile(&found, crate::builtin::profile_ids::OPENAI_CODEX).unwrap();
         assert_eq!(login.source, "Codex");
         assert_eq!(login.account.as_deref(), Some("acct-1"));
         match login.secret {
@@ -309,7 +309,7 @@ mod tests {
         );
 
         let found = discover_logins(home.path());
-        let login = login_for_profile(&found, crate::openai_codex::PROFILE_ID).unwrap();
+        let login = login_for_profile(&found, crate::builtin::profile_ids::OPENAI_CODEX).unwrap();
         match login.secret {
             DiscoveredSecret::Oauth(tokens) => {
                 assert_eq!(tokens.expires_at.as_deref(), Some("1788215796"));
@@ -328,7 +328,7 @@ mod tests {
 
         let found = discover_logins(home.path());
         assert!(
-            login_for_profile(&found, crate::opencode_go::PROFILE_ID).is_some(),
+            login_for_profile(&found, crate::builtin::profile_ids::OPENCODE_GO).is_some(),
             "opencode-go maps to a Forge profile"
         );
         assert_eq!(
@@ -347,7 +347,7 @@ mod tests {
         );
 
         let found = discover_logins(home.path());
-        let login = login_for_profile(&found, crate::xai::PROFILE_ID).unwrap();
+        let login = login_for_profile(&found, crate::builtin::profile_ids::XAI).unwrap();
         assert_eq!(login.account.as_deref(), Some("me@example.com"));
         assert_eq!(
             login.offer_label(),
@@ -380,7 +380,7 @@ mod tests {
             "the default location is empty"
         );
         let found = discover_logins_in(home.path(), Some(data.path()));
-        assert!(login_for_profile(&found, crate::xai::PROFILE_ID).is_some());
+        assert!(login_for_profile(&found, crate::builtin::profile_ids::XAI).is_some());
     }
 
     #[test]

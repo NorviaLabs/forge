@@ -1235,7 +1235,7 @@ base_url = "https://gone.example/v1"
         );
         assert_eq!(
             registry.get("openai").unwrap().base_url,
-            crate::openai_profile().base_url
+            crate::builtin::builtin_profile("openai").base_url
         );
         let warnings = registry.load_warnings().join("\n");
         assert!(

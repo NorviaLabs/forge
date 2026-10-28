@@ -1,6 +1,5 @@
 //! Phase 6 / 6.1 connect profiles: OAuth (xAI) + API-key providers + Ollama.
 
-mod anthropic;
 mod atomic;
 mod auth;
 pub mod builtin;
@@ -13,13 +12,10 @@ mod normalize;
 mod oauth_chatgpt;
 mod oauth_dispatch;
 mod oauth_rfc8628;
-mod ollama;
-mod openai;
-mod openai_codex;
-mod opencode_go;
-mod opencode_zen;
 mod preferences;
 mod profile;
+#[cfg(test)]
+mod provider_tests;
 mod registry;
 mod resolve;
 mod route;
@@ -31,9 +27,7 @@ mod test_env;
 #[cfg(test)]
 mod test_support;
 mod verify;
-mod xai;
 
-pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
 pub use auth::{OauthPending, OauthTokens};
 pub use catalog::{
     fetch_remote_models, models_for_picker, refresh_models_dev_registry, refresh_profile_catalog,
@@ -51,20 +45,6 @@ pub use oauth_dispatch::OauthError;
 pub use oauth_rfc8628::{
     try_open_browser, Rfc8628Client, Rfc8628Error, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
     DEFAULT_SCOPES,
-};
-pub use ollama::{
-    ollama_profile, API_BASE_ENV as OLLAMA_API_BASE_ENV,
-    DEFAULT_BASE_URL as OLLAMA_DEFAULT_BASE_URL, PROFILE_ID as OLLAMA_PROFILE_ID,
-};
-pub use openai::{openai_profile, PROFILE_ID as OPENAI_PROFILE_ID};
-pub use openai_codex::{openai_codex_profile, PROFILE_ID as OPENAI_CODEX_PROFILE_ID};
-pub use opencode_go::{
-    opencode_go_profile, API_BASE_ENV as OPENCODE_API_BASE_ENV,
-    DEFAULT_BASE_URL as OPENCODE_GO_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_GO_PROFILE_ID,
-};
-pub use opencode_zen::{
-    opencode_zen_profile, API_BASE_ENV as OPENCODE_ZEN_API_BASE_ENV,
-    DEFAULT_BASE_URL as OPENCODE_ZEN_DEFAULT_BASE_URL, PROFILE_ID as OPENCODE_ZEN_PROFILE_ID,
 };
 pub use preferences::PreferenceStore;
 pub use profile::{
@@ -89,7 +69,6 @@ pub use service::{
 };
 pub use store::{CredentialStore, StoreError};
 pub use verify::VerifyError;
-pub use xai::{xai_grok_profile, PROFILE_ID as XAI_PROFILE_ID};
 
 pub(crate) fn register_builtin_profiles(registry: &mut ConnectRegistry) {
     for spec in builtin::builtin_specs() {

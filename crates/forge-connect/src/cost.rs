@@ -114,12 +114,11 @@ fn unavailable_report(title: &str, reason: &str, link: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OPENAI_CODEX_PROFILE_ID;
 
     #[test]
     fn api_key_provider_explains_balance_limitation() {
         let report = provider_cost_report(
-            &crate::openai_profile(),
+            &crate::builtin::builtin_profile("openai"),
             "openai/unknown",
             0,
             0,
@@ -150,16 +149,28 @@ mod tests {
 
     #[test]
     fn provider_cost_report_covers_static_provider_messages() {
-        let mut custom = crate::openai_profile();
+        let mut custom = crate::builtin::builtin_profile("openai");
         custom.title = "custom".into();
         custom.billing_note.clear();
         custom.billing_url.clear();
         for (profile, expected) in [
-            (crate::anthropic_profile(), "remaining credits"),
-            (crate::xai_grok_profile(), "xAI does not expose"),
-            (crate::opencode_go_profile(), "OpenCode does not"),
-            (crate::opencode_zen_profile(), "OpenCode does not"),
-            (crate::ollama_profile(), "local inference"),
+            (
+                crate::builtin::builtin_profile("anthropic"),
+                "remaining credits",
+            ),
+            (
+                crate::builtin::builtin_profile("xai"),
+                "xAI does not expose",
+            ),
+            (
+                crate::builtin::builtin_profile("opencode_go"),
+                "OpenCode does not",
+            ),
+            (
+                crate::builtin::builtin_profile("opencode_zen"),
+                "OpenCode does not",
+            ),
+            (crate::builtin::builtin_profile("ollama"), "local inference"),
             (custom, "custom"),
         ] {
             let report =
@@ -176,7 +187,7 @@ mod tests {
     fn store_codex_login(store: &CredentialStore) {
         store
             .set_oauth(
-                OPENAI_CODEX_PROFILE_ID,
+                crate::builtin::profile_ids::OPENAI_CODEX,
                 crate::OauthTokens {
                     access_token: "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.signature".into(),
                     refresh_token: None,
@@ -208,7 +219,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         store_codex_login(&store);
         let report = provider_cost_report(
-            &crate::openai_codex_profile(),
+            &crate::builtin::builtin_profile("openai_codex"),
             "openai-codex/gpt-test",
             0,
             0,
@@ -236,7 +247,7 @@ mod tests {
         guard.set("FORGE_MODELS_DEV_URL", &base);
 
         let report = provider_cost_report(
-            &crate::openai_profile(),
+            &crate::builtin::builtin_profile("openai"),
             "openai/gpt-4.1-mini",
             1_000_000,
             500_000,

@@ -119,7 +119,7 @@ impl OauthPending {
     }
 
     pub fn operator_instructions(&self) -> String {
-        if self.profile_id == crate::openai_codex::PROFILE_ID {
+        if self.profile_id == crate::builtin::profile_ids::OPENAI_CODEX {
             return format!(
                 "Sign in with ChatGPT for Codex subscription access:\n\
   1. Open {uri}\n\
@@ -157,7 +157,7 @@ mod tests {
 
     #[test]
     fn xai_is_oauth_and_opencode_go_prompts_for_a_key() {
-        let xai = crate::xai::xai_grok_profile();
+        let xai = crate::builtin::builtin_profile("xai");
         assert!(xai.effective_auth().is_oauth());
         assert!(!xai.needs_tui_api_key_prompt());
         assert_eq!(xai.effective_auth().label(), "oauth");
@@ -166,7 +166,7 @@ mod tests {
             .issuer
             .is_some_and(|issuer| issuer.contains("auth.x.ai")));
 
-        let go = crate::opencode_go::opencode_go_profile();
+        let go = crate::builtin::builtin_profile("opencode_go");
         assert!(go.needs_tui_api_key_prompt());
         assert_eq!(go.effective_auth().label(), "api_key");
     }

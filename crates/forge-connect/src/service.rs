@@ -590,8 +590,8 @@ pub(crate) fn verify_profile_key(profile: &ConnectProfile, key: &str) -> Result<
         crate::CatalogKind::OpenaiModels => {
             crate::verify::probe_openai_models(base, key, &profile.title, &guidance)
         }
-        crate::CatalogKind::AnthropicModels => crate::anthropic::verify_api_key(key, base),
-        crate::CatalogKind::OllamaTags => crate::ollama::verify_reachable(base),
+        crate::CatalogKind::AnthropicModels => crate::verify::verify_anthropic_key(key, base),
+        crate::CatalogKind::OllamaTags => crate::verify::verify_ollama_reachable(base),
         // OAuth logins and static lists have no key to probe.
         crate::CatalogKind::ChatgptModels | crate::CatalogKind::Static => Ok(()),
     }
@@ -753,10 +753,10 @@ mod tests {
         let mut r = ConnectRegistry::new();
         let mut spec = crate::profile::test_spec(
             "xai",
-            crate::xai::xai_grok_profile().auth.unwrap(),
+            crate::builtin::builtin_profile("xai").auth.unwrap(),
             vec!["xai/grok-3".into()],
         );
-        spec.auth = crate::xai::xai_grok_profile().auth.map(|mut auth| {
+        spec.auth = crate::builtin::builtin_profile("xai").auth.map(|mut auth| {
             auth.issuer = Some(issuer.into());
             auth
         });
@@ -1381,7 +1381,7 @@ mod tests {
             r.register(go);
             let mut xai = crate::profile::test_spec(
                 "xai",
-                crate::xai::xai_grok_profile().auth.unwrap(),
+                crate::builtin::builtin_profile("xai").auth.unwrap(),
                 vec!["xai/m".into()],
             );
             xai.title = "Grok".into();
@@ -1404,7 +1404,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
-        let mut openai = crate::openai::openai_profile();
+        let mut openai = crate::builtin::builtin_profile("openai");
         let Some(mock_url) = mock_http(vec![(200, r#"{"data":[]}"#, vec![])]) else {
             eprintln!("skipping: this host denies binding a listener");
             return;
@@ -1438,7 +1438,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
-        let mut anthropic = crate::anthropic::anthropic_profile();
+        let mut anthropic = crate::builtin::builtin_profile("anthropic");
         let Some(mock_url) = mock_http(vec![(401, "bad key", vec![])]) else {
             eprintln!("skipping: this host denies binding a listener");
             return;
@@ -1477,7 +1477,7 @@ mod tests {
         };
         let connect = |base: String| {
             let mut reg = ConnectRegistry::new();
-            let mut anthropic = crate::anthropic::anthropic_profile();
+            let mut anthropic = crate::builtin::builtin_profile("anthropic");
             anthropic.base_url = base;
             reg.register(anthropic);
             let mut svc = ConnectService {
@@ -1522,7 +1522,7 @@ mod tests {
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
 
-        let mut go = crate::opencode_go::opencode_go_profile();
+        let mut go = crate::builtin::builtin_profile("opencode_go");
         let Some(mock_url) = mock_http(vec![(200, r#"{"data":[{"id":"gpt-4.1-mini"}]}"#, vec![])])
         else {
             eprintln!("skipping: this host denies binding a listener");
@@ -1531,7 +1531,7 @@ mod tests {
         go.base_url = mock_url;
         reg.register(go);
 
-        let mut ollama = crate::ollama::ollama_profile();
+        let mut ollama = crate::builtin::builtin_profile("ollama");
         let Some(mock_url) = mock_http(vec![(200, r#"{"models":[]}"#, vec![])]) else {
             eprintln!("skipping: this host denies binding a listener");
             return;
@@ -1571,7 +1571,7 @@ mod tests {
         let store = CredentialStore::new(dir.path().join("c.toml"));
         let preferences = PreferenceStore::new(dir.path().join("p.toml"));
         let mut reg = ConnectRegistry::new();
-        let mut zen = crate::opencode_zen::opencode_zen_profile();
+        let mut zen = crate::builtin::builtin_profile("opencode_zen");
         let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"id":"claude-sonnet-4"}]}"#,

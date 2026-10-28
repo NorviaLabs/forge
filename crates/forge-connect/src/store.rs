@@ -501,7 +501,7 @@ mod tests {
         assert!(store.is_connected("xai").unwrap());
         let _env = crate::test_env::EnvGuard::new(&["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
         assert_eq!(
-            resolve_connected(&crate::xai::xai_grok_profile(), &store).unwrap(),
+            resolve_connected(&crate::builtin::builtin_profile("xai"), &store).unwrap(),
             Some(KeySource::Oauth)
         );
     }

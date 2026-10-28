@@ -9,24 +9,30 @@ use crate::profile::{ProviderSpec, WireKind};
 
 /// `(profile id, old prefixes read as that profile)`.
 const LEGACY_PREFIXES: &[(&str, &[&str])] = &[
-    (crate::openai::PROFILE_ID, &["openai"]),
-    (crate::openai_codex::PROFILE_ID, &["openai-codex"]),
-    (crate::anthropic::PROFILE_ID, &["anthropic"]),
-    (crate::xai::PROFILE_ID, &["xai", "grok"]),
-    (crate::ollama::PROFILE_ID, &["ollama", "ollama_chat"]),
-    (crate::opencode_go::PROFILE_ID, &["opencode-go", "opencode"]),
-    (crate::opencode_zen::PROFILE_ID, &["opencode-zen"]),
+    (crate::builtin::profile_ids::OPENAI, &["openai"]),
+    (crate::builtin::profile_ids::OPENAI_CODEX, &["openai-codex"]),
+    (crate::builtin::profile_ids::ANTHROPIC, &["anthropic"]),
+    (crate::builtin::profile_ids::XAI, &["xai", "grok"]),
+    (
+        crate::builtin::profile_ids::OLLAMA,
+        &["ollama", "ollama_chat"],
+    ),
+    (
+        crate::builtin::profile_ids::OPENCODE_GO,
+        &["opencode-go", "opencode"],
+    ),
+    (crate::builtin::profile_ids::OPENCODE_ZEN, &["opencode-zen"]),
 ];
 
 /// Built-in route ids sessions stored before the profile id became the only
 /// identity, and the profile each one names.
 const LEGACY_ROUTES: &[(&str, &str)] = &[
-    ("openai-api", crate::openai::PROFILE_ID),
-    ("openai-chatgpt", crate::openai_codex::PROFILE_ID),
-    ("anthropic-api", crate::anthropic::PROFILE_ID),
-    ("xai-api", crate::xai::PROFILE_ID),
-    ("opencode-go", crate::opencode_go::PROFILE_ID),
-    ("opencode-zen", crate::opencode_zen::PROFILE_ID),
+    ("openai-api", crate::builtin::profile_ids::OPENAI),
+    ("openai-chatgpt", crate::builtin::profile_ids::OPENAI_CODEX),
+    ("anthropic-api", crate::builtin::profile_ids::ANTHROPIC),
+    ("xai-api", crate::builtin::profile_ids::XAI),
+    ("opencode-go", crate::builtin::profile_ids::OPENCODE_GO),
+    ("opencode-zen", crate::builtin::profile_ids::OPENCODE_ZEN),
 ];
 
 /// The profile id a stored route names: a built-in's old route id maps to
@@ -159,12 +165,12 @@ mod tests {
 
     #[test]
     fn models_lose_one_own_prefix_and_take_the_current_one() {
-        let go = crate::opencode_go::opencode_go_profile();
+        let go = crate::builtin::builtin_profile("opencode_go");
         assert_eq!(normalize_model(&go, "opencode/kimi"), "opencode_go/kimi");
         assert_eq!(normalize_model(&go, "opencode-go/kimi"), "opencode_go/kimi");
         assert_eq!(normalize_model(&go, "opencode_go/kimi"), "opencode_go/kimi");
         assert_eq!(normalize_model(&go, "kimi"), "opencode_go/kimi");
-        let xai = crate::xai::xai_grok_profile();
+        let xai = crate::builtin::builtin_profile("xai");
         assert_eq!(normalize_model(&xai, "grok/grok-3"), "xai/grok-3");
 
         let mut custom = crate::profile::test_spec(

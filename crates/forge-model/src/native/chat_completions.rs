@@ -483,8 +483,8 @@ mod tests {
     #[test]
     fn opencode_models_select_their_wire_from_the_profile() {
         use forge_connect::WireKind;
-        let go = forge_connect::opencode_go_profile();
-        let zen = forge_connect::opencode_zen_profile();
+        let go = forge_connect::builtin::builtin_profile("opencode_go");
+        let zen = forge_connect::builtin::builtin_profile("opencode_zen");
         for (bare, wire) in [
             ("union-alpha", WireKind::AnthropicMessages),
             ("qwen3.6-plus", WireKind::AnthropicMessages),
@@ -508,7 +508,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_custom_profile_sends_to_its_endpoint_with_its_key() {
-        let mut profile = forge_connect::openai_profile();
+        let mut profile = forge_connect::builtin::builtin_profile("openai");
         profile.id = "custom-test".into();
         profile.model_provider_prefix = "custom-test".into();
         let client = crate::native::tests::test_client(
@@ -829,7 +829,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::openai_profile(),
+            forge_connect::builtin::builtin_profile("openai"),
             &format!("{base_url}/v1"),
             key("secret"),
         );
@@ -906,7 +906,7 @@ mod tests {
                 return;
             };
             let client = test_client(
-                forge_connect::opencode_go_profile(),
+                forge_connect::builtin::builtin_profile("opencode_go"),
                 &base_url,
                 key("test-key"),
             );
@@ -942,7 +942,7 @@ mod tests {
                 return;
             };
             let client = test_client(
-                forge_connect::opencode_go_profile(),
+                forge_connect::builtin::builtin_profile("opencode_go"),
                 &base_url,
                 key("test-key"),
             );
@@ -977,7 +977,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::opencode_go_profile(),
+            forge_connect::builtin::builtin_profile("opencode_go"),
             &base_url,
             key("test-key"),
         );
@@ -1013,7 +1013,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::opencode_go_profile(),
+            forge_connect::builtin::builtin_profile("opencode_go"),
             &base_url,
             key("opencode-secret"),
         );
@@ -1040,7 +1040,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::opencode_go_profile(),
+            forge_connect::builtin::builtin_profile("opencode_go"),
             &base_url,
             key("opencode-secret"),
         );
@@ -1081,7 +1081,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::opencode_zen_profile(),
+            forge_connect::builtin::builtin_profile("opencode_zen"),
             &base_url,
             key("opencode-secret"),
         );
@@ -1133,9 +1133,9 @@ mod tests {
             };
             let client = test_client(
                 if prefix == "opencode_zen" {
-                    forge_connect::opencode_zen_profile()
+                    forge_connect::builtin::builtin_profile("opencode_zen")
                 } else {
-                    forge_connect::opencode_go_profile()
+                    forge_connect::builtin::builtin_profile("opencode_go")
                 },
                 &format!("{base_url}{path}"),
                 key("opencode-secret"),
@@ -1183,7 +1183,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::opencode_go_profile(),
+            forge_connect::builtin::builtin_profile("opencode_go"),
             &format!("{base_url}/v1"),
             key("opencode-secret"),
         );
@@ -1213,7 +1213,11 @@ mod tests {
             eprintln!("skipping: this host denies binding a mock listener");
             return;
         };
-        let client = test_client(forge_connect::openai_profile(), &base_url, key("secret"));
+        let client = test_client(
+            forge_connect::builtin::builtin_profile("openai"),
+            &base_url,
+            key("secret"),
+        );
 
         let error = client
             .complete(request("openai/gpt-test"))
@@ -1226,7 +1230,11 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_missing_keys_unknown_prefixes_and_invalid_tool_json() {
-        let client = test_client(forge_connect::openai_profile(), "http://127.0.0.1:9", None);
+        let client = test_client(
+            forge_connect::builtin::builtin_profile("openai"),
+            "http://127.0.0.1:9",
+            None,
+        );
         assert!(matches!(
             client.complete(request("openai/gpt")).await,
             Err(ModelError::MissingApiKey)

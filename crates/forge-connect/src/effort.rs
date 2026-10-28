@@ -197,25 +197,38 @@ mod tests {
     #[test]
     fn rules_follow_flavor_session_header_wire_and_family() {
         use EffortLevel::*;
-        let codex = support(crate::openai_codex_profile(), "gpt-5.6-sol");
+        let codex = support(
+            crate::builtin::builtin_profile("openai_codex"),
+            "gpt-5.6-sol",
+        );
         assert_eq!(codex.options, vec![Minimal, Low, Medium, High, XHigh, Max]);
         assert_eq!(codex.default, Medium);
 
-        let go = support(crate::opencode_go_profile(), "kimi-k3");
+        let go = support(crate::builtin::builtin_profile("opencode_go"), "kimi-k3");
         assert_eq!(go.options, UP_TO_XHIGH.to_vec());
 
-        let opus = support(crate::anthropic_profile(), "claude-opus-4-8");
+        let opus = support(
+            crate::builtin::builtin_profile("anthropic"),
+            "claude-opus-4-8",
+        );
         assert_eq!(opus.options, vec![Low, Medium, High, XHigh]);
         assert_eq!(opus.default, Low);
-        let sonnet46 = support(crate::anthropic_profile(), "claude-sonnet-4-6");
+        let sonnet46 = support(
+            crate::builtin::builtin_profile("anthropic"),
+            "claude-sonnet-4-6",
+        );
         assert_eq!(sonnet46.options, vec![Low, Medium, High]);
-        assert!(!support(crate::anthropic_profile(), "claude-3-haiku").supported());
+        assert!(!support(
+            crate::builtin::builtin_profile("anthropic"),
+            "claude-3-haiku"
+        )
+        .supported());
 
-        assert!(support(crate::openai_profile(), "gpt-5").supported());
-        assert!(support(crate::openai_profile(), "o3-mini").supported());
-        assert!(!support(crate::openai_profile(), "gpt-4.1-mini").supported());
-        assert!(support(crate::xai_grok_profile(), "grok-4.6").supported());
-        assert!(!support(crate::xai_grok_profile(), "grok-3").supported());
-        assert!(!support(crate::ollama_profile(), "llama3.2").supported());
+        assert!(support(crate::builtin::builtin_profile("openai"), "gpt-5").supported());
+        assert!(support(crate::builtin::builtin_profile("openai"), "o3-mini").supported());
+        assert!(!support(crate::builtin::builtin_profile("openai"), "gpt-4.1-mini").supported());
+        assert!(support(crate::builtin::builtin_profile("xai"), "grok-4.6").supported());
+        assert!(!support(crate::builtin::builtin_profile("xai"), "grok-3").supported());
+        assert!(!support(crate::builtin::builtin_profile("ollama"), "llama3.2").supported());
     }
 }

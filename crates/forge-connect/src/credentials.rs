@@ -173,7 +173,7 @@ mod tests {
     fn a_zen_write_lands_in_the_go_slot_and_disconnect_clears_both() {
         let dir = tempdir().unwrap();
         let creds = credentials(&dir);
-        let zen = crate::opencode_zen::opencode_zen_profile();
+        let zen = crate::builtin::builtin_profile("opencode_zen");
         // An upgrade left a Zen-only key in the old slot (its read is
         // covered in `resolve`).
         creds
@@ -196,7 +196,7 @@ mod tests {
     fn clearing_or_flagging_a_slot_drops_its_session_key() {
         let dir = tempdir().unwrap();
         let creds = credentials(&dir);
-        let openai = crate::openai::openai_profile();
+        let openai = crate::builtin::builtin_profile("openai");
         creds.set_session_key(&openai, "typed");
         assert_eq!(creds.session_key(&openai).as_deref(), Some("typed"));
         creds.report_auth_failure(&openai).unwrap();
@@ -215,7 +215,7 @@ mod tests {
     fn concurrent_refreshes_of_a_profile_run_one_at_a_time() {
         let dir = tempdir().unwrap();
         let creds = Arc::new(credentials(&dir));
-        let xai = crate::xai::xai_grok_profile();
+        let xai = crate::builtin::builtin_profile("xai");
         let guard = creds
             .refresh_guards
             .lock()

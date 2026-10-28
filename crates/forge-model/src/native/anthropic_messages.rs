@@ -465,7 +465,9 @@ mod tests {
     fn thinking_off_sends_disabled_mode() {
         let mut body = json!({});
         let support = forge_connect::effort::effort(
-            &forge_connect::RouteDefinition::from_spec(&forge_connect::anthropic_profile()),
+            &forge_connect::RouteDefinition::from_spec(&forge_connect::builtin::builtin_profile(
+                "anthropic",
+            )),
             "claude-sonnet-4-6",
             &forge_connect::ModelCatalogCache::new(
                 std::env::temp_dir().join("forge-no-catalog.json"),
@@ -704,7 +706,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::anthropic_profile(),
+            forge_connect::builtin::builtin_profile("anthropic"),
             &base_url,
             key("anthropic-secret"),
         );
@@ -760,7 +762,7 @@ mod tests {
     async fn handles_missing_key_http_error_and_stream_error() {
         // No credential in the table: MissingApiKey before any request.
         let client = test_client(
-            forge_connect::anthropic_profile(),
+            forge_connect::builtin::builtin_profile("anthropic"),
             "http://127.0.0.1:9",
             None,
         );
@@ -785,7 +787,7 @@ mod tests {
             return;
         };
         let client = test_client(
-            forge_connect::anthropic_profile(),
+            forge_connect::builtin::builtin_profile("anthropic"),
             &format!("{base_url}/v1"),
             key("bad"),
         );
@@ -849,7 +851,7 @@ mod tests {
     ) -> Option<Result<ModelResponse, ModelError>> {
         let (base_url, _request_rx) = serve_once("200 OK", "text/event-stream", sse).await?;
         let client = test_client(
-            forge_connect::anthropic_profile(),
+            forge_connect::builtin::builtin_profile("anthropic"),
             &base_url,
             key("anthropic-secret"),
         );
@@ -905,7 +907,7 @@ mod tests {
                 return;
             };
             let client = test_client(
-                forge_connect::anthropic_profile(),
+                forge_connect::builtin::builtin_profile("anthropic"),
                 &base_url,
                 key("anthropic-secret"),
             );

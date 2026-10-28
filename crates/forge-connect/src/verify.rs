@@ -148,6 +148,163 @@ pub(crate) fn probe_openai_models(
     }
 }
 
+/// Verify key with a lightweight messages probe (or models if available).
+/// Uses Anthropic's `x-api-key` header. Never includes the key in errors.
+pub(crate) fn verify_anthropic_key(api_key: &str, base_url: &str) -> Result<(), VerifyError> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Err(VerifyError::EmptyKey);
+    }
+    if key.len() < 16 {
+        return Err(VerifyError::KeyTooShort {
+            len: key.len(),
+            guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
+        });
+    }
+    let base = base_url.trim().trim_end_matches('/');
+    // Minimal auth check: list models when supported; otherwise POST with invalid body
+    // still returns 401 for bad keys vs 400 for good keys.
+    let url = format!("{base}/v1/models");
+    let resp = ureq::get(&url)
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header(
+            "User-Agent",
+            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
+        // Verification branches on the status itself, so a non-2xx is data
+        // rather than a transport failure. ureq 3 would otherwise turn every
+        // 401/404/500 into `Err` and leave the status arms below unreachable.
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .call();
+    match resp {
+        Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
+        Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
+            Err(VerifyError::Unauthorized {
+                provider: "Anthropic".into(),
+                guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
+            })
+        }
+        Ok(r) if r.status().as_u16() == 404 => {
+            // Older APIs may not expose /v1/models — fall back to a tiny messages call.
+            verify_via_messages(key, base)
+        }
+        Ok(r) => {
+            // 400/other with auth accepted is fine for key validity.
+            if r.status().as_u16() < 500 {
+                Ok(())
+            } else {
+                Err(VerifyError::Status {
+                    provider: "Anthropic".into(),
+                    status: r.status().as_u16(),
+                    guidance: None,
+                })
+            }
+        }
+        Err(other) => Err(VerifyError::Unreachable {
+            provider: "Anthropic".into(),
+            message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
+        }),
+    }
+}
+
+fn verify_via_messages(key: &str, base: &str) -> Result<(), VerifyError> {
+    // Intentionally tiny/invalid payload — we only care about auth status codes.
+    let url = format!("{base}/v1/messages");
+    let body = r#"{"model":"","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}"#;
+    match ureq::post(&url)
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .header(
+            "User-Agent",
+            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_per_call(Some(std::time::Duration::from_secs(15)))
+        .build()
+        .send(body)
+    {
+        Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => {
+            Err(VerifyError::Unauthorized {
+                provider: "Anthropic".into(),
+                guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
+            })
+        }
+        // 400/404/etc. means the credential was accepted and the payload was not.
+        Ok(_) => Ok(()),
+        Err(other) => Err(VerifyError::Unreachable {
+            provider: "Anthropic".into(),
+            message: format!("Could not reach Anthropic to verify key ({other}). Check network."),
+        }),
+    }
+}
+
+/// Probe `GET {base}/api/tags` to ensure Ollama is running.
+pub(crate) fn verify_ollama_reachable(base_url: &str) -> Result<(), VerifyError> {
+    let base = base_url.trim().trim_end_matches('/');
+    // Prefer native tags API; fall back to OpenAI-compatible /v1/models.
+    let tags = format!("{base}/api/tags");
+    match ureq::get(&tags)
+        .header(
+            "User-Agent",
+            &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .config()
+        // Never follow redirects: a hop could forward the credential.
+        .max_redirects(0)
+        .timeout_per_call(Some(std::time::Duration::from_secs(3)))
+        .build()
+        .call()
+    {
+        Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
+        Ok(r) => Err(VerifyError::Unhealthy {
+            provider: "Ollama".into(),
+            status: r.status().as_u16(),
+            endpoint: base.to_string(),
+            guidance: "Is the server healthy?".into(),
+        }),
+        Err(_) => {
+            let models = format!("{base}/v1/models");
+            match ureq::get(&models)
+                .header(
+                    "User-Agent",
+                    &format!("forge-connect/{}", env!("CARGO_PKG_VERSION")),
+                )
+                .config()
+                // Never follow redirects: a hop could forward the credential.
+                .max_redirects(0)
+                .timeout_per_call(Some(std::time::Duration::from_secs(3)))
+                .build()
+                .call()
+            {
+                Ok(r) if (200..300).contains(&r.status().as_u16()) => Ok(()),
+                Ok(r) => Err(VerifyError::Unhealthy {
+                    provider: "Ollama".into(),
+                    status: r.status().as_u16(),
+                    endpoint: base.to_string(),
+                    guidance: "Is the server healthy?".into(),
+                }),
+                Err(e) => Err(VerifyError::Unreachable {
+                    provider: "Ollama".into(),
+                    message: format!(
+                        "Cannot reach Ollama at {base} ({e}). \
+Start it with `ollama serve` (default http://localhost:11434)."
+                    ),
+                }),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

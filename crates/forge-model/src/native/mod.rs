@@ -571,7 +571,7 @@ pub(super) mod tests {
     async fn the_model_prefix_picks_the_profile_and_old_prefixes_get_a_hint() {
         let dir = tempfile::tempdir().unwrap();
         let (table, creds) = builtin_table(&dir);
-        let codex = forge_connect::openai_codex_profile();
+        let codex = forge_connect::builtin::builtin_profile("openai_codex");
         creds.set_oauth(&codex, oauth(&chatgpt_token())).unwrap();
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         client.set_routes(table);
@@ -625,7 +625,7 @@ pub(super) mod tests {
         let creds = Arc::new(Credentials::new(forge_connect::CredentialStore::new(
             dir.path().join("credentials.toml"),
         )));
-        let mut xai = forge_connect::xai_grok_profile();
+        let mut xai = forge_connect::builtin::builtin_profile("xai");
         xai.api_key_env.clear();
         xai.base_url = chat;
         // The test-only issuer override: refresh talks to the mock.
@@ -659,19 +659,19 @@ pub(super) mod tests {
         let paths = [
             (
                 "chat-completions",
-                forge_connect::openai_profile(),
+                forge_connect::builtin::builtin_profile("openai"),
                 "openai/m",
                 "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
             ),
             (
                 "codex-responses",
-                forge_connect::openai_codex_profile(),
+                forge_connect::builtin::builtin_profile("openai_codex"),
                 "openai_codex/gpt-5",
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n",
             ),
             (
                 "anthropic-messages",
-                forge_connect::anthropic_profile(),
+                forge_connect::builtin::builtin_profile("anthropic"),
                 "anthropic/claude",
                 concat!(
                     "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",

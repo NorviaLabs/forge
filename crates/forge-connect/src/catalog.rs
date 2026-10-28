@@ -1123,7 +1123,6 @@ pub fn runnable_models_for_picker(
 mod tests {
     use super::*;
     use crate::auth::OauthTokens;
-    use crate::openai::openai_profile;
     use crate::{group_routes, normalize_model_id};
     use forge_test_support::mock_http;
     use tempfile::tempdir;
@@ -1133,7 +1132,7 @@ mod tests {
         let Some(url) = mock_http(vec![(200, r#"{"data":[{"id":"org/model"}]}"#, vec![])]) else {
             return;
         };
-        let mut profile = openai_profile();
+        let mut profile = crate::builtin::builtin_profile("openai");
         profile.id = "custom".into();
         profile.model_provider_prefix = "custom".into();
         profile.origin = crate::SpecOrigin::User;
@@ -1162,7 +1161,7 @@ mod tests {
         let Some(url) = mock_http(vec![(503, "{}", vec![])]) else {
             return;
         };
-        let mut profile = openai_profile();
+        let mut profile = crate::builtin::builtin_profile("openai");
         profile.base_url = url;
         profile.manual_models = vec!["openai/manual".into()];
         let dir = tempdir().unwrap();
@@ -1362,7 +1361,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let p = openai_profile();
+        let p = crate::builtin::builtin_profile("openai");
         let entries = models_for_picker(std::slice::from_ref(&p), &store, &cache, false);
         assert!(!entries.is_empty());
         assert!(entries.iter().all(|e| e.id.starts_with("openai/")));
@@ -1381,7 +1380,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let profile = openai_profile();
+        let profile = crate::builtin::builtin_profile("openai");
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
         cache
@@ -1404,7 +1403,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let profile = openai_profile();
+        let profile = crate::builtin::builtin_profile("openai");
         cache
             .put(&profile.id, vec!["openai/gpt-5.6-sol".into()])
             .unwrap();
@@ -1455,7 +1454,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml")).with_ttl(3600);
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let mut profile = crate::xai::xai_grok_profile();
+        let mut profile = crate::builtin::builtin_profile("xai");
         store
             .set_oauth(
                 &profile.id,
@@ -1503,10 +1502,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let mut first = openai_profile();
+        let mut first = crate::builtin::builtin_profile("openai");
         first.id = "first".into();
         first.default_models = vec!["shared/model".into(), "first/alpha".into()];
-        let mut second = openai_profile();
+        let mut second = crate::builtin::builtin_profile("openai");
         second.id = "second".into();
         second.default_models = vec!["shared/model".into(), "second/beta".into()];
 
@@ -1530,10 +1529,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let mut first = openai_profile();
+        let mut first = crate::builtin::builtin_profile("openai");
         first.id = "first".into();
         first.default_models = vec!["shared/model".into(), "first/alpha".into()];
-        let mut second = openai_profile();
+        let mut second = crate::builtin::builtin_profile("openai");
         second.id = "second".into();
         second.default_models = vec!["shared/model".into(), "second/beta".into()];
 
@@ -1601,7 +1600,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let profile = crate::openai_codex::openai_codex_profile();
+        let profile = crate::builtin::builtin_profile("openai_codex");
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai_codex/not-entitled".into()]);
         cache
@@ -1759,7 +1758,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         let store = CredentialStore::new(dir.path().join("k.toml"));
-        let profile = crate::ollama::ollama_profile();
+        let profile = crate::builtin::builtin_profile("ollama");
         let entries = models_for_picker(&[profile], &store, &cache, false);
         assert!(entries.is_empty());
     }
@@ -1777,7 +1776,7 @@ mod tests {
 
     #[test]
     fn fetch_remote_models_uses_profile_specific_http_shapes() {
-        let mut openai = openai_profile();
+        let mut openai = crate::builtin::builtin_profile("openai");
         let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"id":"gpt-4.1-mini"},{"id":"text-embedding-3-small"}]}"#,
@@ -1792,7 +1791,7 @@ mod tests {
             vec!["openai/gpt-4.1-mini"]
         );
 
-        let mut go = crate::opencode_go::opencode_go_profile();
+        let mut go = crate::builtin::builtin_profile("opencode_go");
         let Some(mock_url) = mock_http(vec![(200, r#"{"data":[{"id":"gpt-4.1-mini"}]}"#, vec![])])
         else {
             eprintln!("skipping: this host denies binding a listener");
@@ -1804,7 +1803,7 @@ mod tests {
             vec!["opencode_go/gpt-4.1-mini"]
         );
 
-        let mut zen = crate::opencode_zen::opencode_zen_profile();
+        let mut zen = crate::builtin::builtin_profile("opencode_zen");
         let Some(mock_url) = mock_http(vec![(200, r#"{"models":["claude-sonnet-4"]}"#, vec![])])
         else {
             eprintln!("skipping: this host denies binding a listener");
@@ -1816,7 +1815,7 @@ mod tests {
             vec!["opencode_zen/claude-sonnet-4"]
         );
 
-        let mut xai = crate::xai::xai_grok_profile();
+        let mut xai = crate::builtin::builtin_profile("xai");
         let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"data":[{"slug":"grok-code-fast"}]}"#,
@@ -1831,7 +1830,7 @@ mod tests {
             vec!["xai/grok-code-fast"]
         );
 
-        let mut codex = crate::openai_codex::openai_codex_profile();
+        let mut codex = crate::builtin::builtin_profile("openai_codex");
         let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"models":[{"slug":"gpt-5.6-sol"},{"slug":"codex-auto-review"}]}"#,
@@ -1876,7 +1875,7 @@ mod tests {
                 return;
             };
             profile.base_url = url;
-            let key = if profile.id == crate::OPENAI_CODEX_PROFILE_ID {
+            let key = if profile.id == crate::builtin::profile_ids::OPENAI_CODEX {
                 token.as_str()
             } else {
                 "catalog-key"
@@ -1923,7 +1922,7 @@ mod tests {
 
     #[test]
     fn fetch_remote_models_covers_anthropic_and_ollama_fallbacks() {
-        let mut anthropic = crate::anthropic::anthropic_profile();
+        let mut anthropic = crate::builtin::builtin_profile("anthropic");
         let Some(mock_url) = mock_http(vec![
             (400, "query rejected", vec![]),
             (
@@ -1941,7 +1940,7 @@ mod tests {
             vec!["anthropic/claude-sonnet-4-20250514"]
         );
 
-        let mut ollama = crate::ollama::ollama_profile();
+        let mut ollama = crate::builtin::builtin_profile("ollama");
         let Some(mock_url) = mock_http(vec![(
             200,
             r#"{"models":[{"name":"qwen2.5-coder:latest"}]}"#,
@@ -1956,7 +1955,7 @@ mod tests {
             vec!["ollama/qwen2.5-coder:latest"]
         );
 
-        let mut ollama_fallback = crate::ollama::ollama_profile();
+        let mut ollama_fallback = crate::builtin::builtin_profile("ollama");
         let Some(mock_url) = mock_http(vec![
             (200, r#"{"models":[]}"#, vec![]),
             (200, r#"{"data":[{"id":"llama3.2"}]}"#, vec![]),
@@ -2031,14 +2030,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = CredentialStore::new(dir.path().join("k.toml"));
 
-        let api_profile = openai_profile();
+        let api_profile = crate::builtin::builtin_profile("openai");
         store.set_api_key(&api_profile.id, "sk-file").unwrap();
         assert_eq!(
             credential_for_catalog(&api_profile, &store),
             Some("sk-file".into())
         );
 
-        let oauth_profile = crate::xai::xai_grok_profile();
+        let oauth_profile = crate::builtin::builtin_profile("xai");
         store
             .set_oauth(
                 &oauth_profile.id,
@@ -2090,9 +2089,9 @@ mod tests {
         // ChatGPT shares models.dev's `openai` row through its own
         // `models_dev_providers`, so it stamps that row under its prefix.
         let profiles = vec![
-            openai_profile(),
-            crate::openai_codex::openai_codex_profile(),
-            crate::xai::xai_grok_profile(),
+            crate::builtin::builtin_profile("openai"),
+            crate::builtin::builtin_profile("openai_codex"),
+            crate::builtin::builtin_profile("xai"),
         ];
         cache
             .save(&CatalogFile {
@@ -2179,31 +2178,31 @@ mod tests {
     #[test]
     fn fetch_remote_models_reports_missing_credentials_and_unknown_profiles_before_network() {
         assert_eq!(
-            fetch_remote_models(&openai_profile(), None)
+            fetch_remote_models(&crate::builtin::builtin_profile("openai"), None)
                 .unwrap_err()
                 .to_string(),
             "OpenAI API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::anthropic::anthropic_profile(), None)
+            fetch_remote_models(&crate::builtin::builtin_profile("anthropic"), None)
                 .unwrap_err()
                 .to_string(),
             "Anthropic API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::opencode_go::opencode_go_profile(), None)
+            fetch_remote_models(&crate::builtin::builtin_profile("opencode_go"), None)
                 .unwrap_err()
                 .to_string(),
             "OpenCode Go API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::opencode_zen::opencode_zen_profile(), None)
+            fetch_remote_models(&crate::builtin::builtin_profile("opencode_zen"), None)
                 .unwrap_err()
                 .to_string(),
             "OpenCode Zen API key required for catalog"
         );
         assert_eq!(
-            fetch_remote_models(&crate::xai::xai_grok_profile(), None)
+            fetch_remote_models(&crate::builtin::builtin_profile("xai"), None)
                 .unwrap_err()
                 .to_string(),
             "xAI Grok OAuth token required for catalog"

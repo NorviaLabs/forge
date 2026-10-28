@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{OauthPending, OauthTokens, OPENAI_CODEX_PROFILE_ID};
+use crate::{OauthPending, OauthTokens};
 
 /// Base-URL env alias for the ChatGPT backend.
 pub const API_BASE_ENV: &str = "FORGE_CODEX_API_BASE";
@@ -295,7 +295,7 @@ fn codex_usage_url() -> String {
 /// stored login.
 pub(crate) fn usage_report(store: &crate::CredentialStore) -> Result<Vec<String>, String> {
     let tokens = store
-        .get_oauth(OPENAI_CODEX_PROFILE_ID)
+        .get_oauth(crate::builtin::profile_ids::OPENAI_CODEX)
         .map_err(|error| format!("could not read Codex credentials: {error}"))?;
     let access_token = tokens
         .as_ref()
@@ -432,7 +432,7 @@ mod tests {
 
     fn pending_for(client: &ChatgptOauthClient) -> OauthPending {
         OauthPending {
-            profile_id: crate::openai_codex::PROFILE_ID.into(),
+            profile_id: crate::builtin::profile_ids::OPENAI_CODEX.into(),
             verification_uri: format!("{}/codex/device", client.auth_base),
             verification_uri_complete: None,
             user_code: "FORGE-TEST".into(),
@@ -565,7 +565,7 @@ mod tests {
         };
         let client = mock_client(base);
         let pending = client
-            .start_device_code(crate::OPENAI_CODEX_PROFILE_ID)
+            .start_device_code(crate::builtin::profile_ids::OPENAI_CODEX)
             .unwrap();
         assert_eq!(pending.profile_id, "openai_codex");
         assert_eq!(pending.device_code, "device-1");
@@ -655,7 +655,7 @@ mod tests {
     fn store_codex_login(store: &crate::CredentialStore) {
         store
             .set_oauth(
-                crate::OPENAI_CODEX_PROFILE_ID,
+                crate::builtin::profile_ids::OPENAI_CODEX,
                 crate::OauthTokens {
                     access_token: "header.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjb3VudC0xMjMifX0.signature".into(),
                     refresh_token: None,

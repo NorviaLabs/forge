@@ -430,7 +430,7 @@ mod tests {
         let env = EnvGuard::new(ENV);
         let dir = tempdir().unwrap();
         let (table, creds) = table(&dir);
-        let openai = crate::openai::openai_profile();
+        let openai = crate::builtin::builtin_profile("openai");
         assert_eq!(secret(&table, "openai"), Err(CredentialError::Missing));
         creds.set_api_key(&openai, " stored ").unwrap();
         assert_eq!(secret(&table, "openai").unwrap().as_deref(), Some("stored"));
@@ -464,7 +464,7 @@ mod tests {
         let env = EnvGuard::new(ENV);
         let dir = tempdir().unwrap();
         let (table, creds) = table(&dir);
-        let openai = crate::openai::openai_profile();
+        let openai = crate::builtin::builtin_profile("openai");
         creds.set_api_key(&openai, "stored").unwrap();
         creds.report_auth_failure(&openai).unwrap();
         assert_eq!(secret(&table, "openai"), Err(CredentialError::AuthRequired));
@@ -507,7 +507,7 @@ mod tests {
         let env = EnvGuard::new(ENV);
         let dir = tempdir().unwrap();
         let (table, creds) = table(&dir);
-        let xai = crate::xai::xai_grok_profile();
+        let xai = crate::builtin::builtin_profile("xai");
         let token = |access: &str| crate::OauthTokens {
             access_token: access.into(),
             refresh_token: None,
@@ -584,7 +584,7 @@ mod tests {
             account_id: Some("acct-secret".into()),
         };
         let table = RouteTable::single(
-            definition_for(&crate::openai::openai_profile()),
+            definition_for(&crate::builtin::builtin_profile("openai")),
             Credential::Static(Some(value.clone())),
         );
         let text = format!("{table:?} {value:?}");

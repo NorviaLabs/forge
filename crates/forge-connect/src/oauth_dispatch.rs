@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn the_rfc8628_flow_reads_the_profile_auth_table() {
-        let mut profile = crate::xai::xai_grok_profile();
+        let mut profile = crate::builtin::builtin_profile("xai");
         let client = rfc8628(&profile).unwrap();
         assert_eq!(client.issuer, crate::oauth_rfc8628::DEFAULT_ISSUER);
         assert_eq!(client.client_id, crate::oauth_rfc8628::DEFAULT_CLIENT_ID);
@@ -202,7 +202,7 @@ mod tests {
             return;
         };
 
-        let mut profile = crate::openai_codex::openai_codex_profile();
+        let mut profile = crate::builtin::builtin_profile("openai_codex");
         // The test-only issuer override: the flow talks to the mock.
         if let Some(auth) = profile.auth.as_mut() {
             auth.issuer = Some(base.clone());
@@ -231,7 +231,7 @@ mod tests {
         };
 
         let pending = OauthPending {
-            profile_id: crate::openai_codex::PROFILE_ID.into(),
+            profile_id: crate::builtin::profile_ids::OPENAI_CODEX.into(),
             verification_uri: format!("{base}/codex/device"),
             verification_uri_complete: None,
             user_code: "AB12".into(),
@@ -277,7 +277,7 @@ mod tests {
             return;
         };
 
-        let mut profile = crate::xai::xai_grok_profile();
+        let mut profile = crate::builtin::builtin_profile("xai");
         // The test-only issuer override: the flow talks to the mock.
         if let Some(auth) = profile.auth.as_mut() {
             auth.issuer = Some(base.clone());
@@ -306,7 +306,7 @@ mod tests {
         };
 
         let pending = OauthPending {
-            profile_id: crate::xai::PROFILE_ID.into(),
+            profile_id: crate::builtin::profile_ids::XAI.into(),
             verification_uri: format!("{base}/oauth2/device"),
             verification_uri_complete: None,
             user_code: "AB12".into(),

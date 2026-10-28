@@ -895,7 +895,7 @@ mod tests {
             return;
         };
         let client = crate::native::tests::test_client(
-            forge_connect::openai_codex_profile(),
+            forge_connect::builtin::builtin_profile("openai_codex"),
             &base,
             crate::native::tests::account_key("token"),
         );
@@ -929,7 +929,7 @@ mod tests {
 
     fn codex_client(base: String) -> NativeModelClient {
         crate::native::tests::test_client(
-            forge_connect::openai_codex_profile(),
+            forge_connect::builtin::builtin_profile("openai_codex"),
             &base,
             crate::native::tests::account_key("token"),
         )
@@ -985,7 +985,7 @@ mod tests {
             return;
         };
         let client = crate::native::tests::test_client(
-            forge_connect::openai_codex_profile(),
+            forge_connect::builtin::builtin_profile("openai_codex"),
             &base,
             crate::native::tests::account_key("token"),
         );

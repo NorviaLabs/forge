@@ -6074,8 +6074,8 @@ mod tests {
         // no Models view open); it must hand off a complete, self-sufficient
         // action for the app layer to resolve a default model + effort for.
         let mut registry = forge_connect::ConnectRegistry::new();
-        registry.register(forge_connect::anthropic_profile());
-        registry.register(forge_connect::ollama_profile());
+        registry.register(forge_connect::builtin::builtin_profile("anthropic"));
+        registry.register(forge_connect::builtin::builtin_profile("ollama"));
         let connected: std::collections::HashSet<String> =
             ["anthropic".to_string(), "ollama".to_string()]
                 .into_iter()
@@ -6105,7 +6105,7 @@ mod tests {
     #[test]
     fn providers_column_enter_on_the_active_route_browses_its_models() {
         let mut registry = forge_connect::ConnectRegistry::new();
-        registry.register(forge_connect::ollama_profile());
+        registry.register(forge_connect::builtin::builtin_profile("ollama"));
         let connected: std::collections::HashSet<String> =
             ["ollama".to_string()].into_iter().collect();
         let providers = build_provider_rows_with_reuse(&registry, &connected, Some("ollama"), &[]);
