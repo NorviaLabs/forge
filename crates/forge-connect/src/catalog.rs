@@ -1869,12 +1869,9 @@ mod tests {
         let mut profiles = crate::builtin_registry().profiles().to_vec();
         let mut custom = crate::profile::test_spec(
             "custom",
-            crate::AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
             vec![],
         );
-        custom.transport = crate::ProviderTransport::OpenaiCompat;
         custom.origin = crate::SpecOrigin::User;
         profiles.push(custom);
         let token = codex_access_token_for_tests();

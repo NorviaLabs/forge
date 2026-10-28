@@ -110,20 +110,15 @@ impl OauthDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::{AuthMode, OauthPending};
+    use crate::auth::OauthPending;
 
-    fn profile(id: &str, auth_mode: AuthMode) -> crate::ProviderSpec {
-        crate::profile::test_spec(id, auth_mode, vec![])
+    fn profile(id: &str, auth: crate::AuthSpec) -> crate::ProviderSpec {
+        crate::profile::test_spec(id, auth, vec![])
     }
 
     #[test]
     fn api_key_profiles_have_no_oauth_flavor() {
-        let profile = profile(
-            "demo",
-            AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
-        );
+        let profile = profile("demo", crate::AuthSpec::api_key(crate::AuthPrompt::Never));
         assert!(flavor(&profile)
             .unwrap_err()
             .to_string()
@@ -149,12 +144,7 @@ mod tests {
     /// These assert that short-circuit rather than the transport behind it.
     #[test]
     fn start_rejects_a_non_oauth_profile_without_contacting_a_server() {
-        let profile = profile(
-            "demo",
-            AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
-        );
+        let profile = profile("demo", crate::AuthSpec::api_key(crate::AuthPrompt::Never));
         let err = OauthDispatcher::start(&profile).unwrap_err();
         assert!(
             matches!(err, OauthError::NotOauth(ref id) if id == "demo"),
@@ -165,12 +155,7 @@ mod tests {
 
     #[test]
     fn refresh_rejects_a_non_oauth_profile_without_contacting_a_server() {
-        let profile = profile(
-            "demo",
-            AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
-        );
+        let profile = profile("demo", crate::AuthSpec::api_key(crate::AuthPrompt::Never));
         let err = OauthDispatcher::refresh(&profile, "rt").unwrap_err();
         assert!(matches!(err, OauthError::NotOauth(ref id) if id == "demo"));
     }

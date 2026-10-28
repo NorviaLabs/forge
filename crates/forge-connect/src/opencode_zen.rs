@@ -4,10 +4,9 @@
 //! The same account API key works for Zen and Go; bases differ.
 //! Native routing maps `opencode-zen/<id>` to the Zen OpenAI-compatible endpoint.
 
-use crate::auth::AuthMode;
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
-    ProviderTransport, SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
+    SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
 };
 
 pub const PROFILE_ID: &str = "opencode_zen";
@@ -23,9 +22,6 @@ pub fn opencode_zen_profile() -> ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenCode Zen".into(),
         description: "OpenCode Zen model catalog — API key required (TUI prompts)".into(),
-        auth_mode: AuthMode::ApiKey {
-            tui_always_prompt: true,
-        },
         // Same key family as Go; Zen-specific env allowed first if set.
         api_key_env: vec![
             "OPENCODE_ZEN_API_KEY".into(),
@@ -43,7 +39,6 @@ pub fn opencode_zen_profile() -> ProviderSpec {
         label: "Zen".into(),
         route_id: "opencode-zen".into(),
         catalog_mode: CatalogMode::LiveRegistry,
-        transport: ProviderTransport::OpenaiCompat,
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKey,
             prompt: AuthPrompt::Tui,

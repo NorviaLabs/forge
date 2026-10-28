@@ -1,9 +1,8 @@
 //! xAI Grok connect profile — OAuth (PROV-01 / Phase 6.1).
 
-use crate::auth::AuthMode;
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, EffortFamily,
-    OauthFlavor, ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
+    OauthFlavor, ProviderSpec, SpecOrigin, WireKind,
 };
 
 pub const PROFILE_ID: &str = "xai";
@@ -13,7 +12,6 @@ pub fn xai_grok_profile() -> ProviderSpec {
         id: PROFILE_ID.into(),
         title: "xAI Grok".into(),
         description: "Grok via xAI OAuth (not API key); xai/* models".into(),
-        auth_mode: AuthMode::xai_oauth(),
         // An xAI API key in env beats the stored OAuth login (design E3b).
         api_key_env: vec!["XAI_API_KEY".into(), "GROK_CODE_XAI_API_KEY".into()],
         base_url: "https://api.x.ai/v1".into(),
@@ -27,7 +25,6 @@ pub fn xai_grok_profile() -> ProviderSpec {
         label: "API".into(),
         route_id: "xai-api".into(),
         catalog_mode: CatalogMode::LiveRegistry,
-        transport: ProviderTransport::OpenaiCompat,
         auth: Some(AuthSpec {
             kind: AuthKind::OauthDevice,
             flavor: Some(OauthFlavor::Rfc8628),
@@ -69,7 +66,7 @@ mod tests {
     fn profile_is_oauth_not_api_key() {
         let p = xai_grok_profile();
         assert_eq!(p.id, "xai");
-        assert!(p.auth_mode.is_oauth());
+        assert!(p.effective_auth().is_oauth());
         assert!(p.rejects_api_key_cli());
         assert!(!p.needs_tui_api_key_prompt());
         assert_eq!(p.api_key_env, vec!["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);

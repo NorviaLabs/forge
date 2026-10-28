@@ -1,9 +1,8 @@
 //! Anthropic connect profile — API key (`anthropic/*`).
 
-use crate::auth::AuthMode;
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
-    ProviderTransport, SpecOrigin, StaticHeader, WireKind,
+    SpecOrigin, StaticHeader, WireKind,
 };
 use crate::verify::VerifyError;
 
@@ -15,9 +14,6 @@ pub fn anthropic_profile() -> ProviderSpec {
         id: PROFILE_ID.into(),
         title: "Anthropic".into(),
         description: "Anthropic API key — anthropic/* (Claude) models".into(),
-        auth_mode: AuthMode::ApiKey {
-            tui_always_prompt: true,
-        },
         api_key_env: vec!["ANTHROPIC_API_KEY".into()],
         base_url: DEFAULT_BASE_URL.into(),
         default_models: vec!["anthropic/claude-sonnet-4-20250514".into()],
@@ -29,7 +25,6 @@ pub fn anthropic_profile() -> ProviderSpec {
         label: "API".into(),
         route_id: "anthropic-api".into(),
         catalog_mode: CatalogMode::LiveRegistry,
-        transport: ProviderTransport::Anthropic,
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKey,
             prompt: AuthPrompt::Tui,

@@ -3,9 +3,6 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
-use crate::auth::AuthMode;
 use crate::profile::{
     AuthKind, AuthPrompt, AuthSpec, CatalogMode, EditableField, ProviderSpec, SpecOrigin, WireKind,
 };
@@ -295,9 +292,6 @@ fn save_custom_provider_to(
         // The §1.1 fields plus the legacy `auth_mode`, `transport`,
         // `model_provider_prefix`, `route_id` and `catalog_mode`, which stay
         // until stage 8 so an older binary can still read the entry.
-        auth_mode: AuthMode::ApiKey {
-            tui_always_prompt: true,
-        },
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKey,
             prompt: AuthPrompt::Tui,
@@ -323,7 +317,6 @@ fn save_custom_provider_to(
         provider_label: id.into(),
         route_id: id.into(),
         catalog_mode: CatalogMode::Live,
-        transport: wire.into(),
         origin: SpecOrigin::User,
         ..ProviderSpec::blank()
     };
@@ -348,12 +341,25 @@ fn save_custom_provider_to(
     }
     let registry = loaded_registry_from(path);
     validate_user_spec(&registry, &spec)?;
+    // The legacy `auth_mode` and `transport` keys are written until stage 8
+    // so an older binary can still read the entry.
+    let mut entry =
+        toml::Value::try_from(&spec).map_err(|err| format!("cannot serialize provider: {err}"))?;
+    if let Some(table) = entry.as_table_mut() {
+        table.insert(
+            "auth_mode".into(),
+            toml::toml! { api_key = { tui_always_prompt = true } }.into(),
+        );
+        table.insert(
+            "transport".into(),
+            crate::profile::legacy_transport_for(wire).into(),
+        );
+    }
+    let mut file = toml::Table::new();
+    file.insert("providers".into(), toml::Value::Array(vec![entry]));
     let addition = format!(
         "\n{}",
-        toml::to_string_pretty(&UserProvidersFile {
-            providers: vec![spec.clone()],
-        })
-        .map_err(|err| format!("cannot serialize provider: {err}"))?
+        toml::to_string_pretty(&file).map_err(|err| format!("cannot serialize provider: {err}"))?
     );
     // Some valid TOML shapes (e.g. `providers = []`) cannot accept an array-table append.
     toml::from_str::<toml::Value>(&format!("{}{addition}", original.as_deref().unwrap_or("")))
@@ -513,12 +519,6 @@ fn normalize_model_lists(registry: &mut ConnectRegistry) {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct UserProvidersFile {
-    #[serde(default)]
-    providers: Vec<ProviderSpec>,
-}
-
 /// Keys a custom entry may set (§1.1 "C"), including the old names of
 /// renamed fields and the legacy keys.
 const CUSTOM_KEYS: &[&str] = &[
@@ -640,14 +640,22 @@ fn is_valid_key_env_name(name: &str) -> bool {
 
 fn normalize_spec(mut spec: ProviderSpec) -> ProviderSpec {
     spec.origin = SpecOrigin::User;
-    // The §1.1 fields are authoritative; the legacy fields follow them for
-    // readers not yet moved to `effective_*`.
-    if let Some(auth) = &spec.auth {
-        spec.auth_mode = auth.to_auth_mode();
+    // Legacy keys map into the §1.1 fields when those are unset.
+    if spec.auth.is_none() {
+        spec.auth = spec
+            .legacy_auth_mode
+            .as_ref()
+            .and_then(crate::profile::auth_from_legacy_mode);
     }
-    if let Some(wire) = spec.wire {
-        spec.transport = wire.into();
+    if spec.wire.is_none() {
+        spec.wire = spec
+            .legacy_transport
+            .as_deref()
+            .and_then(crate::profile::wire_from_legacy_transport);
     }
+    // Consumed: the raw legacy values are not part of the loaded profile.
+    spec.legacy_auth_mode = None;
+    spec.legacy_transport = None;
     if spec.title.trim().is_empty() {
         spec.title = spec.id.clone();
     }
@@ -793,7 +801,7 @@ fn validate_user_spec(registry: &ConnectRegistry, spec: &ProviderSpec) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::{test_spec, ProviderTransport};
+    use crate::profile::test_spec;
     use tempfile::tempdir;
 
     #[test]
@@ -884,7 +892,7 @@ mod tests {
             .unwrap();
             assert_eq!(spec.default_model(), Some(expected));
             assert_eq!(spec.catalog_mode, CatalogMode::Live);
-            assert_eq!(spec.transport, ProviderTransport::OpenaiCompat);
+            assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
             assert!(spec.needs_tui_api_key_prompt());
             assert!(spec.is_user());
             assert!(spec.api_key_env.is_empty());
@@ -1326,9 +1334,7 @@ base_url = "https://gone.example/v1"
         let mut r = ConnectRegistry::new();
         r.register(test_spec(
             "demo",
-            crate::auth::AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Never),
             vec!["demo/m".into()],
         ));
         assert_eq!(r.get("DEMO").unwrap().title, "demo");
@@ -1339,9 +1345,7 @@ base_url = "https://gone.example/v1"
     fn profile(id: &str, title: &str) -> ProviderSpec {
         let mut spec = test_spec(
             id,
-            crate::auth::AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Never),
             vec![],
         );
         spec.title = title.into();
@@ -1384,7 +1388,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         let registry = loaded_registry_from(&path);
         let spec = registry.get("groq").expect("user spec loaded");
         assert_eq!(spec.route_id(), "groq");
-        assert_eq!(spec.transport, ProviderTransport::OpenaiCompat);
+        assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
         assert_eq!(spec.origin, SpecOrigin::User);
         assert!(registry.get("openai").is_some());
     }

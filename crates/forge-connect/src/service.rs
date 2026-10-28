@@ -2,7 +2,7 @@
 
 use thiserror::Error;
 
-use crate::auth::{AuthMode, OauthPending, OauthTokens};
+use crate::auth::{OauthPending, OauthTokens};
 use crate::catalog::CatalogError;
 use crate::catalog::ModelCatalogCache;
 use crate::credentials::Credentials;
@@ -126,7 +126,7 @@ impl<'a> ConnectService<'a> {
                 "{badge} {id} — {title} ({mode})",
                 id = p.id,
                 title = p.title,
-                mode = p.auth_mode.label()
+                mode = p.effective_auth().label()
             ));
         }
         if lines.is_empty() {
@@ -177,7 +177,7 @@ impl<'a> ConnectService<'a> {
         api_key: Option<&str>,
     ) -> Result<ConnectOutcome, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        if profile.auth_mode.is_oauth() {
+        if profile.effective_auth().is_oauth() {
             return Err(ConnectError::OauthRejectsApiKey(profile.id));
         }
 
@@ -256,7 +256,7 @@ impl<'a> ConnectService<'a> {
         tokens: OauthTokens,
     ) -> Result<ConnectOutcome, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        if !profile.auth_mode.is_oauth() {
+        if !profile.effective_auth().is_oauth() {
             return Err(ConnectError::Message(format!(
                 "profile `{}` is not OAuth",
                 profile.id
@@ -272,27 +272,24 @@ impl<'a> ConnectService<'a> {
     /// Start an OAuth device-code session for the selected provider.
     pub fn start_oauth(&self, profile_id: &str) -> Result<OauthPending, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        let AuthMode::Oauth {
-            auth_server,
-            system_browser,
-            ..
-        } = &profile.auth_mode
-        else {
+        let auth = profile.effective_auth();
+        if !auth.is_oauth() {
             return Err(ConnectError::Message(format!(
                 "profile `{}` is not OAuth",
                 profile.id
             )));
-        };
+        }
 
         // Offline / unit-test stub
         if std::env::var("FORGE_CONNECT_OAUTH_STUB").is_ok()
             || std::env::var("FORGE_CONNECT_OAUTH_FIXTURE").is_ok()
         {
-            return Ok(OauthPending::start_stub(&profile.id, auth_server));
+            let issuer = auth.issuer.clone().unwrap_or_default();
+            return Ok(OauthPending::start_stub(&profile.id, &issuer));
         }
 
         let pending = OauthDispatcher::start(&profile)?;
-        if *system_browser {
+        if auth.prompt == crate::AuthPrompt::Browser {
             try_open_browser(pending.open_url());
         }
         Ok(pending)
@@ -389,7 +386,7 @@ impl<'a> ConnectService<'a> {
         profile_id: &str,
     ) -> Result<Result<ConnectOutcome, OauthPending>, ConnectError> {
         let profile = self.profile_or_err(profile_id)?;
-        if !profile.auth_mode.is_oauth() {
+        if !profile.effective_auth().is_oauth() {
             return Err(ConnectError::Message(format!(
                 "profile `{}` is not OAuth",
                 profile.id
@@ -487,7 +484,7 @@ impl ConnectService<'_> {
         for p in self.registry.profiles() {
             if resolve_connected(p, self.credentials.store())?.is_some() {
                 // Only count OAuth when tokens are non-fixture.
-                if p.auth_mode.is_oauth() {
+                if p.effective_auth().is_oauth() {
                     if let Some(tok) = self.credentials.store().get_oauth(&p.id)? {
                         let at = tok.access_token.trim();
                         if at.is_empty()
@@ -650,7 +647,7 @@ pub fn needs_tui_api_key_prompt(registry: &ConnectRegistry, profile_id: &str) ->
 pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
     registry
         .get(profile_id)
-        .map(|p| p.auth_mode.is_oauth())
+        .map(|p| p.effective_auth().is_oauth())
         .unwrap_or(false)
 }
 
@@ -677,7 +674,11 @@ pub fn handle_connect_action(
             lines.extend(svc.list_lines()?);
             for p in registry.profiles() {
                 if let Some(url) = &p.auth_url {
-                    lines.push(format!("  {} auth: {url} ({})", p.id, p.auth_mode.label()));
+                    lines.push(format!(
+                        "  {} auth: {url} ({})",
+                        p.id,
+                        p.effective_auth().label()
+                    ));
                 }
             }
             Ok(lines.join("\n"))
@@ -712,7 +713,6 @@ pub fn handle_connect_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::AuthMode;
 
     use crate::registry::ConnectRegistry;
     use tempfile::tempdir;
@@ -732,9 +732,7 @@ mod tests {
         let mut r = ConnectRegistry::new();
         let mut spec = crate::profile::test_spec(
             "demo",
-            AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
             vec!["demo/model-1".into()],
         );
         spec.title = "Demo".into();
@@ -752,8 +750,11 @@ mod tests {
     /// An xAI-shaped OAuth registry whose device flow talks to `issuer`.
     fn oauth_registry_at(issuer: &str) -> ConnectRegistry {
         let mut r = ConnectRegistry::new();
-        let mut spec =
-            crate::profile::test_spec("xai", AuthMode::xai_oauth(), vec!["xai/grok-3".into()]);
+        let mut spec = crate::profile::test_spec(
+            "xai",
+            crate::xai::xai_grok_profile().auth.unwrap(),
+            vec!["xai/grok-3".into()],
+        );
         spec.auth = crate::xai::xai_grok_profile().auth.map(|mut auth| {
             auth.issuer = Some(issuer.into());
             auth
@@ -1258,14 +1259,11 @@ mod tests {
     fn characterization_custom_profile() -> ConnectProfile {
         let mut custom = crate::profile::test_spec(
             "custom",
-            AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
             vec!["custom/model".into()],
         );
         custom.api_key_env = vec!["CUSTOM_KEY".into()];
         custom.base_url = "https://custom.example/v1".into();
-        custom.transport = crate::ProviderTransport::OpenaiCompat;
         custom.origin = crate::SpecOrigin::User;
         custom
     }
@@ -1366,7 +1364,7 @@ mod tests {
             let mut r = ConnectRegistry::new();
             let mut go = crate::profile::test_spec(
                 "opencode_go",
-                AuthMode::opencode_go_api_key(),
+                crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
                 vec!["m".into()],
             );
             go.title = "Go".into();
@@ -1376,8 +1374,11 @@ mod tests {
             go.provider_label = "OpenCode".into();
             go.label = "Go".into();
             r.register(go);
-            let mut xai =
-                crate::profile::test_spec("xai", AuthMode::xai_oauth(), vec!["xai/m".into()]);
+            let mut xai = crate::profile::test_spec(
+                "xai",
+                crate::xai::xai_grok_profile().auth.unwrap(),
+                vec!["xai/m".into()],
+            );
             xai.title = "Grok".into();
             xai.api_key_env = vec![];
             xai.provider_label = "Grok".into();

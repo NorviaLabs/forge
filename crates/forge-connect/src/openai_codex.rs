@@ -5,21 +5,15 @@ use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogSpec, EffortFamily, OauthFlavor,
     WireKind,
 };
-use crate::{AuthMode, CatalogMode, ProviderSpec, ProviderTransport, SpecOrigin};
+use crate::{CatalogMode, ProviderSpec, SpecOrigin};
 
 pub const PROFILE_ID: &str = "openai_codex";
-pub const AUTH_SERVER: &str = "https://auth.openai.com";
 
 pub fn openai_codex_profile() -> ProviderSpec {
     ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenAI Codex subscription".into(),
         description: "Use a ChatGPT plan through Forge's own device login".into(),
-        auth_mode: AuthMode::Oauth {
-            device_code: true,
-            system_browser: true,
-            auth_server: AUTH_SERVER.into(),
-        },
         api_key_env: vec![],
         base_url: DEFAULT_BASE_URL.into(),
         default_models: vec!["openai-codex/gpt-5.6-sol".into()],
@@ -33,7 +27,6 @@ pub fn openai_codex_profile() -> ProviderSpec {
         label: "ChatGPT".into(),
         route_id: "openai-chatgpt".into(),
         catalog_mode: CatalogMode::LiveRegistry,
-        transport: ProviderTransport::Codex,
         auth: Some(AuthSpec {
             kind: AuthKind::OauthDevice,
             flavor: Some(OauthFlavor::Chatgpt),
@@ -63,7 +56,7 @@ mod tests {
     #[test]
     fn profile_uses_forge_oauth() {
         let profile = openai_codex_profile();
-        assert!(profile.auth_mode.is_oauth());
+        assert!(profile.effective_auth().is_oauth());
         assert!(profile.api_key_env.is_empty());
         assert!(profile
             .default_models

@@ -386,13 +386,8 @@ mod tests {
 
     /// A key profile reading only `env` (plus its generated name).
     fn key_profile(id: &str, env: &[&str]) -> crate::profile::ProviderSpec {
-        let mut spec = crate::profile::test_spec(
-            id,
-            crate::AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
-            vec![],
-        );
+        let mut spec =
+            crate::profile::test_spec(id, crate::AuthSpec::api_key(crate::AuthPrompt::Tui), vec![]);
         spec.api_key_env = env.iter().map(|name| name.to_string()).collect();
         spec
     }

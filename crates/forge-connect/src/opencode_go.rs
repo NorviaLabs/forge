@@ -3,10 +3,9 @@
 //! OpenCode Go is OpenAI-compatible at `https://opencode.ai/zen/go/v1`.
 //! Native routing maps `opencode-go/<id>` to this OpenAI-compatible endpoint.
 
-use crate::auth::AuthMode;
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
-    ProviderTransport, SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
+    SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
 };
 
 pub const PROFILE_ID: &str = "opencode_go";
@@ -22,7 +21,6 @@ pub fn opencode_go_profile() -> ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenCode Go".into(),
         description: "OpenCode Go coding models — API key required (TUI prompts)".into(),
-        auth_mode: AuthMode::opencode_go_api_key(),
         api_key_env: vec!["OPENCODE_API_KEY".into(), "OPENCODE_GO_API_KEY".into()],
         base_url: DEFAULT_BASE_URL.into(),
         // Distinctive prefix avoids hijacking real OpenAI (`openai/gpt-*`) routes.
@@ -35,7 +33,6 @@ pub fn opencode_go_profile() -> ProviderSpec {
         label: "Go".into(),
         route_id: "opencode-go".into(),
         catalog_mode: CatalogMode::LiveRegistry,
-        transport: ProviderTransport::OpenaiCompat,
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKey,
             prompt: AuthPrompt::Tui,
@@ -112,7 +109,7 @@ mod tests {
     fn profile_always_prompts_for_api_key() {
         let p = opencode_go_profile();
         assert_eq!(p.id, "opencode_go");
-        assert!(p.auth_mode.is_api_key());
+        assert!(!p.effective_auth().is_oauth());
         assert!(p.needs_tui_api_key_prompt());
         assert!(!p.rejects_api_key_cli());
         assert!(p.auth_url.as_deref().unwrap().contains("opencode.ai"));

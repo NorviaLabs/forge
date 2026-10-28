@@ -33,7 +33,7 @@ mod verify;
 mod xai;
 
 pub use anthropic::{anthropic_profile, PROFILE_ID as ANTHROPIC_PROFILE_ID};
-pub use auth::{AuthMode, OauthPending, OauthTokens};
+pub use auth::{OauthPending, OauthTokens};
 pub use catalog::{
     fetch_remote_models, models_for_picker, refresh_models_dev_registry, refresh_profile_catalog,
     runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError, CatalogLimits,
@@ -68,8 +68,8 @@ pub use preferences::PreferenceStore;
 pub use profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
     ConnectOutcome, ConnectProfile, ConnectStatus, EditableField, EffortFamily, KeySource,
-    OauthFlavor, ProviderSpec, ProviderTransport, SessionHeaderKind, SpecOrigin, StaticHeader,
-    VerifyKind, VerifySpec, WireKind, WireOverride,
+    OauthFlavor, ProviderSpec, SessionHeaderKind, SpecOrigin, StaticHeader, VerifyKind, VerifySpec,
+    WireKind, WireOverride,
 };
 pub use registry::{
     builtin_registry, credential_env_names, loaded_registry, loaded_registry_from,
@@ -203,16 +203,12 @@ mod tests {
                 Some(SessionHeaderKind::Opencode)
             );
         }
-        // Today's `auth_mode` still agrees with the new `auth` table.
-        for p in r.profiles() {
-            assert_eq!(p.effective_auth().to_auth_mode(), p.auth_mode, "{}", p.id);
-        }
     }
 
     #[test]
     fn builtin_auth_modes() {
         let r = builtin_registry();
-        assert!(r.get("xai").unwrap().auth_mode.is_oauth());
+        assert!(r.get("xai").unwrap().effective_auth().is_oauth());
         assert!(r.get("opencode_go").unwrap().needs_tui_api_key_prompt());
         assert!(r.get("opencode_zen").unwrap().needs_tui_api_key_prompt());
         assert!(r.get("openai").unwrap().needs_tui_api_key_prompt());

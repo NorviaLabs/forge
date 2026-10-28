@@ -2,8 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::auth::AuthMode;
-
 /// Where a spec's model list and capability metadata come from.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -20,17 +18,6 @@ pub enum CatalogMode {
     Static,
 }
 
-/// Wire implementation a request is sent through.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ProviderTransport {
-    #[default]
-    #[serde(rename = "openai-compat")]
-    OpenaiCompat,
-    Anthropic,
-    Codex,
-}
-
 /// How requests are encoded and responses parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -38,26 +25,6 @@ pub enum WireKind {
     ChatCompletions,
     Responses,
     AnthropicMessages,
-}
-
-impl From<ProviderTransport> for WireKind {
-    fn from(transport: ProviderTransport) -> Self {
-        match transport {
-            ProviderTransport::OpenaiCompat => Self::ChatCompletions,
-            ProviderTransport::Anthropic => Self::AnthropicMessages,
-            ProviderTransport::Codex => Self::Responses,
-        }
-    }
-}
-
-impl From<WireKind> for ProviderTransport {
-    fn from(wire: WireKind) -> Self {
-        match wire {
-            WireKind::ChatCompletions => Self::OpenaiCompat,
-            WireKind::AnthropicMessages => Self::Anthropic,
-            WireKind::Responses => Self::Codex,
-        }
-    }
 }
 
 /// How the user obtains a credential.
@@ -117,58 +84,68 @@ impl AuthSpec {
         self.kind == AuthKind::OauthDevice
     }
 
-    /// The legacy [`AuthMode`] this spec maps to, for readers not yet moved.
-    pub fn to_auth_mode(&self) -> AuthMode {
-        match self.kind {
-            AuthKind::OauthDevice => AuthMode::Oauth {
-                device_code: true,
-                system_browser: self.prompt == AuthPrompt::Browser,
-                // The `chatgpt` flavor owns its issuer.
-                auth_server: match (self.flavor, &self.issuer) {
-                    (_, Some(issuer)) => issuer.clone(),
-                    (Some(OauthFlavor::Chatgpt), None) => {
-                        crate::oauth_chatgpt::DEFAULT_AUTH_BASE.into()
-                    }
-                    (_, None) => String::new(),
-                },
-            },
-            AuthKind::ApiKey => AuthMode::ApiKey {
-                tui_always_prompt: self.prompt == AuthPrompt::Tui,
-            },
-            AuthKind::ApiKeyOptional => AuthMode::ApiKey {
-                tui_always_prompt: false,
-            },
+    /// A key profile that prompts per `prompt`.
+    pub fn api_key(prompt: AuthPrompt) -> Self {
+        Self {
+            kind: AuthKind::ApiKey,
+            prompt,
+            ..Self::default()
+        }
+    }
+
+    /// A device-login profile of `flavor`, optionally at `issuer`.
+    pub fn oauth(flavor: OauthFlavor, issuer: Option<String>) -> Self {
+        Self {
+            kind: AuthKind::OauthDevice,
+            flavor: Some(flavor),
+            issuer,
+            prompt: AuthPrompt::Browser,
+            ..Self::default()
+        }
+    }
+
+    /// `oauth` or `api_key`, for status lines.
+    pub fn label(&self) -> &'static str {
+        if self.is_oauth() {
+            "oauth"
+        } else {
+            "api_key"
         }
     }
 }
 
-impl From<&AuthMode> for AuthSpec {
-    fn from(mode: &AuthMode) -> Self {
-        match mode {
-            AuthMode::Oauth {
-                system_browser,
-                auth_server,
-                ..
-            } => Self {
-                kind: AuthKind::OauthDevice,
-                issuer: Some(auth_server.clone()),
-                prompt: if *system_browser {
-                    AuthPrompt::Browser
-                } else {
-                    AuthPrompt::Tui
-                },
-                ..Self::default()
-            },
-            AuthMode::ApiKey { tui_always_prompt } => Self {
-                kind: AuthKind::ApiKey,
-                prompt: if *tui_always_prompt {
-                    AuthPrompt::Tui
-                } else {
-                    AuthPrompt::Never
-                },
-                ..Self::default()
-            },
-        }
+/// The `auth` table a legacy `auth_mode` value maps to. Only the API-key
+/// form is accepted for custom entries; anything else maps to `None`.
+pub(crate) fn auth_from_legacy_mode(mode: &toml::Value) -> Option<AuthSpec> {
+    let key = mode.get("api_key")?;
+    let prompt = key
+        .get("tui_always_prompt")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(true);
+    Some(AuthSpec::api_key(if prompt {
+        AuthPrompt::Tui
+    } else {
+        AuthPrompt::Never
+    }))
+}
+
+/// The wire a legacy `transport` value maps to.
+pub(crate) fn wire_from_legacy_transport(transport: &str) -> Option<WireKind> {
+    match transport {
+        "openai-compat" => Some(WireKind::ChatCompletions),
+        "anthropic" => Some(WireKind::AnthropicMessages),
+        "codex" => Some(WireKind::Responses),
+        _ => None,
+    }
+}
+
+/// The legacy `transport` value for a wire, which writers still emit until
+/// stage 8 so an older binary can read the entry.
+pub(crate) fn legacy_transport_for(wire: WireKind) -> &'static str {
+    match wire {
+        WireKind::ChatCompletions => "openai-compat",
+        WireKind::AnthropicMessages => "anthropic",
+        WireKind::Responses => "codex",
     }
 }
 
@@ -301,12 +278,6 @@ fn is_zero(value: &u16) -> bool {
     *value == 0
 }
 
-fn default_auth_mode() -> AuthMode {
-    AuthMode::ApiKey {
-        tui_always_prompt: true,
-    }
-}
-
 /// Who authored the spec.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -321,16 +292,17 @@ pub enum SpecOrigin {
 /// Renamed fields keep their old TOML names as aliases, and through stage 7
 /// they are written under the old names too, so an older binary still reads
 /// entries this one saves.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProviderSpec {
     pub id: String,
     pub title: String,
     /// Optional display text; user provider files may omit it.
     #[serde(default)]
     pub description: String,
-    /// Legacy auth form. When `auth` is set it is derived from it.
-    #[serde(default = "default_auth_mode")]
-    pub auth_mode: AuthMode,
+    /// The legacy `auth_mode` value, read only; `normalize_spec` maps it
+    /// into `auth`.
+    #[serde(default, rename = "auth_mode", skip_serializing)]
+    pub legacy_auth_mode: Option<toml::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<AuthSpec>,
     /// Vendor env aliases for the key (first present wins).
@@ -424,9 +396,10 @@ pub struct ProviderSpec {
     pub route_id: String,
     #[serde(default)]
     pub catalog_mode: CatalogMode,
-    /// Legacy wire form. When `wire` is set it is derived from it.
-    #[serde(default)]
-    pub transport: ProviderTransport,
+    /// The legacy `transport` value, read only; `normalize_spec` maps it
+    /// into `wire`.
+    #[serde(default, rename = "transport", skip_serializing)]
+    pub legacy_transport: Option<String>,
     #[serde(default, skip_serializing)]
     pub origin: SpecOrigin,
 }
@@ -441,7 +414,7 @@ impl ProviderSpec {
             id: String::new(),
             title: String::new(),
             description: String::new(),
-            auth_mode: default_auth_mode(),
+            legacy_auth_mode: None,
             auth: None,
             api_key_env: Vec::new(),
             base_url_env: Vec::new(),
@@ -471,7 +444,7 @@ impl ProviderSpec {
             label: String::new(),
             route_id: String::new(),
             catalog_mode: CatalogMode::LiveRegistry,
-            transport: ProviderTransport::OpenaiCompat,
+            legacy_transport: None,
             origin: SpecOrigin::Builtin,
         }
     }
@@ -502,27 +475,26 @@ impl ProviderSpec {
     }
 
     pub fn needs_tui_api_key_prompt(&self) -> bool {
-        self.auth_mode.tui_always_prompt_key()
+        let auth = self.effective_auth();
+        auth.kind == AuthKind::ApiKey && auth.prompt == AuthPrompt::Tui
     }
 
     pub fn rejects_api_key_cli(&self) -> bool {
-        self.auth_mode.is_oauth()
+        self.effective_auth().is_oauth()
     }
 
     pub fn is_user(&self) -> bool {
         self.origin == SpecOrigin::User
     }
 
-    /// The profile's wire protocol: `wire`, else mapped from `transport`.
+    /// The profile's wire protocol (`chat-completions` when unset).
     pub fn effective_wire(&self) -> WireKind {
-        self.wire.unwrap_or_else(|| self.transport.into())
+        self.wire.unwrap_or(WireKind::ChatCompletions)
     }
 
-    /// The profile's auth: `auth`, else mapped from `auth_mode`.
+    /// The profile's auth (an API key prompted in the TUI when unset).
     pub fn effective_auth(&self) -> AuthSpec {
-        self.auth
-            .clone()
-            .unwrap_or_else(|| AuthSpec::from(&self.auth_mode))
+        self.auth.clone().unwrap_or_default()
     }
 
     /// The catalog kind: `catalog.kind`, else from the wire
@@ -587,16 +559,12 @@ pub struct ConnectStatus {
 }
 
 #[cfg(test)]
-pub(crate) fn test_spec(
-    id: &str,
-    auth_mode: AuthMode,
-    default_models: Vec<String>,
-) -> ProviderSpec {
+pub(crate) fn test_spec(id: &str, auth: AuthSpec, default_models: Vec<String>) -> ProviderSpec {
     ProviderSpec {
         id: id.into(),
         title: id.into(),
         description: format!("{id} profile"),
-        auth_mode,
+        auth: Some(auth),
         api_key_env: vec!["DEMO_KEY".into()],
         base_url: "https://example.test".into(),
         default_models,
@@ -612,16 +580,14 @@ pub(crate) fn test_spec(
 mod tests {
     use super::*;
 
-    fn profile(auth_mode: AuthMode, default_models: Vec<String>) -> ProviderSpec {
-        test_spec("demo", auth_mode, default_models)
+    fn profile(auth: AuthSpec, default_models: Vec<String>) -> ProviderSpec {
+        test_spec("demo", auth, default_models)
     }
 
     #[test]
     fn profile_helpers_reflect_auth_mode_and_default_model() {
         let api = profile(
-            AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
             vec!["demo/model-a".into(), "demo/model-b".into()],
         );
         assert_eq!(api.default_model(), Some("demo/model-a"));
@@ -629,11 +595,10 @@ mod tests {
         assert!(!api.rejects_api_key_cli());
 
         let oauth = profile(
-            AuthMode::Oauth {
-                device_code: true,
-                system_browser: false,
-                auth_server: "https://issuer.example".into(),
-            },
+            crate::AuthSpec::oauth(
+                crate::OauthFlavor::Rfc8628,
+                Some("https://issuer.example".into()),
+            ),
             vec![],
         );
         assert_eq!(oauth.default_model(), None);
@@ -651,12 +616,7 @@ mod tests {
 
     #[test]
     fn route_id_is_a_field_not_a_match() {
-        let mut profile = profile(
-            AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
-            vec![],
-        );
+        let mut profile = profile(crate::AuthSpec::api_key(crate::AuthPrompt::Tui), vec![]);
         profile.route_id = "openai-chatgpt".into();
         assert_eq!(profile.route_id(), "openai-chatgpt");
         profile.route_id = "openai-api".into();

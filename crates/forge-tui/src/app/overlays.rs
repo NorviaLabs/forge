@@ -820,7 +820,7 @@ impl TuiApp {
                                 editing: true,
                                 wire: profile.effective_wire(),
                             });
-                        } else if profile.auth_mode.is_oauth() {
+                        } else if profile.effective_auth().is_oauth() {
                             self.begin_oauth_flow(&profile_id);
                         } else {
                             self.open_api_key_prompt(&profile_id, None);

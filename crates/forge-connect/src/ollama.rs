@@ -2,10 +2,9 @@
 //!
 //! No cloud API key required. Connect checks that the Ollama daemon is reachable.
 
-use crate::auth::AuthMode;
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, EditableField,
-    ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
+    ProviderSpec, SpecOrigin, WireKind,
 };
 use crate::verify::VerifyError;
 
@@ -22,9 +21,6 @@ pub fn ollama_profile() -> ProviderSpec {
         title: "Ollama (local)".into(),
         description: "Local Ollama models — no API key required (ollama/*)".into(),
         // No mandatory TUI key prompt: local server auth is optional.
-        auth_mode: AuthMode::ApiKey {
-            tui_always_prompt: false,
-        },
         api_key_env: vec!["OLLAMA_API_KEY".into()],
         base_url: DEFAULT_BASE_URL.into(),
         default_models: vec![],
@@ -36,7 +32,6 @@ pub fn ollama_profile() -> ProviderSpec {
         label: "Local".into(),
         route_id: "ollama".into(),
         catalog_mode: CatalogMode::Live,
-        transport: ProviderTransport::OpenaiCompat,
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKeyOptional,
             prompt: AuthPrompt::Never,

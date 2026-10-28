@@ -108,9 +108,7 @@ mod tests {
 
         let mut custom = crate::profile::test_spec(
             "my-llm",
-            crate::AuthMode::ApiKey {
-                tui_always_prompt: true,
-            },
+            crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
             vec![],
         );
         custom.model_provider_prefix = "my-llm".into();

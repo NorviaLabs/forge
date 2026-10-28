@@ -1,9 +1,8 @@
 //! OpenAI connect profile — API key (`openai/*`).
 
-use crate::auth::AuthMode;
 use crate::profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
-    EffortFamily, ProviderSpec, ProviderTransport, SpecOrigin, WireKind,
+    EffortFamily, ProviderSpec, SpecOrigin, WireKind,
 };
 
 pub const PROFILE_ID: &str = "openai";
@@ -14,9 +13,6 @@ pub fn openai_profile() -> ProviderSpec {
         id: PROFILE_ID.into(),
         title: "OpenAI".into(),
         description: "OpenAI API key — openai/* models".into(),
-        auth_mode: AuthMode::ApiKey {
-            tui_always_prompt: true,
-        },
         api_key_env: vec!["OPENAI_API_KEY".into()],
         base_url: DEFAULT_BASE_URL.into(),
         default_models: vec!["openai/gpt-4.1-mini".into()],
@@ -28,7 +24,6 @@ pub fn openai_profile() -> ProviderSpec {
         label: "API".into(),
         route_id: "openai-api".into(),
         catalog_mode: CatalogMode::LiveRegistry,
-        transport: ProviderTransport::OpenaiCompat,
         auth: Some(AuthSpec {
             kind: AuthKind::ApiKey,
             prompt: AuthPrompt::Tui,

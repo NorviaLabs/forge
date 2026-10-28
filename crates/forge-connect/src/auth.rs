@@ -4,65 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// How a profile authenticates during `/connect`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AuthMode {
-    /// Browser and/or device-code OAuth; store access/refresh tokens.
-    Oauth {
-        device_code: bool,
-        system_browser: bool,
-        /// OIDC issuer, e.g. https://auth.x.ai (Grok Build default)
-        auth_server: String,
-    },
-    /// Operator pastes API key; TUI may always prompt.
-    ApiKey {
-        /// If true, TUI always opens masked key input when connecting.
-        tui_always_prompt: bool,
-    },
-}
-
-impl AuthMode {
-    pub fn is_oauth(&self) -> bool {
-        matches!(self, Self::Oauth { .. })
-    }
-
-    pub fn is_api_key(&self) -> bool {
-        matches!(self, Self::ApiKey { .. })
-    }
-
-    pub fn tui_always_prompt_key(&self) -> bool {
-        match self {
-            Self::ApiKey {
-                tui_always_prompt, ..
-            } => *tui_always_prompt,
-            Self::Oauth { .. } => false,
-        }
-    }
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::Oauth { .. } => "oauth",
-            Self::ApiKey { .. } => "api_key",
-        }
-    }
-
-    /// Match Grok Build: SpaceXAI OAuth issuer `auth.x.ai`.
-    pub fn xai_oauth() -> Self {
-        Self::Oauth {
-            device_code: true,
-            system_browser: true,
-            auth_server: crate::oauth_rfc8628::DEFAULT_ISSUER.into(),
-        }
-    }
-
-    pub fn opencode_go_api_key() -> Self {
-        Self::ApiKey {
-            tui_always_prompt: true,
-        }
-    }
-}
-
 /// OAuth tokens stored for a profile (never logged).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OauthTokens {
@@ -215,25 +156,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xai_is_oauth_not_api_key_prompt() {
-        let m = AuthMode::xai_oauth();
-        assert!(m.is_oauth());
-        assert!(!m.tui_always_prompt_key());
-        assert_eq!(m.label(), "oauth");
-        match &m {
-            AuthMode::Oauth { auth_server, .. } => {
-                assert!(auth_server.contains("auth.x.ai"));
-            }
-            _ => panic!("expected oauth"),
-        }
-    }
+    fn xai_is_oauth_and_opencode_go_prompts_for_a_key() {
+        let xai = crate::xai::xai_grok_profile();
+        assert!(xai.effective_auth().is_oauth());
+        assert!(!xai.needs_tui_api_key_prompt());
+        assert_eq!(xai.effective_auth().label(), "oauth");
+        assert!(xai
+            .effective_auth()
+            .issuer
+            .is_some_and(|issuer| issuer.contains("auth.x.ai")));
 
-    #[test]
-    fn opencode_go_always_prompts() {
-        let m = AuthMode::opencode_go_api_key();
-        assert!(m.is_api_key());
-        assert!(m.tui_always_prompt_key());
-        assert_eq!(m.label(), "api_key");
+        let go = crate::opencode_go::opencode_go_profile();
+        assert!(go.needs_tui_api_key_prompt());
+        assert_eq!(go.effective_auth().label(), "api_key");
     }
 
     #[test]
