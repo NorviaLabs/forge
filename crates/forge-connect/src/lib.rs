@@ -94,13 +94,9 @@ pub use verify::VerifyError;
 pub use xai::{xai_grok_profile, PROFILE_ID as XAI_PROFILE_ID};
 
 pub(crate) fn register_builtin_profiles(registry: &mut ConnectRegistry) {
-    registry.register(xai::xai_grok_profile());
-    registry.register(opencode_go::opencode_go_profile());
-    registry.register(opencode_zen::opencode_zen_profile());
-    registry.register(openai::openai_profile());
-    registry.register(openai_codex::openai_codex_profile());
-    registry.register(anthropic::anthropic_profile());
-    registry.register(ollama::ollama_profile());
+    for spec in builtin::builtin_specs() {
+        registry.register(spec);
+    }
 }
 
 #[cfg(test)]

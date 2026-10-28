@@ -4,12 +4,9 @@
 //! The same account API key works for Zen and Go; bases differ.
 //! Native routing maps `opencode-zen/<id>` to the Zen OpenAI-compatible endpoint.
 
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
-    SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
-};
+use crate::profile::ProviderSpec;
 
-pub const PROFILE_ID: &str = "opencode_zen";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::OPENCODE_ZEN;
 
 /// OpenAI-compatible chat/completions base for Zen (not the Go subscription path).
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/v1";
@@ -17,63 +14,9 @@ pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/v1";
 /// Env var the worker reads for the Zen API base (set by connect).
 pub const API_BASE_ENV: &str = "OPENCODE_ZEN_API_BASE";
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn opencode_zen_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "OpenCode Zen".into(),
-        description: "OpenCode Zen model catalog — API key required (TUI prompts)".into(),
-        // Same key family as Go; Zen-specific env allowed first if set.
-        api_key_env: vec![
-            "OPENCODE_ZEN_API_KEY".into(),
-            "OPENCODE_API_KEY".into(),
-            "OPENCODE_GO_API_KEY".into(),
-        ],
-        base_url: DEFAULT_BASE_URL.into(),
-        // Fallbacks until live catalog refresh; /model pulls full Zen list after connect.
-        default_models: vec!["opencode-zen/gpt-4.1-mini".into()],
-        models_dev_providers: vec!["opencode".into()],
-        auth_url: Some("https://opencode.ai/auth".into()),
-        model_provider_prefix: "opencode-zen".into(),
-        provider: "opencode".into(),
-        provider_label: "OpenCode".into(),
-        label: "Zen".into(),
-        route_id: "opencode-zen".into(),
-        catalog_mode: CatalogMode::LiveRegistry,
-        auth: Some(AuthSpec {
-            kind: AuthKind::ApiKey,
-            prompt: AuthPrompt::Tui,
-            ..AuthSpec::default()
-        }),
-        base_url_env: vec![API_BASE_ENV.into()],
-        credential_from: Some(crate::opencode_go::PROFILE_ID.into()),
-        wire: Some(WireKind::ChatCompletions),
-        wire_overrides: vec![
-            WireOverride {
-                models: vec![
-                    "muse-spark-1.2-contributor*".into(),
-                    "muse-spark-1.3-contributor*".into(),
-                ],
-                wire: WireKind::Responses,
-            },
-            WireOverride {
-                models: vec!["union-alpha".into()],
-                wire: WireKind::AnthropicMessages,
-            },
-        ],
-        attach: Some(Attach::Bearer),
-        session_header: Some(SessionHeaderKind::Opencode),
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::OpenaiModels),
-            filter: None,
-        },
-        billing_url: "https://opencode.ai/".into(),
-        guidance: "Get a key from https://opencode.ai/auth (Zen billing / API keys).".into(),
-        min_key_len: 16,
-        billing_note: "OpenCode does not currently expose wallet balance through its model API."
-            .into(),
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 #[cfg(test)]

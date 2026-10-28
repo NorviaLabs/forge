@@ -23,8 +23,33 @@ struct ProvidersFile {
 }
 
 /// Every built-in profile, in file order. A malformed embedded file is a
-/// build defect, which `tests/builtin_providers.rs` catches.
+/// build defect, which `tests/builtin_providers.rs` catches. Parsed once.
 pub fn builtin_specs() -> Vec<ProviderSpec> {
+    static SPECS: std::sync::OnceLock<Vec<ProviderSpec>> = std::sync::OnceLock::new();
+    SPECS.get_or_init(parse_builtin_specs).clone()
+}
+
+/// The built-in profile `id`. Panics on an id no embedded file defines,
+/// which only a code defect can produce.
+pub fn builtin_profile(id: &str) -> ProviderSpec {
+    builtin_specs()
+        .into_iter()
+        .find(|spec| spec.id == id)
+        .unwrap_or_else(|| panic!("no built-in provider `{id}`"))
+}
+
+/// The built-in profile ids.
+pub mod profile_ids {
+    pub const ANTHROPIC: &str = "anthropic";
+    pub const OLLAMA: &str = "ollama";
+    pub const OPENAI: &str = "openai";
+    pub const OPENAI_CODEX: &str = "openai_codex";
+    pub const OPENCODE_GO: &str = "opencode_go";
+    pub const OPENCODE_ZEN: &str = "opencode_zen";
+    pub const XAI: &str = "xai";
+}
+
+fn parse_builtin_specs() -> Vec<ProviderSpec> {
     BUILTIN_PROVIDERS
         .iter()
         .flat_map(|(name, text)| {

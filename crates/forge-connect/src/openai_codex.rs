@@ -1,51 +1,12 @@
-//! OpenAI Codex subscription profile and token helpers.
+//! OpenAI Codex subscription profile.
 
-use crate::oauth_chatgpt::{API_BASE_ENV, DEFAULT_BASE_URL};
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogSpec, EffortFamily, OauthFlavor,
-    WireKind,
-};
-use crate::{CatalogMode, ProviderSpec, SpecOrigin};
+use crate::profile::ProviderSpec;
 
-pub const PROFILE_ID: &str = "openai_codex";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::OPENAI_CODEX;
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn openai_codex_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "OpenAI Codex subscription".into(),
-        description: "Use a ChatGPT plan through Forge's own device login".into(),
-        api_key_env: vec![],
-        base_url: DEFAULT_BASE_URL.into(),
-        default_models: vec!["openai-codex/gpt-5.6-sol".into()],
-        // Entitlement still comes from the live Codex catalog; models.dev
-        // only supplies public metadata such as effort and image input.
-        models_dev_providers: vec!["openai".into()],
-        auth_url: Some("https://auth.openai.com/codex/device".into()),
-        model_provider_prefix: "openai-codex".into(),
-        provider: "openai".into(),
-        provider_label: "OpenAI".into(),
-        label: "ChatGPT".into(),
-        route_id: "openai-chatgpt".into(),
-        catalog_mode: CatalogMode::LiveRegistry,
-        auth: Some(AuthSpec {
-            kind: AuthKind::OauthDevice,
-            flavor: Some(OauthFlavor::Chatgpt),
-            client_id: Some(crate::oauth_chatgpt::CLIENT_ID.into()),
-            prompt: AuthPrompt::Browser,
-            ..AuthSpec::default()
-        }),
-        base_url_env: vec![API_BASE_ENV.into()],
-        wire: Some(WireKind::Responses),
-        attach: Some(Attach::BearerAccountId),
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::ChatgptModels),
-            filter: None,
-        },
-        import_aliases: vec!["openai".into()],
-        effort_family: EffortFamily::Openai,
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 #[cfg(test)]

@@ -1902,7 +1902,7 @@ mod tests {
                 .collect();
             actual.push((profile.id.clone(), result.is_ok(), sent));
         }
-        let expected: Vec<(String, bool, Vec<String>)> = [
+        let mut expected: Vec<(String, bool, Vec<String>)> = [
             ("xai", "GET /models authorization"),
             ("opencode_go", "GET /models authorization"),
             ("opencode_zen", "GET /models authorization"),
@@ -1918,6 +1918,9 @@ mod tests {
         .iter()
         .map(|(id, sent)| (id.to_string(), true, vec![sent.to_string()]))
         .collect();
+        // The registry's order is the embedded files' order; compare by id.
+        actual.sort();
+        expected.sort();
         assert_eq!(actual, expected);
     }
 

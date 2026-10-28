@@ -2,53 +2,19 @@
 //!
 //! No cloud API key required. Connect checks that the Ollama daemon is reachable.
 
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, EditableField,
-    ProviderSpec, SpecOrigin, WireKind,
-};
+use crate::profile::ProviderSpec;
 use crate::verify::VerifyError;
 
-pub const PROFILE_ID: &str = "ollama";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::OLLAMA;
 /// Default local Ollama OpenAI-compatible base.
 pub const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 pub const API_BASE_ENV: &str = "OLLAMA_API_BASE";
 /// Stored / exported placeholder when no optional key is set (Ollama ignores it).
 pub const LOCAL_PLACEHOLDER_KEY: &str = "ollama";
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn ollama_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "Ollama (local)".into(),
-        description: "Local Ollama models — no API key required (ollama/*)".into(),
-        // No mandatory TUI key prompt: local server auth is optional.
-        api_key_env: vec!["OLLAMA_API_KEY".into()],
-        base_url: DEFAULT_BASE_URL.into(),
-        default_models: vec![],
-        models_dev_providers: vec![],
-        auth_url: Some("https://ollama.com/download".into()),
-        model_provider_prefix: "ollama".into(),
-        provider: PROFILE_ID.into(),
-        provider_label: "Ollama".into(),
-        label: "Local".into(),
-        route_id: "ollama".into(),
-        catalog_mode: CatalogMode::Live,
-        auth: Some(AuthSpec {
-            kind: AuthKind::ApiKeyOptional,
-            prompt: AuthPrompt::Never,
-            ..AuthSpec::default()
-        }),
-        base_url_env: vec![API_BASE_ENV.into()],
-        editable: vec![EditableField::BaseUrl],
-        wire: Some(WireKind::ChatCompletions),
-        attach: Some(Attach::Bearer),
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::OllamaTags),
-            filter: None,
-        },
-        billing_note: "Cost: local inference; no provider quota or wallet balance.".into(),
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 /// Probe `GET {base}/api/tags` to ensure Ollama is running.

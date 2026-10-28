@@ -1,54 +1,13 @@
 //! Anthropic connect profile — API key (`anthropic/*`).
 
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
-    SpecOrigin, StaticHeader, WireKind,
-};
+use crate::profile::ProviderSpec;
 use crate::verify::VerifyError;
 
-pub const PROFILE_ID: &str = "anthropic";
-pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::ANTHROPIC;
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn anthropic_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "Anthropic".into(),
-        description: "Anthropic API key — anthropic/* (Claude) models".into(),
-        api_key_env: vec!["ANTHROPIC_API_KEY".into()],
-        base_url: DEFAULT_BASE_URL.into(),
-        default_models: vec!["anthropic/claude-sonnet-4-20250514".into()],
-        models_dev_providers: vec!["anthropic".into()],
-        auth_url: Some("https://console.anthropic.com/settings/keys".into()),
-        model_provider_prefix: "anthropic".into(),
-        provider: PROFILE_ID.into(),
-        provider_label: "Anthropic".into(),
-        label: "API".into(),
-        route_id: "anthropic-api".into(),
-        catalog_mode: CatalogMode::LiveRegistry,
-        auth: Some(AuthSpec {
-            kind: AuthKind::ApiKey,
-            prompt: AuthPrompt::Tui,
-            ..AuthSpec::default()
-        }),
-        base_url_env: vec!["ANTHROPIC_API_BASE".into()],
-        wire: Some(WireKind::AnthropicMessages),
-        attach: Some(Attach::XApiKey),
-        static_headers: vec![StaticHeader {
-            name: "anthropic-beta".into(),
-            value: "interleaved-thinking-2025-05-14".into(),
-        }],
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::AnthropicModels),
-            filter: None,
-        },
-        import_aliases: vec!["anthropic".into()],
-        billing_url: "https://console.anthropic.com/settings/billing".into(),
-        guidance: "Create a key at https://console.anthropic.com/settings/keys.".into(),
-        min_key_len: 16,
-        billing_note: "Anthropic does not expose remaining credits through the API key API.".into(),
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 /// Verify key with a lightweight messages probe (or models if available).
@@ -169,7 +128,7 @@ mod tests {
 
     #[test]
     fn short_key_rejected() {
-        let err = verify_api_key("sk-ant-short", DEFAULT_BASE_URL)
+        let err = verify_api_key("sk-ant-short", &anthropic_profile().base_url)
             .unwrap_err()
             .to_string();
         assert!(err.contains("too short"), "{err}");
@@ -177,7 +136,7 @@ mod tests {
 
     #[test]
     fn empty_key_rejected_without_network() {
-        let err = verify_api_key("   ", DEFAULT_BASE_URL)
+        let err = verify_api_key("   ", &anthropic_profile().base_url)
             .unwrap_err()
             .to_string();
         assert_eq!(err, "API key is empty");

@@ -1,56 +1,12 @@
 //! xAI Grok connect profile — OAuth (PROV-01 / Phase 6.1).
 
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, EffortFamily,
-    OauthFlavor, ProviderSpec, SpecOrigin, WireKind,
-};
+use crate::profile::ProviderSpec;
 
-pub const PROFILE_ID: &str = "xai";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::XAI;
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn xai_grok_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "xAI Grok".into(),
-        description: "Grok via xAI OAuth (not API key); xai/* models".into(),
-        // An xAI API key in env beats the stored OAuth login (design E3b).
-        api_key_env: vec!["XAI_API_KEY".into(), "GROK_CODE_XAI_API_KEY".into()],
-        base_url: "https://api.x.ai/v1".into(),
-        default_models: vec!["xai/grok-3".into()],
-        models_dev_providers: vec!["xai".into()],
-        // Grok Build signs in via auth.x.ai OIDC; device verify page is accounts.x.ai/oauth2/device
-        auth_url: Some("https://auth.x.ai".into()),
-        model_provider_prefix: "xai".into(),
-        provider: PROFILE_ID.into(),
-        provider_label: "xAI".into(),
-        label: "API".into(),
-        route_id: "xai-api".into(),
-        catalog_mode: CatalogMode::LiveRegistry,
-        auth: Some(AuthSpec {
-            kind: AuthKind::OauthDevice,
-            flavor: Some(OauthFlavor::Rfc8628),
-            issuer: Some(crate::oauth_rfc8628::DEFAULT_ISSUER.into()),
-            client_id: Some(crate::oauth_rfc8628::DEFAULT_CLIENT_ID.into()),
-            scopes: crate::oauth_rfc8628::DEFAULT_SCOPES
-                .split_whitespace()
-                .map(Into::into)
-                .collect(),
-            prompt: AuthPrompt::Browser,
-        }),
-        base_url_env: vec!["XAI_API_BASE".into()],
-        wire: Some(WireKind::ChatCompletions),
-        attach: Some(Attach::Bearer),
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::OpenaiModels),
-            filter: None,
-        },
-        import_aliases: vec!["xai".into()],
-        billing_url: "https://console.x.ai/".into(),
-        effort_family: EffortFamily::Xai,
-        billing_note: "xAI does not expose account balance through the connected OAuth token."
-            .into(),
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 #[cfg(test)]

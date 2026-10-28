@@ -1,49 +1,12 @@
 //! OpenAI connect profile — API key (`openai/*`).
 
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogMode, CatalogSpec,
-    EffortFamily, ProviderSpec, SpecOrigin, WireKind,
-};
+use crate::profile::ProviderSpec;
 
-pub const PROFILE_ID: &str = "openai";
-pub const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::OPENAI;
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn openai_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "OpenAI".into(),
-        description: "OpenAI API key — openai/* models".into(),
-        api_key_env: vec!["OPENAI_API_KEY".into()],
-        base_url: DEFAULT_BASE_URL.into(),
-        default_models: vec!["openai/gpt-4.1-mini".into()],
-        models_dev_providers: vec!["openai".into()],
-        auth_url: Some("https://platform.openai.com/api-keys".into()),
-        model_provider_prefix: "openai".into(),
-        provider: "openai".into(),
-        provider_label: "OpenAI".into(),
-        label: "API".into(),
-        route_id: "openai-api".into(),
-        catalog_mode: CatalogMode::LiveRegistry,
-        auth: Some(AuthSpec {
-            kind: AuthKind::ApiKey,
-            prompt: AuthPrompt::Tui,
-            ..AuthSpec::default()
-        }),
-        base_url_env: vec!["OPENAI_API_BASE".into()],
-        wire: Some(WireKind::ChatCompletions),
-        attach: Some(Attach::Bearer),
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::OpenaiModels),
-            filter: Some(CatalogFilter::Chat),
-        },
-        billing_url: "https://platform.openai.com/usage".into(),
-        effort_family: EffortFamily::Openai,
-        guidance: "Create a key at https://platform.openai.com/api-keys.".into(),
-        min_key_len: 16,
-        billing_note: "OpenAI does not expose wallet balance through the API key API.".into(),
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -72,7 +35,7 @@ mod tests {
 
     #[test]
     fn short_key_rejected() {
-        let err = verify_api_key("sk-short", DEFAULT_BASE_URL)
+        let err = verify_api_key("sk-short", &openai_profile().base_url)
             .unwrap_err()
             .to_string();
         assert!(err.contains("too short"), "{err}");
@@ -80,7 +43,7 @@ mod tests {
 
     #[test]
     fn empty_key_rejected_without_network() {
-        let err = verify_api_key("   ", DEFAULT_BASE_URL)
+        let err = verify_api_key("   ", &openai_profile().base_url)
             .unwrap_err()
             .to_string();
         assert_eq!(err, "API key is empty");

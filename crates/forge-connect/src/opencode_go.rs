@@ -3,12 +3,9 @@
 //! OpenCode Go is OpenAI-compatible at `https://opencode.ai/zen/go/v1`.
 //! Native routing maps `opencode-go/<id>` to this OpenAI-compatible endpoint.
 
-use crate::profile::{
-    Attach, AuthKind, AuthPrompt, AuthSpec, CatalogKind, CatalogMode, CatalogSpec, ProviderSpec,
-    SessionHeaderKind, SpecOrigin, WireKind, WireOverride,
-};
+use crate::profile::ProviderSpec;
 
-pub const PROFILE_ID: &str = "opencode_go";
+pub const PROFILE_ID: &str = crate::builtin::profile_ids::OPENCODE_GO;
 
 /// OpenAI-compatible chat/completions base for the Go subscription.
 pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
@@ -16,71 +13,9 @@ pub const DEFAULT_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 /// Env var the worker reads for the Go API base (set by connect).
 pub const API_BASE_ENV: &str = "OPENCODE_API_BASE";
 
+/// The embedded built-in definition (`providers/*.toml`).
 pub fn opencode_go_profile() -> ProviderSpec {
-    ProviderSpec {
-        id: PROFILE_ID.into(),
-        title: "OpenCode Go".into(),
-        description: "OpenCode Go coding models — API key required (TUI prompts)".into(),
-        api_key_env: vec!["OPENCODE_API_KEY".into(), "OPENCODE_GO_API_KEY".into()],
-        base_url: DEFAULT_BASE_URL.into(),
-        // Distinctive prefix avoids hijacking real OpenAI (`openai/gpt-*`) routes.
-        default_models: vec!["opencode-go/gpt-4.1-mini".into()],
-        models_dev_providers: vec!["opencode-go".into()],
-        auth_url: Some("https://opencode.ai/auth".into()),
-        model_provider_prefix: "opencode-go".into(),
-        provider: "opencode".into(),
-        provider_label: "OpenCode".into(),
-        label: "Go".into(),
-        route_id: "opencode-go".into(),
-        catalog_mode: CatalogMode::LiveRegistry,
-        auth: Some(AuthSpec {
-            kind: AuthKind::ApiKey,
-            prompt: AuthPrompt::Tui,
-            ..AuthSpec::default()
-        }),
-        base_url_env: vec![API_BASE_ENV.into(), "OPENCODE_GO_API_BASE".into()],
-        wire: Some(WireKind::ChatCompletions),
-        wire_overrides: vec![
-            WireOverride {
-                models: vec![
-                    "muse-spark-1.2-contributor*".into(),
-                    "muse-spark-1.3-contributor*".into(),
-                    "grok-4.6".into(),
-                    "gpt-5.6-luna".into(),
-                ],
-                wire: WireKind::Responses,
-            },
-            WireOverride {
-                models: [
-                    "union-alpha",
-                    "minimax-m3",
-                    "minimax-m2.7",
-                    "minimax-m2.5",
-                    "qwen3.8-max",
-                    "qwen3.8-flash",
-                    "qwen3.7-max",
-                    "qwen3.7-plus",
-                    "qwen3.6-plus",
-                ]
-                .map(Into::into)
-                .to_vec(),
-                wire: WireKind::AnthropicMessages,
-            },
-        ],
-        attach: Some(Attach::Bearer),
-        session_header: Some(SessionHeaderKind::Opencode),
-        catalog: CatalogSpec {
-            kind: Some(CatalogKind::OpenaiModels),
-            filter: None,
-        },
-        import_aliases: vec!["opencode-go".into(), "opencode_go".into()],
-        billing_url: "https://opencode.ai/".into(),
-        guidance: "Get a key from https://opencode.ai/auth (OpenCode Zen → subscribe to Go → copy API key).".into(),
-        min_key_len: 16,
-        billing_note: "OpenCode does not currently expose wallet balance through its model API.".into(),
-        origin: SpecOrigin::Builtin,
-        ..ProviderSpec::blank()
-    }
+    crate::builtin::builtin_profile(PROFILE_ID)
 }
 
 #[cfg(test)]
