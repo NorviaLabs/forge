@@ -106,9 +106,17 @@ pub fn append_user_allow_rule(pattern: &str) -> std::io::Result<()> {
 }
 
 fn append_allow_rule(path: &Path, pattern: &str) -> std::io::Result<()> {
+    // Only a missing file starts empty. An unreadable or malformed one is an
+    // error: rewriting it from an empty list would drop its deny rules.
     let mut file = match std::fs::read_to_string(path) {
-        Ok(content) => parse_permissions_toml(&content).unwrap_or_default(),
-        Err(_) => PermissionsFile::default(),
+        Ok(content) => parse_permissions_toml(&content).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not valid; not changed: {error}", path.display()),
+            )
+        })?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => PermissionsFile::default(),
+        Err(error) => return Err(error),
     };
     if file.allow.iter().any(|existing| existing == pattern) {
         return Ok(());
@@ -434,6 +442,19 @@ mod tests {
         assert!(!text.contains("deny"), "{text}");
     }
 
+    /// A malformed personal file is left untouched: rewriting it from an
+    /// empty list would silently drop its deny rules.
+    #[test]
+    fn append_allow_rule_refuses_a_malformed_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("permissions.toml");
+        let original = "deny = [\"bash(rm -rf *)\"]\nallow = [\n";
+        std::fs::write(&path, original).unwrap();
+        let error = append_allow_rule(&path, "bash(cargo test *)").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
     /// The personal file is created along with its parent directory on first
     /// use — an "always allow" decision must not fail on a fresh machine.
     #[test]
@@ -446,30 +467,6 @@ mod tests {
         assert_eq!(file.allow, vec!["bash(cargo test *)".to_string()]);
     }
 
-    /// Documented sharp edge: an existing personal file that does not parse is
-    /// treated as absent, so appending a rule REPLACES it. Nothing that was in
-    /// the broken file (including its `deny` entries) survives. It fails toward
-    /// an empty ruleset rather than toward a wider one, so this is safe, but it
-    /// is lossy and worth pinning.
-    #[test]
-    fn append_allow_rule_discards_an_unparseable_existing_file() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("permissions.toml");
-        std::fs::write(&path, "deny = [\"bash(rm -rf*)\"]\nbroken [[[\n").unwrap();
-
-        append_allow_rule(&path, "bash(cargo test *)").unwrap();
-
-        let file = parse_permissions_toml(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(file.allow, vec!["bash(cargo test *)".to_string()]);
-        assert!(
-            file.deny.is_empty(),
-            "the unparseable file's deny rules do not survive: {:?}",
-            file.deny
-        );
-    }
-
-    /// Round trip: a file written by `append_allow_rule` is loadable by
-    /// `load_permissions` through the real personal-scope path.
     #[test]
     fn appended_rule_is_visible_to_the_next_load() {
         let user = IsolatedUserConfig::new();

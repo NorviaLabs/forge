@@ -37,7 +37,7 @@ All submodules are private; the crate surface is `lib.rs` plus its `pub use` re-
 - A file whose `version` exceeds `CONFIG_SCHEMA_VERSION` is refused, never partially loaded; a file with no `version` reads as version 1.
 - Permission scopes are not equally trusted: personal file `allow` + `deny` are merged; workspace `.forge/permissions.toml` contributes **deny only** — its `allow` entries are ignored and a diagnostic is emitted, because they would skip approvals.
 - `load_permissions` never fails: malformed files produce diagnostics alongside the merged rules; a missing or unreadable file is skipped silently.
-- Trust is inherited: a path is trusted when it or an ancestor is listed in the user-global `trust.toml`. A canonicalization failure means "not trusted". An unparseable trust file reads as empty rather than erroring.
+- Trust is inherited: a path is trusted when it or an ancestor is listed in the user-global `trust.toml`. A canonicalization failure means "not trusted". An unparseable trust file reads as untrusted.
 - `theme_committed` is an explicit first-install commit; a missing key or a defaulted `forge-dark` does not count as committed.
 - `PaneLayoutPreferences` fields stay `Option` on purpose: missing values keep the renderer's responsive defaults, and malformed/missing files fall back to all-`None` rather than blocking startup.
 - Env layer variables: `FORGE_WORKSPACE`, `FORGE_JOURNAL_PATH`, `FORGE_MODEL_REQUEST_TIMEOUT_SECS`, and `FORGE_WEB_SEARCH_{ENABLED,PROVIDER,API_KEY_ENV,MAX_RESULTS,TIMEOUT_MS,REQUIRE_KEY}`. An invalid `FORGE_WEB_SEARCH_PROVIDER` fails the load, while an invalid file-layer provider is ignored; unparseable numeric env values are ignored.
@@ -47,7 +47,7 @@ All submodules are private; the crate surface is `lib.rs` plus its `pub use` re-
 - Reads `$XDG_CONFIG_HOME/forge/config.toml` (or platform equivalent), `./forge.toml`, env vars, and the process cwd.
 - Reads `forge/permissions.toml` (user) and `<workspace>/.forge/permissions.toml`.
 - Writes: user `config.toml` (theme commit, smart-commit, and the `[tui.layout]` ratios via `PaneLayoutStore`), user `trust.toml` (trust grants), and user `forge/permissions.toml` (`append_user_allow_rule`). All user files live under the platform config dir (`dirs::config_dir()/forge/`).
-- Malformed files are overwritten, not refused: `persist_committed_theme` and `persist_smart_commit` replace an unparseable `config.toml` with only the `[tui]` table, `append_user_allow_rule` rewrites an unparseable `permissions.toml` with only the new allow rule, and `grant_trust` rewrites an unparseable `trust.toml` with only the new path. `PaneLayoutStore::save`/`reset` instead return an error on a malformed `config.toml`.
+- Writers never replace a file they cannot parse: `persist_committed_theme`, `persist_smart_commit`, and `PaneLayoutStore::save`/`reset` return an error on a malformed `config.toml`; `append_user_allow_rule` returns `InvalidData` on a malformed `permissions.toml` (and the read error on an unreadable one); `grant_trust` returns the parse error on a malformed `trust.toml`. Each leaves the file unchanged.
 - `Config::default()` performs `env::current_dir()`.
 
 ## Verification

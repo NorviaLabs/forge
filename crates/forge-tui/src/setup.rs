@@ -152,11 +152,8 @@ fn run_setup_loop(
                     if *selected == 1 {
                         return Ok(SetupResult::Canceled);
                     }
-                    if grant_trust(&request.cwd).is_err() {
-                        *error = Some(
-                            "Could not save trust decision; check permissions and try again."
-                                .into(),
-                        );
+                    if let Err(failure) = grant_trust(&request.cwd) {
+                        *error = Some(format!("Could not save trust decision: {failure}"));
                         continue;
                     }
                     return Ok(SetupResult::Completed);

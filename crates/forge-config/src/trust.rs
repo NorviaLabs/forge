@@ -37,7 +37,10 @@ fn load_at(path: &Path) -> Result<TrustFile, TrustError> {
         return Ok(TrustFile::default());
     }
     let text = fs::read_to_string(path)?;
-    Ok(toml::from_str(&text).unwrap_or_default())
+    // A malformed file is an error, never an empty list: `grant_trust` saves
+    // what it loaded, so an empty fallback would erase every other entry.
+    // Readers (`is_trusted_at`) treat the error as untrusted.
+    Ok(toml::from_str(&text)?)
 }
 
 fn save_at(path: &Path, file: &TrustFile) -> Result<(), TrustError> {
@@ -138,7 +141,14 @@ fn edit_tui_table(
 ) -> Result<(), ConfigError> {
     let mut value: toml::Value = if path.is_file() {
         let text = fs::read_to_string(path)?;
-        toml::from_str(&text).unwrap_or_else(|_| toml::Value::Table(toml::map::Map::new()))
+        // Refuse rather than replace: rewriting an unparseable file would
+        // drop every other setting in it for the sake of one preference.
+        toml::from_str(&text).map_err(|_| {
+            ConfigError::Message(format!(
+                "{} is not valid TOML; fix it before saving preferences",
+                path.display()
+            ))
+        })?
     } else {
         toml::Value::Table(toml::map::Map::new())
     };
@@ -378,16 +388,33 @@ mod tests {
         assert_eq!(value["tui"]["theme_committed"].as_bool(), Some(true));
     }
 
-    /// An unparseable user config is replaced rather than aborting the commit —
-    /// the theme choice the user just made still lands.
+    /// An unparseable user config is left untouched: replacing it would drop
+    /// every other setting for one preference.
     #[test]
-    fn persist_theme_replaces_an_unparseable_config() {
+    fn persist_preferences_refuse_an_unparseable_config() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "not [[[ toml").unwrap();
-        persist_committed_theme_at(&path, "forge-dark").unwrap();
-        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
+        let original = "[[mcp.servers]]\nid = \"keep\"\nnot [[[ toml";
+        fs::write(&path, original).unwrap();
+        let error = persist_committed_theme_at(&path, "forge-dark").unwrap_err();
+        assert!(error.to_string().contains("not valid TOML"), "{error}");
+        assert!(persist_smart_commit_at(&path, true).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    /// A malformed trust file makes `grant_trust` fail instead of replacing
+    /// the file with only the new path; readers treat it as untrusted.
+    #[test]
+    fn grant_trust_refuses_a_malformed_trust_file() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("trust.toml");
+        let workspace = dir.path().join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let original = "paths = [\"/kept\"\n";
+        fs::write(&store, original).unwrap();
+        assert!(grant_trust_at(&store, &workspace).is_err());
+        assert_eq!(fs::read_to_string(&store).unwrap(), original);
+        assert!(!is_trusted_at(&store, &workspace));
     }
 
     /// `[tui]` present as a non-table is a config error, not a panic.
