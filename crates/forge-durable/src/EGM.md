@@ -56,7 +56,8 @@ table that is a record only — replay never reads it.
 - Every 256th `seq` written through `append` requests a replay checkpoint;
   the request is best-effort (`try_send` on a depth-1 channel) and its failure
   is ignored. `append_tool_intents`/`append_tool_results` insert rows in their
-  own transaction and never request a checkpoint.
+  own transaction and, after commit, request one if any row they wrote is
+  an interval boundary.
 - Checkpoints are accepted only when their stored `seq` matches
   `ReplayCheckpoint.last_seq`; otherwise replay starts from an empty state and
   all events are read.

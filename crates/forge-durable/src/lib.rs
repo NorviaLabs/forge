@@ -501,13 +501,14 @@ impl Journal {
         let sid = session_id.to_string();
         let event_type = serde_json::to_string(&JournalEventType::ToolIntent)?;
         let event_type = event_type.trim_matches('"');
+        let mut crosses_checkpoint = false;
         for call in calls {
             let payload = serde_json::to_string(&json!({
                 "call_id": call.id,
                 "name": call.name,
                 "arguments": call.arguments,
             }))?;
-            sqlx::query(
+            let inserted = sqlx::query(
                 r#"
                 INSERT INTO events (session_id, ts, event_type, schema_version, payload)
                 VALUES (?, ?, ?, 1, ?)
@@ -519,8 +520,15 @@ impl Journal {
             .bind(payload)
             .execute(&mut *tx)
             .await?;
+            crosses_checkpoint |=
+                (inserted.last_insert_rowid() as u64).is_multiple_of(REPLAY_CHECKPOINT_INTERVAL);
         }
         tx.commit().await?;
+        // Same accelerator as `append`: a batch that writes an interval
+        // boundary requests the checkpoint once it is committed.
+        if crosses_checkpoint {
+            self.request_replay_checkpoint(session_id);
+        }
         Ok(())
     }
 
@@ -537,13 +545,14 @@ impl Journal {
         let sid = session_id.to_string();
         let event_type = serde_json::to_string(&JournalEventType::ToolResult)?;
         let event_type = event_type.trim_matches('"');
+        let mut crosses_checkpoint = false;
         for (call, output) in results {
             let payload = serde_json::to_string(&json!({
                 "call_id": call.id,
                 "name": call.name,
                 "output": output,
             }))?;
-            sqlx::query(
+            let inserted = sqlx::query(
                 r#"
                 INSERT INTO events (session_id, ts, event_type, schema_version, payload)
                 VALUES (?, ?, ?, 1, ?)
@@ -555,8 +564,15 @@ impl Journal {
             .bind(payload)
             .execute(&mut *tx)
             .await?;
+            crosses_checkpoint |=
+                (inserted.last_insert_rowid() as u64).is_multiple_of(REPLAY_CHECKPOINT_INTERVAL);
         }
         tx.commit().await?;
+        // Same accelerator as `append`: a batch that writes an interval
+        // boundary requests the checkpoint once it is committed.
+        if crosses_checkpoint {
+            self.request_replay_checkpoint(session_id);
+        }
         Ok(())
     }
 
@@ -1623,6 +1639,32 @@ mod tests {
         let state = j.replay(sid).await.unwrap();
         assert_eq!(state.messages[0].content, "first");
         assert_eq!(state.messages[1].content, "second");
+    }
+
+    /// A batch append that writes an interval boundary requests the
+    /// checkpoint like a single append does.
+    #[tokio::test]
+    async fn batch_appends_request_the_checkpoint_they_cross() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        for index in 0..253 {
+            journal
+                .append_user_message(sid, &format!("message {index}"))
+                .await
+                .unwrap();
+        }
+        // seq 254..=257: the batch writes seq 256.
+        let calls: Vec<ToolCall> = (0..4)
+            .map(|index| ToolCall {
+                id: format!("call-{index}"),
+                name: "read".into(),
+                arguments: json!({}),
+            })
+            .collect();
+        journal.append_tool_intents(sid, &calls).await.unwrap();
+        wait_for_checkpoint(&journal, sid, 256).await;
     }
 
     #[tokio::test]
