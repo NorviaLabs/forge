@@ -239,9 +239,8 @@ prefix (`<profile_id>/<model>`).
 - `update_custom_provider` edits user-origin providers and built-ins with
   editable `base_url` (base URL plus an optional manual model). With
   `details` (custom providers only) it also replaces `title`, `label`, and
-  `api_key_env`; that path checks only the env names' shape, not the
-  built-in/`FORGE_*_API_KEY` reservation, and writes before the reload that
-  can fail with "cannot reload provider";
+  `api_key_env`; it checks the env names' shape and the loader's
+  built-in/`FORGE_*_API_KEY` reservation before any write;
   `save_manual_model` rejects empty, `/`-terminated, or control-character
   ids and namespaces with the profile's prefix.
 - `CatalogSource::is_runnable` is true only for `Live`, `Cached`, and

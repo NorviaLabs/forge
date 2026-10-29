@@ -142,7 +142,26 @@ fn check_details(details: &ProviderDetails) -> Result<(), String> {
                 .into(),
         );
     }
+    // Same rule the loader applies, checked before writing: a reserved name
+    // would be saved, then rejected on load. A reserved name is a known
+    // variable name, never a secret, so it may be echoed.
+    let builtin_names = credential_env_names(&builtin_registry());
+    if let Some(name) = details
+        .api_key_env
+        .iter()
+        .find(|name| is_reserved_key_env_name(&builtin_names, name))
+    {
+        return Err(format!(
+            "key env name `{name}` is reserved by a built-in provider"
+        ));
+    }
     Ok(())
+}
+
+/// A built-in provider's key variable, or any `FORGE_*_API_KEY`.
+fn is_reserved_key_env_name(builtin_names: &[String], name: &str) -> bool {
+    builtin_names.iter().any(|builtin| builtin == name)
+        || (name.starts_with("FORGE_") && name.ends_with("_API_KEY"))
 }
 
 /// Replace the `id` entry of the `[[providers]]` array: its lines are
@@ -944,9 +963,7 @@ fn validate_user_spec(registry: &ConnectRegistry, spec: &ProviderSpec) -> Result
                 "api_key_env `{name}` must be uppercase and end in _KEY or _TOKEN"
             ));
         }
-        if builtin_names.contains(name)
-            || (name.starts_with("FORGE_") && name.ends_with("_API_KEY"))
-        {
+        if is_reserved_key_env_name(&builtin_names, name) {
             return Err(format!(
                 "api_key_env `{name}` is reserved by a built-in provider"
             ));
@@ -1151,6 +1168,16 @@ mod tests {
             ProviderDetails {
                 title: "t".into(),
                 api_key_env: vec!["sk-live-secret-value".into()],
+                ..ProviderDetails::default()
+            },
+            ProviderDetails {
+                title: "t".into(),
+                api_key_env: vec!["OPENAI_API_KEY".into()],
+                ..ProviderDetails::default()
+            },
+            ProviderDetails {
+                title: "t".into(),
+                api_key_env: vec!["FORGE_CUSTOM_API_KEY".into()],
                 ..ProviderDetails::default()
             },
         ] {
