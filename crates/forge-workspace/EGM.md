@@ -34,8 +34,9 @@ concerns; a frontend consumes its data and decides how it looks.
 - Long-running Git work in `git_status` and `git_sync` (`pull`, `push`,
   `fetch`, status refresh, diffs) runs on worker threads behind a channel, and
   the caller polls. Every `gh.rs` function runs synchronously on the caller's
-  thread: each `gh` call is bounded by a 30 s timeout, `wait_for_checks`
-  sleeps 10 s between polls, and `push_branch` runs `git push` inline.
+  thread: each `gh` and local `git` call is bounded by a 30 s timeout and
+  `push_branch`'s `git push` by 300 s (process group killed at the
+  deadline); `wait_for_checks` sleeps 10 s between polls.
 - Read-only GitHub discovery stays separate from write workflows: `github.rs`
   only reads; `gh.rs` performs mutations through explicit command functions.
 - No credentials are read or stored here; authentication belongs to the `gh`

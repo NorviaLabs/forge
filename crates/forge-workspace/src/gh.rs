@@ -208,27 +208,21 @@ pub fn create_issue_pull_request_for_branch(
         ));
     }
     validate_clean_worktree(workspace)?;
-    let base_ref = std::process::Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args([
+    let base_ref = run_git(
+        workspace,
+        &[
             "rev-parse",
             "--verify",
             &format!("origin/{base}^{{commit}}"),
-        ])
-        .output()
-        .map_err(|error| GithubError::Command(error.to_string()))?;
+        ],
+        GH_TIMEOUT,
+    )?;
     if !base_ref.status.success() {
         return Err(GithubError::Command(format!(
             "base branch `{base}` is not fetched locally"
         )));
     }
-    let branch = std::process::Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["branch", "--show-current"])
-        .output()
-        .map_err(|error| GithubError::Command(error.to_string()))?;
+    let branch = run_git(workspace, &["branch", "--show-current"], GH_TIMEOUT)?;
     let branch = String::from_utf8_lossy(&branch.stdout).trim().to_string();
     if branch.is_empty() || branch != expected_branch {
         return Err(GithubError::Command(
@@ -248,12 +242,7 @@ pub fn create_issue_pull_request_for_branch(
 }
 
 pub fn validate_clean_worktree(workspace: &Path) -> Result<(), GithubError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["status", "--porcelain"])
-        .output()
-        .map_err(|error| GithubError::Command(error.to_string()))?;
+    let output = run_git(workspace, &["status", "--porcelain"], GH_TIMEOUT)?;
     if !output.status.success() {
         return Err(GithubError::Command(
             "could not inspect local Git changes".into(),
@@ -268,12 +257,7 @@ pub fn validate_clean_worktree(workspace: &Path) -> Result<(), GithubError> {
 }
 
 pub fn current_branch(workspace: &Path) -> Result<String, GithubError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["branch", "--show-current"])
-        .output()
-        .map_err(|e| GithubError::Command(e.to_string()))?;
+    let output = run_git(workspace, &["branch", "--show-current"], GH_TIMEOUT)?;
     if !output.status.success() {
         return Err(GithubError::Command(
             "could not determine current branch".into(),
@@ -289,12 +273,11 @@ pub fn current_branch(workspace: &Path) -> Result<String, GithubError> {
 }
 
 pub fn push_branch(workspace: &Path, branch: &str) -> Result<(), GithubError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["push", "-u", "origin", branch])
-        .output()
-        .map_err(|e| GithubError::Command(e.to_string()))?;
+    let output = run_git(
+        workspace,
+        &["push", "-u", "origin", branch],
+        GIT_PUSH_TIMEOUT,
+    )?;
     if !output.status.success() {
         return Err(GithubError::Command(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -752,12 +735,7 @@ pub fn merge_if_ready(
 }
 
 pub fn repository(workspace: &Path) -> Result<String, GithubError> {
-    let remote = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
-        .args(["remote", "get-url", "origin"])
-        .output()
-        .map_err(|e| GithubError::Command(e.to_string()))?;
+    let remote = run_git(workspace, &["remote", "get-url", "origin"], GH_TIMEOUT)?;
     if !remote.status.success() {
         return Err(GithubError::MissingRemote);
     }
@@ -766,6 +744,37 @@ pub fn repository(workspace: &Path) -> Result<String, GithubError> {
 }
 
 pub(crate) const GH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// A push transfers objects over the network, so it gets longer than the
+/// local and API calls.
+const GIT_PUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+
+/// `git -C <workspace> <args>` that can never wait on a person: terminal
+/// credential prompts are disabled, stdin is closed, and the call is killed
+/// at `timeout` (with its process group). Runs on blocking workers, so an
+/// interactive prompt would otherwise hang one indefinitely.
+fn git_command(workspace: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(workspace)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null());
+    command
+}
+
+fn run_git(
+    workspace: &Path,
+    args: &[&str],
+    timeout: std::time::Duration,
+) -> Result<BoundedCommandOutput, GithubError> {
+    bounded_command(
+        &mut git_command(workspace, args),
+        MAX_GIT_OUTPUT_BYTES,
+        timeout,
+    )
+}
 const MAX_GH_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
 struct BoundedCommandOutput {
@@ -786,6 +795,7 @@ fn bounded_command(
         time::{Duration, Instant},
     };
     let deadline = Instant::now() + timeout;
+    let program = command.get_program().to_string_lossy().into_owned();
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -795,7 +805,10 @@ fn bounded_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(gh_spawn_error)?;
+        .map_err(|error| match program.as_str() {
+            "gh" => gh_spawn_error(error),
+            _ => GithubError::Command(format!("cannot run `{program}`: {error}")),
+        })?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let (out_tx, out_rx) = mpsc::channel();
@@ -816,18 +829,18 @@ fn bounded_command(
                 result => {
                     return Err(GithubError::Command(match result {
                         Err(error) => error.to_string(),
-                        _ => "GitHub CLI deadline exceeded".into(),
+                        _ => format!("`{program}` exceeded its {timeout:?} deadline"),
                     }))
                 }
             }
         };
         let (stdout, truncated) = out_rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| GithubError::Command("GitHub CLI stdout deadline exceeded".into()))?
+            .map_err(|_| GithubError::Command(format!("`{program}` stdout deadline exceeded")))?
             .map_err(|error| GithubError::Command(error.to_string()))?;
         let (stderr, _) = err_rx
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| GithubError::Command("GitHub CLI stderr deadline exceeded".into()))?
+            .map_err(|_| GithubError::Command(format!("`{program}` stderr deadline exceeded")))?
             .map_err(|error| GithubError::Command(error.to_string()))?;
         Ok(BoundedCommandOutput {
             status,
@@ -1021,6 +1034,49 @@ mod tests {
         assert!(result.status.success());
         assert_eq!(result.stdout.len(), 100);
         assert!(result.truncated);
+    }
+
+    /// Git run for PR work never waits on a person: terminal prompts are
+    /// off and stdin is closed (a deadline still bounds the call).
+    #[test]
+    fn git_commands_cannot_prompt() {
+        let command = git_command(Path::new("/repo"), &["push", "-u", "origin", "b"]);
+        assert!(command
+            .get_envs()
+            .any(|(key, value)| key == "GIT_TERMINAL_PROMPT"
+                && value == Some(std::ffi::OsStr::new("0"))));
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["-C", "/repo", "push", "-u", "origin", "b"]);
+    }
+
+    /// A push to a remote that cannot be reached fails with git's own error
+    /// instead of hanging, and a missing repository is not misreported as a
+    /// missing GitHub CLI.
+    #[test]
+    fn push_to_an_unreachable_remote_fails_promptly() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec![
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "i",
+            ],
+            vec!["remote", "add", "origin", "https://127.0.0.1:9/none.git"],
+        ] {
+            assert!(git_command(repo, &args).status().unwrap().success());
+        }
+        let started = std::time::Instant::now();
+        let error = push_branch(repo, "main").unwrap_err();
+        assert!(started.elapsed() < std::time::Duration::from_secs(60));
+        assert!(!matches!(error, GithubError::MissingCli), "{error:?}");
     }
 
     #[test]
