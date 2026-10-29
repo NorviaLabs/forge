@@ -164,6 +164,8 @@ fn merge_session_directory(
     destination: PathBuf,
 ) -> MigrationRecord {
     let mut moved = 0;
+    let mut failed = 0;
+    let mut first_error = None;
     let Ok(entries) = fs::read_dir(&source) else {
         return MigrationRecord {
             source,
@@ -178,10 +180,28 @@ fn merge_session_directory(
             continue;
         }
         let target = destination.join(entry.file_name());
-        if target.exists() || fs::rename(&path, target).is_err() {
+        // An existing destination file is a collision, left in place on
+        // purpose; a failed rename is an error the caller must hear about.
+        if target.exists() {
             continue;
         }
-        moved += 1;
+        match fs::rename(&path, target) {
+            Ok(()) => moved += 1,
+            Err(error) => {
+                failed += 1;
+                first_error.get_or_insert_with(|| format!("{}: {error}", path.display()));
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        return MigrationRecord {
+            source,
+            destination,
+            outcome: MigrationOutcome::Failed,
+            detail: Some(format!(
+                "{failed} session file(s) could not be moved ({moved} moved); first: {error}"
+            )),
+        };
     }
     let outcome = if fs::read_dir(&source)
         .map(|mut entries| entries.next().is_none())
@@ -279,6 +299,39 @@ mod tests {
             .join(".forge/local/sessions/previous.db")
             .is_file());
         assert!(!dir.path().join(".forge/sessions").exists());
+    }
+
+    /// A file that cannot be moved makes the merge `Failed` with a detail,
+    /// instead of reading as migrated or as a collision.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_file_that_cannot_move_reports_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let destination = dir.path().join(".forge/local/sessions");
+        fs::create_dir_all(dir.path().join(".forge/sessions")).unwrap();
+        fs::create_dir_all(&destination).unwrap();
+        fs::write(dir.path().join(".forge/sessions/previous.db"), "data").unwrap();
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o555)).unwrap();
+
+        let records = migrate_legacy_runtime_files(dir.path());
+        fs::set_permissions(&destination, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let record = records
+            .iter()
+            .find(|record| record.source.ends_with("sessions"))
+            .unwrap();
+        assert_eq!(record.outcome, MigrationOutcome::Failed, "{record:?}");
+        assert!(
+            record
+                .detail
+                .as_deref()
+                .unwrap_or("")
+                .contains("could not be moved"),
+            "{record:?}"
+        );
+        assert!(dir.path().join(".forge/sessions/previous.db").is_file());
     }
 
     #[test]
