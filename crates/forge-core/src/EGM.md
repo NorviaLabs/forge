@@ -101,8 +101,9 @@ Subdirectory:
 - With governance enabled, every tool call is authorized at one policy point
   (`AgentSession::authorize_tool_call` in `session/tools.rs`), which applies
   approve-all only to `Hitl` decisions and queues an audit row for each
-  decision; the row is written at the next durable point (e.g. the tool
-  result). `request_unconfined_retry` bypasses it and audits its own combined
+  decision; queued rows are written before each tool intent is journaled
+  (`journal_tool_intent`/`journal_tool_intents`), so the decision is
+  durable before the tool runs. `request_unconfined_retry` bypasses it and audits its own combined
   decision (`explicit_unconfined_retry`). The remaining direct
   `governance.authorize` calls are unaudited and only narrow (see
   [session](./session/EGM.md)). With `enable_governance` off, no

@@ -1392,6 +1392,49 @@ async fn a_grant_decision_is_validated_then_grants_the_host_and_retries() {
 /// A call refused by the egress proxy, granted at the prompt and retried
 /// leaves one ordered, durable trail correlated by its call id, and the
 /// trail survives a resume.
+/// The authorization row is durable before the tool runs: read through a
+/// second journal handle while the call is pending, before any execution.
+#[tokio::test]
+async fn the_authorization_audit_row_is_durable_before_the_tool_runs() {
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(NetworkDeniedOnceTool::new()));
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.append_user_message("run it").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-early".into(),
+                name: "network_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(application, ModelResponseApplication::Execute(_)));
+
+    // Not `session.audit_events()`: that flushes first and would hide the bug.
+    let other = forge_durable::Journal::open(session.journal.directory(), session.session_id)
+        .await
+        .unwrap();
+    let rows = other.audit_events(session.session_id).await.unwrap();
+    assert!(
+        rows.iter()
+            .any(|row| row.kind == forge_durable::AuditKind::Authorize
+                && row.call_id.as_deref() == Some("call-early")),
+        "authorization must be journaled before execution: {rows:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_host_grant_and_retry_leave_an_ordered_durable_audit_trail() {
     let dir = tempdir().unwrap();

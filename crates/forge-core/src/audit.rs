@@ -249,6 +249,27 @@ impl AgentSession {
         Ok(())
     }
 
+    /// Journal a tool intent, writing the queued audit rows first. The
+    /// call's authorization decision is queued when it is made; flushing here
+    /// makes it durable before the tool can run, so a crash mid-tool never
+    /// loses the record of why it was allowed.
+    pub(crate) async fn journal_tool_intent(&self, call: &ToolCall) -> Result<(), LoopError> {
+        self.flush_audit().await?;
+        self.journal
+            .append_tool_intent(self.session_id, call)
+            .await?;
+        Ok(())
+    }
+
+    /// As [`Self::journal_tool_intent`], for a batch of parallel calls.
+    pub(crate) async fn journal_tool_intents(&self, calls: &[ToolCall]) -> Result<(), LoopError> {
+        self.flush_audit().await?;
+        self.journal
+            .append_tool_intents(self.session_id, calls)
+            .await?;
+        Ok(())
+    }
+
     /// A turn boundary: take the gateway's events into the trail, then write
     /// it.
     pub(crate) async fn flush_audit_at_boundary(&self) -> Result<(), LoopError> {

@@ -104,9 +104,7 @@ impl AgentSession {
         output: ToolOutput,
     ) -> Result<(), LoopError> {
         self.push_denied_evidence(call, &output.content);
-        self.journal
-            .append_tool_intent(self.session_id, call)
-            .await?;
+        self.journal_tool_intent(call).await?;
         self.publish_tool_result(call, &output).await?;
         Ok(())
     }
@@ -402,9 +400,7 @@ impl AgentSession {
                     }
                 }
                 if !executions.is_empty() {
-                    self.journal
-                        .append_tool_intents(self.session_id, &intent_calls)
-                        .await?;
+                    self.journal_tool_intents(&intent_calls).await?;
                     return Ok(ModelResponseApplication::Execute(Box::new(
                         PendingToolApplication {
                             executions,
@@ -980,9 +976,7 @@ impl AgentSession {
         }
 
         if append_intent {
-            self.journal
-                .append_tool_intent(self.session_id, &call)
-                .await?;
+            self.journal_tool_intent(&call).await?;
         }
 
         if let Some(start) = self.dispatch_special_tool(&call, validated).await? {
@@ -1046,9 +1040,7 @@ impl AgentSession {
             let output = ToolOutput::denied(
                 "retry_of must reference an unconsumed failed confined bash call from this turn",
             );
-            self.journal
-                .append_tool_intent(self.session_id, request)
-                .await?;
+            self.journal_tool_intent(request).await?;
             self.publish_tool_result(request, &output).await?;
             return Ok(ToolExecutionStart::Finished(None));
         };
@@ -1091,9 +1083,7 @@ impl AgentSession {
             });
             if !matches!(decision, PolicyDecision::Allow | PolicyDecision::Hitl) {
                 let output = ToolOutput::denied("governance denied the unconfined retry");
-                self.journal
-                    .append_tool_intent(self.session_id, request)
-                    .await?;
+                self.journal_tool_intent(request).await?;
                 self.publish_tool_result(request, &output).await?;
                 return Ok(ToolExecutionStart::Finished(None));
             }
@@ -1104,9 +1094,7 @@ impl AgentSession {
             name: original.name,
             arguments: original.arguments,
         };
-        self.journal
-            .append_tool_intent(self.session_id, request)
-            .await?;
+        self.journal_tool_intent(request).await?;
         self.turn
             .retry_requests
             .insert(request.id.clone(), request.clone());
@@ -1417,9 +1405,7 @@ impl AgentSession {
         if call.name == "background_run" {
             self.turn.record_call(call.clone());
             if append_intent {
-                self.journal
-                    .append_tool_intent(self.session_id, call)
-                    .await?;
+                self.journal_tool_intent(call).await?;
             }
             self.dispatch_background_run(call).await?;
             return Ok(None);
@@ -1432,18 +1418,14 @@ impl AgentSession {
         if is_agent_tool(&call.name) {
             self.turn.record_call(call.clone());
             if append_intent {
-                self.journal
-                    .append_tool_intent(self.session_id, call)
-                    .await?;
+                self.journal_tool_intent(call).await?;
             }
             Box::pin(self.dispatch_agent_tool_result(call)).await?;
             return Ok(None);
         }
         self.turn.record_call(call.clone());
         if append_intent {
-            self.journal
-                .append_tool_intent(self.session_id, call)
-                .await?;
+            self.journal_tool_intent(call).await?;
         }
         Ok(Some(PendingHitlExecution {
             execution: PendingToolExecution {

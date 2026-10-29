@@ -101,7 +101,7 @@ from the crate root and can therefore reach them.
   enabling on an untrusted workspace.
 - When governance is enabled, tool authorization goes through the private
   `authorize_tool_call` policy point, which queues an audit row for every
-  decision (written at the next durable point, e.g. `publish_tool_result`);
+  decision, written before the call's tool intent (`journal_tool_intent`);
   approve-all upgrades only `Hitl` to `Allow` and never overrides a `Deny`.
   The explicit unconfined retry bypasses it and audits its own decision
   (`explicit_unconfined_retry`). The other, unaudited `governance.authorize`

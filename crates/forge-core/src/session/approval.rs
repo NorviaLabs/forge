@@ -117,9 +117,7 @@ impl AgentSession {
                 });
             self.turn.record_call(call.clone());
             self.push_denied_evidence(&call, &output.content);
-            self.journal
-                .append_tool_intent(self.session_id, &call)
-                .await?;
+            self.journal_tool_intent(&call).await?;
             self.publish_tool_result(&call, &output).await?;
             // Stale evidence from the paused call must not leak into a later
             // completion decision within this same turn (see `apply_model_response`).

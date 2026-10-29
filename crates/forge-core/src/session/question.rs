@@ -25,9 +25,7 @@ impl AgentSession {
                  Include the unresolved question in your final result instead.",
                 None,
             );
-            self.journal
-                .append_tool_intent(self.session_id, call)
-                .await?;
+            self.journal_tool_intent(call).await?;
             self.journal
                 .append_tool_result(self.session_id, call, &output)
                 .await?;
@@ -40,9 +38,7 @@ impl AgentSession {
             Ok(args) => args,
             Err(message) => {
                 let output = ToolOutput::failed_exit(message, None);
-                self.journal
-                    .append_tool_intent(self.session_id, call)
-                    .await?;
+                self.journal_tool_intent(call).await?;
                 self.journal
                     .append_tool_result(self.session_id, call, &output)
                     .await?;
@@ -129,9 +125,7 @@ impl AgentSession {
             })
             .unwrap_or_else(|_| json!({"questions": []})),
         };
-        self.journal
-            .append_tool_intent(self.session_id, &call)
-            .await?;
+        self.journal_tool_intent(&call).await?;
         self.journal
             .append_tool_result(self.session_id, &call, &output)
             .await?;

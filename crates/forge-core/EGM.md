@@ -39,9 +39,9 @@ wiring. It composes `forge-model`, `forge-tools`, `forge-context`,
   point before it runs; a few unaudited re-checks may only narrow a decision.
   With `enable_governance` off, no authorization runs.
 - Each durable event is journaled before its side effect; resume replays the
-  journal and reconciles incomplete intents. Audit rows are the exception:
-  they are queued in memory and written at the next durable point (e.g. a
-  tool result), so an authorization row lands after the tool has run.
+  journal and reconciles incomplete intents. Audit rows are queued in memory
+  and written before the next tool intent (and at other durable points), so
+  a call's authorization row is durable before the tool runs.
 - Compaction is transactional and never fails the user's turn.
 
 ## Side Effects
