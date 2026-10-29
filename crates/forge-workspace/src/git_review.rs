@@ -154,7 +154,7 @@ pub fn restore_path(root: &Path, path: &Path) -> Result<(), String> {
 }
 
 /// Keep review subprocesses scoped to ordinary paths inside the selected worktree.
-fn validated_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
+pub(crate) fn validated_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let root = root
         .canonicalize()
         .map_err(|e| format!("workspace root: {e}"))?;
@@ -315,7 +315,9 @@ fn is_tracked(root: &Path, rel: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn git_command(root: &Path) -> Command {
+/// `git` rooted at `root` with every repository-redirecting `GIT_*`
+/// variable removed, so the caller's environment cannot point it elsewhere.
+pub(crate) fn git_command(root: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(root);
     for name in [

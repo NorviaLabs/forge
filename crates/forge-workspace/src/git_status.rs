@@ -375,15 +375,14 @@ impl GitStatusCache {
 fn load_unstaged_diff(root: &Path, path: &Path) -> Result<String, String> {
     // `--no-optional-locks` keeps this background read from refreshing (and
     // locking) the index, which would race a foreground `s` / `u` stage.
-    let output = std::process::Command::new("git")
-        .args([
-            "--no-optional-locks",
-            "diff",
-            "--no-color",
-            "--",
-            path.to_str().unwrap_or(""),
-        ])
-        .current_dir(root)
+    // Same rules as the staged and combined diffs: an ordinary path inside
+    // the worktree, passed as raw bytes (a non-UTF-8 name must not become an
+    // empty pathspec, which would diff the whole repository), with the
+    // repository-redirecting `GIT_*` variables removed.
+    let rel = crate::git_review::validated_relative_path(root, path)?;
+    let output = crate::git_review::git_command(root)
+        .args(["--no-optional-locks", "diff", "--no-color", "--"])
+        .arg(rel.as_os_str())
         .output()
         .map_err(|e| format!("failed to run git diff: {e}"))?;
 
@@ -401,7 +400,7 @@ fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, PathStatus>, String> 
     // Same reason as `load_unstaged_diff`: a background poll must never take
     // the index lock. The test `s_stages_the_selected_file_and_u_puts_it_back`
     // was the canary — `u` intermittently failed with a live index.lock.
-    let output = std::process::Command::new("git")
+    let output = crate::git_review::git_command(root)
         .args([
             "--no-optional-locks",
             "status",
@@ -409,7 +408,6 @@ fn load_git_status(root: &Path) -> Result<HashMap<PathBuf, PathStatus>, String> 
             "-z",
             "-uall",
         ])
-        .current_dir(root)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .output()
@@ -621,6 +619,39 @@ mod tests {
                 .and_then(|s| s.primary()),
             Some(GitStatusKind::Untracked)
         );
+    }
+
+    /// The unstaged diff is scoped to one file: an invalid path is refused
+    /// instead of becoming an empty pathspec that diffs every file.
+    #[test]
+    fn unstaged_diff_is_limited_to_the_requested_path() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            assert!(Command::new("git")
+                .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+                .args(args)
+                .current_dir(root.path())
+                .output()
+                .unwrap()
+                .status
+                .success());
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(root.path().join("b.txt"), "b\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "init"]);
+        std::fs::write(root.path().join("a.txt"), "a2\n").unwrap();
+        std::fs::write(root.path().join("b.txt"), "b2\n").unwrap();
+
+        let diff = load_unstaged_diff(root.path(), Path::new("a.txt")).unwrap();
+        assert!(diff.contains("a2") && !diff.contains("b2"), "{diff}");
+        for bad in ["", "../a.txt", ".git/config"] {
+            assert!(
+                load_unstaged_diff(root.path(), Path::new(bad)).is_err(),
+                "`{bad}` must be refused"
+            );
+        }
     }
 
     #[tokio::test]

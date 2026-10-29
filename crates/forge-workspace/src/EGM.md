@@ -76,14 +76,15 @@ modules; each module owns one concern:
 - Git subprocesses never run through a shell. Only `LocalGit`'s operation
   spawns set `GIT_TERMINAL_PROMPT=0`, `GIT_EDITOR=true`, and
   `GIT_MERGE_AUTOEDIT=no`; `LocalGit::new`'s `rev-parse`, `git_review`'s
-  commands (which only scrub `GIT_DIR` and related variables), `git_status`'s
-  status/unstaged-diff reads do not set them. `gh.rs`'s `git` calls set
+  commands and `git_status`'s status/unstaged-diff reads (which only scrub
+  `GIT_DIR` and related variables) do not set them. `gh.rs`'s `git` calls set
   `GIT_TERMINAL_PROMPT=0`, close stdin, and run under a deadline (30 s;
   300 s for `push_branch`).
 - Paths that `LocalGit` and `git_review` pass to Git are relative, contain only
   `Component::Normal`, never start with `.git`, and reject symlinked ancestors
-  (including deleted paths). `git_status`'s unstaged diff passes the caller's
-  `path` to `git diff --` unvalidated.
+  (including deleted paths). `git_status`'s unstaged diff validates its path
+  with `git_review`'s rule (relative, `Normal` components, not under `.git`)
+  and passes it as raw bytes, so a non-UTF-8 name never widens the diff.
 - `git_status`/`git_sync` caches are refreshed by a worker thread and observed
   only through `poll`; `start_refresh` increments `revision` and clears the
   diff cache on every call, and diff requests are answered into the cache,
