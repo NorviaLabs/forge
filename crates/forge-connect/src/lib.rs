@@ -56,8 +56,8 @@ pub use profile::{
 };
 pub use registry::{
     builtin_registry, credential_env_names, loaded_registry, loaded_registry_from,
-    save_custom_provider, save_manual_model, update_custom_provider, ConnectRegistry,
-    ProviderDetails,
+    save_custom_provider, save_manual_model, update_custom_provider, user_providers_path,
+    ConnectRegistry, ProviderDetails,
 };
 pub use remove::{RemovalError, RemovalReport, StoreKind};
 pub use resolve::{

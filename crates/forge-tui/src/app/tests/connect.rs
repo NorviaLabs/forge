@@ -2016,3 +2016,232 @@ fn a_403_is_not_a_rejected_credential() {
     };
     assert!(unauthorized.rejected_credential());
 }
+
+// ---- removing a custom provider (Ctrl-X) ---------------------------------
+
+const LABBOX_PROVIDERS: &str = "[[providers]]\nid = \"labbox\"\ntitle = \"labbox\"\nbase_url = \"https://lab.example/v1\"\nwire = \"chat-completions\"\n\n[providers.auth]\nkind = \"api-key\"\n\n[manual_models]\nlabbox = [\"labbox/a\"]\n";
+
+/// An app whose user `providers.toml` (under the isolated HOME) defines
+/// `labbox`, with temp credential and preference stores.
+async fn removal_app() -> (TempDir, TempDir, TuiApp) {
+    let path = forge_connect::user_providers_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, LABBOX_PROVIDERS).unwrap();
+    let (dir, mut app) = focus_test_app().await;
+    let stores = tempfile::tempdir().unwrap();
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(stores.path().join("credentials.toml")),
+    ));
+    app.connect.preferences = PreferenceStore::new(stores.path().join("preferences.toml"));
+    app.connect.registry = forge_connect::loaded_registry();
+    (dir, stores, app)
+}
+
+/// Open the picker with the Providers cursor on `id`.
+fn focus_provider_row(app: &mut TuiApp, id: &str) {
+    app.open_connect_picker();
+    for cursor in 0..64 {
+        if let Some(Overlay::ConnectModel {
+            provider_cursor, ..
+        }) = app.overlay.as_mut()
+        {
+            *provider_cursor = cursor;
+        }
+        if app.picker_route().as_deref() == Some(id) {
+            return;
+        }
+    }
+    panic!("no provider row for `{id}`");
+}
+
+#[tokio::test]
+async fn ctrl_x_in_the_picker_asks_to_remove_the_provider() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    app.open_connect_picker();
+    let overlay = app.overlay.as_mut().unwrap();
+    assert!(matches!(
+        handle_overlay_key(overlay, OverlayKey::Ctrl('x')),
+        OverlayAction::RemoveProvider
+    ));
+}
+
+#[tokio::test]
+async fn removing_a_custom_provider_confirms_then_deletes_it() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    focus_provider_row(&mut app, "labbox");
+    app.begin_remove_provider();
+    let Some(Overlay::ConnectRemoveConfirm {
+        profile_id,
+        lines,
+        choice,
+    }) = app.overlay.as_mut()
+    else {
+        panic!("expected the remove confirm, got {:?}", app.overlay);
+    };
+    assert_eq!(profile_id, "labbox");
+    assert!(lines[1].contains("1 manual model."), "{lines:?}");
+    assert_eq!(lines.last().unwrap(), "This cannot be undone.");
+    assert_eq!(*choice, crate::overlays::RemoveChoice::Cancel);
+    // Enter on the default row cancels.
+    let overlay = app.overlay.as_mut().unwrap();
+    assert!(matches!(
+        handle_overlay_key(overlay, OverlayKey::Enter),
+        OverlayAction::Close
+    ));
+    assert!(matches!(
+        handle_overlay_key(overlay, OverlayKey::Down),
+        OverlayAction::None
+    ));
+    let action = handle_overlay_key(overlay, OverlayKey::Enter);
+    assert!(matches!(
+        action,
+        OverlayAction::ConfirmRemoveProvider { ref profile_id } if profile_id == "labbox"
+    ));
+    app.apply_overlay_action(action).await.unwrap();
+    assert!(app.connect.registry.get("labbox").is_none());
+    assert!(
+        !std::fs::read_to_string(forge_connect::user_providers_path())
+            .unwrap()
+            .contains("labbox")
+    );
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert!(format!("{:?}", app.activity).contains("Removed custom provider `labbox`."));
+}
+
+#[tokio::test]
+async fn esc_on_the_remove_confirm_returns_to_the_picker() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    focus_provider_row(&mut app, "labbox");
+    app.begin_remove_provider();
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::ConnectRemoveConfirm { .. })
+    ));
+    app.apply_overlay_action(OverlayAction::Close)
+        .await
+        .unwrap();
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert!(app.connect.registry.get("labbox").is_some());
+}
+
+#[tokio::test]
+async fn built_in_providers_cannot_be_removed() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    app.open_connect_picker();
+    let built_in = (0..64).find_map(|cursor| {
+        if let Some(Overlay::ConnectModel {
+            provider_cursor, ..
+        }) = app.overlay.as_mut()
+        {
+            *provider_cursor = cursor;
+        }
+        app.picker_route().filter(|id| {
+            app.connect
+                .registry
+                .get(id)
+                .is_some_and(|spec| !spec.is_user())
+        })
+    });
+    assert!(built_in.is_some(), "the picker lists a built-in provider");
+    app.begin_remove_provider();
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert_eq!(app.feedback.text, "only custom providers can be removed");
+}
+
+#[tokio::test]
+async fn removal_waits_for_a_running_model_refresh() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    focus_provider_row(&mut app, "labbox");
+    let (_tx, rx) = std::sync::mpsc::channel();
+    app.catalog_fetch.refresh_rx = Some(rx);
+    app.begin_remove_provider();
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert!(app.feedback.text.contains("model refresh is running"));
+    // The check runs again at confirm time.
+    app.overlay = None;
+    app.confirm_remove_provider("labbox");
+    assert!(app.connect.registry.get("labbox").is_some());
+}
+
+#[tokio::test]
+async fn removing_the_active_provider_stops_the_auto_restore() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    app.connect.profile = Some("labbox".into());
+    app.runtime.model_label = "labbox/a".into();
+    app.confirm_remove_provider("labbox");
+    assert!(app.connect.profile.is_none());
+    assert!(app.connect.auth_suspended);
+    assert!(app.runtime.model_label.is_empty());
+}
+
+#[tokio::test]
+async fn adding_a_provider_clears_state_left_under_its_id() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app().await;
+    let spec = app.connect.registry.get("labbox").unwrap().clone();
+    app.connect
+        .credentials
+        .set_api_key(&spec, "sk-old")
+        .unwrap();
+    std::fs::write(forge_connect::user_providers_path(), "").unwrap();
+    app.connect.registry = forge_connect::loaded_registry();
+    app.apply_overlay_action(OverlayAction::SaveCustomProvider {
+        id: "labbox".into(),
+        base_url: "https://new.example/v1".into(),
+        model: "fresh".into(),
+        api_key: String::new(),
+        editing: false,
+        wire: forge_connect::WireKind::ChatCompletions,
+        details: None,
+    })
+    .await
+    .unwrap();
+    assert!(
+        !std::fs::read_to_string(app.connect.credentials.store().path())
+            .unwrap_or_default()
+            .contains("sk-old")
+    );
+}
+
+#[tokio::test]
+async fn removal_is_refused_while_a_supervised_session_on_it_is_busy() {
+    let (_home, _guard) = isolated_home_guard();
+    let path = forge_connect::user_providers_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, LABBOX_PROVIDERS).unwrap();
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    app.connect.registry = forge_connect::loaded_registry();
+    let primary = app.selected_session_id;
+    let template = app.supervisor.as_ref().unwrap().snapshots[&primary].clone();
+    for state in [
+        forge_session::SupervisorTurnState::Running,
+        forge_session::SupervisorTurnState::Queued,
+        forge_session::SupervisorTurnState::Waiting,
+    ] {
+        let id = uuid::Uuid::new_v4();
+        let mut busy = template.clone();
+        busy.task.session_id = id;
+        busy.task.model_id = "labbox/a".into();
+        busy.task.turn_state = state;
+        app.supervisor.as_mut().unwrap().snapshots.insert(id, busy);
+        focus_provider_row(&mut app, "labbox");
+        app.begin_remove_provider();
+        assert!(
+            app.feedback.text.contains("in use by 1 busy session"),
+            "{state:?}: {}",
+            app.feedback.text
+        );
+        assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+        app.supervisor.as_mut().unwrap().snapshots.remove(&id);
+    }
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}

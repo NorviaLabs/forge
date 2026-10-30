@@ -104,8 +104,12 @@ Overlays and setup:
   names rows (5-7) for a user profile; `None` hides them. The picker emits
   `OverlayAction::RefreshModels`, `AddManualModel`, `SaveManualModel`,
   `AddCustomProvider`, `SaveCustomProvider { .., wire, details }` and
-  `EditProvider`. `Overlay::picker_route` names the route whose models the
-  picker is showing.
+  `EditProvider`, and `RemoveProvider` (`Ctrl-X`). `Overlay::picker_route`
+  names the route whose models the picker is showing (the row under the
+  cursor while the Providers column has focus).
+  `Overlay::ConnectRemoveConfirm { profile_id, lines, choice }` is the
+  remove confirm: `RemoveChoice::Cancel` is the default row, ↑↓/Tab toggle,
+  and Enter on `Remove` emits `ConfirmRemoveProvider { profile_id }`.
 - `command_palette` — palette data and filtering.
 - `model_picker` — model-picker data and route grouping.
 - `setup` — pre-session setup shell (theme, then directory trust).
@@ -153,8 +157,8 @@ Subdirectories:
   output queue; a fast child applies backpressure rather than growing the queue.
 - Displayed key hints must match routing: a `hints` table may only advertise
   keys the owning overlay actually handles (for example `PICKER` lists
-  `Ctrl-R` refresh, `Ctrl-A` add model, `Ctrl-E` edit because the model picker
-  routes them).
+  `Ctrl-R` refresh, `Ctrl-A` add model, `Ctrl-E` edit, `Ctrl-X` remove because
+  the model picker routes them).
 - `launch::decide_launch` only offers the resume picker when the theme is
   committed and the directory was trusted at process start.
 - Slash parsing is pure: `parse_slash` returns `None` for non-slash input and

@@ -151,6 +151,13 @@ pub enum Overlay {
         label: String,
         detail: String,
     },
+    /// Confirm removing a custom provider; `lines` say what goes and what
+    /// stays. Cancel is the default row.
+    ConnectRemoveConfirm {
+        profile_id: String,
+        lines: Vec<String>,
+        choice: RemoveChoice,
+    },
     SessionInput {
         mode: SessionInputMode,
         field: usize,
@@ -310,6 +317,24 @@ pub struct SessionSwitcherItem {
 }
 
 /// A destructive session action awaiting confirmation.
+/// The two rows of the remove-provider confirm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RemoveChoice {
+    Remove,
+    /// The default row: removal cannot be undone.
+    #[default]
+    Cancel,
+}
+
+impl RemoveChoice {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Remove => Self::Cancel,
+            Self::Cancel => Self::Remove,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionConfirmKind {
     /// Final: an archived session cannot be reopened.
@@ -1567,6 +1592,11 @@ pub enum OverlayAction {
         model: String,
     },
     EditProvider,
+    /// `Ctrl-X` in the connect picker: remove the focused custom provider.
+    RemoveProvider,
+    ConfirmRemoveProvider {
+        profile_id: String,
+    },
     /// Providers view: picked a route that's already connected but isn't
     /// the currently active one — switch to it and land in usable steady
     /// state (default model + safe effort), without a forced next step.
@@ -1697,10 +1727,29 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             Key::Ctrl('r') => return OverlayAction::RefreshModels,
             Key::Ctrl('a') => return OverlayAction::AddManualModel,
             Key::Ctrl('e') => return OverlayAction::EditProvider,
+            Key::Ctrl('x') => return OverlayAction::RemoveProvider,
             _ => {}
         }
     }
     match key {
+        Key::Up | Key::Down | Key::Tab | Key::BackTab
+            if matches!(overlay, Overlay::ConnectRemoveConfirm { .. }) =>
+        {
+            if let Overlay::ConnectRemoveConfirm { choice, .. } = overlay {
+                *choice = choice.toggle();
+            }
+            OverlayAction::None
+        }
+        Key::Enter if matches!(overlay, Overlay::ConnectRemoveConfirm { .. }) => match overlay {
+            Overlay::ConnectRemoveConfirm {
+                profile_id,
+                choice: RemoveChoice::Remove,
+                ..
+            } => OverlayAction::ConfirmRemoveProvider {
+                profile_id: profile_id.clone(),
+            },
+            _ => OverlayAction::Close,
+        },
         Key::Esc if matches!(overlay, Overlay::TrustSession { .. }) => {
             if let Overlay::TrustSession { operation_id, .. } = overlay {
                 OverlayAction::CancelSessionCreation {
@@ -2735,7 +2784,9 @@ pub fn handle_overlay_key(overlay: &mut Overlay, key: Key) -> OverlayAction {
             } => Overlay::branch_enter(items, filter, *selected, *merge),
             // Confirmations are routed by the `Key::Enter` arm above, which
             // needs the kind to pick the matching action.
-            Overlay::SessionConfirm { .. } => OverlayAction::None,
+            Overlay::SessionConfirm { .. } | Overlay::ConnectRemoveConfirm { .. } => {
+                OverlayAction::None
+            }
             Overlay::GitCommit {
                 message,
                 error,
@@ -4479,6 +4530,44 @@ impl Widget for OverlayWidget<'_> {
                 ))
                 .block(block)
                 .render(r, buf);
+            }
+            Overlay::ConnectRemoveConfirm { lines, choice, .. } => {
+                let r = centered_rect(68, 50, area);
+                clear_modal(r, buf);
+                let mut text: Vec<Line> = lines
+                    .iter()
+                    .map(|line| Line::styled(line.clone(), theme::text()))
+                    .collect();
+                text.push(Line::from(""));
+                for (row, label) in [
+                    (RemoveChoice::Remove, "Remove"),
+                    (RemoveChoice::Cancel, "Cancel"),
+                ] {
+                    if row == *choice {
+                        text.push(Line::styled(
+                            format!("▶ {label}"),
+                            theme::focused_selection_style(),
+                        ));
+                    } else {
+                        text.push(Line::styled(format!("  {label}"), theme::text()));
+                    }
+                }
+                text.push(Line::from(""));
+                text.push(Line::styled(
+                    crate::hints::hint_text(crate::hints::REMOVE_CONFIRM),
+                    theme::muted(),
+                ));
+                Paragraph::new(text)
+                    .wrap(ratatui::widgets::Wrap { trim: true })
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_style(theme::error_callout())
+                            .style(theme::panel())
+                            .padding(Padding::horizontal(MODAL_PAD_X))
+                            .title(theme::modal_title("Remove custom provider")),
+                    )
+                    .render(r, buf);
             }
             Overlay::SessionConfirm {
                 kind,

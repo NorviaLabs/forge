@@ -770,6 +770,21 @@ impl TuiApp {
                 Ok(profile) => {
                     let profile_id = profile.id.clone();
                     self.reload_providers();
+                    if !editing {
+                        // A key, cached models, or saved selection left under
+                        // this id must not attach to the new provider.
+                        let (_, failed) = self.connect_service().clear_provider_state(
+                            &forge_connect::ModelCatalogCache::user_default(),
+                            &profile,
+                        );
+                        for (store, reason) in failed {
+                            self.push_activity(
+                                ActivityKind::Connect,
+                                FeedbackSeverity::Warn,
+                                format!("could not clear old {store} for `{profile_id}`: {reason}"),
+                            );
+                        }
+                    }
                     if api_key.trim().is_empty() {
                         self.finish_connect(&profile_id, None, false);
                     } else {
@@ -805,6 +820,11 @@ impl TuiApp {
                         }
                     }
                 }
+            }
+            OverlayAction::RemoveProvider => self.begin_remove_provider(),
+            OverlayAction::ConfirmRemoveProvider { profile_id } => {
+                self.overlay = None;
+                self.confirm_remove_provider(&profile_id);
             }
             OverlayAction::EditProvider => {
                 if let Some(profile_id) = self.picker_route() {
@@ -907,6 +927,7 @@ impl TuiApp {
                 Overlay::ConnectApiKey { .. }
                     | Overlay::ConnectCustom { .. }
                     | Overlay::ConnectManualModel { .. }
+                    | Overlay::ConnectRemoveConfirm { .. }
             )
         ) {
             self.open_connect_picker();

@@ -6,7 +6,7 @@
 //! successful connection. Methods are moved verbatim.
 
 use super::*;
-use crate::overlays::build_provider_rows_with_reuse;
+use crate::overlays::{build_provider_rows_with_reuse, RemoveChoice};
 
 /// Provider connection/auth state: known profiles, stored credentials, the
 /// active profile selection, and in-flight xAI OAuth polling. #19 phase 3 —
@@ -1054,6 +1054,10 @@ impl TuiApp {
                 if let Some(session) = self.session_runtime.as_mut() {
                     session.set_route_table(forge_session::route_table());
                 }
+                // Supervised sessions keep their own route tables.
+                if self.supervisor.is_some() {
+                    self.try_session_command(forge_session::SupervisorCommand::ReloadProviders);
+                }
             }
             SelectedRuntime::Supervised(_) => {
                 self.try_session_command(forge_session::SupervisorCommand::ReloadProviders);
@@ -1546,5 +1550,252 @@ impl TuiApp {
         );
         self.finish_connect_flow(profile_id);
         true
+    }
+}
+
+/// Removing a custom provider from the connect picker (`Ctrl-X`).
+impl TuiApp {
+    pub(super) fn connect_service(&self) -> ConnectService<'_> {
+        ConnectService {
+            registry: &self.connect.registry,
+            credentials: &self.connect.credentials,
+            preferences: &self.connect.preferences,
+            active_profile_id: None,
+            active_model: None,
+        }
+    }
+
+    /// True when `model` (a saved or selected model id) or `profile` points
+    /// at `spec`. Matches the id and an older custom prefix the model was
+    /// saved under, ignoring case.
+    fn uses_provider(spec: &forge_connect::ProviderSpec, profile: &str, model: &str) -> bool {
+        if profile.eq_ignore_ascii_case(&spec.id) {
+            return true;
+        }
+        let model = forge_connect::normalize_saved_model_id(model);
+        model.split_once('/').is_some_and(|(prefix, _)| {
+            prefix.eq_ignore_ascii_case(&spec.id)
+                || spec
+                    .legacy_prefix
+                    .as_deref()
+                    .is_some_and(|old| prefix.eq_ignore_ascii_case(old))
+        })
+    }
+
+    /// `(busy, idle)` open sessions using `spec`. Busy means a supervised
+    /// turn that is running, queued, or waiting, or a direct session with a
+    /// turn, a pending prompt, an approval, or a question in flight.
+    fn sessions_on_provider(&self, spec: &forge_connect::ProviderSpec) -> (usize, usize) {
+        let (mut busy, mut idle) = (0, 0);
+        let direct = self
+            .session_runtime
+            .as_ref()
+            .map(|session| session.session_id);
+        if let Some(session) = self.session_runtime.as_ref() {
+            let model = if session.active_model.is_empty() {
+                self.runtime.model_label.as_str()
+            } else {
+                session.active_model.as_str()
+            };
+            let profile = self.connect.profile.as_deref().unwrap_or("");
+            if Self::uses_provider(spec, profile, model) {
+                let working = self.busy_state.is_active()
+                    || self.pending_turn.has_prompt()
+                    || self.session_runtime.pending_hitl().is_some()
+                    || self.session_runtime.pending_question().is_some();
+                if working {
+                    busy += 1;
+                } else {
+                    idle += 1;
+                }
+            }
+        }
+        for snapshot in self
+            .supervisor
+            .as_ref()
+            .map(|supervisor| supervisor.snapshots.values())
+            .into_iter()
+            .flatten()
+        {
+            let task = &snapshot.task;
+            if Some(task.session_id) == direct
+                || task.lifecycle != forge_session::SessionLifecycle::Active
+                || !Self::uses_provider(spec, &task.profile_id, &task.model_id)
+            {
+                continue;
+            }
+            if matches!(
+                task.turn_state,
+                forge_session::SupervisorTurnState::Running
+                    | forge_session::SupervisorTurnState::Queued
+                    | forge_session::SupervisorTurnState::Waiting
+            ) {
+                busy += 1;
+            } else {
+                idle += 1;
+            }
+        }
+        (busy, idle)
+    }
+
+    /// The refusals that can change while the confirm is open: a model
+    /// refresh, or a session on the provider that became busy.
+    fn removal_blocked(&self, spec: &forge_connect::ProviderSpec) -> Option<String> {
+        if self.catalog_fetch.refresh_rx.is_some() {
+            return Some("a model refresh is running; try again when it finishes".into());
+        }
+        let (busy, _) = self.sessions_on_provider(spec);
+        (busy > 0).then(|| {
+            format!(
+                "`{}` is in use by {} — finish or stop the turn first",
+                spec.id,
+                counted_noun(busy, "busy session")
+            )
+        })
+    }
+
+    /// `Ctrl-X` in the connect picker: check the Providers row under the
+    /// cursor can be removed, then open the confirm.
+    pub(super) fn begin_remove_provider(&mut self) {
+        if !matches!(
+            self.overlay,
+            Some(Overlay::ConnectModel {
+                focus: ConnectModelColumn::Providers,
+                ..
+            })
+        ) {
+            return;
+        }
+        let Some(id) = self.picker_route() else {
+            return;
+        };
+        let Some(spec) = self.connect.registry.get(&id).cloned() else {
+            return;
+        };
+        if !spec.is_user() {
+            self.set_feedback(
+                FeedbackSeverity::Warn,
+                "only custom providers can be removed",
+            );
+            return;
+        }
+        if let Some(reason) = self.removal_blocked(&spec) {
+            self.set_feedback(FeedbackSeverity::Warn, reason);
+            return;
+        }
+        let report = match self
+            .connect_service()
+            .preview_removal(&forge_connect::user_providers_path(), &spec.id)
+        {
+            Ok(report) => report,
+            Err(error) => {
+                self.set_feedback(FeedbackSeverity::Warn, error.to_string());
+                return;
+            }
+        };
+        let (_, idle) = self.sessions_on_provider(&spec);
+        let id = &spec.id;
+        let mut lines = vec![
+            format!("Remove `{id}` from {}.", report.providers_path.display()),
+            format!(
+                "Deletes its stored API key, its cached model list and {}.",
+                if report.manual_models == 0 {
+                    "no manual models".to_string()
+                } else {
+                    counted_noun(report.manual_models, "manual model")
+                }
+            ),
+        ];
+        if report.forget.cleared_last {
+            lines.push("Clears the default selection.".into());
+        }
+        if report.forget.cleared_previous {
+            lines.push("Clears the Quick Switch target.".into());
+        }
+        if idle > 0 {
+            lines.push(format!(
+                "{} will ask for a new provider before the next send.",
+                counted_noun(idle, "open session")
+            ));
+        }
+        for name in &report.env_still_set {
+            lines.push(format!(
+                "`{name}` stays set in your environment. Once `{id}` is gone, commands the model runs can read it."
+            ));
+        }
+        if !report.unrecoverable_fields.is_empty() {
+            lines.push(format!(
+                "These settings were added by hand and cannot be recreated in the picker: {}.",
+                report.unrecoverable_fields.join(", ")
+            ));
+        }
+        lines.push("This cannot be undone.".into());
+        self.overlay = Some(Overlay::ConnectRemoveConfirm {
+            profile_id: spec.id.clone(),
+            lines,
+            choice: RemoveChoice::default(),
+        });
+    }
+
+    /// The confirm's Remove: check again (a turn may have started while it
+    /// was open), remove, reload every session's routes, and record it.
+    pub(super) fn confirm_remove_provider(&mut self, profile_id: &str) {
+        let Some(spec) = self.connect.registry.get(profile_id).cloned() else {
+            self.open_connect_picker();
+            return;
+        };
+        if let Some(reason) = self.removal_blocked(&spec) {
+            self.open_connect_picker();
+            self.set_feedback(FeedbackSeverity::Warn, reason);
+            return;
+        }
+        // Decided before the reload: afterwards nothing owns these ids.
+        let active_removed = self
+            .connect
+            .profile
+            .as_deref()
+            .is_some_and(|active| active.eq_ignore_ascii_case(&spec.id));
+        let label_removed = Self::uses_provider(&spec, "", &self.runtime.model_label);
+        let result = self.connect_service().remove_custom_provider(
+            &forge_connect::user_providers_path(),
+            &ModelCatalogCache::user_default(),
+            &spec.id,
+        );
+        let report = match result {
+            Ok(report) => report,
+            Err(error) => {
+                self.open_connect_picker();
+                self.set_feedback(FeedbackSeverity::Error, error.to_string());
+                return;
+            }
+        };
+        self.reload_providers();
+        if active_removed {
+            // Without this, the next send's auto-restore would quietly move
+            // the session to another connected provider.
+            self.connect.profile = None;
+            self.connect.auth_suspended = true;
+        }
+        if label_removed {
+            self.runtime.model_label.clear();
+        }
+        self.refresh_connection_ui();
+        self.open_connect_picker();
+        let mut summary = format!("Removed custom provider `{}`.", spec.id);
+        if !report.failed.is_empty() {
+            let failed: Vec<String> = report
+                .failed
+                .iter()
+                .map(|(store, reason)| format!("{store} ({reason})"))
+                .collect();
+            summary.push_str(&format!(" Could not clear: {}.", failed.join(", ")));
+        }
+        let severity = if report.failed.is_empty() {
+            FeedbackSeverity::Info
+        } else {
+            FeedbackSeverity::Warn
+        };
+        self.set_feedback(severity, summary.clone());
+        self.push_activity(ActivityKind::Connect, severity, summary);
     }
 }

@@ -90,6 +90,7 @@ pub const PICKER: &[Hint] = &[
     ("Ctrl-R", "refresh"),
     ("Ctrl-A", "add model"),
     ("Ctrl-E", "edit"),
+    ("Ctrl-X", "remove"),
 ];
 pub const APPROVAL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "don't run")];
 /// A child agent's inline request while its card holds focus. The decision
@@ -133,6 +134,7 @@ pub const THEME: &[Hint] = &[("↑↓", "preview"), ("Enter", "apply"), ("Esc", 
 pub const TRUST: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "quit")];
 /// Quit-all confirm. The highlighted row defaults to `Cancel`, so `Enter`
 /// confirms whatever is selected rather than always quitting.
+pub const REMOVE_CONFIRM: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "cancel")];
 pub const QUIT_ALL: &[Hint] = &[("↑↓", "move"), ("Enter", "confirm"), ("Esc", "cancel")];
 pub const COMMANDS: &[Hint] = &[("↑↓", "move"), ("Tab", "complete"), ("Enter", "run")];
 pub const BROWSE: &[Hint] = &[

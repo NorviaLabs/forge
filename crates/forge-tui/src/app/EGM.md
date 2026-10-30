@@ -111,6 +111,18 @@ Submodules by responsibility:
   goes to the OAuth flow or the API-key prompt. On save, `details` becomes
   `forge_connect::ProviderDetails` (key env names split on commas, trimmed,
   empties dropped) and is passed to `update_custom_provider`.
+- `OverlayAction::RemoveProvider` (`begin_remove_provider`) acts only with
+  the Providers column focused. It refuses a built-in, a running model
+  refresh, or a busy session on the provider (supervised `Running`/`Queued`/
+  `Waiting` in the roster, or the direct session with a turn, pending prompt,
+  approval, or question), then opens `Overlay::ConnectRemoveConfirm` from
+  `ConnectService::preview_removal`. `confirm_remove_provider` repeats the
+  refresh and busy checks, removes, reloads every session's routes, clears
+  `connect.profile` and sets `auth_suspended` when the active provider went
+  (so the send path's auto-restore cannot pick another provider), reopens
+  the picker, and records one Connect activity entry. Esc on the confirm
+  returns to the picker. Saving a new custom provider first clears any key,
+  cached models, or saved selection left under its id.
 - Catalog-refresh outcomes are recorded per route in `connect.catalog_errors`;
   an auth failure also marks the route `auth_required` and invalidates the
   connected state. Neither outcome changes the running session's model.
