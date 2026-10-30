@@ -374,7 +374,7 @@ pub fn winning_env_var(registry: &ConnectRegistry, profile_id: &str) -> Option<S
 }
 
 /// The first named env var with a non-blank value, trimmed.
-fn first_env(names: &[String]) -> Option<(String, String)> {
+pub(crate) fn first_env(names: &[String]) -> Option<(String, String)> {
     names.iter().find_map(|name| {
         let value = std::env::var(name).ok()?;
         let value = value.trim();

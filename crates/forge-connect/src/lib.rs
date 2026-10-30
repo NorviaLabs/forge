@@ -17,6 +17,7 @@ mod profile;
 #[cfg(test)]
 mod provider_tests;
 mod registry;
+mod remove;
 mod resolve;
 mod route;
 mod selection;
@@ -46,7 +47,7 @@ pub use oauth_rfc8628::{
     try_open_browser, Rfc8628Client, Rfc8628Error, DEFAULT_CLIENT_ID, DEFAULT_ISSUER,
     DEFAULT_SCOPES,
 };
-pub use preferences::PreferenceStore;
+pub use preferences::{ForgetOutcome, PreferenceStore};
 pub use profile::{
     Attach, AuthKind, AuthPrompt, AuthSpec, CatalogFilter, CatalogKind, CatalogSpec,
     ConnectOutcome, ConnectProfile, ConnectStatus, EditableField, EffortFamily, KeySource,
@@ -58,6 +59,7 @@ pub use registry::{
     save_custom_provider, save_manual_model, update_custom_provider, ConnectRegistry,
     ProviderDetails,
 };
+pub use remove::{RemovalError, RemovalReport, StoreKind};
 pub use resolve::{
     env_names_for, resolve, winning_env_var, Credential, CredentialError, CredentialValue,
     ResolvedProfile, RouteDefinition, RouteTable,

@@ -288,8 +288,10 @@ impl ModelCatalogCache {
 
     pub fn clear_profile(&self, profile_id: &str) -> Result<(), CatalogError> {
         let mut file = self.load();
-        file.models.remove(profile_id);
-        file.fetched_at.remove(profile_id);
+        let had_models = file.models.remove(profile_id).is_some();
+        if !(file.fetched_at.remove(profile_id).is_some() || had_models) {
+            return Ok(());
+        }
         self.save(&file)
     }
 

@@ -164,25 +164,13 @@ fn is_reserved_key_env_name(builtin_names: &[String], name: &str) -> bool {
         || (name.starts_with("FORGE_") && name.ends_with("_API_KEY"))
 }
 
-/// Replace the `id` entry of the `[[providers]]` array: its lines are
-/// removed and a rewritten copy is appended at the end of the file, so
-/// comments inside that entry are lost and the provider moves last. Every
-/// other byte of the file is kept.
-fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> Result<(), String> {
-    const LAYOUT: &str = "cannot safely edit this TOML layout; edit providers.toml directly";
-    let original = read_provider_text(path)?;
-    let document: toml::Value = toml::from_str(&original).map_err(|_| "invalid providers TOML")?;
-    let entries = document
-        .get("providers")
-        .and_then(toml::Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let index = entries
-        .iter()
-        .position(|entry| entry.get("id").and_then(toml::Value::as_str) == Some(id))
-        .ok_or("this provider is not defined in providers.toml")?;
-    // The entry spans from its `[[providers]]` header to the next header
-    // that is not one of its own sub-tables (`[providers.auth]`, ...).
+const LAYOUT: &str = "cannot safely edit this TOML layout; edit providers.toml directly";
+
+/// The byte range of the `index`th `[[providers]]` entry: from its header to
+/// the next header that is not one of its own sub-tables (`[providers.auth]`,
+/// ...). Comments and blank lines just above that next header belong to what
+/// follows, so they are outside the range.
+fn provider_entry_range(original: &str, index: usize) -> Option<std::ops::Range<usize>> {
     let mut seen = 0;
     let mut start = None;
     let mut end = original.len();
@@ -208,9 +196,13 @@ fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> R
         }
         offset += line.len();
     }
-    let start = start.ok_or(LAYOUT)?;
-    // Comments and blank lines just above the next header belong to what
-    // follows, so they stay.
+    let start = start?;
+    Some(start..without_trailing_comments(original, start, end))
+}
+
+/// `end`, moved back over the comments and blank lines that close
+/// `original[start..end]`.
+fn without_trailing_comments(original: &str, start: usize, end: usize) -> usize {
     let mut kept = end;
     for line in original[start..end].split_inclusive('\n').rev() {
         let text = line.trim();
@@ -219,8 +211,251 @@ fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> R
         }
         kept -= line.len();
     }
-    let end = kept.max(start);
-    let remainder = format!("{}{}", &original[..start], &original[end..]);
+    kept.max(start)
+}
+
+/// The `[provider_overrides.<id>]` section, written quoted by Forge or bare
+/// by hand, up to the next header.
+fn override_section_range(original: &str, id: &str) -> Option<std::ops::Range<usize>> {
+    let mut start = None;
+    let mut offset = 0;
+    for line in original.split_inclusive('\n') {
+        let header = line.trim();
+        if start.is_some() && header.starts_with('[') {
+            let start = start?;
+            return Some(start..without_trailing_comments(original, start, offset));
+        }
+        if start.is_none() {
+            let key = header
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+                .filter(|inner| !inner.starts_with('['))
+                .and_then(|inner| inner.trim().strip_prefix("provider_overrides."))
+                .map(|key| key.trim().trim_matches('"'));
+            if key.is_some_and(|key| key.eq_ignore_ascii_case(id)) {
+                start = Some(offset);
+            }
+        }
+        offset += line.len();
+    }
+    let start = start?;
+    Some(start..without_trailing_comments(original, start, original.len()))
+}
+
+/// The lines of the `<id> = [...]` key inside `[manual_models]`, to the line
+/// where its brackets balance.
+fn manual_models_key_range(original: &str, id: &str) -> Option<std::ops::Range<usize>> {
+    let mut in_section = false;
+    let mut start = None;
+    let mut depth = 0i32;
+    let mut offset = 0;
+    for line in original.split_inclusive('\n') {
+        let text = line.trim();
+        if let Some(start) = start {
+            depth += bracket_depth(text);
+            offset += line.len();
+            if depth <= 0 {
+                return Some(start..offset);
+            }
+            continue;
+        }
+        if text.starts_with('[') {
+            in_section = text == "[manual_models]";
+        } else if in_section {
+            let key = text
+                .split_once('=')
+                .map(|(key, _)| key.trim().trim_matches('"'));
+            if key.is_some_and(|key| key.eq_ignore_ascii_case(id)) {
+                start = Some(offset);
+                depth = bracket_depth(text.split_once('=').map_or("", |(_, value)| value));
+                if depth <= 0 {
+                    return Some(offset..offset + line.len());
+                }
+            }
+        }
+        offset += line.len();
+    }
+    start.map(|start| start..original.len())
+}
+
+/// Open minus close brackets on a line, ignoring a trailing `#` comment.
+fn bracket_depth(text: &str) -> i32 {
+    let code = text.split('#').next().unwrap_or("");
+    code.matches('[').count() as i32 - code.matches(']').count() as i32
+}
+
+/// `table` without `id` (any case); an empty table counts as absent.
+fn without_id(table: Option<&toml::Value>, id: &str) -> Option<toml::Table> {
+    let mut table = table.and_then(toml::Value::as_table).cloned()?;
+    table.retain(|key, _| !key.eq_ignore_ascii_case(id));
+    (!table.is_empty()).then_some(table)
+}
+
+/// Number of `[[providers]]` entries whose id is `id` (any case).
+pub(crate) fn provider_entry_count(document: &toml::Value, id: &str) -> usize {
+    document
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .get("id")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|entry_id| entry_id.eq_ignore_ascii_case(id))
+        })
+        .count()
+}
+
+/// `original` without everything `providers.toml` holds for `id`: its
+/// `[[providers]]` entry when `remove_entry` is set, its override section, and
+/// its `[manual_models]` key. The result is re-parsed: it must hold exactly
+/// the original data minus those parts, or the edit is refused with
+/// [`LAYOUT`]. Nothing to cut returns `original` unchanged.
+fn strip_provider_sections(original: &str, id: &str, remove_entry: bool) -> Result<String, String> {
+    let document: toml::Value = toml::from_str(original).map_err(|_| "invalid providers TOML")?;
+    let entries = document
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut ranges = Vec::new();
+    let mut expected = entries.clone();
+    if remove_entry {
+        let index = entries
+            .iter()
+            .position(|entry| {
+                entry
+                    .get("id")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|entry_id| entry_id.eq_ignore_ascii_case(id))
+            })
+            .ok_or("this provider is not defined in providers.toml")?;
+        ranges.push(provider_entry_range(original, index).ok_or(LAYOUT)?);
+        expected.remove(index);
+    }
+    let overrides = document.get("provider_overrides");
+    let manual = document.get("manual_models");
+    let has_override = overrides
+        .and_then(toml::Value::as_table)
+        .is_some_and(|table| table.keys().any(|key| key.eq_ignore_ascii_case(id)));
+    let has_manual = manual
+        .and_then(toml::Value::as_table)
+        .is_some_and(|table| table.keys().any(|key| key.eq_ignore_ascii_case(id)));
+    if has_override {
+        ranges.push(override_section_range(original, id).ok_or(LAYOUT)?);
+    }
+    if has_manual {
+        ranges.push(manual_models_key_range(original, id).ok_or(LAYOUT)?);
+    }
+    if ranges.is_empty() {
+        return Ok(original.to_string());
+    }
+    ranges.sort_by_key(|range| std::cmp::Reverse(range.start));
+    let mut updated = original.to_string();
+    let mut floor = usize::MAX;
+    for range in ranges {
+        if range.end > floor {
+            return Err(LAYOUT.into());
+        }
+        updated.replace_range(range.clone(), "");
+        floor = range.start;
+    }
+    let left: toml::Value = toml::from_str(&updated).map_err(|_| LAYOUT)?;
+    let left_entries = left
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut left_rest = left.as_table().cloned().unwrap_or_default();
+    let mut doc_rest = document.as_table().cloned().unwrap_or_default();
+    for key in ["providers", "provider_overrides", "manual_models"] {
+        left_rest.remove(key);
+        doc_rest.remove(key);
+    }
+    if left_entries != expected
+        || left_rest != doc_rest
+        || without_id(left.get("provider_overrides"), id) != without_id(overrides, id)
+        || without_id(left.get("manual_models"), id) != without_id(manual, id)
+    {
+        return Err(LAYOUT.into());
+    }
+    Ok(updated)
+}
+
+/// Remove the `id` entry from `providers.toml`, with its override section and
+/// its `[manual_models]` key, in one checked write. Every other byte of the
+/// file is kept.
+pub(crate) fn remove_provider_entry(path: &Path, id: &str) -> Result<(), String> {
+    let original = read_provider_text(path)?;
+    let updated = strip_provider_sections(&original, id, true)?;
+    write_checked(path, &original, &updated)
+}
+
+/// Entry fields the add and edit forms set from what the user types.
+const FORM_INPUT_FIELDS: &[&str] = &[
+    "id",
+    "title",
+    "label",
+    "api_key_env",
+    "base_url",
+    "wire",
+    "manual_models",
+    "default_models",
+];
+
+/// Fields of a raw `[[providers]]` entry that the picker cannot recreate:
+/// every field, other than the ones the forms take as input, whose value
+/// differs from what the add form writes for the same id, base URL and wire.
+pub(crate) fn unrecoverable_fields(entry: &toml::Table) -> Vec<String> {
+    let mut entry = entry.clone();
+    let id = entry
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if upgrade_legacy_keys(&mut entry, &id).is_err() {
+        return Vec::new();
+    }
+    let base_url = entry
+        .get("base_url")
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let wire = entry
+        .get("wire")
+        .and_then(|wire| wire.clone().try_into().ok())
+        .unwrap_or(WireKind::ChatCompletions);
+    let form = toml::Value::try_from(form_spec(&id, &base_url, "", wire))
+        .ok()
+        .and_then(|form| form.as_table().cloned())
+        .unwrap_or_default();
+    entry
+        .iter()
+        .filter(|(key, _)| !FORM_INPUT_FIELDS.contains(&key.as_str()))
+        .filter(|(key, value)| form.get(key.as_str()) != Some(value))
+        .map(|(key, _)| key.clone())
+        .collect()
+}
+
+/// Replace the `id` entry of the `[[providers]]` array: its lines are
+/// removed and a rewritten copy is appended at the end of the file, so
+/// comments inside that entry are lost and the provider moves last. Every
+/// other byte of the file is kept.
+fn replace_provider_entry(path: &Path, id: &str, details: &ProviderDetails) -> Result<(), String> {
+    let original = read_provider_text(path)?;
+    let document: toml::Value = toml::from_str(&original).map_err(|_| "invalid providers TOML")?;
+    let entries = document
+        .get("providers")
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let index = entries
+        .iter()
+        .position(|entry| entry.get("id").and_then(toml::Value::as_str) == Some(id))
+        .ok_or("this provider is not defined in providers.toml")?;
+    let range = provider_entry_range(&original, index).ok_or(LAYOUT)?;
+    let remainder = format!("{}{}", &original[..range.start], &original[range.end..]);
     // The cut must have removed exactly that entry and nothing else.
     let mut expected = entries.clone();
     let mut entry = expected.remove(index);
@@ -470,29 +705,9 @@ pub fn save_custom_provider(
     save_custom_provider_to(&user_providers_path(), id, base_url, model, wire)
 }
 
-fn save_custom_provider_to(
-    path: &Path,
-    id: &str,
-    base_url: &str,
-    model: &str,
-    wire: WireKind,
-) -> Result<ProviderSpec, String> {
-    if !matches!(
-        wire,
-        WireKind::ChatCompletions | WireKind::AnthropicMessages
-    ) {
-        return Err("custom providers use chat-completions or anthropic-messages".into());
-    }
-    check_profile_id(id)?;
-    if crate::normalize::is_reserved_id(id) {
-        return Err("id is reserved by a built-in provider".into());
-    }
-    check_base_url(base_url)?;
-    let model = model.trim();
-    if model == format!("{id}/") {
-        return Err("model ID is empty".into());
-    }
-    let spec = ProviderSpec {
+/// The entry the add form writes for these inputs.
+fn form_spec(id: &str, base_url: &str, model: &str, wire: WireKind) -> ProviderSpec {
+    ProviderSpec {
         id: id.into(),
         title: id.into(),
         description: match wire {
@@ -525,7 +740,32 @@ fn save_custom_provider_to(
         provider_label: id.into(),
         origin: SpecOrigin::User,
         ..ProviderSpec::blank()
-    };
+    }
+}
+
+fn save_custom_provider_to(
+    path: &Path,
+    id: &str,
+    base_url: &str,
+    model: &str,
+    wire: WireKind,
+) -> Result<ProviderSpec, String> {
+    if !matches!(
+        wire,
+        WireKind::ChatCompletions | WireKind::AnthropicMessages
+    ) {
+        return Err("custom providers use chat-completions or anthropic-messages".into());
+    }
+    check_profile_id(id)?;
+    if crate::normalize::is_reserved_id(id) {
+        return Err("id is reserved by a built-in provider".into());
+    }
+    check_base_url(base_url)?;
+    let model = model.trim();
+    if model == format!("{id}/") {
+        return Err("model ID is empty".into());
+    }
+    let spec = form_spec(id, base_url, model, wire);
     let original = match std::fs::read_to_string(path) {
         Ok(text) => Some(text),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
@@ -545,6 +785,9 @@ fn save_custom_provider_to(
     }
     let registry = loaded_registry_from(path);
     validate_user_spec(&registry, &spec)?;
+    // Sections a hand deletion left for this id would otherwise apply to the
+    // new entry: an old base URL override and old manual models.
+    let stripped = strip_provider_sections(original.as_deref().unwrap_or(""), id, false)?;
     let entry =
         toml::Value::try_from(&spec).map_err(|err| format!("cannot serialize provider: {err}"))?;
     let mut file = toml::Table::new();
@@ -556,6 +799,10 @@ fn save_custom_provider_to(
     // Some valid TOML shapes (e.g. `providers = []`) cannot accept an array-table append.
     toml::from_str::<toml::Value>(&format!("{}{addition}", original.as_deref().unwrap_or("")))
         .map_err(|_| "cannot safely append to this TOML layout")?;
+    if let Some(original) = original.as_deref().filter(|original| *original != stripped) {
+        write_checked(path, original, &format!("{stripped}{addition}"))?;
+        return Ok(spec);
+    }
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .map_err(|err| format!("cannot create providers directory: {err}"))?;
@@ -1035,6 +1282,56 @@ mod tests {
             );
         }
         assert!(!std::fs::read_to_string(path).unwrap().contains("api_key ="));
+    }
+
+    #[test]
+    fn re_adding_an_id_drops_sections_a_hand_deletion_left() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            "# mine\n[provider_overrides.\"labbox\"]\nbase_url = \"https://old.example/v1\"\n\n[manual_models]\nlabbox = [\"labbox/old\"]\n",
+        )
+        .unwrap();
+        save_custom_provider_to(
+            &path,
+            "labbox",
+            "https://new.example/v1",
+            "fresh",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
+        let registry = loaded_registry_from(&path);
+        let spec = registry.get("labbox").unwrap();
+        assert_eq!(spec.base_url, "https://new.example/v1");
+        assert_eq!(spec.manual_models, vec!["labbox/fresh"]);
+        assert!(registry.load_warnings().is_empty());
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .starts_with("# mine\n"));
+    }
+
+    #[test]
+    fn removing_an_edited_provider_drops_the_quoted_override_section() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("providers.toml");
+        save_custom_provider_to(
+            &path,
+            "custom",
+            "https://old.example/v1",
+            "first",
+            crate::WireKind::ChatCompletions,
+        )
+        .unwrap();
+        update_custom_provider_to(&path, "custom", "https://new.example/v1", "second", None)
+            .unwrap();
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("[provider_overrides.\"custom\"]"));
+        remove_provider_entry(&path, "custom").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("custom"), "{text}");
+        assert!(loaded_registry_from(&path).load_warnings().is_empty());
     }
 
     #[test]

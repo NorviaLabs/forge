@@ -26,6 +26,9 @@ inside a Tokio runtime). Source lives in `src/`.
 - Secrets live only in the 0600 credentials file; preferences, provider TOML,
   and catalog caches never hold keys or tokens.
 - Connecting a provider stores credentials only; it never selects a model.
+- Removing a custom provider (`ConnectService::remove_custom_provider`) edits
+  `providers.toml` first, in one checked write, then clears its key, cached
+  models, and saved selections; adding an id clears the same state first.
 - The profile id is the only provider identity and the model-id prefix.
   Built-in behavior lives in `providers/*.toml`; production code never names
   a built-in id (`tests/no_profile_id_branches.rs`).

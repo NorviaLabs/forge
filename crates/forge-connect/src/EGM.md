@@ -83,7 +83,13 @@ prefix (`<profile_id>/<model>`).
   `user_default`, `path`, `last_selection`,
   `set_last_selection`, `last_selection_struct(registry)`, `last_effort`,
   `set_last_effort`, `clear_last_selection`, `previous_selection`,
-  `previous_effort`, `record_switch`, `quick_switch`.
+  `previous_effort`, `record_switch`, `quick_switch`, `would_forget(matches)`
+  and `forget_provider(matches) -> ForgetOutcome { cleared_last,
+  cleared_previous }` (only `forget_provider` clears `previous_*`).
+- Removal (`remove.rs`): `ConnectService::preview_removal(providers_path,
+  id)`, `remove_custom_provider(providers_path, catalog, id)`, and
+  `clear_provider_state(catalog, spec)`; `RemovalReport`, `RemovalError {
+  NotFound, BuiltIn, DuplicateId, Providers }`, `StoreKind`.
 - Registry (`registry.rs`): `ConnectRegistry` — `new`, `register`, `profiles`,
   `get` (case-insensitive), `profile_for_model` (id, prefix, or legacy
   prefix), `ids`, `load_warnings`; free functions `builtin_registry`,
@@ -235,7 +241,19 @@ prefix (`<profile_id>/<model>`).
   without rewriting existing bytes, refuses layouts that cannot accept an
   array-table append, aborts if the file changed while saving, and never
   writes secrets. The model is stored as a manual model, namespaced
-  `<id>/<model>` unless already so.
+  `<id>/<model>` unless already so. When a hand deletion left the id's
+  `[provider_overrides.<id>]` section or `[manual_models]` key behind, it
+  removes them in the same checked write that adds the entry.
+- `remove_custom_provider` refuses built-in, unknown, and duplicated ids.
+  Its only fallible write cuts the `[[providers]]` entry, the override
+  section (quoted or bare header), and the `[manual_models]` key from
+  `providers.toml`, keeping every other byte and re-parsing to prove it
+  (otherwise the layout error, nothing written). Then the key, the catalog
+  cache entry, and every `last_*`/`previous_*` selection pointing at the
+  provider (by id, or by its current or older model prefix) are cleared
+  best-effort; failures are listed in `RemovalReport::failed`. The report
+  names custom key variables still set and entry fields the picker cannot
+  recreate, never values.
 - `update_custom_provider` edits user-origin providers and built-ins with
   editable `base_url` (base URL plus an optional manual model). With
   `details` (custom providers only) it also replaces `title`, `label`, and

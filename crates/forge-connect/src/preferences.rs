@@ -43,6 +43,28 @@ pub struct PreferenceStore {
     path: PathBuf,
 }
 
+/// Which saved selection groups (profile, model, effort) point at a provider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ForgetOutcome {
+    /// The default selection (`last_*`).
+    pub cleared_last: bool,
+    /// The Quick Switch target (`previous_*`).
+    pub cleared_previous: bool,
+}
+
+/// True when the saved `(profile id, model)` pair belongs to a provider.
+pub type SelectionMatch<'a> = &'a dyn Fn(&str, &str) -> bool;
+
+fn group_matches(
+    matches: SelectionMatch<'_>,
+    profile: &Option<String>,
+    model: &Option<String>,
+) -> bool {
+    let profile = profile.as_deref().unwrap_or("").trim();
+    let model = model.as_deref().unwrap_or("").trim();
+    !(profile.is_empty() && model.is_empty()) && matches(profile, model)
+}
+
 impl PreferenceStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
@@ -143,6 +165,45 @@ impl PreferenceStore {
         let mut file = self.load();
         file.last_effort = Some(effort.trim().to_string());
         self.save(&file)
+    }
+
+    /// Which selection groups `forget_provider` would clear. Writes nothing.
+    pub fn would_forget(&self, matches: SelectionMatch<'_>) -> ForgetOutcome {
+        let file = self.load();
+        ForgetOutcome {
+            cleared_last: group_matches(matches, &file.last_profile_id, &file.last_model),
+            cleared_previous: group_matches(
+                matches,
+                &file.previous_profile_id,
+                &file.previous_model,
+            ),
+        }
+    }
+
+    /// Clear every selection group (`last_*` and `previous_*`) that points at
+    /// a removed provider. Unlike `clear_last_selection`, this also clears the
+    /// Quick Switch target. The file is saved only when something matched.
+    pub fn forget_provider(
+        &self,
+        matches: SelectionMatch<'_>,
+    ) -> Result<ForgetOutcome, StoreError> {
+        let outcome = self.would_forget(matches);
+        if outcome == ForgetOutcome::default() {
+            return Ok(outcome);
+        }
+        let mut file = self.load();
+        if outcome.cleared_last {
+            file.last_profile_id = None;
+            file.last_model = None;
+            file.last_effort = None;
+        }
+        if outcome.cleared_previous {
+            file.previous_profile_id = None;
+            file.previous_model = None;
+            file.previous_effort = None;
+        }
+        self.save(&file)?;
+        Ok(outcome)
     }
 
     pub fn clear_last_selection(&self, profile_id: Option<&str>) -> Result<(), StoreError> {
@@ -265,6 +326,41 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let prefs = PreferenceStore::new(dir.path().join("prefs.toml"));
         (dir, prefs)
+    }
+
+    #[test]
+    fn forgetting_a_provider_clears_only_the_groups_that_point_at_it() {
+        let (_dir, prefs) = prefs();
+        let text = "last_profile_id = \"anthropic\"\nlast_model = \"anthropic/m\"\nprevious_profile_id = \"labbox\"\nprevious_model = \"labbox/m\"\nprevious_effort = \"high\"\n";
+        std::fs::write(prefs.path(), text).unwrap();
+        let matches =
+            |profile: &str, model: &str| profile == "labbox" || model.starts_with("labbox/");
+        let expected = ForgetOutcome {
+            cleared_last: false,
+            cleared_previous: true,
+        };
+        assert_eq!(prefs.would_forget(&matches), expected);
+        assert_eq!(std::fs::read_to_string(prefs.path()).unwrap(), text);
+        assert_eq!(prefs.forget_provider(&matches).unwrap(), expected);
+        assert!(prefs.previous_selection().unwrap().is_none());
+        assert!(prefs.previous_effort().unwrap().is_none());
+        assert_eq!(
+            prefs.last_selection().unwrap(),
+            Some(("anthropic".into(), "anthropic/m".into()))
+        );
+    }
+
+    #[test]
+    fn forgetting_an_unused_provider_leaves_the_file_alone() {
+        let (_dir, prefs) = prefs();
+        let text = "last_profile_id = \"anthropic\"\nlast_model = \"anthropic/m\"\n";
+        std::fs::write(prefs.path(), text).unwrap();
+        let matches = |profile: &str, _: &str| profile == "labbox";
+        assert_eq!(
+            prefs.forget_provider(&matches).unwrap(),
+            ForgetOutcome::default()
+        );
+        assert_eq!(std::fs::read_to_string(prefs.path()).unwrap(), text);
     }
 
     #[test]
