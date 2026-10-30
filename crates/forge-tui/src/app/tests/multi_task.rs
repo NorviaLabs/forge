@@ -2972,3 +2972,52 @@ async fn supervisor_disconnect_names_the_effect_and_the_recovery() {
         .await
         .unwrap();
 }
+
+/// `c` in the Sessions navigator on a session whose provider is gone does
+/// not continue it: the session is selected and the model picker opens.
+#[tokio::test]
+async fn navigator_continue_on_a_removed_provider_opens_the_picker() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, mut app, handle) = app_with_supervisor().await;
+    let stores = tempfile::tempdir().unwrap();
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        forge_connect::CredentialStore::new(stores.path().join("credentials.toml")),
+    ));
+    app.connect
+        .credentials
+        .store()
+        .set_api_key(forge_connect::builtin::profile_ids::OPENAI, "test-key")
+        .unwrap();
+    app.connect.registry = forge_connect::loaded_registry();
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt".into();
+    let primary_id = app.selected_session_id;
+    let sibling_id = create_promptless_session(&mut app).await.session_id;
+    assert!(app.select_supervised_session(primary_id));
+    app.supervisor
+        .as_mut()
+        .unwrap()
+        .snapshots
+        .get_mut(&sibling_id)
+        .unwrap()
+        .task
+        .model_id = "labbox/a".into();
+    app.task_strip_selection = app
+        .session_chrome
+        .iter()
+        .position(|item| item.session_id == sibling_id)
+        .expect("sibling in task strip");
+    app.handle_task_strip_key(press(KeyCode::Char('c'), KeyModifiers::NONE))
+        .await
+        .unwrap();
+    assert_eq!(app.selected_session_id, sibling_id);
+    assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
+    assert!(app
+        .feedback
+        .text
+        .contains("is not available from any loaded provider"));
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}

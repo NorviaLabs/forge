@@ -2266,13 +2266,7 @@ async fn removal_app_with_openai() -> (TempDir, TempDir, TuiApp) {
 
 fn assert_picker_opened_for_unowned_model(app: &TuiApp, typed: &str) {
     assert!(
-        matches!(
-            app.overlay,
-            Some(Overlay::ConnectModel {
-                focus: ConnectModelColumn::Models,
-                ..
-            })
-        ),
+        matches!(app.overlay, Some(Overlay::ConnectModel { .. })),
         "{:?}",
         app.overlay
     );
@@ -2301,6 +2295,16 @@ async fn sending_after_removing_the_active_provider_opens_the_picker() {
     assert!(
         app.connect.profile.is_none(),
         "no other provider was picked on the user's behalf"
+    );
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::ConnectModel {
+                focus: ConnectModelColumn::Providers,
+                ..
+            })
+        ),
+        "with no active provider the picker starts on Providers"
     );
 }
 

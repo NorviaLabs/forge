@@ -129,7 +129,8 @@ Submodules by responsibility:
   Sessions navigator's reply and `c` continue. When the target session's
   model has a provider prefix no loaded provider owns and some provider is
   connected, nothing is sent: that session is selected, the typed text is
-  put back in the composer, and the model picker opens on Models. Empty
+  put back in the composer, and the picker opens (on Models when a provider
+  is active, otherwise the full picker on Providers). Empty
   models, ids without a prefix, the mock provider, and "nothing connected"
   fall through to the existing gates.
 - Catalog-refresh outcomes are recorded per route in `connect.catalog_errors`;

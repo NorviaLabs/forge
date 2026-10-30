@@ -1858,7 +1858,13 @@ impl TuiApp {
             self.input.set_text(text);
         }
         self.enter_chat_composer();
-        self.open_connect_picker_compact(ConnectModelColumn::Models);
+        if self.connect.profile.is_some() {
+            self.open_connect_picker_compact(ConnectModelColumn::Models);
+        } else {
+            // No active route means the compact Models list is empty: start
+            // from the providers instead.
+            self.open_connect_picker();
+        }
         self.set_feedback(
             FeedbackSeverity::Warn,
             format!("`{model}` is not available from any loaded provider — pick a model"),
