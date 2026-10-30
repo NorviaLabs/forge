@@ -27,7 +27,7 @@ impl TuiApp {
     /// switched independently. A session may carry a restored route without a
     /// model (see `restore_saved_auth` and `disconnect`), so callers deciding
     /// identity must key off the model, not the route.
-    fn selected_session_model(&self) -> Option<&str> {
+    pub(super) fn selected_session_model(&self) -> Option<&str> {
         match self.selected_runtime() {
             SelectedRuntime::Direct => self
                 .session_runtime

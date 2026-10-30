@@ -1799,3 +1799,70 @@ impl TuiApp {
         self.push_activity(ActivityKind::Connect, severity, summary);
     }
 }
+
+/// Which session a send targets, for [`TuiApp::unowned_model_gate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GateTarget {
+    /// The selected session (composer and queue sends).
+    Selected,
+    /// A session addressed from the Sessions navigator.
+    Session(uuid::Uuid),
+}
+
+impl TuiApp {
+    /// Stop a send whose session is set to a model no loaded provider owns
+    /// (its provider was removed, here or by editing `providers.toml`): select
+    /// that session, keep the typed `text` in the input box, and open the
+    /// model picker. Returns true when the send must not go ahead.
+    ///
+    /// Empty models and ids without a provider prefix are left to the
+    /// existing auto-restore and connected gates, and so is the case where no
+    /// provider is connected at all.
+    pub(super) fn unowned_model_gate(&mut self, target: GateTarget, text: Option<String>) -> bool {
+        if self.is_mock_provider() {
+            return false;
+        }
+        let target = match target {
+            GateTarget::Session(id) if id == self.selected_session_id => GateTarget::Selected,
+            target => target,
+        };
+        let model = match target {
+            GateTarget::Selected => self.selected_session_model().map(str::to_string),
+            GateTarget::Session(id) => self
+                .supervisor
+                .as_ref()
+                .and_then(|supervisor| supervisor.snapshots.get(&id))
+                .map(|snapshot| snapshot.task.model_id.clone()),
+        };
+        let Some(model) = model.filter(|model| !model.trim().is_empty()) else {
+            return false;
+        };
+        let normalized = forge_connect::normalize_saved_model_id(&model);
+        // The router's rule: the prefix must name a loaded provider.
+        let Some((prefix, _)) = normalized.split_once('/') else {
+            return false;
+        };
+        if self.connect.registry.get(prefix).is_some() || self.connected_profile_count() == 0 {
+            return false;
+        }
+        if let GateTarget::Session(id) = target {
+            if !self.select_supervised_session(id) {
+                self.set_feedback(
+                    FeedbackSeverity::Warn,
+                    format!("`{model}` is not available from any loaded provider; could not select that session"),
+                );
+                return true;
+            }
+        }
+        if let Some(text) = text.filter(|text| !text.trim().is_empty()) {
+            self.input.set_text(text);
+        }
+        self.enter_chat_composer();
+        self.open_connect_picker_compact(ConnectModelColumn::Models);
+        self.set_feedback(
+            FeedbackSeverity::Warn,
+            format!("`{model}` is not available from any loaded provider — pick a model"),
+        );
+        true
+    }
+}

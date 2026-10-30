@@ -123,6 +123,15 @@ Submodules by responsibility:
   the picker, and records one Connect activity entry. Esc on the confirm
   returns to the picker. Saving a new custom provider first clears any key,
   cached models, or saved selection left under its id.
+- `unowned_model_gate(GateTarget, text)` runs first on every send path: the
+  composer (`dispatch_line`, before the attachment is taken and before the
+  auto-restore), `dequeue_and_send_next`, `enqueue_user_message`, and the
+  Sessions navigator's reply and `c` continue. When the target session's
+  model has a provider prefix no loaded provider owns and some provider is
+  connected, nothing is sent: that session is selected, the typed text is
+  put back in the composer, and the model picker opens on Models. Empty
+  models, ids without a prefix, the mock provider, and "nothing connected"
+  fall through to the existing gates.
 - Catalog-refresh outcomes are recorded per route in `connect.catalog_errors`;
   an auth failure also marks the route `auth_required` and invalidates the
   connected state. Neither outcome changes the running session's model.

@@ -1430,6 +1430,12 @@ impl TuiApp {
             return Ok(());
         }
 
+        // Before anything is taken from the composer, and before the
+        // auto-restore below can quietly pick another provider.
+        if self.unowned_model_gate(GateTarget::Selected, Some(line.to_string())) {
+            return Ok(());
+        }
+
         // Queue user message — the event loop drains this so the YOU bubble paints
         // before the model call, and so stream deltas can redraw each frame.
         self.clear_error_chrome();

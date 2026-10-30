@@ -637,6 +637,9 @@ impl TuiApp {
     /// claim success (or clear the composer's caller-held text) until the
     /// queue store durably accepts the item.
     pub(super) async fn enqueue_user_message(&mut self, line: String) {
+        if self.unowned_model_gate(GateTarget::Selected, Some(line.clone())) {
+            return;
+        }
         if self.selected_is_supervised() {
             if !self.submit_session_command(forge_session::SupervisorCommand::SubmitPrompt {
                 session_id: self.selected_session_id,
@@ -674,6 +677,10 @@ impl TuiApp {
     /// — the queue store owns the atomic Queued->Promoting->Promoted pipeline;
     /// this only decides when to call it and how to kick off streaming.
     pub(super) async fn dequeue_and_send_next(&mut self) {
+        // The queued item stays queued until a model is picked.
+        if self.unowned_model_gate(GateTarget::Selected, None) {
+            return;
+        }
         if self.selected_is_supervised() {
             self.submit_session_command(forge_session::SupervisorCommand::ContinueTurn {
                 session_id: self.selected_session_id,

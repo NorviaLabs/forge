@@ -3,6 +3,7 @@
 //! Split out of `app/tests/mod.rs` per #19. Moved verbatim.
 
 use super::prelude::*;
+use crate::app::GateTarget;
 use crate::overlays::{handle_overlay_key, Key as OverlayKey, ModelItem, OverlayAction};
 use forge_connect::PreferenceStore;
 
@@ -2034,6 +2035,9 @@ async fn removal_app() -> (TempDir, TempDir, TuiApp) {
     ));
     app.connect.preferences = PreferenceStore::new(stores.path().join("preferences.toml"));
     app.connect.registry = forge_connect::loaded_registry();
+    // The mock provider counts as always connected; these tests need routing.
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt".into();
     (dir, stores, app)
 }
 
@@ -2240,6 +2244,126 @@ async fn removal_is_refused_while_a_supervised_session_on_it_is_busy() {
         assert!(matches!(app.overlay, Some(Overlay::ConnectModel { .. })));
         app.supervisor.as_mut().unwrap().snapshots.remove(&id);
     }
+    handle
+        .command(forge_session::SupervisorCommand::Shutdown)
+        .await
+        .unwrap();
+}
+
+// ---- the send check for a model whose provider is gone -------------------
+
+/// `removal_app` with OpenAI connected too, so a provider is still available
+/// after `labbox` goes.
+async fn removal_app_with_openai() -> (TempDir, TempDir, TuiApp) {
+    let (dir, stores, app) = removal_app().await;
+    app.connect
+        .credentials
+        .store()
+        .set_api_key(forge_connect::builtin::profile_ids::OPENAI, "test-key")
+        .unwrap();
+    (dir, stores, app)
+}
+
+fn assert_picker_opened_for_unowned_model(app: &TuiApp, typed: &str) {
+    assert!(
+        matches!(
+            app.overlay,
+            Some(Overlay::ConnectModel {
+                focus: ConnectModelColumn::Models,
+                ..
+            })
+        ),
+        "{:?}",
+        app.overlay
+    );
+    assert_eq!(app.input.text, typed);
+    assert!(
+        app.feedback
+            .text
+            .contains("is not available from any loaded provider"),
+        "{}",
+        app.feedback.text
+    );
+    assert!(!app.pending_turn.has_prompt(), "nothing is sent");
+}
+
+#[tokio::test]
+async fn sending_after_removing_the_active_provider_opens_the_picker() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app_with_openai().await;
+    app.connect.profile = Some("labbox".into());
+    app.runtime.model_label = "labbox/a".into();
+    app.set_selected_model("labbox/a".into());
+    app.confirm_remove_provider("labbox");
+    app.overlay = None;
+    app.dispatch_line("hello").await.unwrap();
+    assert_picker_opened_for_unowned_model(&app, "hello");
+    assert!(
+        app.connect.profile.is_none(),
+        "no other provider was picked on the user's behalf"
+    );
+}
+
+#[tokio::test]
+async fn a_hand_removed_provider_is_caught_on_the_queue_paths() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app_with_openai().await;
+    app.set_selected_model("gone/model".into());
+    app.dequeue_and_send_next().await;
+    assert_picker_opened_for_unowned_model(&app, "");
+    app.overlay = None;
+    app.enqueue_user_message("later".into()).await;
+    assert_picker_opened_for_unowned_model(&app, "later");
+}
+
+#[tokio::test]
+async fn the_send_check_leaves_other_models_alone() {
+    let (_home, _guard) = isolated_home_guard();
+    let (_dir, _stores, mut app) = removal_app_with_openai().await;
+    for model in ["labbox/a", "no-prefix-model"] {
+        app.set_selected_model(model.into());
+        assert!(
+            !app.unowned_model_gate(GateTarget::Selected, Some("x".into())),
+            "{model}"
+        );
+    }
+    // With nothing connected, the existing "not connected" gate reports it.
+    let (_dir, _stores, mut app) = removal_app().await;
+    app.set_selected_model("gone/model".into());
+    assert!(!app.unowned_model_gate(GateTarget::Selected, None));
+}
+
+#[tokio::test]
+async fn a_navigator_reply_to_a_session_on_a_removed_provider_selects_it() {
+    let (_home, _guard) = isolated_home_guard();
+    let path = forge_connect::user_providers_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let (_dir, mut app, handle) = super::multi_task::app_with_supervisor().await;
+    let stores = tempfile::tempdir().unwrap();
+    app.connect.credentials = std::sync::Arc::new(forge_connect::Credentials::new(
+        CredentialStore::new(stores.path().join("credentials.toml")),
+    ));
+    app.connect
+        .credentials
+        .store()
+        .set_api_key(forge_connect::builtin::profile_ids::OPENAI, "test-key")
+        .unwrap();
+    app.connect.registry = forge_connect::loaded_registry();
+    app.runtime.provider = "native".into();
+    app.runtime.model_label = "openai/gpt".into();
+    let primary = app.selected_session_id;
+    let mut other = app.supervisor.as_ref().unwrap().snapshots[&primary].clone();
+    let other_id = uuid::Uuid::new_v4();
+    other.task.session_id = other_id;
+    other.task.model_id = "labbox/a".into();
+    app.supervisor
+        .as_mut()
+        .unwrap()
+        .snapshots
+        .insert(other_id, other);
+    assert!(app.unowned_model_gate(GateTarget::Session(other_id), Some("reply".into())));
+    assert_eq!(app.selected_session_id, other_id);
+    assert_picker_opened_for_unowned_model(&app, "reply");
     handle
         .command(forge_session::SupervisorCommand::Shutdown)
         .await

@@ -218,6 +218,11 @@ impl TuiApp {
                 }
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     let text = std::mem::take(&mut self.navigator_reply);
+                    if self.unowned_model_gate(GateTarget::Session(focused_id), Some(text.clone()))
+                    {
+                        self.navigator_peek = None;
+                        return Ok(true);
+                    }
                     if !text.trim().is_empty() {
                         self.submit_session_command(
                             forge_session::SupervisorCommand::SubmitPrompt {
@@ -318,6 +323,9 @@ impl TuiApp {
                         FeedbackSeverity::Info,
                         "the selected Session is controlled by the composer",
                     );
+                    return Ok(true);
+                }
+                if self.unowned_model_gate(GateTarget::Session(session_id), None) {
                     return Ok(true);
                 }
                 self.submit_session_command(forge_session::SupervisorCommand::ContinueTurn {
@@ -834,7 +842,7 @@ impl TuiApp {
     /// The supervisor's `Selected` echo only arrives on the next poll, so the
     /// local view moves now from the cached snapshot, which is authoritative
     /// until then.
-    fn select_supervised_session(&mut self, session_id: uuid::Uuid) -> bool {
+    pub(super) fn select_supervised_session(&mut self, session_id: uuid::Uuid) -> bool {
         if !self.submit_session_command(forge_session::SupervisorCommand::SelectSession {
             session_id: Some(session_id),
         }) {

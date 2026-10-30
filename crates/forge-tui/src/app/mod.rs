@@ -128,6 +128,7 @@ pub use chrome::resume_session_items;
 /// from inside `chrome.rs`.
 #[cfg(test)]
 use chrome::{footer_limits_from_report, footer_usage_summary_with_cost};
+use connect::GateTarget;
 pub use shell::{
     run_tui, run_tui_supervised, run_tui_with_launch, run_tui_with_resume_picker, TuiLaunch,
 };
