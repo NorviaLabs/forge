@@ -33,7 +33,7 @@ kind = "openai-models"
 [[providers]]
 id = "openai_codex"
 title = "OpenAI Codex subscription"
-label = "ChatGPT"
+label = "Subscription"
 provider = "openai"
 provider_label = "OpenAI"
 description = "Use a ChatGPT plan through Forge's own device login"

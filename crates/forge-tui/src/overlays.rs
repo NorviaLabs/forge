@@ -6131,7 +6131,7 @@ mod tests {
             .iter()
             .find(|r| r.vendor_id == "openai")
             .expect("openai vendor row");
-        assert_eq!(openai.routes.len(), 2, "API key + ChatGPT sign-in");
+        assert_eq!(openai.routes.len(), 2, "API key + subscription");
         let opencode = rows
             .iter()
             .find(|r| r.vendor_id == "opencode")
@@ -6141,11 +6141,12 @@ mod tests {
             .iter()
             .find(|r| r.vendor_id == "anthropic")
             .expect("anthropic vendor row");
-        assert_eq!(
-            anthropic.routes.len(),
-            1,
-            "single-offering vendors don't nest"
-        );
+        assert_eq!(anthropic.routes.len(), 2, "API key + subscription");
+        let ollama = rows
+            .iter()
+            .find(|r| r.vendor_id == "ollama")
+            .expect("ollama vendor row");
+        assert_eq!(ollama.routes.len(), 1, "single-offering vendors don't nest");
     }
 
     #[test]
@@ -6192,7 +6193,7 @@ mod tests {
     fn provider_status_tags_share_one_right_aligned_column() {
         let registry = forge_connect::builtin_registry();
         let connected: std::collections::HashSet<String> =
-            ["anthropic".to_string(), "xai".to_string()].into();
+            ["ollama".to_string(), "xai".to_string()].into();
         let providers = build_provider_rows_with_reuse(&registry, &connected, Some("xai"), &[]);
         let overlay = Overlay::connect_model_open(
             providers,
@@ -6240,9 +6241,9 @@ mod tests {
         let registry = forge_connect::builtin_registry();
         let connected = std::collections::HashSet::new();
         let providers = build_provider_rows_with_reuse(&registry, &connected, None, &[]);
-        let anthropic_idx = providers
+        let ollama_idx = providers
             .iter()
-            .position(|p| p.vendor_id == "anthropic")
+            .position(|p| p.vendor_id == "ollama")
             .unwrap();
         let mut overlay = Overlay::connect_model_open(
             providers,
@@ -6256,12 +6257,12 @@ mod tests {
             provider_cursor, ..
         } = &mut overlay
         {
-            *provider_cursor = anthropic_idx;
+            *provider_cursor = ollama_idx;
         }
         assert_eq!(
             handle_overlay_key(&mut overlay, Key::Enter),
             OverlayAction::ConnectPickProfile {
-                profile_id: "anthropic".into()
+                profile_id: "ollama".into()
             }
         );
     }
