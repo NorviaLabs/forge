@@ -153,6 +153,7 @@ fn request(messages: usize) -> ModelRequest {
         reasoning_effort: Some("high".into()),
         thinking_enabled: true,
         prompt_cache: true,
+        side_call: false,
     }
 }
 

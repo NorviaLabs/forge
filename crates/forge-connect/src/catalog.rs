@@ -597,6 +597,7 @@ pub fn fetch_remote_models(
         CatalogKind::ChatgptModels => fetch_codex_remote_models(base, prefix, &ua, api_key),
         CatalogKind::AnthropicModels => fetch_anthropic_remote_models(base, prefix, &ua, api_key),
         CatalogKind::OllamaTags => fetch_ollama_remote_models(base, prefix, &ua),
+        CatalogKind::ClaudeAgent => fetch_claude_agent_models(prefix),
         CatalogKind::Static => Ok(Vec::new()),
         CatalogKind::OpenaiModels => {
             let mut headers = vec![("User-Agent", ua.clone())];
@@ -727,6 +728,24 @@ fn fetch_ollama_remote_models(
             Ok(map_prefix(prefix, raw, |_| true))
         }
     }
+}
+
+/// The models the installed `claude` offers its login, from its startup
+/// report. Starts `claude` without sending a prompt.
+fn fetch_claude_agent_models(prefix: &str) -> Result<Vec<String>, CatalogError> {
+    let probe = crate::claude_agent::probe().map_err(|error| match error {
+        crate::claude_agent::ProbeError::Missing => {
+            CatalogError::CredentialRequired(error.to_string())
+        }
+        crate::claude_agent::ProbeError::Failed(detail) => CatalogError::Transport {
+            label: "Claude Code".into(),
+            detail,
+        },
+    })?;
+    if let Some(reason) = probe.readiness_error() {
+        return Err(CatalogError::CredentialRequired(reason));
+    }
+    Ok(map_prefix(prefix, probe.catalog_ids(), |_| true))
 }
 
 fn filter_openai_chat_ish(id: &str) -> bool {
@@ -1862,6 +1881,10 @@ mod tests {
         custom.origin = crate::SpecOrigin::User;
         profiles.push(custom);
         let token = codex_access_token_for_tests();
+        // Claude Agent runs a local program rather than sending a request;
+        // point it at one that does not exist so the test stays hermetic.
+        let env = crate::test_env::EnvGuard::new(&[crate::claude_agent::EXECUTABLE_ENV]);
+        env.set(crate::claude_agent::EXECUTABLE_ENV, "/nonexistent/claude");
         let mut actual = Vec::new();
         for mut profile in profiles {
             let Some((url, requests)) = crate::test_support::serve_recording(vec![
@@ -1905,6 +1928,8 @@ mod tests {
         .iter()
         .map(|(id, sent)| (id.to_string(), true, vec![sent.to_string()]))
         .collect();
+        // No `claude` installed: no request, and the fetch fails.
+        expected.push(("claude_agent".into(), false, vec![]));
         // The registry's order is the embedded files' order; compare by id.
         actual.sort();
         expected.sort();

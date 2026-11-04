@@ -1,0 +1,32 @@
+# Built-in provider definitions (claude_agent), embedded at compile time.
+# Fields: `ProviderSpec` in src/profile.rs.
+#
+# Runs the user's installed `claude` (Claude Code) through the Claude Agent
+# SDK protocol. Forge never reads Claude Code's login: the user signs in with
+# `claude auth login`, and `/connect` only records the choice. Any Claude Code
+# login works: a Claude plan, an API key, or a cloud account.
+
+[[providers]]
+id = "claude_agent"
+title = "Claude Agent"
+label = "Subscription"
+provider = "anthropic"
+provider_label = "Anthropic"
+description = "Claude models through your own Claude Code login (claude auth login)"
+base_url = "https://api.anthropic.com"
+api_key_env = []
+wire = "claude-agent"
+attach = "none"
+default_models = []
+models_dev_providers = ["anthropic"]
+auth_url = "https://claude.com/claude-code"
+guidance = "Install Claude Code and run `claude auth login` in a terminal, then connect again."
+billing_note = "Usage counts against your Claude Code login: your Claude plan's limits, or your API key's billing."
+route_id = "claude-agent"
+
+[providers.auth]
+kind = "api-key-optional"
+prompt = "never"
+
+[providers.catalog]
+kind = "claude-agent"

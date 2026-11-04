@@ -417,6 +417,7 @@ mod tests {
             reasoning_effort: Some("high".into()),
             thinking_enabled: true,
             prompt_cache: true,
+            side_call: false,
         }
     }
 

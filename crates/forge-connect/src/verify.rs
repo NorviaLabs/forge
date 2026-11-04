@@ -69,6 +69,11 @@ pub enum VerifyError {
         provider: Cow<'static, str>,
         message: String,
     },
+
+    /// The local program a profile runs is missing, signed out, or too old.
+    /// Fixing it happens outside Forge, so nothing is saved.
+    #[error("{0}")]
+    NotReady(String),
 }
 
 impl VerifyError {
@@ -86,7 +91,10 @@ impl VerifyError {
     /// The credential itself was refused — re-prompting the user is the fix.
     pub fn is_auth_failure(&self) -> bool {
         match self {
-            Self::EmptyKey | Self::KeyTooShort { .. } | Self::Unauthorized { .. } => true,
+            Self::EmptyKey
+            | Self::KeyTooShort { .. }
+            | Self::Unauthorized { .. }
+            | Self::NotReady(_) => true,
             Self::Rejected { status, .. } => *status == 401 || *status == 403,
             _ => false,
         }
@@ -100,6 +108,26 @@ impl VerifyError {
             Self::Status { status, .. } | Self::Unhealthy { status, .. } => *status >= 500,
             _ => false,
         }
+    }
+}
+
+/// The `claude-agent` check: the installed `claude` starts, is signed in,
+/// and is new enough. A missing, signed-out, or old `claude` is
+/// [`VerifyError::NotReady`]; a `claude` that fails to start is
+/// [`VerifyError::Unreachable`].
+pub(crate) fn verify_claude_agent() -> Result<(), VerifyError> {
+    match crate::claude_agent::probe() {
+        Ok(probe) => match probe.readiness_error() {
+            Some(reason) => Err(VerifyError::NotReady(reason)),
+            None => Ok(()),
+        },
+        Err(error @ crate::claude_agent::ProbeError::Missing) => {
+            Err(VerifyError::NotReady(error.to_string()))
+        }
+        Err(crate::claude_agent::ProbeError::Failed(message)) => Err(VerifyError::Unreachable {
+            provider: "Claude Code".into(),
+            message,
+        }),
     }
 }
 

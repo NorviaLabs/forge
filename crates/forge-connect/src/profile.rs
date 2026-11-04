@@ -9,6 +9,9 @@ pub enum WireKind {
     ChatCompletions,
     Responses,
     AnthropicMessages,
+    /// The user's installed `claude` program, driven over the Claude Agent
+    /// SDK's stdio protocol. Claude Code owns the login and the API calls.
+    ClaudeAgent,
 }
 
 /// How the user obtains a credential.
@@ -173,6 +176,8 @@ pub enum CatalogKind {
     AnthropicModels,
     OllamaTags,
     ChatgptModels,
+    /// The models the installed `claude` reports at startup.
+    ClaudeAgent,
     Static,
 }
 
@@ -342,7 +347,7 @@ pub struct ProviderSpec {
     #[serde(default, alias = "vendor_label")]
     pub provider_label: String,
     /// This profile's short label under its provider, e.g. "API key",
-    /// "ChatGPT", "Go", "Zen". Empty for providers with one offering.
+    /// "Subscription", "Go", "Zen". Empty for providers with one offering.
     #[serde(default, alias = "route_label")]
     pub label: String,
     /// The legacy `transport` value, read only; `normalize_spec` maps it
@@ -446,6 +451,7 @@ impl ProviderSpec {
     pub fn effective_catalog_kind(&self) -> CatalogKind {
         self.catalog.kind.unwrap_or(match self.effective_wire() {
             WireKind::AnthropicMessages => CatalogKind::AnthropicModels,
+            WireKind::ClaudeAgent => CatalogKind::ClaudeAgent,
             _ => CatalogKind::OpenaiModels,
         })
     }

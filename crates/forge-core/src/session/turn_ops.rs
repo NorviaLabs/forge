@@ -90,6 +90,7 @@ impl AgentSession {
             reasoning_effort: selection.reasoning_effort,
             thinking_enabled: selection.thinking_enabled,
             prompt_cache: true,
+            side_call: false,
         }
     }
 

@@ -10,8 +10,10 @@ snapshot (`forge_connect::RouteTable`), request-target resolution
 (profile, credential, headers), the image cache, SSE line splitting, and
 shared HTTP-status error mapping. `protocol.rs` dispatches by `WireKind`
 with a `match`. The wire modules are private (`chat_completions`,
-`responses`, `anthropic_messages`, `protocol`) and expose only `pub(super)`
-seams; there are no per-provider modules.
+`responses`, `anthropic_messages`, `claude_agent`, `protocol`) and expose
+only `pub(super)` seams; there are no per-provider modules. `claude_agent`
+is the one wire without HTTP: it drives the user's installed `claude`
+(Claude Code) over the Claude Agent SDK's stdio control protocol.
 
 ## Interface
 
@@ -36,6 +38,11 @@ seams; there are no per-provider modules.
 
 ## Invariants
 
+- Claude Agent (`claude_agent/`): one long-running `claude` per Forge session (`ModelRequest::session_id`), held in `NativeModelClient::claude_sessions`. Claude Code's built-in tools are off (`forge_connect::claude_agent::base_args`); Forge's tools reach Claude as an in-process SDK MCP server named `forge` (`mcp__forge__<name>`; names over Claude Code's 64-char limit, or with other characters, are sanitised with a SHA-256 suffix). A step ends at the `message_stop` of the API message that called Forge's tools: the response carries the calls and Claude Code's `tools/call` is held (keyed by `_meta.claudecode/toolUseId`, else the PreToolUse hook's id) until the session's next request supplies the tool messages, which are released as MCP results. A cancelled result, missing results, or a new message instead interrupts Claude's turn and starts a new one. The turn's `result` ends the last step; failed results map to `ModelError::ProviderAuth` (signed out) or non-retryable `ModelError::Provider` (Claude Code already retried).
+- Forge's transcript is the source of truth. The wire records the fingerprint of the conversation prefix Claude has seen; new messages after it are sent as one user message (`client_composed`, so Claude Code does not expand commands). A lone user message goes as-is; anything else (tool results, another model's replies) goes inside `<conversation-checkpoint>`. A prefix that no longer matches (edit, undo, compaction) or a retry with nothing new starts a new Claude conversation with the whole history. Leading system messages become `appendSystemPrompt` on Claude Code's preset prompt, after a runtime note.
+- A changed system prompt, tool list, effort, or workspace restarts the process with `--resume` of the same Claude conversation; a model change uses `set_model` on the running one. A dropped request interrupts Claude (`interrupt` control request) and its leftover output is skipped up to that turn's `result`; the interrupt is written before anything else. Idle processes stop after 5 minutes, or 60 while Claude waits on Forge's tools.
+- `ModelRequest::side_call` (compaction, goal checks) runs in a throwaway `--no-session-persistence` process with no tools, so the session's Claude conversation is untouched.
+
 - Dispatch is by the model id's provider prefix, never by provider-id branches: `RouteTable::profile_for_request(model)` picks the profile and bare id, and the profile definition's `wire_for_model(bare)` picks the wire. There is no route id on `ModelRequest`.
 - No configured default model: an empty/blank `req.model` fails with `ModelError::Other("model id is required")`. For prompt projection and cache keys only, a missing model or unknown prefix falls back to `WireKind::ChatCompletions`.
 - A model whose prefix no profile serves fails with `ModelError::UnknownRoute`; an id under an old prefix (`forge_connect::old_prefix_hint`) names its current form, otherwise the message lists the known profile ids.
@@ -56,6 +63,7 @@ seams; there are no per-provider modules.
 ## Side Effects
 
 - Opens outbound HTTPS connections (`<base>/chat/completions`, `<base>/responses`, `<base>/codex/responses`, `<base>/v1/messages`).
+- The `claude-agent` wire starts the installed `claude` (`FORGE_CLAUDE_PATH`, else `PATH`) in the request's workspace with Forge's flags and environment; Claude Code makes the API calls with its own login and saves its conversation under `~/.claude/` (side calls save nothing).
 - Reads image files from the workspace (`load_image_ref`); read errors surface as `String` and usually become protocol/transport errors or missing-image notes upstream.
 - Mutates in-process state: the route table (`set_route_table`), the image cache, and the process-wide `FALLBACK_OPENCODE_SESSION` `OnceLock` in `mod.rs`.
 - `from_config` reads the user provider registry (`forge_connect::loaded_registry()`) and the shared credential handle; requests may refresh OAuth credentials (blocking, off the async runtime) via `forge-connect`.

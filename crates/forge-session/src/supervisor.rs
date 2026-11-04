@@ -3420,6 +3420,7 @@ async fn run_one_inner(
             let request = {
                 let mut request = task_actor.session.lock().await.build_model_request();
                 request.tools.clear();
+                request.side_call = true;
                 request.messages.push(Message::new(
                     MessageRole::System,
                     goal_evaluator_instruction(&condition),

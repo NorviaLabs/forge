@@ -592,6 +592,7 @@ pub(crate) fn verify_profile_key(profile: &ConnectProfile, key: &str) -> Result<
         }
         crate::CatalogKind::AnthropicModels => crate::verify::verify_anthropic_key(key, base),
         crate::CatalogKind::OllamaTags => crate::verify::verify_ollama_reachable(base),
+        crate::CatalogKind::ClaudeAgent => crate::verify::verify_claude_agent(),
         // OAuth logins and static lists have no key to probe.
         crate::CatalogKind::ChatgptModels | crate::CatalogKind::Static => Ok(()),
     }
@@ -1276,6 +1277,10 @@ mod tests {
     fn characterize_verify_profile_key_for_every_profile() {
         let mut profiles = crate::builtin_registry().profiles().to_vec();
         profiles.push(characterization_custom_profile());
+        // Claude Agent checks a local program; one that does not exist keeps
+        // the test hermetic.
+        let env = crate::test_env::EnvGuard::new(&[crate::claude_agent::EXECUTABLE_ENV]);
+        env.set(crate::claude_agent::EXECUTABLE_ENV, "/nonexistent/claude");
         let mut actual = Vec::new();
         for mut profile in profiles {
             let Some((url, requests)) = crate::test_support::serve_recording(vec![
@@ -1297,6 +1302,8 @@ mod tests {
             ("openai_codex", true, &[][..]),
             ("anthropic", true, &["GET /v1/models x-api-key"][..]),
             ("ollama", true, &["GET /api/tags"][..]),
+            // A missing `claude` blocks the connection without a request.
+            ("claude_agent", false, &[][..]),
             // Every key profile is probed now, custom ones included.
             ("custom", true, &["GET /models authorization"][..]),
         ]

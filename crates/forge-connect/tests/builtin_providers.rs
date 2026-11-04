@@ -8,5 +8,5 @@ fn embedded_files_are_sorted_and_parse() {
     let mut sorted = names.clone();
     sorted.sort_unstable();
     assert_eq!(names, sorted);
-    assert_eq!(builtin_specs().len(), 7);
+    assert_eq!(builtin_specs().len(), 8);
 }

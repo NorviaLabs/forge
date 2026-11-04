@@ -1,5 +1,6 @@
 mod anthropic_messages;
 mod chat_completions;
+mod claude_agent;
 mod protocol;
 mod responses;
 
@@ -134,6 +135,9 @@ pub struct NativeModelClient {
     /// before any await, so an in-flight turn keeps its snapshot.
     routes: RwLock<RouteTable>,
     image_cache: Mutex<HashMap<PathBuf, CachedImage>>,
+    /// Running `claude` processes, one per Forge session on the
+    /// `claude-agent` wire.
+    claude_sessions: claude_agent::ClaudeAgentSessions,
 }
 
 /// The request's resolved destination (design §4): base URL, model ids, and
@@ -231,6 +235,7 @@ impl NativeModelClient {
                 &Credentials::shared(),
             )),
             image_cache: Mutex::new(HashMap::new()),
+            claude_sessions: Default::default(),
         })
     }
 
@@ -509,6 +514,7 @@ pub(super) mod tests {
             reasoning_effort: None,
             thinking_enabled: false,
             prompt_cache: false,
+            side_call: false,
         }
     }
 
@@ -708,6 +714,7 @@ pub(super) mod tests {
                     reasoning_effort: None,
                     thinking_enabled: false,
                     prompt_cache: false,
+                    side_call: false,
                 };
                 let outcome = match client.complete(request).await {
                     Ok(_) => "Ok".to_string(),
@@ -753,6 +760,7 @@ pub(super) mod tests {
             reasoning_effort: None,
             thinking_enabled: false,
             prompt_cache: false,
+            side_call: false,
         };
         assert_eq!(
             client.prompt_transport_key(&request("anthropic/claude")),

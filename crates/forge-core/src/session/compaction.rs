@@ -149,6 +149,7 @@ impl AgentSession {
     /// provider is in flight.
     pub fn begin_context_compaction(&self, trigger: CompactionTrigger) -> PendingContextCompaction {
         let mut request = self.build_model_request();
+        request.side_call = true;
         request.messages.push(compaction_message(
             self.context_state.checkpoint.as_ref(),
             &self.context_state.protected_facts,

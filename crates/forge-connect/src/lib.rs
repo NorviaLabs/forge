@@ -4,6 +4,7 @@ mod atomic;
 mod auth;
 pub mod builtin;
 mod catalog;
+pub mod claude_agent;
 mod cost;
 mod credentials;
 pub mod effort;
@@ -192,7 +193,12 @@ mod tests {
         assert!(!r.get("openai_codex").unwrap().needs_tui_api_key_prompt());
         assert!(r.get("anthropic").unwrap().needs_tui_api_key_prompt());
         assert!(!r.get("ollama").unwrap().needs_tui_api_key_prompt());
-        assert_eq!(r.profiles().len(), 7);
+        let claude = r.get("claude_agent").unwrap();
+        assert!(!claude.needs_tui_api_key_prompt());
+        assert_eq!(claude.effective_wire(), WireKind::ClaudeAgent);
+        assert_eq!(claude.effective_catalog_kind(), CatalogKind::ClaudeAgent);
+        assert_eq!(claude.attach, Some(Attach::None));
+        assert_eq!(r.profiles().len(), 8);
         assert!(r.get("opencode_zen").unwrap().base_url.contains("/zen/v1"));
     }
 }

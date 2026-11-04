@@ -18,10 +18,11 @@ prefix (`<profile_id>/<model>`).
   crate-internal `register_builtin_profiles` registers every
   `builtin::builtin_specs()` entry.
 - Built-ins (`builtin.rs`, public module): `BUILTIN_PROVIDERS` (`(file
-  name, include_str!)` for `anthropic`, `ollama`, `openai`, `opencode`,
-  `xai` `.toml`, sorted), `builtin_specs()` (parsed once; seven profiles),
-  `builtin_profile(id)` (panics on an unknown id), `profile_ids::{ANTHROPIC,
-  OLLAMA, OPENAI, OPENAI_CODEX, OPENCODE_GO, OPENCODE_ZEN, XAI}`.
+  name, include_str!)` for `anthropic`, `claude_agent`, `ollama`, `openai`,
+  `opencode`, `xai` `.toml`, sorted), `builtin_specs()` (parsed once; eight
+  profiles), `builtin_profile(id)` (panics on an unknown id),
+  `profile_ids::{ANTHROPIC, CLAUDE_AGENT, OLLAMA, OPENAI, OPENAI_CODEX,
+  OPENCODE_GO, OPENCODE_ZEN, XAI}`.
 - Provider specs (`profile.rs`): `ProviderSpec` (`ConnectProfile` is a type
   alias), `SpecOrigin` (`Builtin`, `User`), `ConnectOutcome { profile_id,
   model, key_source, verified }`, `ConnectStatus`, `KeySource` (`Env`,
@@ -29,11 +30,11 @@ prefix (`<profile_id>/<model>`).
   `issuer`, `client_id`, `scopes`, `prompt`), `AuthKind` (`ApiKey`,
   `ApiKeyOptional`, `OauthDevice`), `OauthFlavor` (`Rfc8628`, `Chatgpt`),
   `AuthPrompt` (`Tui`, `Browser`, `Never`), `WireKind` (`ChatCompletions`,
-  `Responses`, `AnthropicMessages`), `WireOverride`, `Attach` (`Bearer`,
+  `Responses`, `AnthropicMessages`, `ClaudeAgent`), `WireOverride`, `Attach` (`Bearer`,
   `XApiKey`, `BearerAccountId`, `None`), `StaticHeader`,
   `SessionHeaderKind` (`Opencode`), `CatalogSpec` (`kind`, `filter`),
   `CatalogKind` (`OpenaiModels`, `AnthropicModels`, `OllamaTags`,
-  `ChatgptModels`, `Static`), `CatalogFilter` (`Chat`), `VerifySpec`/
+  `ChatgptModels`, `ClaudeAgent`, `Static`), `CatalogFilter` (`Chat`), `VerifySpec`/
   `VerifyKind` (`ModelsProbe`, `None`), `EffortFamily` (`None`, `Openai`,
   `Xai`), `EditableField` (`BaseUrl`). `ProviderSpec` fields: `id`, `title`,
   `description`, `auth`, `api_key_env`, `base_url_env`, `credential_from`,
@@ -146,7 +147,34 @@ prefix (`<profile_id>/<model>`).
   `tests/builtin_providers.rs`, `tests/legacy_providers.rs`,
   `tests/no_profile_id_branches.rs`.
 
+- Claude Agent (`claude_agent.rs`, public module): `executable()`
+  (`FORGE_CLAUDE_PATH`, else `claude` on `PATH`), `base_args()`,
+  `isolation_env()`, `command(executable, cwd)`, `probe()` /
+  `parse_initialize_response(&Value) -> Probe { version, logged_in,
+  subscription, models }` with `catalog_ids()` and `readiness_error()`,
+  `version_error`, `version_at_least`, `ProbeError` (`Missing`, `Failed`),
+  constants `EXECUTABLE_ENV`, `MCP_SERVER` (`forge`), `TOOL_PREFIX`
+  (`mcp__forge__`), `MINIMUM_VERSION`, `STARTUP_TIMEOUT`, `INSTALL_HINT`.
+  `VerifyError::NotReady(message)` reports a missing, signed-out, or too-old
+  `claude` (an auth failure: nothing is saved).
+
 ## Invariants
+
+- The `claude_agent` profile (wire and catalog `claude-agent`, `attach =
+  none`, key-optional with `prompt = never`) never reads or stores Claude
+  Code's login: `/connect` saves only the key-optional placeholder after
+  `verify_claude_agent` confirms the installed `claude` starts, is signed in
+  (`account.tokenSource != "none"` or an `apiKeySource`), and is at least
+  `MINIMUM_VERSION`. Its catalog is the startup report's models, listed by
+  resolved id (`claude_agent/claude-opus-5-5`, not the `opus` alias) so
+  models.dev metadata applies; the `default` row is dropped. The probe sends
+  no prompt, so it spends no usage. Every `claude` Forge starts gets
+  `base_args()` (stream-json both ways, `--tools=`, `--setting-sources=`,
+  `--strict-mcp-config`, `--permission-mode=dontAsk`, only `mcp__forge__*`
+  allowed, hooks disabled) and `isolation_env()` (CLAUDE.md files, auto
+  memory, auto compaction, tool search, and the advisor tool off;
+  `CLAUDE_CODE_SIMPLE`, `CLAUDE_CODE_EFFORT_LEVEL`, `MCP_TOOL_TIMEOUT`
+  removed).
 
 - Built-in provider behavior lives in `providers/*.toml`; there are no
   per-provider modules or `*_profile()` helpers. A malformed embedded file
@@ -295,6 +323,9 @@ prefix (`<profile_id>/<model>`).
 
 ## Side Effects
 
+- Verifying and listing the `claude_agent` profile starts the installed
+  `claude` (in the temp directory, `--no-session-persistence`), sends only
+  `initialize`, and stops it; no prompt, no usage.
 - Reads and writes `credentials.toml` (creating parent directories, enforcing
   0600; includes the `auth_required` set), `preferences.toml`, and the model
   catalog cache `<config_dir>/forge/model-catalog.toml`.

@@ -9,11 +9,15 @@
 //!   `<base>/codex/responses`; a missing `response.completed` is truncation.
 //! - `anthropic_messages`: `<base>/v1/messages`; a missing `message_stop`
 //!   or `stop_reason = max_tokens` is truncation.
+//! - `claude_agent`: no HTTP; the user's installed `claude` over the Claude
+//!   Agent SDK's stdio protocol, one process per session.
 
 use forge_connect::{Attach, WireKind};
 use forge_types::ModelResponse;
 
-use super::{anthropic_messages, chat_completions, responses, NativeModelClient, Target};
+use super::{
+    anthropic_messages, chat_completions, claude_agent, responses, NativeModelClient, Target,
+};
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
 /// Send `req` over `wire` and parse the reply.
@@ -27,6 +31,7 @@ pub(super) async fn complete(
     match wire {
         WireKind::ChatCompletions => chat_completions::complete(client, req, target, tx).await,
         WireKind::AnthropicMessages => anthropic_messages::complete(client, req, target, tx).await,
+        WireKind::ClaudeAgent => claude_agent::complete(client, req, target, tx).await,
         // The ChatGPT flavor owns its own Responses endpoint and headers.
         WireKind::Responses if target.attach == Attach::BearerAccountId => {
             responses::complete_chatgpt(client, req, target, tx).await
@@ -42,7 +47,11 @@ pub(super) fn prompt_projection(
     wire: WireKind,
 ) -> serde_json::Value {
     match wire {
-        WireKind::AnthropicMessages => anthropic_messages::prompt_projection(client, req),
+        // Claude Code builds the real request; the Messages projection is
+        // the closest shape for prefix diagnostics.
+        WireKind::AnthropicMessages | WireKind::ClaudeAgent => {
+            anthropic_messages::prompt_projection(client, req)
+        }
         WireKind::Responses => {
             // The wire takes the bare model id.
             let bare = req
@@ -64,6 +73,7 @@ pub(super) fn prompt_projection(
 pub(super) fn cache_key(wire: WireKind) -> &'static str {
     match wire {
         WireKind::AnthropicMessages => "anthropic_messages",
+        WireKind::ClaudeAgent => "claude-agent",
         WireKind::Responses => "codex",
         WireKind::ChatCompletions => "openai_compat",
     }

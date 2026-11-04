@@ -567,6 +567,7 @@ mod tests {
             reasoning_effort: None,
             thinking_enabled: true,
             prompt_cache: true,
+            side_call: false,
         }
     }
 
@@ -908,6 +909,7 @@ mod tests {
             reasoning_effort: None,
             thinking_enabled: true,
             prompt_cache: true,
+            side_call: false,
         };
         let response = client.complete(request).await.unwrap();
         assert_eq!(response.text, "hello");
@@ -924,6 +926,7 @@ mod tests {
             reasoning_effort: None,
             thinking_enabled: true,
             prompt_cache: true,
+            side_call: false,
         }
     }
 
@@ -998,6 +1001,7 @@ mod tests {
             reasoning_effort: None,
             thinking_enabled: true,
             prompt_cache: true,
+            side_call: false,
         };
         let err = client.complete(request).await.unwrap_err();
         assert!(err.is_auth_failure());

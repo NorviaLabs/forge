@@ -218,6 +218,11 @@ pub struct ModelRequest {
     pub reasoning_effort: Option<String>,
     pub thinking_enabled: bool,
     pub prompt_cache: bool,
+    /// A one-off call on a copy of the session's context (compaction, goal
+    /// checks) rather than the session's next step. Stateless transports
+    /// ignore it; the Claude Agent wire runs it in a throwaway process so
+    /// the session's own Claude conversation is left untouched.
+    pub side_call: bool,
 }
 
 #[async_trait]
@@ -314,6 +319,7 @@ mod tests {
                 reasoning_effort: None,
                 thinking_enabled: true,
                 prompt_cache: true,
+                side_call: false,
             })
             .await
             .unwrap();
@@ -336,6 +342,7 @@ mod tests {
                     reasoning_effort: None,
                     thinking_enabled: true,
                     prompt_cache: true,
+                    side_call: false,
                 },
                 Some(tx),
             )
@@ -374,6 +381,7 @@ mod tests {
                 reasoning_effort: None,
                 thinking_enabled: true,
                 prompt_cache: true,
+                side_call: false,
             })
             .await
             .unwrap();
@@ -409,6 +417,7 @@ mod tests {
                     reasoning_effort: None,
                     thinking_enabled: true,
                     prompt_cache: false,
+                    side_call: false,
                 },
                 Some(tx),
             )

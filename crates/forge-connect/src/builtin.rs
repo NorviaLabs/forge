@@ -10,6 +10,10 @@ pub const BUILTIN_PROVIDERS: &[(&str, &str)] = &[
         "anthropic.toml",
         include_str!("../providers/anthropic.toml"),
     ),
+    (
+        "claude_agent.toml",
+        include_str!("../providers/claude_agent.toml"),
+    ),
     ("ollama.toml", include_str!("../providers/ollama.toml")),
     ("openai.toml", include_str!("../providers/openai.toml")),
     ("opencode.toml", include_str!("../providers/opencode.toml")),
@@ -41,6 +45,7 @@ pub fn builtin_profile(id: &str) -> ProviderSpec {
 /// The built-in profile ids.
 pub mod profile_ids {
     pub const ANTHROPIC: &str = "anthropic";
+    pub const CLAUDE_AGENT: &str = "claude_agent";
     pub const OLLAMA: &str = "ollama";
     pub const OPENAI: &str = "openai";
     pub const OPENAI_CODEX: &str = "openai_codex";

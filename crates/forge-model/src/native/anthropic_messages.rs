@@ -499,6 +499,7 @@ mod tests {
             model: "anthropic/claude".into(),
             session_id: None,
             prompt_cache: true,
+            side_call: false,
             reasoning_effort: None,
             thinking_enabled: true,
             messages: vec![
@@ -542,6 +543,7 @@ mod tests {
             model: "anthropic/claude".into(),
             session_id: None,
             prompt_cache: true,
+            side_call: false,
             reasoning_effort: None,
             thinking_enabled: true,
             messages: vec![
@@ -590,6 +592,7 @@ mod tests {
             model: "anthropic/claude".into(),
             session_id: None,
             prompt_cache: true,
+            side_call: false,
             reasoning_effort: None,
             thinking_enabled: true,
             messages: vec![
@@ -730,6 +733,7 @@ mod tests {
                 idempotent: false,
             }],
             prompt_cache: true,
+            side_call: false,
         };
 
         let response = client
@@ -775,6 +779,7 @@ mod tests {
             messages: vec![].into(),
             tools: vec![],
             prompt_cache: true,
+            side_call: false,
         };
         assert!(matches!(
             client.complete(request.clone()).await,
@@ -864,6 +869,7 @@ mod tests {
             messages: vec![Message::new(MessageRole::User, "hello")].into(),
             tools: vec![],
             prompt_cache: false,
+            side_call: false,
         };
         Some(client.complete(request).await)
     }
@@ -920,6 +926,7 @@ mod tests {
                 messages: vec![Message::new(MessageRole::User, "hello")].into(),
                 tools: vec![],
                 prompt_cache: false,
+                side_call: false,
             };
             let error = client.complete(request).await.unwrap_err();
             assert_eq!(error.is_auth_failure(), auth, "{status}: {error}");

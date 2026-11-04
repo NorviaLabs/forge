@@ -475,6 +475,7 @@ mod tests {
             reasoning_effort: None,
             thinking_enabled: true,
             prompt_cache: true,
+            side_call: false,
         }
     }
 
