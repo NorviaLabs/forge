@@ -526,16 +526,18 @@ impl TuiApp {
                 ApprovalMenuKind::DenyWithNote,
             ];
         }
-        // Approve-all never covers leaving the sandbox, so it is not offered
-        // here: this prompt is answered for this one command only.
-        if payload.sandbox_escalation {
-            return vec![
-                ApprovalMenuKind::Deny,
-                ApprovalMenuKind::AllowOnce,
-                ApprovalMenuKind::DenyWithNote,
-            ];
-        }
         let approval = self.approval_state_for_payload(payload);
+        // Approve-all never covers leaving the sandbox, and neither does an
+        // "always" rule: this prompt is answered for this command, or for
+        // commands like it until the session ends.
+        if payload.sandbox_escalation {
+            let mut kinds = vec![ApprovalMenuKind::Deny, ApprovalMenuKind::AllowOnce];
+            if approval.pattern_allow_eligible {
+                kinds.push(ApprovalMenuKind::AllowPattern);
+            }
+            kinds.push(ApprovalMenuKind::DenyWithNote);
+            return kinds;
+        }
         let mut kinds = vec![
             ApprovalMenuKind::Deny,
             ApprovalMenuKind::AllowOnce,
@@ -634,6 +636,18 @@ impl TuiApp {
                 // The pattern goes in the label, not only in the elided detail
                 // column. "Remember similar commands" asked the operator to
                 // approve a rule they could not read.
+                ApprovalMenuKind::AllowPattern if sandbox_retry => {
+                    crate::conversation::ApprovalMenuRow {
+                        label: format!("Allow {remembered} outside the sandbox this session"),
+                        detail: Some(remembered.clone()),
+                        help: Some(format!(
+                            "Retries this command outside the filesystem sandbox, and later \
+                             commands matching {remembered} run there without asking until \
+                             the session ends. Never saved."
+                        )),
+                        key: Some(kind.shortcut().into()),
+                    }
+                }
                 ApprovalMenuKind::AllowPattern => crate::conversation::ApprovalMenuRow {
                     label: format!("Allow {remembered} this session"),
                     detail: Some(remembered.clone()),

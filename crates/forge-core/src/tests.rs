@@ -428,13 +428,13 @@ async fn orchestration_tools_return_results_without_aborting_the_turn() {
     let model = Arc::new(MockModelClient::script(vec![
         tool_call_response(vec![ToolCall {
             id: "list".into(),
-            name: "list_agents".into(),
-            arguments: json!({}),
+            name: "wait_agent".into(),
+            arguments: json!({"since_revision": 0, "timeout_ms": 100}),
         }]),
         tool_call_response(vec![ToolCall {
             id: "interrupt".into(),
-            name: "interrupt_agent".into(),
-            arguments: json!({"target": "not-an-agent-id"}),
+            name: "send_message".into(),
+            arguments: json!({"target": "not-an-agent-id", "interrupt": true}),
         }]),
         text_only("done"),
     ]));
@@ -1055,6 +1055,82 @@ async fn a_session_grant_does_not_authorize_unconfined_execution() {
         ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
     ));
     assert!(session.pending_hitl().is_some());
+}
+
+/// "Allow this session" on a sandbox escalation remembers the command
+/// pattern: the next matching denial reruns unconfined without a prompt.
+/// It is never offered as a persistent rule.
+#[tokio::test]
+async fn a_session_escalation_grant_reruns_matching_denials_unconfined() {
+    let dir = tempdir().unwrap();
+    let mut session = sandbox_denied_session(dir.path()).await;
+    let first = run_sandbox_denied_call(&mut session).await;
+    assert!(matches!(
+        first,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    assert!(session.pending_hitl().unwrap().sandbox_escalation);
+
+    let error = session
+        .decide_hitl(GrantDecision::AllowPatternAlways, "test")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("never saved"), "{error}");
+    assert!(session.pending_hitl().is_some());
+
+    let outcome = session
+        .decide_hitl(GrantDecision::AllowPatternForSession, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.grant,
+        AppliedGrant::Pattern {
+            pattern: "sandbox_denied".into()
+        }
+    );
+    assert!(session.pending_hitl().is_none());
+
+    // Same turn, a later call of the same shape.
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-sandbox-denied-2".into(),
+                name: "sandbox_denied".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("tool should begin execution");
+    };
+    let denied = pending.execute().await;
+    let ModelResponseApplication::Execute(retry) =
+        session.finish_tool_application(denied).await.unwrap()
+    else {
+        panic!("a remembered escalation must rerun instead of prompting");
+    };
+    let rerun = retry.execute().await;
+    let finished = session.finish_tool_application(rerun).await.unwrap();
+    assert!(
+        !matches!(
+            finished,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "no second prompt"
+    );
+    assert!(session.pending_hitl().is_none());
+    assert!(session
+        .messages
+        .iter()
+        .any(|message| message.content.contains("approved retry ran unconfined")));
+    assert!(session
+        .events
+        .iter()
+        .any(|event| event.kind == "unconfined_retry"));
 }
 
 /// Without any grant the prompt still happens — the fix must not turn a
@@ -2047,42 +2123,6 @@ async fn appending_messages_updates_the_context_estimate_from_the_tail() {
     assert!(after > before);
     assert_eq!(cache_before.0, session.messages.storage_id());
     assert_eq!(cache_after.messages, cache_before.1.messages + 1);
-}
-
-#[tokio::test]
-async fn session_omits_mock_web_search_with_default_config() {
-    let dir = tempdir().unwrap();
-    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
-        text: "ok".into(),
-        tool_calls: vec![],
-        usage: None,
-        thinking: None,
-    }]));
-    let s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
-        .await
-        .unwrap();
-    let names = s.list_tools();
-    assert!(
-        !names.iter().any(|n| n == "web_search"),
-        "mock web_search must not be advertised, got {names:?}"
-    );
-}
-
-#[tokio::test]
-async fn session_omits_web_search_when_disabled() {
-    let dir = tempdir().unwrap();
-    let model = Arc::new(MockModelClient::script(vec![ModelResponse {
-        text: "ok".into(),
-        tool_calls: vec![],
-        usage: None,
-        thinking: None,
-    }]));
-    let mut cfg = base_cfg(dir.path());
-    cfg.web_search.enabled = false;
-    let s = AgentSession::create(cfg, model, ToolRegistry::new())
-        .await
-        .unwrap();
-    assert!(!s.list_tools().iter().any(|n| n == "web_search"));
 }
 
 #[tokio::test]

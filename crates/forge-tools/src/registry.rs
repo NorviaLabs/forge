@@ -161,8 +161,8 @@ impl ToolContext {
         self
     }
 
-    /// Resolve a tool-supplied path for reading, confined to the workspace or
-    /// this session's private temp directory.
+    /// Resolve a tool-supplied path for reading, confined to the workspace,
+    /// this session's private temp directory, or (macOS) the shared `/tmp`.
     pub fn resolve_path(&self, rel: &str) -> Result<PathBuf, ToolError> {
         self.resolve(rel, PathAccess::Read)
     }
@@ -175,7 +175,7 @@ impl ToolContext {
         self.resolve(rel, PathAccess::Write)
     }
 
-    fn allowed_roots(&self) -> Result<Vec<PathBuf>, ToolError> {
+    fn allowed_roots(&self, access: PathAccess) -> Result<Vec<PathBuf>, ToolError> {
         let workspace = self
             .workspace_root
             .canonicalize()
@@ -186,6 +186,14 @@ impl ToolContext {
                 ToolError::Execution(format!("cannot resolve session temp: {error}"))
             })?;
             roots.push(tmp);
+        }
+        // `/tmp` is where other tools leave logs and build output an agent is
+        // asked to inspect. It is readable, never writable: writes stay in the
+        // workspace and the private session temp.
+        if access == PathAccess::Read {
+            if let Some(tmp) = shared_tmp_root() {
+                roots.push(tmp);
+            }
         }
         Ok(roots)
     }
@@ -228,7 +236,7 @@ impl ToolContext {
             }
         }
 
-        let roots = self.allowed_roots()?;
+        let roots = self.allowed_roots(access)?;
 
         // Existing target: resolve it completely. This follows symlinks, so a
         // link pointing outside the allowed roots is caught by the containment
@@ -274,6 +282,18 @@ impl ToolContext {
         } else {
             escapes_workspace(rel)
         }
+    }
+}
+
+/// The shared temp directory tools and confined commands may read
+/// (`/private/tmp`). macOS only: the Linux sandbox keeps `/tmp` masked, since
+/// a read-only bind would still let a process connect to the Unix sockets
+/// under it, and `read_file` keeps the same boundary as the shell.
+pub(crate) fn shared_tmp_root() -> Option<PathBuf> {
+    if cfg!(target_os = "macos") {
+        Path::new("/tmp").canonicalize().ok()
+    } else {
+        None
     }
 }
 
@@ -327,12 +347,8 @@ impl ToolRegistry {
     /// Register built-ins that are not already present, then start the
     /// workspace file index in the background so the first glob/grep/find
     /// overlaps journal I/O instead of stalling the first tool call.
-    pub fn install_default_builtins(
-        &mut self,
-        web_search: &forge_config::WebSearchConfig,
-        workspace: &Path,
-    ) {
-        for tool in crate::default_builtins_with_web_search(web_search) {
+    pub fn install_default_builtins(&mut self, workspace: &Path) {
+        for tool in crate::default_builtins() {
             if self.get(tool.name()).is_none() {
                 self.register(tool);
             }
@@ -698,6 +714,25 @@ mod tests {
         assert_eq!(missing, dir.path().join("new.txt"));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn shared_tmp_is_readable_but_not_writable() {
+        let dir = tempdir().unwrap();
+        let shared = tempfile::Builder::new()
+            .prefix("forge-registry-tmp-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let log = shared.path().join("build.log");
+        std::fs::write(&log, "ok").unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+
+        assert_eq!(
+            ctx.resolve_path(log.to_str().unwrap()).unwrap(),
+            log.canonicalize().unwrap()
+        );
+        assert!(ctx.resolve_write_path(log.to_str().unwrap()).is_err());
+    }
+
     #[test]
     fn tool_context_rejects_canonical_escape() {
         let dir = tempdir().unwrap();
@@ -980,7 +1015,7 @@ mod tests {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("hit.rs"), "hello from install\n").unwrap();
         let mut reg = ToolRegistry::new();
-        reg.install_default_builtins(&forge_config::WebSearchConfig::default(), dir.path());
+        reg.install_default_builtins(dir.path());
         assert!(reg.get("glob").is_some());
         assert!(reg.get("grep").is_some());
         let ctx = ToolContext::new(dir.path().to_path_buf());

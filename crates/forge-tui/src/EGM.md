@@ -117,7 +117,7 @@ Overlays and setup:
 
 Commands, history, effort, launch:
 
-- `commands` — `SlashCommand`, `GoalAction`, `CommandError`, `parse_slash`.
+- `commands` — `SlashCommand`, `CommandError`, `parse_slash`.
 - `history` — `InputHistory`, `HistoryStore`, `MAX_INPUT_HISTORY`.
 - `effort` — `ReasoningEffort`, provider-neutral per-session effort.
 - `launch` — `decide_launch(theme_committed, trusted_at_start,

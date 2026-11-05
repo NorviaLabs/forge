@@ -105,10 +105,8 @@ impl TuiApp {
             agents: AgentViewState::default(),
             turn_summaries: Vec::new(),
             turn_summaries_revision: 0,
-            search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),
-            goal: None,
             pending_interaction: PendingInteractionState::default(),
             pending_command_completions: Vec::new(),
             external_editor: ExternalEditorState { requested: false },
@@ -252,7 +250,6 @@ impl TuiApp {
         };
         app.init_file_watcher();
         app.load_ui_state();
-        app.restore_goal();
         app.restore_saved_auth().apply_connection_chrome()
     }
 
@@ -356,10 +353,8 @@ impl TuiApp {
             agents: AgentViewState::default(),
             turn_summaries: Vec::new(),
             turn_summaries_revision: 0,
-            search_status: SearchStatusState { label: None },
             activity: ActivityFeed::default(),
             pending_turn: PendingTurnState::default(),
-            goal: None,
             pending_interaction: PendingInteractionState::default(),
             pending_command_completions: Vec::new(),
             external_editor: ExternalEditorState { requested: false },

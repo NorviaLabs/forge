@@ -463,7 +463,7 @@ impl AgentCoordinator {
     /// Stop descendant actors when their parent session is being retired.
     ///
     /// A completed subagent normally keeps its actor channel attached so a
-    /// later `followup_task` can wake it. That retention is useful during the
+    /// later `send_message` with `wake` can wake it. That retention is useful during the
     /// session's lifetime, but it would keep the child `AgentSession` (and its
     /// workspace-scoped handles) alive after the parent is archived or the
     /// repository supervisor shuts down. Cancel the child token and drop the

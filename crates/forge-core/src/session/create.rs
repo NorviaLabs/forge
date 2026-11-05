@@ -181,7 +181,7 @@ impl AgentSession {
         model: Arc<dyn ModelClient>,
         mut tools: ToolRegistry,
     ) -> Result<Self, LoopError> {
-        tools.install_default_builtins(&loop_cfg.web_search, &loop_cfg.workspace);
+        tools.install_default_builtins(&loop_cfg.workspace);
         let session_id = new_session_id();
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         journal.append_session_created(session_id).await?;
@@ -268,7 +268,7 @@ impl AgentSession {
         mut tools: ToolRegistry,
         session_id: SessionId,
     ) -> Result<Self, LoopError> {
-        tools.install_default_builtins(&loop_cfg.web_search, &loop_cfg.workspace);
+        tools.install_default_builtins(&loop_cfg.workspace);
         let journal = Journal::open(&loop_cfg.journal_dir, session_id).await?;
         let state = journal.replay(session_id).await?;
         if state.last_seq == 0 {
@@ -384,7 +384,6 @@ impl AgentSession {
             journal_dir: self.journal.directory().to_path_buf(),
             enable_context_lifecycle: self.enable_context,
             enable_governance: self.enable_gov,
-            web_search: WebSearchConfig::default(),
             agents: self.coordinator.config().into(),
         };
         let mut fork = Self::create(loop_cfg, self.model.clone(), (*self.tools).clone()).await?;

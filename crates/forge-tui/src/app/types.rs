@@ -128,9 +128,7 @@ pub(crate) struct SessionViewState {
     pub(crate) question_session: super::questions::QuestionSessionState,
     pub(crate) busy_state: BusyState,
     pub(crate) status_state: StatusMessageState,
-    pub(crate) search_status: SearchStatusState,
     pub(crate) pending_turn: PendingTurnState,
-    pub(crate) goal: Option<GoalState>,
     pub(crate) pending_interaction: PendingInteractionState,
     pub(crate) task_selection: TaskSelectionState,
     pub(crate) timing: TurnTimingState,
@@ -198,9 +196,7 @@ impl Default for SessionViewState {
             question_session: super::questions::QuestionSessionState::default(),
             busy_state: BusyState::default(),
             status_state: StatusMessageState::default(),
-            search_status: SearchStatusState::default(),
             pending_turn: PendingTurnState::default(),
-            goal: None,
             pending_interaction: PendingInteractionState::default(),
             task_selection: TaskSelectionState::default(),
             timing: TurnTimingState::default(),
@@ -1372,22 +1368,6 @@ impl PendingTurnState {
     }
 }
 
-/// An active `/goal` completion condition plus the bookkeeping `/goal` status
-/// reports and the post-turn evaluator updates.
-#[derive(Debug, Clone)]
-pub(crate) struct GoalState {
-    /// The condition the evaluator judges after every completed turn.
-    pub(crate) condition: String,
-    /// Turns the evaluator has judged since the goal was set.
-    pub(crate) turns_evaluated: u32,
-    /// The evaluator's most recent reason, for `/goal` and the verdict line.
-    pub(crate) last_reason: Option<String>,
-    /// A paused goal remains visible and can be resumed explicitly.
-    pub(crate) paused: bool,
-    /// When the goal was set, for the status line's elapsed time.
-    pub(crate) started_at: Instant,
-}
-
 /// Deferred interactions owned by the event loop.
 ///
 /// How far an approval's grant reaches.
@@ -1616,11 +1596,6 @@ impl ToolDetailState {
     pub(crate) fn collapse(&mut self) {
         self.expanded = false;
     }
-}
-
-#[derive(Default)]
-pub(crate) struct SearchStatusState {
-    pub(crate) label: Option<String>,
 }
 
 #[derive(Default)]
@@ -2048,9 +2023,6 @@ pub struct TuiApp {
     pub(crate) turn_summaries_revision: u64,
     /// Phase 10 / TUI-10 — progressive busy phase for chrome.
     pub(crate) pending_turn: PendingTurnState,
-    /// Active `/goal` completion condition; `None` when no goal is running.
-    /// Session-scoped: `/new`, `/fork`, and `/resume` start without one.
-    pub(crate) goal: Option<GoalState>,
     pub(crate) pending_interaction: PendingInteractionState,
     /// Commands submitted without awaiting execution. Polled every tick so a
     /// busy actor can never block input or rendering. App-level rather than
@@ -2074,7 +2046,6 @@ pub struct TuiApp {
     /// Live assistant text while tokens stream in.
     pub(crate) stream: StreamState,
     pub(crate) timing: TurnTimingState,
-    pub(crate) search_status: SearchStatusState,
     /// Phase 10 / TUI-10 — activity ring buffer.
     pub(crate) activity: ActivityFeed,
     pub(crate) reasoning_effort: ReasoningEffortState,

@@ -1139,6 +1139,13 @@ fn orchestration_summary(name: &str, call: Option<&ToolCall>) -> Option<String> 
             .map(str::to_string)
     };
     let target = || arg("target").map(|t| short_agent_ref(&t));
+    let flag = |key: &str| {
+        call.and_then(|call| call.arguments.get(key))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+    // `followup_task`, `list_agents` and `interrupt_agent` were folded into
+    // `send_message`/`wait_agent`; their arms stay so older journals replay.
     Some(match name {
         "spawn_agent" => match arg("task_name") {
             Some(task) => format!("started {task}"),
@@ -1146,6 +1153,14 @@ fn orchestration_summary(name: &str, call: Option<&ToolCall>) -> Option<String> 
         },
         "wait_agent" => "waited for agents".to_string(),
         "list_agents" => "listed agents".to_string(),
+        "send_message" if flag("interrupt") => match target() {
+            Some(target) => format!("interrupted {target}"),
+            None => "interrupted an agent".to_string(),
+        },
+        "send_message" if flag("wake") => match target() {
+            Some(target) => format!("sent a follow-up to {target}"),
+            None => "sent a follow-up".to_string(),
+        },
         "send_message" => match target() {
             Some(target) => format!("messaged {target}"),
             None => "sent a message".to_string(),
@@ -3088,24 +3103,6 @@ fn classify_tool_content(
                 .map(|pattern| format!("{pattern} · {label}"))
                 .unwrap_or(label)
         }
-        "web_search" => {
-            let results = detail
-                .lines()
-                .filter(|line| {
-                    let line = line.trim_start();
-                    line.split_once(". **")
-                        .is_some_and(|(index, _)| index.parse::<usize>().is_ok())
-                })
-                .count();
-            let label = if lower.contains("no results") {
-                "no results".to_string()
-            } else {
-                result_count_label(results, "result", "results")
-            };
-            tool_argument(call, "query")
-                .map(|query| format!("{query} · {label}"))
-                .unwrap_or(label)
-        }
         _ if name.contains("write") || name.contains("search_replace") || name == "edit" => {
             format!("wrote · {}", first.chars().take(80).collect::<String>())
         }
@@ -3313,7 +3310,7 @@ mod tests {
         );
         // Nothing identifying to show: the tool name alone is still evidence
         // that something ran.
-        assert_eq!(plan_evidence_subject("web_search", None), "web_search");
+        assert_eq!(plan_evidence_subject("web_fetch", None), "web_fetch");
     }
 
     /// Nothing to supersede on the first call: the plan appears as a card and
@@ -6257,17 +6254,6 @@ mod verification_tests {
         );
         assert_eq!(summary, "needle · no matches");
 
-        let (_, summary, _, _) = classify_tool_content(
-            "web_search",
-            "1. **first**\n2. **second**",
-            Some(&call("web_search", serde_json::json!({"query": "forge"}))),
-            &ok(),
-        );
-        assert_eq!(summary, "forge · 2 results");
-
-        let (_, summary, _, _) = classify_tool_content("web_search", "no results", None, &ok());
-        assert_eq!(summary, "no results");
-
         let (_, summary, _, _) = classify_tool_content("edit", "updated a.rs", None, &ok());
         assert_eq!(summary, "wrote · updated a.rs");
 
@@ -6575,6 +6561,22 @@ mod agent_placement_tests {
         assert_eq!(
             orchestration_summary("send_message", Some(&msg)).as_deref(),
             Some("messaged agent 1d311769")
+        );
+        let wake = call(
+            "send_message",
+            serde_json::json!({"target": "worker", "message": "go", "wake": true}),
+        );
+        assert_eq!(
+            orchestration_summary("send_message", Some(&wake)).as_deref(),
+            Some("sent a follow-up to worker")
+        );
+        let stop = call(
+            "send_message",
+            serde_json::json!({"target": "worker", "interrupt": true}),
+        );
+        assert_eq!(
+            orchestration_summary("send_message", Some(&stop)).as_deref(),
+            Some("interrupted worker")
         );
         assert_eq!(
             orchestration_summary("wait_agent", None).as_deref(),

@@ -169,7 +169,6 @@ async fn open_session_with_model(
         journal_dir,
         enable_context_lifecycle: true,
         enable_governance: true,
-        web_search: cfg.tools.web_search.clone(),
         agents: cfg.tools.agents.clone(),
     };
 

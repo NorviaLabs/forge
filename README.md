@@ -242,7 +242,6 @@ Useful in-app commands:
                work from the changed-file list, which adds `↑`/`↓` to move the list
                cursor and `i` for issues
 /issues        Browse repository issues inline; requires authenticated GitHub CLI
-/goal          Work toward a completion condition until it holds (`/goal clear` stops)
 /effort        Set model effort
 /thinking      Toggle model thinking generation
 /help          Open help
@@ -384,8 +383,7 @@ max_wait_ms = 120000
 `/connect` and `/model` instead. `[model] request_timeout_secs` still applies.
 
 Agent orchestration is enabled by default. The model can use `spawn_agent`,
-`send_message`, `followup_task`, `wait_agent`, `list_agents`, and
-`interrupt_agent`. Each child runs in an isolated Git worktree and inherits the
+`send_message`, and `wait_agent`. Each child runs in an isolated Git worktree and inherits the
 parent model, governance, and workspace policy. `spawn_agent` can narrow a
 child's tools with `tool_allowlist`.
 
@@ -398,8 +396,10 @@ than falling back to the bell, because an unexpected audible bell is worse than
 no notification; set `bell` if your terminal is not on the known-good list.
 
 `max_depth` bounds nested work. `send_message` queues a
-mailbox message without waking its target; `followup_task` wakes an idle or
-completed descendant. Agent IDs are opaque session identifiers, and operations
+mailbox message without waking its target; with `wake: true` it starts an idle
+or completed descendant's next turn, and with `interrupt: true` (no message) it
+stops the descendant's current turn. `wait_agent` returns every descendant's
+status; pass `since_revision: 0` to list them without waiting. Agent IDs are opaque session identifiers, and operations
 are limited to descendants of the calling agent. Child journals, statuses,
 summaries, and worktree locations are durable. Running children are resumed
 after a restart when their worktree is recoverable; completed children remain
@@ -468,8 +468,9 @@ it matter.
 
 Inside the sandbox a command can:
 
-- **read** inside your workspace, the per-session temp directory, and the
-  OS-owned paths a process needs to start (system binaries, libraries,
+- **read** inside your workspace, the per-session temp directory, the shared
+  `/tmp` on macOS (Linux keeps it hidden, because a read-only mount would
+  still expose the Unix sockets there), and the OS-owned paths a process needs to start (system binaries, libraries,
   frameworks, and standard configuration), plus the read-only runtime paths
   selected from the command's resolved executable and configured toolchain
   homes. Everything else user-writable — `~/.ssh`, `~/.aws`, and other home
@@ -508,9 +509,12 @@ If macOS `open` reports the Launch Services permission error `-54`, Forge
 asks to retry that exact command outside the sandbox. For a failed `bash`
 call whose output does not identify a sandbox denial, the agent can use
 `request_unconfined_retry` with the failed call's ID and a reason. Forge
-recovers the original arguments and asks for one-time approval; the request
-cannot supply a replacement command. Session and saved command rules do not
-authorize removal of the sandbox. A failed unconfined attempt cannot trigger
+recovers the original arguments and asks for approval; the request
+cannot supply a replacement command. Saved command rules and approve-all do
+not authorize removal of the sandbox. The approval prompt can instead allow
+the command's pattern (for example `bash(cargo test *)`) outside the sandbox
+for the rest of the session: later sandbox denials matching it rerun
+unconfined without asking. That grant is never saved to disk. A failed unconfined attempt cannot trigger
 another escalation for the same command during that turn. Retry references
 are consumed once and expire at the end of the turn. After restarting Forge,
 an approval whose original arguments are unavailable must be denied and the
@@ -640,7 +644,6 @@ Depending on configuration, the agent can use tools for:
 - inspecting Git status and diffs;
 - fast file and content search;
 - coordinating isolated child agents and reviewing their status;
-- web search;
 - configured MCP tools.
 
 Tool arguments are validated before execution, and shell commands are confined

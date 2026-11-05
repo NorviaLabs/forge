@@ -19,8 +19,12 @@ or host); `audit.rs` is the shared in-memory decision log.
   - `retain_session_patterns_from(&Self)`,
   - `allow_suggested_pattern_for_session(&ToolCall) -> Option<String>`,
   - `allow_pattern_for_session(PatternRule)`,
-  - `clear_session_pattern_allows()`, `session_pattern_allow_count()`,
-    `session_pattern_allows(&ToolCall) -> bool`,
+  - `clear_session_pattern_allows()` (also clears escalation grants),
+    `session_pattern_allow_count()`, `session_pattern_allows(&ToolCall) -> bool`,
+  - `allow_suggested_escalation_for_session(&ToolCall) -> Option<String>`,
+    `session_escalation_allows(&ToolCall) -> bool` — command patterns the
+    operator let run outside the sandbox for this session; never persisted
+    and separate from ordinary pattern grants,
   - `redact_args(&Value) -> Value`, `record_audit(AuditEvent)`.
 - `Default for Governance`: `Principal::local_dev()`, `AclPolicy::allow_all()`,
   `hitl_tools = default_hitl_tools()` (`["mcp:*"]`), empty hitl classes and

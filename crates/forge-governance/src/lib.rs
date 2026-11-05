@@ -35,6 +35,11 @@ pub struct Governance {
     /// Shared across clones so a parent and its subagents see the same set.
     /// Never written to `permissions.toml`.
     session_pattern_allow: Arc<Mutex<Vec<PatternRule>>>,
+    /// Commands the operator let run outside the sandbox for the rest of this
+    /// process session. A sandbox denial matching one reruns unconfined
+    /// without a prompt. Shared across clones like `session_pattern_allow`,
+    /// and never persisted: leaving the sandbox is never a standing rule.
+    session_escalation_allow: Arc<Mutex<Vec<PatternRule>>>,
 }
 
 impl Default for Governance {
@@ -51,6 +56,7 @@ impl Default for Governance {
             pattern_allow: vec![],
             pattern_deny: vec![],
             session_pattern_allow: Arc::new(Mutex::new(Vec::new())),
+            session_escalation_allow: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -164,6 +170,7 @@ impl Governance {
     /// the policy (`set_governance` reloads ACL / pattern files).
     pub fn retain_session_patterns_from(&mut self, other: &Self) {
         self.session_pattern_allow = other.session_pattern_allow.clone();
+        self.session_escalation_allow = other.session_escalation_allow.clone();
     }
 
     /// Remember the suggested pattern for `call` for the rest of this process
@@ -187,6 +194,33 @@ impl Governance {
 
     pub fn clear_session_pattern_allows(&mut self) {
         self.session_pattern_lock().clear();
+        self.session_escalation_lock().clear();
+    }
+
+    /// Remember `call`'s suggested pattern as allowed to run outside the
+    /// sandbox for the rest of this session. Same eligibility as
+    /// [`Self::allow_suggested_pattern_for_session`]; never persisted.
+    pub fn allow_suggested_escalation_for_session(&mut self, call: &ToolCall) -> Option<String> {
+        let raw = suggest_pattern(call)?;
+        let rule = PatternRule::parse(&raw)?;
+        let mut rules = self.session_escalation_lock();
+        if !rules.iter().any(|existing| existing.raw == rule.raw) {
+            rules.push(rule);
+        }
+        Some(raw)
+    }
+
+    /// Whether a sandbox denial of `call` may rerun unconfined without asking.
+    pub fn session_escalation_allows(&self, call: &ToolCall) -> bool {
+        self.session_escalation_lock()
+            .iter()
+            .any(|rule| rule.matches(call))
+    }
+
+    fn session_escalation_lock(&self) -> std::sync::MutexGuard<'_, Vec<PatternRule>> {
+        self.session_escalation_allow
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     pub fn session_pattern_allow_count(&self) -> usize {

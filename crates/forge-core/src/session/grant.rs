@@ -25,6 +25,9 @@ pub enum GrantRejection {
     /// Approve-all never covers leaving the sandbox.
     #[error("approve-all never approves running a command outside the sandbox")]
     ApproveAllEscalation,
+    /// Running outside the sandbox is remembered for the session at most.
+    #[error("running outside the sandbox is never saved; allow it for this session instead")]
+    PersistentEscalation,
 }
 
 /// The grant a resolved decision applied, for a frontend to report.
@@ -84,8 +87,15 @@ pub fn validate_grant_decision(
                 Err(GrantRejection::NoDeniedHost)
             }
         }
+        GrantDecision::AllowPatternAlways if kind == ApprovalKind::SandboxEscalation => {
+            Err(GrantRejection::PersistentEscalation)
+        }
         GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways => {
-            if kind == ApprovalKind::Governance && pattern_grant_eligible(payload) {
+            let remembers = matches!(
+                kind,
+                ApprovalKind::Governance | ApprovalKind::SandboxEscalation
+            );
+            if remembers && pattern_grant_eligible(payload) {
                 Ok(())
             } else {
                 Err(GrantRejection::NoSessionPattern)
@@ -176,6 +186,23 @@ impl AgentSession {
                 }
                 self.grant_egress_host_for(&pattern, Some(call_id), "approval");
                 outcome.grant = AppliedGrant::Host { pattern };
+            }
+            GrantDecision::AllowPatternForSession
+                if payload.kind() == ApprovalKind::SandboxEscalation =>
+            {
+                let pattern = self
+                    .governance
+                    .allow_suggested_escalation_for_session(&payload_call(&payload))
+                    .ok_or_else(|| {
+                        LoopError::Other(GrantRejection::NoSessionPattern.to_string())
+                    })?;
+                self.audit_escalation_grant(
+                    Some(call_id),
+                    Some(&payload.tool),
+                    Some(&pattern),
+                    "approval",
+                );
+                outcome.grant = AppliedGrant::Pattern { pattern };
             }
             GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways => {
                 let pattern = self
@@ -303,12 +330,21 @@ mod tests {
     }
 
     #[test]
-    fn a_sandbox_escalation_is_answered_for_this_command_only() {
+    fn a_sandbox_escalation_is_remembered_for_the_session_at_most() {
         let mut escalation = payload(serde_json::json!({"command": "cargo build"}));
         escalation.sandbox_escalation = true;
         assert_eq!(
             accepts(&escalation),
-            ["deny", "deny_with_note", "allow_once"]
+            [
+                "deny",
+                "deny_with_note",
+                "allow_once",
+                "allow_pattern_for_session"
+            ]
+        );
+        assert_eq!(
+            validate_grant_decision(&escalation, &GrantDecision::AllowPatternAlways),
+            Err(GrantRejection::PersistentEscalation)
         );
         assert_eq!(
             validate_grant_decision(&escalation, &GrantDecision::ApproveAll),

@@ -1108,7 +1108,6 @@ impl TuiApp {
                             self.session_view_states.remove(&old_session_id);
                             self.session_runtime = DirectSessionSlot::some(session);
                             self.selected_session_id = session_id;
-                            self.goal = None;
                             self.session_chrome
                                 .retain(|task| task.session_id == session_id);
                             if self.session_chrome.is_empty() {
@@ -1250,7 +1249,6 @@ impl TuiApp {
                             self.overlay = None;
                             self.busy_state.stop();
                             self.selected_session_id = self.session_runtime.session_id;
-                            self.restore_goal();
                             self.session_view = SessionSnapshot::capture(&self.session_runtime);
                             self.transcript_view =
                                 TranscriptSnapshot::capture(&self.session_runtime);
@@ -1389,13 +1387,6 @@ impl TuiApp {
                         rows: self.plan_report_rows(),
                     });
                 }
-                Ok(SlashCommand::Goal { action }) => match action {
-                    GoalAction::Show => self.show_goal(),
-                    GoalAction::Clear => self.clear_goal_command(),
-                    GoalAction::Pause => self.pause_goal_command(),
-                    GoalAction::Resume => self.resume_goal_command().await?,
-                    GoalAction::Set(condition) => self.set_goal(condition).await?,
-                },
                 Ok(SlashCommand::Effort) => {
                     self.open_connect_picker_compact(ConnectModelColumn::Effort);
                 }

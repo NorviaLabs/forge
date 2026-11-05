@@ -17,8 +17,9 @@
 //!
 //! Scope (matching Codex's `workspace-write`):
 //!
-//! * reads — the workspace, a granted session scratch directory, and the
-//!   OS-owned paths a process needs merely to start (system binaries,
+//! * reads — the workspace, a granted session scratch directory, the shared
+//!   `/tmp` (macOS only; Linux keeps it masked because a read-only bind
+//!   would still expose the Unix sockets under it), and the OS-owned paths a process needs merely to start (system binaries,
 //!   libraries, frameworks, configuration, device nodes). Everything
 //!   user-writable is outside that boundary — `~/.ssh`, `~/.aws`, per-user
 //!   temp, mounted volumes — exactly as it is for `read_file`/`write_file`.
@@ -916,6 +917,14 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     if let Some(tmp) = &policy.session_tmp {
         let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
         profile.push_str(&format!("\n  (subpath \"{tmp}\")"));
+    }
+    // The shared `/tmp` (`/private/tmp`) is readable, never writable, so a
+    // command can inspect logs and build output other tools left there.
+    // Unix sockets under it stay unreachable: connecting is `network*`,
+    // which is denied below.
+    if let Some(shared) = crate::registry::shared_tmp_root() {
+        let shared = sbpl_literal(&shared)?;
+        profile.push_str(&format!("\n  (literal \"/tmp\")\n  (subpath \"{shared}\")"));
     }
     for path in &policy.toolchain_read_paths {
         let path = sbpl_literal(&path.canonicalize().ok()?)?;

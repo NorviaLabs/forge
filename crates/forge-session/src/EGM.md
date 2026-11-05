@@ -47,7 +47,7 @@ command/event API, and immutable per-frame snapshots for frontends.
 `supervisor.rs`:
 
 - `SessionRuntimeSnapshot { task, session, transcript, details, queued_prompts, interrupted_prompts }`.
-- `SupervisorEvent` (`#[non_exhaustive]`): `Roster`, `SessionUpdated(Box<_>)`, `Stream`, `Attention`, `GoalStatus`, `GoalNotice`, `Selected`, `Error`, `TrustRequired`.
+- `SupervisorEvent` (`#[non_exhaustive]`): `Roster`, `SessionUpdated(Box<_>)`, `Stream`, `Attention`, `Selected`, `Error`, `TrustRequired`.
 - `QueuedPromptId::{Durable(u64), Session(QueueItemId)}`.
 - `SupervisorCommand` (`#[non_exhaustive]`): creation/attach/archive/rename/pin/removal, `TrustWorkspace`, prompt submission and queue control, goal commands, `ContinueTurn`, `ForkSession`, `ResumeSession`, `CloseSession`, `CloseAllSessions`, `StopTurn`, `ResolveApproval`, `DecideApproval`, `ResolveQuestion`, `SelectSession`, `SetModel`, `SetThinking`, `SetApproveAll`, `SetCapabilities`, `PollSession`, `CompactContext`, background-task cancel/approve commands, `GrantEgressHost`, `AllowSessionPattern`, `ClearSessionApprovals`, `ReloadProviders`, GitHub issue commands (`CreateIssuePullRequest`, `RefreshIssuePullRequest`, `ApplyIssuePullRequestFeedback`), `Refresh`, `Shutdown`.
 - `SupervisorHandle::{command, submit, try_command, subscribe}`.

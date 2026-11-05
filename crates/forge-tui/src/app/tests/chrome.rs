@@ -165,7 +165,6 @@ fn status_model_from_app_fields() {
         provider_connected: true,
         vendor_label: None,
         route_label: None,
-        web_search_label: None,
         tools_visible: 0,
         prompt_cache_hits: 0,
         prompt_cache_writes: 0,

@@ -39,7 +39,7 @@ Agent runtime:
   and presentation structs.
 - forge-tools: [./forge-tools/EGM.md](./forge-tools/EGM.md) - Tool trait,
   registry, schema validation, built-in tools, the sandbox (Seatbelt and
-  bubblewrap), the shell spawn spec, egress proxy/gateway, and `web_search`.
+  bubblewrap), the shell spawn spec, and egress proxy/gateway.
 - forge-mcp: [./forge-mcp/EGM.md](./forge-mcp/EGM.md) - MCP stdio client.
   Tools are registered as `mcp:<server>:<tool>`, servers are sandboxed and fail
   closed, and the crate provides the `search_tools` meta-tool.

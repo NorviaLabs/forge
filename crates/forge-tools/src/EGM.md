@@ -11,8 +11,6 @@ processes, and routes network access through a domain-filtered egress proxy.
 
 Subdirectories:
 
-- [web_search](./web_search/EGM.md) — `web_search` tool and backend extension
-  point.
 
 ## Interface
 
@@ -41,8 +39,7 @@ Subdirectories:
 - Built-ins (`builtins.rs`): `ReadFileTool` (`read_file`), `LsTool` (`ls`),
   `WriteFileTool` (`write_file`), `BashTool` (`bash`), `GitTool` (`git`),
   `UpdatePlanTool` (`update_plan`), `AskUserQuestionTool`
-  (`ask_user_question`), `default_builtins`,
-  `default_builtins_with_web_search`, `run_shell_command`,
+  (`ask_user_question`), `default_builtins`, `run_shell_command`,
   `run_shell_command_observed`, `run_shell_command_with_egress`,
   `run_shell_command_with_egress_and_temp`, `run_shell_command_unconfined`,
   `ShellOutputCapture` (`snapshot`), `ShellOutputSnapshot`,
@@ -60,9 +57,9 @@ Subdirectories:
 - Execution: `unified_exec_tools() -> (ExecCommandTool, WriteStdinTool)`
   (`exec_command`, `write_stdin`); the argument structs are crate-internal.
 - Agent orchestration tools (`orchestration.rs`): `SpawnAgentTool`,
-  `SendMessageTool`, `FollowupTaskTool`, `WaitAgentTool`, `ListAgentsTool`,
-  `InterruptAgentTool`, with `SpawnAgentArgs`, `AgentMode`, `AgentMessageArgs`,
-  `WaitAgentArgs`, `ListAgentsArgs`, `TargetAgentArgs`.
+  `SendMessageTool` (queue, `wake`, or `interrupt`), `WaitAgentTool` (also
+  lists descendants with `since_revision: 0`), with `SpawnAgentArgs`,
+  `AgentMode`, `AgentMessageArgs`, `AgentMessageAction`, `WaitAgentArgs`.
 - Skills: `LoadSkillTool` (`load_skill`), `LoadSkillArgs`.
 - Media/fetch: `ViewImageTool` (`view_image`), `ViewImageArgs`;
   `WebFetchTool` (`web_fetch`), `WebFetchArgs`, `web_fetch_tool`.
@@ -181,8 +178,7 @@ Subdirectories:
 - Runs host-side `git credential fill` for granted hosts during confined
   spawns.
 - Performs outbound network requests for `web_fetch` and network-capable
-  `git` commands. `web_search` has only a mock backend and is never
-  registered in a session, so it does no network I/O.
+  `git` commands.
 - Loads files and images from disk for `read_file`, `ls`, `view_image`, and
   `load_skill`.
 
@@ -190,6 +186,3 @@ Subdirectories:
 
 - Run: `cargo test --package forge-tools --locked`
 
-Subdirectory contracts:
-
-- [web_search](./web_search/EGM.md) — search tool, backend trait, and mock.

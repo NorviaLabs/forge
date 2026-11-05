@@ -43,7 +43,7 @@ use serde_json::json;
 use thiserror::Error;
 
 use crate::activity::{ActivityFeed, ActivityKind};
-use crate::commands::{parse_slash, GoalAction, SlashCommand};
+use crate::commands::{parse_slash, SlashCommand};
 use crate::conversation::{
     BannerKind, ChatItem, ConversationModel, ConversationViewOpts, StreamWaitPhase, TurnKey,
     TurnSummaryPresentation,
@@ -87,7 +87,6 @@ mod diff;
 mod files;
 mod focus;
 mod github_view;
-mod goal;
 mod input;
 mod input_route;
 mod mouse;

@@ -1858,8 +1858,7 @@ Not a free-form shell. Prefer this over `bash(git …)`."
     }
 }
 
-/// Phase 1 workspace tools only (no web_search). Prefer
-/// [`default_builtins_with_web_search`] when config is available.
+/// Built-in workspace tools every session registers.
 pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
     let (exec_command, write_stdin) = crate::unified_exec_tools();
     let mut tools: Vec<std::sync::Arc<dyn Tool>> = vec![
@@ -1878,25 +1877,11 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(RequestUnconfinedRetryTool),
         std::sync::Arc::new(crate::SpawnAgentTool),
         std::sync::Arc::new(crate::SendMessageTool),
-        std::sync::Arc::new(crate::FollowupTaskTool),
         std::sync::Arc::new(crate::WaitAgentTool),
-        std::sync::Arc::new(crate::ListAgentsTool),
-        std::sync::Arc::new(crate::InterruptAgentTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
         crate::web_fetch::web_fetch_tool(),
     ];
     tools.extend(crate::fast_file_tools::fff_tools());
-    tools
-}
-
-/// Phase 1 built-ins plus optional Phase 9 `web_search` when config allows.
-pub fn default_builtins_with_web_search(
-    web_search: &forge_config::WebSearchConfig,
-) -> Vec<std::sync::Arc<dyn Tool>> {
-    let mut tools = default_builtins();
-    if let Some(t) = crate::web_search::web_search_tool(web_search) {
-        tools.push(t);
-    }
     tools
 }
 
@@ -2405,30 +2390,6 @@ mod tests {
     }
 
     #[test]
-    fn default_builtins_with_web_search_omits_mock() {
-        let cfg = forge_config::WebSearchConfig::default();
-        let tools = default_builtins_with_web_search(&cfg);
-        assert!(
-            !tools.iter().any(|t| t.name() == "web_search"),
-            "mock web_search must not be advertised"
-        );
-        assert!(tools.iter().any(|t| t.name() == "read_file"));
-        assert!(tools.iter().any(|t| t.name() == "git"));
-        assert_eq!(tools.len(), default_builtins().len());
-    }
-
-    #[test]
-    fn default_builtins_omits_web_search_when_disabled() {
-        let cfg = forge_config::WebSearchConfig {
-            enabled: false,
-            ..Default::default()
-        };
-        let tools = default_builtins_with_web_search(&cfg);
-        assert!(!tools.iter().any(|t| t.name() == "web_search"));
-        assert_eq!(tools.len(), default_builtins().len());
-    }
-
-    #[test]
     fn default_builtins_includes_git() {
         let tools = default_builtins();
         assert!(tools.iter().any(|t| t.name() == "git"));
@@ -2449,10 +2410,13 @@ mod tests {
         assert!(tools.iter().any(|t| t.name() == "request_unconfined_retry"));
         assert!(tools.iter().any(|t| t.name() == "spawn_agent"));
         assert!(tools.iter().any(|t| t.name() == "send_message"));
-        assert!(tools.iter().any(|t| t.name() == "followup_task"));
         assert!(tools.iter().any(|t| t.name() == "wait_agent"));
-        assert!(tools.iter().any(|t| t.name() == "list_agents"));
-        assert!(tools.iter().any(|t| t.name() == "interrupt_agent"));
+        for folded in ["followup_task", "list_agents", "interrupt_agent"] {
+            assert!(
+                !tools.iter().any(|t| t.name() == folded),
+                "{folded} is folded into send_message/wait_agent"
+            );
+        }
         assert!(tools.iter().any(|t| t.name() == "ls"));
     }
 

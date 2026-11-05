@@ -54,7 +54,7 @@ Submodules by responsibility:
 | `files`, `diff`, `github_view`, `workspace`, `watch` | Explorer and filesystem ops, review mode, GitHub state, workspace panes, fs watching. |
 | `chrome` | Toasts, feedback, activity summary, status header and footer. |
 | `connect` | Provider connection, credentials, model selection, per-route model-catalog refresh (`start_catalog_refresh`, `poll_catalog_refresh`). |
-| `context`, `goal`, `scratchpad` | Compaction/external-editor drains, `/goal`, session notes. |
+| `context`, `scratchpad` | Compaction/external-editor drains, session notes. |
 | `persist`, `session_state`, `selection`, `resize`, `quit` | UI-state persistence, session-row helpers, runtime ownership, pane resizing, quit-all sweep. |
 | `util`, `types` | Path/footer helpers; all state types including `TuiApp`. |
 
@@ -153,7 +153,7 @@ Submodules by responsibility:
   writes the user model-catalog cache and the credential store's
   `auth_required` flag), custom-provider and manual-model saves
   (`forge_connect::save_custom_provider` / `update_custom_provider` /
-  `save_manual_model`), GitHub view data, and `web_search`/`web_fetch` tool
+  `save_manual_model`), GitHub view data, and `web_fetch` tool
   calls surfaced in the transcript.
 - Processes: git sync/status subprocesses, the external editor (terminal is
   suspended and resumed around it), and the PTY-backed interactive terminal.
@@ -162,7 +162,7 @@ Submodules by responsibility:
   `std::sync::mpsc` channel polled each tick. `spawn_blocking` runs the
   terminal-event reader (`shell::TerminalEventSource`) and the model-stream
   relay in `turn`. `IsolatedTask` runs model completions, tool application,
-  approved HITL tools, context compaction and `/goal` model calls. Progress
+  approved HITL tools, and context compaction model calls. Progress
   (`.forge/progress.json`) is read synchronously on a poll interval.
   Supervisor commands go over `SupervisorHandle`.
 - Out-of-band notification (`forge-tui::notify`) on background completion.

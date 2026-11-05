@@ -171,6 +171,28 @@ impl AgentSession {
         ));
     }
 
+    /// A command pattern allowed to run outside the sandbox for the session
+    /// (`source` is `approval` when granted, `remembered` when it fired).
+    pub(crate) fn audit_escalation_grant(
+        &self,
+        call_id: Option<&str>,
+        tool: Option<&str>,
+        pattern: Option<&str>,
+        source: &str,
+    ) {
+        self.audit.queue(entry(
+            AuditKind::PatternGrant,
+            call_id,
+            tool,
+            json!({
+                "pattern": pattern,
+                "scope": "session",
+                "unconfined": true,
+                "source": source,
+            }),
+        ));
+    }
+
     pub(crate) fn audit_approve_all(&self, call_id: &str) {
         self.audit.queue(entry(
             AuditKind::ApproveAll,

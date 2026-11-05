@@ -16,7 +16,7 @@ concern they drive (listed below).
     `events`, `active_task`, `active_model`, `active_profile_id`,
     `token_usage`, `last_completion`.
   - `LoopError`, `LoopConfig { workspace, journal_dir, enable_context_lifecycle,
-    enable_governance, web_search, agents }`, `TurnEvent`,
+    enable_governance, agents }`, `TurnEvent`,
     `SessionTokenUsage`, `TokenUsageReport`, `ApplyOutcome`, `ResumeReport`.
 - Turn coordination (`turn.rs`): `TurnCoordinator::run` (private).
 - Model streaming (`stream.rs`): `ModelStepAccumulator`,

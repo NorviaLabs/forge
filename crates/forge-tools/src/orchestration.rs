@@ -34,8 +34,51 @@ pub enum AgentMode {
 pub struct AgentMessageArgs {
     /// Opaque agent ID returned by spawn_agent.
     pub target: String,
-    /// Message to place in the target's mailbox.
-    pub message: String,
+    /// Message for the target. Required unless `interrupt` is true.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Start the target's next turn with this message. Use it for an idle or
+    /// completed agent; without it the message waits in the mailbox.
+    #[serde(default)]
+    pub wake: bool,
+    /// Stop the target's current turn instead of messaging it. Already
+    /// finished targets are treated as success.
+    #[serde(default)]
+    pub interrupt: bool,
+}
+
+/// What a `send_message` call asks the coordinator to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentMessageAction {
+    /// Queue the message without waking the target.
+    Queue(String),
+    /// Deliver the message and start the target's next turn.
+    Wake(String),
+    /// Interrupt the target's current turn.
+    Interrupt,
+}
+
+impl AgentMessageArgs {
+    /// Resolve the flags into one action, rejecting contradictory input.
+    pub fn action(&self) -> Result<AgentMessageAction, String> {
+        let message = self
+            .message
+            .as_deref()
+            .map(str::trim)
+            .filter(|message| !message.is_empty())
+            .map(str::to_string);
+        match (self.interrupt, self.wake, message) {
+            (true, true, _) => Err("`interrupt` and `wake` cannot both be set".into()),
+            (true, false, Some(_)) => Err(
+                "`interrupt` takes no message; interrupt first, then send the message with `wake`"
+                    .into(),
+            ),
+            (true, false, None) => Ok(AgentMessageAction::Interrupt),
+            (false, _, None) => Err("`message` is required unless `interrupt` is true".into()),
+            (false, true, Some(message)) => Ok(AgentMessageAction::Wake(message)),
+            (false, false, Some(message)) => Ok(AgentMessageAction::Queue(message)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -44,31 +87,16 @@ pub struct WaitAgentArgs {
     /// its configured minimum and maximum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
-    /// Revision returned by the previous wait/list call. If omitted, the
-    /// current revision is used and the call waits for a future change.
+    /// Revision returned by the previous wait call. If omitted, the current
+    /// revision is used and the call waits for a future change. Pass 0 to
+    /// list every descendant immediately without waiting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since_revision: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct ListAgentsArgs {
-    /// Optional opaque-ID prefix used to narrow the descendant list.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path_prefix: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct TargetAgentArgs {
-    /// Opaque agent ID returned by spawn_agent.
-    pub target: String,
-}
-
 pub struct SpawnAgentTool;
 pub struct SendMessageTool;
-pub struct FollowupTaskTool;
 pub struct WaitAgentTool;
-pub struct ListAgentsTool;
-pub struct InterruptAgentTool;
 
 macro_rules! orchestration_tool {
     ($type:ty, $name:literal, $description:literal, $args:ty) => {
@@ -113,34 +141,15 @@ orchestration_tool!(
 orchestration_tool!(
     SendMessageTool,
     "send_message",
-    "Place a message in a child agent's mailbox without waking it.",
-    AgentMessageArgs
-);
-orchestration_tool!(
-    FollowupTaskTool,
-    "followup_task",
-    "Deliver a message to an idle or completed child agent and start its next turn.",
+    "Message a child agent. By default the message waits in its mailbox; set `wake` to start its next turn with it, or `interrupt` (no message) to stop its current turn.",
     AgentMessageArgs
 );
 orchestration_tool!(
     WaitAgentTool,
     "wait_agent",
-    "Wait for the next state change from one of this agent's descendants.",
+    "Wait for the next state change from this agent's descendants and return all of them. Pass `since_revision: 0` to list them without waiting.",
     WaitAgentArgs
 );
-orchestration_tool!(
-    ListAgentsTool,
-    "list_agents",
-    "List this agent's live and recently finished descendants.",
-    ListAgentsArgs
-);
-orchestration_tool!(
-    InterruptAgentTool,
-    "interrupt_agent",
-    "Interrupt a descendant agent. Already finished targets are treated as success.",
-    TargetAgentArgs
-);
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,35 +161,18 @@ mod tests {
         let tools: Vec<Box<dyn Tool>> = vec![
             Box::new(SpawnAgentTool),
             Box::new(SendMessageTool),
-            Box::new(FollowupTaskTool),
             Box::new(WaitAgentTool),
-            Box::new(ListAgentsTool),
-            Box::new(InterruptAgentTool),
         ];
         let names: Vec<_> = tools.iter().map(|tool| tool.name()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "spawn_agent",
-                "send_message",
-                "followup_task",
-                "wait_agent",
-                "list_agents",
-                "interrupt_agent"
-            ]
-        );
+        assert_eq!(names, vec!["spawn_agent", "send_message", "wait_agent"]);
         for tool in tools {
             validate_args(
                 tool.name(),
                 &tool.input_schema(),
                 &match tool.name() {
                     "spawn_agent" => json!({"task_name": "reviewer", "message": "Review the diff"}),
-                    "send_message" | "followup_task" => {
-                        json!({"target": "agent-id", "message": "Continue"})
-                    }
+                    "send_message" => json!({"target": "agent-id", "message": "Continue"}),
                     "wait_agent" => json!({"timeout_ms": 1000}),
-                    "list_agents" => json!({}),
-                    "interrupt_agent" => json!({"target": "agent-id"}),
                     _ => unreachable!(),
                 },
             )
@@ -215,6 +207,32 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.tool, "spawn_agent");
+    }
+
+    #[test]
+    fn send_message_flags_resolve_to_one_action() {
+        let args = |value: Value| -> AgentMessageArgs { serde_json::from_value(value).unwrap() };
+        assert_eq!(
+            args(json!({"target": "a", "message": "hi"})).action(),
+            Ok(AgentMessageAction::Queue("hi".into()))
+        );
+        assert_eq!(
+            args(json!({"target": "a", "message": "hi", "wake": true})).action(),
+            Ok(AgentMessageAction::Wake("hi".into()))
+        );
+        assert_eq!(
+            args(json!({"target": "a", "interrupt": true})).action(),
+            Ok(AgentMessageAction::Interrupt)
+        );
+        for bad in [
+            json!({"target": "a"}),
+            json!({"target": "a", "message": "  "}),
+            json!({"target": "a", "wake": true}),
+            json!({"target": "a", "interrupt": true, "wake": true}),
+            json!({"target": "a", "interrupt": true, "message": "stop"}),
+        ] {
+            assert!(args(bad.clone()).action().is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]

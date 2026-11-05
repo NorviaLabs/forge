@@ -122,10 +122,10 @@ mod tests {
         assert_eq!(BusyPhase::Model.label(), "thinking");
         assert_eq!(
             BusyPhase::Tool {
-                name: "web_search".into()
+                name: "web_fetch".into()
             }
             .label(),
-            "tool:web_search"
+            "tool:web_fetch"
         );
     }
 

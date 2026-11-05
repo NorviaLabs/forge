@@ -374,16 +374,6 @@ impl TuiApp {
                         self.sync_supervised_presentation(&snapshot);
                     }
                 }
-                forge_session::SupervisorEvent::GoalNotice {
-                    session_id,
-                    message,
-                } => {
-                    if session_id == self.selected_session_id {
-                        self.set_feedback(FeedbackSeverity::Info, message);
-                    } else {
-                        self.toast.push_overlay(FeedbackSeverity::Info, message);
-                    }
-                }
                 forge_session::SupervisorEvent::SessionUpdated(snapshot) => {
                     let snapshot = *snapshot;
                     let lifecycle = snapshot.session.lifecycle;
@@ -483,28 +473,6 @@ impl TuiApp {
                         // turn is never announced with a success tick.
                         self.toast
                             .push_overlay(session_notice_severity(state), message);
-                    }
-                }
-                forge_session::SupervisorEvent::GoalStatus {
-                    session_id,
-                    condition,
-                    paused,
-                    turns_evaluated,
-                    last_reason,
-                } => {
-                    if session_id == self.selected_session_id {
-                        match condition {
-                            Some(condition) => {
-                                let status = if paused { "paused" } else { "active" };
-                                let mut message =
-                                    format!("Goal {status} · turn {turns_evaluated} · {condition}");
-                                if let Some(reason) = last_reason {
-                                    message.push_str(&format!(" · {reason}"));
-                                }
-                                self.set_feedback(FeedbackSeverity::Info, message);
-                            }
-                            None => self.set_feedback(FeedbackSeverity::Info, "No goal set"),
-                        }
                     }
                 }
                 forge_session::SupervisorEvent::Stream { session_id, event }
@@ -835,7 +803,6 @@ impl TuiApp {
             provider_connected,
             vendor_label,
             route_label,
-            web_search_label: self.search_status.label.clone(),
             tools_visible: session_view.tool_count,
             prompt_cache_hits: session_view.prompt_cache_hits,
             prompt_cache_writes: session_view.prompt_cache_writes,

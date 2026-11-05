@@ -615,6 +615,48 @@ fn reads_outside_the_workspace_are_refused() {
     );
 }
 
+/// The shared `/tmp` is readable on macOS so a command can inspect logs other
+/// tools left there, but it is never writable, and a Unix socket under it
+/// stays unreachable because connecting is network access.
+#[cfg(target_os = "macos")]
+#[test]
+fn shared_tmp_is_readable_but_not_writable_or_connectable() {
+    use std::os::unix::net::UnixListener;
+    require_sandbox!();
+    let ws = workspace();
+    let shared = tempfile::Builder::new()
+        .prefix("forge-shared-tmp-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let log = shared.path().join("build.log");
+    std::fs::write(&log, "BUILD-LOG-LINE\n").unwrap();
+
+    let (ok, out) = run_confined(ws.path(), &format!("cat {}", log.to_str().unwrap()));
+    assert!(ok, "reading /tmp must be allowed: {out}");
+    assert!(out.contains("BUILD-LOG-LINE"), "{out}");
+
+    let target = shared.path().join("written.txt");
+    let (ok, _) = run_confined(ws.path(), &format!("echo x > {}", target.to_str().unwrap()));
+    assert!(!ok, "writing /tmp must stay denied");
+    assert!(!target.exists());
+
+    let socket = shared.path().join("agent.sock");
+    let listener = UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (ok, out) = run_confined(
+        ws.path(),
+        &format!("nc -U {} < /dev/null", socket.to_str().unwrap()),
+    );
+    assert!(
+        !ok,
+        "connecting to a socket under /tmp must be denied: {out}"
+    );
+    assert!(
+        listener.accept().is_err(),
+        "the confined process must not reach the listener"
+    );
+}
+
 /// The counterpart of the denial above: a process still has to *start*, which
 /// means reading its own binary, the system libraries, and standard
 /// configuration. Pinned so tightening the runtime allowlist cannot silently

@@ -8,12 +8,7 @@ use std::collections::BTreeSet;
 use std::process::Command;
 use std::sync::Arc;
 
-use forge_config::WebSearchConfig;
-use forge_tools::{
-    default_builtins, web_search_tool, web_search_tool_for_tests, ToolContext, ToolError,
-    ToolRegistry, ValidationBudget,
-};
-use forge_types::SideEffectClass;
+use forge_tools::{default_builtins, ToolContext, ToolError, ToolRegistry, ValidationBudget};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
@@ -29,9 +24,6 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
     "git",
     "glob",
     "grep",
-    "followup_task",
-    "interrupt_agent",
-    "list_agents",
     "load_skill",
     "ls",
     "read_file",
@@ -51,7 +43,6 @@ fn register_all() -> ToolRegistry {
     for tool in default_builtins() {
         registry.register(tool);
     }
-    registry.register(web_search_tool_for_tests());
     registry
 }
 
@@ -147,25 +138,6 @@ fn every_default_tool_has_a_usable_descriptor() {
     }
 }
 
-#[test]
-fn web_search_is_optional_and_network_class() {
-    let names: Vec<_> = default_builtins()
-        .iter()
-        .map(|tool| tool.name().to_string())
-        .collect();
-    assert!(
-        !names.iter().any(|name| name == "web_search"),
-        "default_builtins must not include web_search"
-    );
-    assert!(
-        web_search_tool(&WebSearchConfig::default()).is_none(),
-        "default mock config must not register web_search for users"
-    );
-    let search = web_search_tool_for_tests();
-    assert_eq!(search.name(), "web_search");
-    assert_eq!(search.side_effect_class(), SideEffectClass::Network);
-}
-
 #[tokio::test]
 async fn every_tool_rejects_missing_required_args() {
     let workspace = Workspace::new();
@@ -185,7 +157,6 @@ async fn every_tool_rejects_missing_required_args() {
         ("load_skill", json!({})),
         ("glob", json!({})),
         ("grep", json!({})),
-        ("web_search", json!({})),
         ("web_fetch", json!({})),
     ];
     for (name, args) in required {
@@ -391,7 +362,7 @@ async fn exec_command_and_write_stdin_share_a_session() {
 }
 
 #[tokio::test]
-async fn update_plan_load_skill_and_web_search() {
+async fn update_plan_and_load_skill() {
     let workspace = Workspace::new();
 
     let plan = workspace
@@ -428,13 +399,6 @@ async fn update_plan_load_skill_and_web_search() {
         .await
         .unwrap();
     assert_eq!(reference.content, "Use two spaces.\n");
-
-    let search = workspace
-        .call("web_search", json!({"query": "serde json schema"}))
-        .await
-        .unwrap();
-    assert!(!search.is_error, "{}", search.content);
-    assert!(search.content.contains("serde"), "{}", search.content);
 }
 
 #[tokio::test]
@@ -512,7 +476,7 @@ fn registry_names_include_every_default_tool() {
     for name in DEFAULT_TOOL_NAMES {
         assert!(names.contains(*name), "registry missing {name}: {names:?}");
     }
-    assert!(names.contains("web_search"));
+    assert!(!names.contains("web_search"));
 }
 
 #[test]

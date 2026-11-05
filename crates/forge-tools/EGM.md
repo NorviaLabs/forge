@@ -21,8 +21,6 @@ contract directory.
   `ToolRegistry`/`ToolContext`, every built-in tool, validation, sandbox
   (`SandboxPolicy`), shell spawn (`ShellSpawnSpec`), and egress
   (`EgressPolicy`, `EgressProxy`, `CallGateway`).
-- Nested contract: [`./src/web_search/EGM.md`](./src/web_search/EGM.md) —
-  `web_search` tool and `SearchBackend` extension point.
 
 ## Invariants
 
@@ -40,8 +38,6 @@ contract directory.
 - Workspace file reads/writes, subprocess spawning (shells, git, PTYs,
   background jobs), loopback egress listeners and Unix sockets, per-session
   temp directories, and outbound network for `web_fetch` and network `git`.
-  `web_search` has only a mock backend and is never registered in a session,
-  so it does no network I/O. See the child contract for detail.
 
 ## Verification
 

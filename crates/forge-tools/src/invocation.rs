@@ -26,7 +26,6 @@ pub fn tool_invocation(name: &str, args: &Value) -> Option<String> {
             Some(line)
         }
         "glob" | "grep" | "rg" => str_arg(args, "pattern"),
-        "web_search" => str_arg(args, "query"),
         "load_skill" => str_arg(args, "name"),
         "ask_user_question" => args
             .get("questions")
@@ -118,10 +117,6 @@ mod tests {
         assert_eq!(
             tool_invocation("rg", &json!({"pattern": "async"})),
             Some("async".into())
-        );
-        assert_eq!(
-            tool_invocation("web_search", &json!({"query": "tokio docs"})),
-            Some("tokio docs".into())
         );
         assert_eq!(
             tool_invocation(

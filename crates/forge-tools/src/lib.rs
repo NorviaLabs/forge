@@ -1,5 +1,4 @@
 //! Tool protocol (tool-protocol.md) — CORE-01.
-//! Phase 9: `web_search` (WEB-01) — see `web_search` module.
 
 mod apply_patch;
 mod builtins;
@@ -21,13 +20,11 @@ mod unified_exec;
 mod validation;
 mod view_image;
 mod web_fetch;
-pub mod web_search;
 
 pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
-    default_builtins, default_builtins_with_web_search, is_provider_credential_env,
-    provider_credential_env_names, run_shell_command, run_shell_command_observed,
-    run_shell_command_unconfined, run_shell_command_with_egress,
+    default_builtins, is_provider_credential_env, provider_credential_env_names, run_shell_command,
+    run_shell_command_observed, run_shell_command_unconfined, run_shell_command_with_egress,
     run_shell_command_with_egress_and_temp, strip_credentials, AskUserQuestionTool, BashTool,
     GitTool, LsTool, ReadFileTool, ShellOutputCapture, ShellOutputSnapshot, UpdatePlanTool,
     WriteFileTool, PROVIDER_CREDENTIAL_ENV,
@@ -36,9 +33,8 @@ pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};
 pub use invocation::tool_invocation;
 pub use orchestration::{
-    AgentMessageArgs, AgentMode, FollowupTaskTool, InterruptAgentTool, ListAgentsArgs,
-    ListAgentsTool, SendMessageTool, SpawnAgentArgs, SpawnAgentTool, TargetAgentArgs,
-    WaitAgentArgs, WaitAgentTool,
+    AgentMessageAction, AgentMessageArgs, AgentMode, SendMessageTool, SpawnAgentArgs,
+    SpawnAgentTool, WaitAgentArgs, WaitAgentTool,
 };
 pub use output_filters::compress_tool_output;
 pub use registry::{
@@ -50,10 +46,6 @@ pub use unified_exec::{unified_exec_tools, ExecCommandTool, WriteStdinTool};
 pub use validation::{validate_args, validation_error_signature, ValidationBudget};
 pub use view_image::{ViewImageArgs, ViewImageTool};
 pub use web_fetch::{web_fetch_tool, WebFetchArgs, WebFetchTool};
-pub use web_search::{
-    should_register_web_search, web_search_tool, web_search_tool_for_tests, WebSearchArgs,
-    WebSearchTool,
-};
 
 use async_trait::async_trait;
 use forge_types::{

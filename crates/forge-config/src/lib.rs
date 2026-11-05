@@ -387,140 +387,8 @@ pub struct ValidationConfig {
     pub command: Option<CommandConfig>,
 }
 
-/// Phase 9 — `[tools.web_search]` (WEB-01).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WebSearchProvider {
-    #[default]
-    Mock,
-}
-
-impl WebSearchProvider {
-    pub fn parse(s: &str) -> Result<Self, ConfigError> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "mock" => Ok(Self::Mock),
-            other => Err(ConfigError::Message(format!(
-                "invalid web_search provider `{other}` (expected mock)"
-            ))),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Mock => "mock",
-        }
-    }
-
-    /// Default env var name for the provider API key (mock has none).
-    pub fn default_api_key_env(self) -> Option<&'static str> {
-        match self {
-            Self::Mock => None,
-        }
-    }
-
-    pub fn needs_api_key(self) -> bool {
-        !matches!(self, Self::Mock)
-    }
-
-    /// Mock is a deterministic test backend, never a user-facing provider.
-    pub fn is_mock(self) -> bool {
-        matches!(self, Self::Mock)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebSearchConfig {
-    #[serde(default = "default_web_search_enabled")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub provider: WebSearchProvider,
-    /// Env var that holds the API key (ignored for mock).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub api_key_env: Option<String>,
-    #[serde(default = "default_web_search_max_results")]
-    pub max_results: u32,
-    #[serde(default = "default_web_search_timeout_ms")]
-    pub timeout_ms: u64,
-    /// If true and provider needs a key that is missing, do not register the tool.
-    #[serde(default = "default_web_search_require_key")]
-    pub require_key: bool,
-    #[serde(default = "default_web_search_max_query_chars")]
-    pub max_query_chars: u32,
-}
-
-fn default_web_search_enabled() -> bool {
-    true
-}
-fn default_web_search_max_results() -> u32 {
-    8
-}
-fn default_web_search_timeout_ms() -> u64 {
-    15_000
-}
-fn default_web_search_require_key() -> bool {
-    true
-}
-fn default_web_search_max_query_chars() -> u32 {
-    512
-}
-
-impl Default for WebSearchConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_web_search_enabled(),
-            provider: WebSearchProvider::Mock,
-            api_key_env: None,
-            max_results: default_web_search_max_results(),
-            timeout_ms: default_web_search_timeout_ms(),
-            require_key: default_web_search_require_key(),
-            max_query_chars: default_web_search_max_query_chars(),
-        }
-    }
-}
-
-impl WebSearchConfig {
-    /// Env name used to resolve the API key for the active provider.
-    pub fn resolved_api_key_env(&self) -> Option<String> {
-        if let Some(ref e) = self.api_key_env {
-            if !e.is_empty() {
-                return Some(e.clone());
-            }
-        }
-        self.provider.default_api_key_env().map(str::to_string)
-    }
-
-    /// Whether `web_search` should be registered in the tool catalog.
-    ///
-    /// Mock is never advertised: it exists so tests can inject a backend, not
-    /// so a session can return `example.com` hits to the model.
-    pub fn should_register(&self) -> bool {
-        if !self.enabled || self.provider.is_mock() {
-            return false;
-        }
-        if !self.provider.needs_api_key() {
-            return true;
-        }
-        if !self.require_key {
-            return true;
-        }
-        self.api_key_present()
-    }
-
-    /// True if the configured API key env var is set and non-empty.
-    pub fn api_key_present(&self) -> bool {
-        let Some(env_name) = self.resolved_api_key_env() else {
-            return false;
-        };
-        env::var(env_name)
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolsConfig {
-    #[serde(default)]
-    pub web_search: WebSearchConfig,
     #[serde(default)]
     pub agents: AgentConfig,
 }
@@ -779,7 +647,6 @@ struct ConfigFile {
 
 #[derive(Debug, Default, Deserialize)]
 struct ToolsConfigFile {
-    web_search: Option<WebSearchConfigFile>,
     agents: Option<AgentConfigFile>,
 }
 
@@ -789,17 +656,6 @@ struct AgentConfigFile {
     min_wait_ms: Option<u64>,
     default_wait_ms: Option<u64>,
     max_wait_ms: Option<u64>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct WebSearchConfigFile {
-    enabled: Option<bool>,
-    provider: Option<String>,
-    api_key_env: Option<String>,
-    max_results: Option<u32>,
-    timeout_ms: Option<u64>,
-    require_key: Option<bool>,
-    max_query_chars: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -889,9 +745,6 @@ impl ConfigFile {
             cfg.validation = validation;
         }
         if let Some(tools) = self.tools {
-            if let Some(ws) = tools.web_search {
-                apply_web_search_file(&mut cfg.tools.web_search, ws);
-            }
             if let Some(agents) = tools.agents {
                 apply_agent_file(&mut cfg.tools.agents, agents);
             }
@@ -917,32 +770,6 @@ fn apply_agent_file(dst: &mut AgentConfig, src: AgentConfigFile) {
     dst.max_wait_ms = dst.max_wait_ms.max(dst.default_wait_ms);
 }
 
-fn apply_web_search_file(dst: &mut WebSearchConfig, src: WebSearchConfigFile) {
-    if let Some(e) = src.enabled {
-        dst.enabled = e;
-    }
-    if let Some(p) = src.provider {
-        if let Ok(prov) = WebSearchProvider::parse(&p) {
-            dst.provider = prov;
-        }
-    }
-    if src.api_key_env.is_some() {
-        dst.api_key_env = src.api_key_env;
-    }
-    if let Some(n) = src.max_results {
-        dst.max_results = n.max(1);
-    }
-    if let Some(t) = src.timeout_ms {
-        dst.timeout_ms = t;
-    }
-    if let Some(r) = src.require_key {
-        dst.require_key = r;
-    }
-    if let Some(m) = src.max_query_chars {
-        dst.max_query_chars = m.max(1);
-    }
-}
-
 fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
     if let Ok(w) = env::var("FORGE_WORKSPACE") {
         cfg.workspace_root = Some(w);
@@ -954,31 +781,6 @@ fn apply_env(cfg: &mut Config) -> Result<(), ConfigError> {
         if let Ok(n) = t.parse() {
             cfg.model.request_timeout_secs = n;
         }
-    }
-    // Phase 9 — web_search
-    if let Ok(v) = env::var("FORGE_WEB_SEARCH_ENABLED") {
-        cfg.tools.web_search.enabled =
-            matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
-    }
-    if let Ok(p) = env::var("FORGE_WEB_SEARCH_PROVIDER") {
-        cfg.tools.web_search.provider = WebSearchProvider::parse(&p)?;
-    }
-    if let Ok(e) = env::var("FORGE_WEB_SEARCH_API_KEY_ENV") {
-        cfg.tools.web_search.api_key_env = Some(e);
-    }
-    if let Ok(n) = env::var("FORGE_WEB_SEARCH_MAX_RESULTS") {
-        if let Ok(n) = n.parse::<u32>() {
-            cfg.tools.web_search.max_results = n.max(1);
-        }
-    }
-    if let Ok(t) = env::var("FORGE_WEB_SEARCH_TIMEOUT_MS") {
-        if let Ok(t) = t.parse::<u64>() {
-            cfg.tools.web_search.timeout_ms = t;
-        }
-    }
-    if let Ok(v) = env::var("FORGE_WEB_SEARCH_REQUIRE_KEY") {
-        cfg.tools.web_search.require_key =
-            matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
     }
     Ok(())
 }
@@ -1104,15 +906,6 @@ mod tests {
         "FORGE_JOURNAL_PATH",
         "FORGE_OTEL_ENDPOINT",
         "FORGE_MODEL_REQUEST_TIMEOUT_SECS",
-        "FORGE_WEB_SEARCH_ENABLED",
-        "FORGE_WEB_SEARCH_PROVIDER",
-        "FORGE_WEB_SEARCH_API_KEY_ENV",
-        "FORGE_WEB_SEARCH_MAX_RESULTS",
-        "FORGE_WEB_SEARCH_TIMEOUT_MS",
-        "FORGE_WEB_SEARCH_REQUIRE_KEY",
-        "TAVILY_API_KEY",
-        "BRAVE_API_KEY",
-        "SERPER_API_KEY",
     ];
 
     /// Isolates everything `Config::load` reads from outside the repository:
@@ -1406,22 +1199,7 @@ model = "claude-sonnet"
     }
 
     #[test]
-    fn web_search_defaults_to_enabled_mock() {
-        let _g = EnvGuard::clear_forge_env();
-        let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        assert!(cfg.tools.web_search.enabled);
-        assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Mock);
-        assert_eq!(cfg.tools.web_search.max_results, 8);
-        assert_eq!(cfg.tools.web_search.timeout_ms, 15_000);
-        assert!(cfg.tools.web_search.require_key);
-        assert!(
-            !cfg.tools.web_search.should_register(),
-            "mock is test-only and must not register for users"
-        );
-    }
-
-    #[test]
-    fn web_search_toml_section() {
+    fn legacy_web_search_section_is_ignored() {
         let _g = EnvGuard::clear_forge_env();
         let dir = tempdir().unwrap();
         let path = dir.path().join("forge.toml");
@@ -1431,11 +1209,10 @@ model = "claude-sonnet"
 [tools.web_search]
 enabled = true
 provider = "mock"
-api_key_env = "MY_TAVILY"
 max_results = 3
-timeout_ms = 9000
-require_key = false
-max_query_chars = 200
+
+[tools.agents]
+max_depth = 4
 "#,
         )
         .unwrap();
@@ -1443,16 +1220,8 @@ max_query_chars = 200
             config_path: Some(path),
             ..Default::default()
         })
-        .unwrap();
-        let ws = &cfg.tools.web_search;
-        assert!(ws.enabled);
-        assert_eq!(ws.provider, WebSearchProvider::Mock);
-        assert_eq!(ws.api_key_env.as_deref(), Some("MY_TAVILY"));
-        assert_eq!(ws.max_results, 3);
-        assert_eq!(ws.timeout_ms, 9000);
-        assert!(!ws.require_key);
-        assert_eq!(ws.max_query_chars, 200);
-        assert_eq!(ws.resolved_api_key_env().as_deref(), Some("MY_TAVILY"));
+        .expect("configs written before web_search was removed must still load");
+        assert_eq!(cfg.tools.agents.max_depth, 4);
     }
 
     #[test]
@@ -1642,129 +1411,6 @@ sandbox_workspace = "read_write"
         .apply(&mut cfg, ConfigScope::UntrustedProject);
         assert!(cfg.mcp.servers.is_empty(), "no server may be spawned");
         assert_eq!(cfg.refused_project_keys, ["mcp.servers"]);
-    }
-
-    #[test]
-    fn web_search_toml_clamps_minimums_and_allows_empty_api_key_env() {
-        let _g = EnvGuard::clear_forge_env();
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        fs::write(
-            &path,
-            r#"
-[tools.web_search]
-api_key_env = ""
-max_results = 0
-max_query_chars = 0
-"#,
-        )
-        .unwrap();
-        let cfg = Config::load(ConfigOverrides {
-            config_path: Some(path),
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.tools.web_search.max_results, 1);
-        assert_eq!(cfg.tools.web_search.max_query_chars, 1);
-        assert!(cfg.tools.web_search.resolved_api_key_env().is_none());
-    }
-
-    #[test]
-    fn web_search_env_overrides() {
-        let g = EnvGuard::clear_forge_env();
-        g.set("FORGE_WEB_SEARCH_ENABLED", "false");
-        g.set("FORGE_WEB_SEARCH_PROVIDER", "mock");
-        g.set("FORGE_WEB_SEARCH_MAX_RESULTS", "2");
-        let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        assert!(!cfg.tools.web_search.enabled);
-        assert_eq!(cfg.tools.web_search.provider, WebSearchProvider::Mock);
-        assert_eq!(cfg.tools.web_search.max_results, 2);
-        assert!(!cfg.tools.web_search.should_register());
-    }
-
-    #[test]
-    fn web_search_env_overrides_limits_and_key_options() {
-        let g = EnvGuard::clear_forge_env();
-        g.set("FORGE_WEB_SEARCH_API_KEY_ENV", "SEARCH_KEY");
-        g.set("FORGE_WEB_SEARCH_MAX_RESULTS", "0");
-        g.set("FORGE_WEB_SEARCH_TIMEOUT_MS", "1234");
-        g.set("FORGE_WEB_SEARCH_REQUIRE_KEY", "off");
-        let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        let ws = cfg.tools.web_search;
-        assert_eq!(ws.api_key_env.as_deref(), Some("SEARCH_KEY"));
-        assert_eq!(ws.max_results, 1);
-        assert_eq!(ws.timeout_ms, 1234);
-        assert!(!ws.require_key);
-    }
-
-    #[test]
-    fn web_search_mock_never_registers() {
-        let g = EnvGuard::clear_forge_env();
-        let mut ws = WebSearchConfig {
-            enabled: true,
-            provider: WebSearchProvider::Mock,
-            require_key: true,
-            ..Default::default()
-        };
-        assert!(!ws.should_register());
-        g.set("TAVILY_API_KEY", "secret-test-key");
-        assert!(!ws.should_register());
-        ws.require_key = false;
-        env::remove_var("TAVILY_API_KEY");
-        assert!(!ws.should_register());
-        assert!(WebSearchProvider::Mock.is_mock());
-    }
-
-    #[test]
-    fn web_search_provider_parse() {
-        assert_eq!(
-            WebSearchProvider::parse("MOCK").unwrap(),
-            WebSearchProvider::Mock
-        );
-        assert!(WebSearchProvider::parse("bing").is_err());
-    }
-
-    #[test]
-    fn web_search_provider_as_str_round_trips_through_parse() {
-        assert_eq!(WebSearchProvider::Mock.as_str(), "mock");
-        assert_eq!(
-            WebSearchProvider::parse(WebSearchProvider::Mock.as_str()).unwrap(),
-            WebSearchProvider::Mock
-        );
-    }
-
-    /// Direct calls to `api_key_present`. Mock never reaches the key check in
-    /// `should_register`; these cover the public method used once a real
-    /// provider exists.
-    #[test]
-    fn api_key_present_reflects_env_var_state() {
-        let g = EnvGuard::clear_forge_env();
-        let mut ws = WebSearchConfig {
-            api_key_env: Some("SOME_SEARCH_KEY".into()),
-            ..Default::default()
-        };
-        assert!(
-            !ws.api_key_present(),
-            "unset env var must not count as present"
-        );
-
-        g.set("SOME_SEARCH_KEY", "   ");
-        assert!(
-            !ws.api_key_present(),
-            "whitespace-only value must not count as present"
-        );
-
-        g.set("SOME_SEARCH_KEY", "real-value");
-        assert!(
-            ws.api_key_present(),
-            "non-empty value must count as present"
-        );
-
-        ws.api_key_env = None;
-        assert!(
-            !ws.api_key_present(),
-            "no resolvable env name means no key can be present"
-        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! `web_fetch` built-in — fetches a URL and returns its content as text.
 //!
-//! Unlike `web_search` this needs no provider/API key: it is a direct HTTP
+//! This needs no provider/API key: it is a direct HTTP
 //! GET, so it is always registered.
 //!
 //! Every hop — the first request and each redirect — is first checked

@@ -3,20 +3,10 @@
 //! Split out of `lib.rs`; methods are moved verbatim.
 
 use crate::*;
-use forge_tools::{
-    AgentMessageArgs, ListAgentsArgs, SpawnAgentArgs, TargetAgentArgs, WaitAgentArgs,
-};
+use forge_tools::{AgentMessageAction, AgentMessageArgs, SpawnAgentArgs, WaitAgentArgs};
 
 fn is_agent_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "spawn_agent"
-            | "send_message"
-            | "followup_task"
-            | "wait_agent"
-            | "list_agents"
-            | "interrupt_agent"
-    )
+    matches!(name, "spawn_agent" | "send_message" | "wait_agent")
 }
 
 fn parse_agent_id(value: &str) -> Result<SessionId, LoopError> {
@@ -502,6 +492,37 @@ impl AgentSession {
                     execution.result = Err(ToolError::Execution(format!(
                             "command still failed after an approved unconfined attempt; not requesting sandbox approval again: {content}"
                         )));
+                } else if denied_host.is_none()
+                    && !parallel
+                    && self.governance.session_escalation_allows(&call)
+                {
+                    // The operator already let this command pattern run
+                    // outside the sandbox for the session: rerun it unconfined
+                    // instead of asking again. An unconfined run is never
+                    // sandbox-denied, so this cannot loop.
+                    self.audit_escalation_grant(
+                        Some(&call.id),
+                        Some(&call.name),
+                        None,
+                        "remembered",
+                    );
+                    self.events.push(TurnEvent {
+                        kind: "unconfined_retry".into(),
+                        detail: call.name.clone(),
+                    });
+                    let budget = std::mem::take(&mut execution.budget);
+                    return Ok(ModelResponseApplication::Execute(Box::new(
+                        PendingToolApplication {
+                            executions: vec![PendingToolExecution {
+                                call,
+                                tools: self.tools.clone(),
+                                tool_ctx: self.tool_ctx.clone().with_unconfined_shell(),
+                                budget,
+                                prepared: None,
+                            }],
+                            remaining: pending,
+                        },
+                    )));
                 } else if let Some(host) = denied_host
                     .as_deref()
                     .filter(|_| self.approve_all && !parallel)
@@ -1148,38 +1169,50 @@ impl AgentSession {
                     .map_err(|error| {
                         LoopError::Other(format!("invalid send_message arguments: {error}"))
                     })?;
+                let action = args.action().map_err(|error| {
+                    LoopError::Other(format!("invalid send_message arguments: {error}"))
+                })?;
                 let target = parse_agent_id(&args.target)?;
-                self.coordinator
-                    .send_message(self.session_id, target, args.message)
-                    .map_err(|error| LoopError::Other(error.to_string()))?;
-                ToolOutput::success(
-                    json!({"target": target.to_string(), "delivered": true, "woken": false})
-                        .to_string(),
-                )
-            }
-            "followup_task" => {
-                let args: AgentMessageArgs = serde_json::from_value(call.arguments.clone())
-                    .map_err(|error| {
-                        LoopError::Other(format!("invalid followup_task arguments: {error}"))
-                    })?;
-                let target = parse_agent_id(&args.target)?;
-                let retained_task = self
-                    .followup_retained_subagent(target, args.message.clone())
-                    .await?;
-                if retained_task.is_none() {
-                    let cancel = self
-                        .coordinator
-                        .followup(self.session_id, target, args.message)
-                        .map_err(|error| LoopError::Other(error.to_string()))?;
-                    if let Some(task_id) = self.background_id_for_child(target) {
-                        self.tasks.background.mark_running(task_id);
-                        self.tasks.background.replace_cancel_token(task_id, cancel);
+                match action {
+                    AgentMessageAction::Queue(message) => {
+                        self.coordinator
+                            .send_message(self.session_id, target, message)
+                            .map_err(|error| LoopError::Other(error.to_string()))?;
+                        ToolOutput::success(
+                            json!({"target": target.to_string(), "delivered": true, "woken": false})
+                                .to_string(),
+                        )
+                    }
+                    AgentMessageAction::Wake(message) => {
+                        let retained_task = self
+                            .followup_retained_subagent(target, message.clone())
+                            .await?;
+                        if retained_task.is_none() {
+                            let cancel = self
+                                .coordinator
+                                .followup(self.session_id, target, message)
+                                .map_err(|error| LoopError::Other(error.to_string()))?;
+                            if let Some(task_id) = self.background_id_for_child(target) {
+                                self.tasks.background.mark_running(task_id);
+                                self.tasks.background.replace_cancel_token(task_id, cancel);
+                            }
+                        }
+                        ToolOutput::success(
+                            json!({"target": target.to_string(), "delivered": true, "woken": true})
+                                .to_string(),
+                        )
+                    }
+                    AgentMessageAction::Interrupt => {
+                        let interrupted = self
+                            .coordinator
+                            .interrupt(self.session_id, target)
+                            .map_err(|error| LoopError::Other(error.to_string()))?;
+                        ToolOutput::success(
+                            json!({"target": target.to_string(), "interrupted": interrupted})
+                                .to_string(),
+                        )
                     }
                 }
-                ToolOutput::success(
-                    json!({"target": target.to_string(), "delivered": true, "woken": true})
-                        .to_string(),
-                )
             }
             "wait_agent" => {
                 let args: WaitAgentArgs =
@@ -1201,34 +1234,6 @@ impl AgentSession {
                 ToolOutput::success(
                     serde_json::to_string(&result)
                         .map_err(|error| LoopError::Other(error.to_string()))?,
-                )
-            }
-            "list_agents" => {
-                let args: ListAgentsArgs =
-                    serde_json::from_value(call.arguments.clone()).map_err(|error| {
-                        LoopError::Other(format!("invalid list_agents arguments: {error}"))
-                    })?;
-                let agents = self
-                    .coordinator
-                    .descendants(self.session_id, args.path_prefix.as_deref())
-                    .map_err(|error| LoopError::Other(error.to_string()))?;
-                ToolOutput::success(
-                    serde_json::to_string(&agents)
-                        .map_err(|error| LoopError::Other(error.to_string()))?,
-                )
-            }
-            "interrupt_agent" => {
-                let args: TargetAgentArgs = serde_json::from_value(call.arguments.clone())
-                    .map_err(|error| {
-                        LoopError::Other(format!("invalid interrupt_agent arguments: {error}"))
-                    })?;
-                let target = parse_agent_id(&args.target)?;
-                let interrupted = self
-                    .coordinator
-                    .interrupt(self.session_id, target)
-                    .map_err(|error| LoopError::Other(error.to_string()))?;
-                ToolOutput::success(
-                    json!({"target": target.to_string(), "interrupted": interrupted}).to_string(),
                 )
             }
             _ => unreachable!(),

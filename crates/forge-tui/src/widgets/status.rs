@@ -88,7 +88,6 @@ pub(crate) fn tool_progress_description(name: &str) -> String {
         "grep" | "rg" => "Searching code".into(),
         "bash" => "Running command".into(),
         "git" => "Checking git".into(),
-        "web_search" => "Searching the web".into(),
         "web_fetch" => "Fetching URL".into(),
         other => {
             let cleaned = other.replace('_', " ");
@@ -231,7 +230,6 @@ pub struct StatusModel {
     /// This profile's offering label, e.g. "ChatGPT sign-in" — only set when
     /// its vendor has more than one registered route.
     pub route_label: Option<String>,
-    pub web_search_label: Option<String>,
     pub tools_visible: usize,
     pub prompt_cache_hits: u64,
     pub prompt_cache_writes: u64,
@@ -553,10 +551,6 @@ pub fn session_chrome_rows(m: &StatusModel) -> Vec<StatusRow> {
             m.connect_profile.as_deref().unwrap_or("none").to_string(),
         ),
         StatusRow::field("Connected", if m.provider_connected { "yes" } else { "no" }),
-        StatusRow::field(
-            "Web search",
-            m.web_search_label.as_deref().unwrap_or("off").to_string(),
-        ),
     ]
 }
 
@@ -593,7 +587,6 @@ mod tests {
             provider_connected: true,
             vendor_label: None,
             route_label: None,
-            web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
@@ -624,7 +617,6 @@ mod tests {
             provider_connected: false,
             vendor_label: None,
             route_label: None,
-            web_search_label: Some("mock".into()),
             tools_visible: 5,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
@@ -658,7 +650,6 @@ mod tests {
             provider_connected: true,
             vendor_label: None,
             route_label: None,
-            web_search_label: None,
             tools_visible: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,

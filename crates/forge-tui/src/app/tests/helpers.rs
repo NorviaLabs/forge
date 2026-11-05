@@ -226,8 +226,7 @@ pub(crate) fn force_mock_provider(app: &mut TuiApp) {
 }
 
 /// Like `focus_test_app`, but the session runs on a caller-supplied model, so a
-/// test can script a specific reply sequence (the `/goal` evaluator consumes a
-/// second, tool-less model call after the turn it judges).
+/// test can script a specific reply sequence.
 pub(crate) async fn focus_test_app_with_model(model: Arc<dyn ModelClient>) -> (TempDir, TuiApp) {
     let dir = TempDir::new().unwrap();
     let session = session_for_workspace_with_model(dir.path(), model).await;
