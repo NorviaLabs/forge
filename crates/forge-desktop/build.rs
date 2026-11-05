@@ -5,6 +5,7 @@ fn main() {
     // tracks tauri.conf.json, so rebuild when the others change too.
     println!("cargo:rerun-if-changed=tauri.self-test.conf.json");
     println!("cargo:rerun-if-changed=ui/dist");
+    println!("cargo:rerun-if-changed=isolation");
     // Self-test builds expose exactly the same commands as release builds.
     let commands = DESKTOP_COMMANDS;
     // Declaring the app manifest makes every command opt-in: only the

@@ -30,6 +30,7 @@ appear in the root `Cargo.lock`.
 - `tauri.conf.json`: the release configuration (`dev.forge.desktop`).
   `tauri.self-test.conf.json` is identical except for its identity
   (`dev.forge.desktop.test`).
+- `isolation/index.html`: the isolation-pattern hook (inline script).
 - `capabilities/main.json`: the only capability. It is scoped to the
   `main` window and grants `core:event:allow-listen`/`unlisten` plus the
   allowlisted commands. There is no `core:default` and no plugins.
@@ -48,13 +49,18 @@ appear in the root `Cargo.lock`.
   allowed for styles only. Scripts, frames, objects and every remote origin
   are closed.
 - `withGlobalTauri` is off and `freezePrototype` is on.
+- The **isolation pattern** is on. `isolation/index.html` holds the hook
+  *inline*, because Tauri serves only `index.html` from that directory. The
+  hook passes exactly `DESKTOP_COMMANDS` plus event listen/unlisten and drops
+  everything else. The CSP has no `frame-src`: Tauri appends its per-build
+  isolation scheme (`isolation-<uuid>:`) to `default-src`, and an explicit
+  `frame-src` would override that and block the isolation frame.
 - The webview never receives credentials. Events carry session ids, turn
   states, message counts and streamed model output.
 - K1 limits:
   - It needs a git repository (non-git arrives with track D).
   - It refuses an untrusted workspace with a message (the native trust
     prompt comes later).
-  - The isolation pattern is not enabled yet (follow-up K1-F1).
 
 ## Verification
 

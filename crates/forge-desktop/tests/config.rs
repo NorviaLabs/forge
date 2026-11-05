@@ -9,7 +9,11 @@ use std::path::Path;
 
 include!("../src/commands_list.rs");
 
-const PINNED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; font-src 'self'; connect-src ipc: http://ipc.localhost; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
+/// No `frame-src` on purpose: with the isolation pattern, Tauri appends its
+/// per-build isolation scheme (`isolation-<uuid>:`) to `default-src` only,
+/// and an explicit `frame-src` would override that and block the isolation
+/// frame. Frames therefore fall back to `default-src 'none'` + that scheme.
+const PINNED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; font-src 'self'; connect-src ipc: http://ipc.localhost; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 fn crate_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -54,6 +58,11 @@ fn check_security(config: &serde_json::Value, name: &str) {
             .is_none(),
         "{name}"
     );
+    assert_eq!(
+        security["pattern"],
+        serde_json::json!({"use": "isolation", "options": {"dir": "isolation"}}),
+        "{name}: the isolation pattern must be on"
+    );
     let windows = app["windows"].as_array().unwrap();
     assert_eq!(windows.len(), 1, "{name}: one window");
     assert_eq!(windows[0]["label"], "main", "{name}");
@@ -69,6 +78,12 @@ fn csp_is_strict_where_it_matters() {
     // them); scripts, frames, objects and remote origins stay closed.
     let directives: Vec<&str> = PINNED_CSP.split("; ").collect();
     assert!(directives.contains(&"script-src 'self'"));
+    assert!(
+        !directives
+            .iter()
+            .any(|d| d.starts_with("frame-src") || d.starts_with("child-src")),
+        "an explicit frame-src/child-src would block the isolation frame"
+    );
     assert!(directives.contains(&"default-src 'none'"));
     assert!(!PINNED_CSP.contains("unsafe-eval"));
     assert!(!PINNED_CSP.contains("http://127.0.0.1") && !PINNED_CSP.contains("localhost:"));
@@ -159,4 +174,33 @@ fn no_tauri_plugins_are_linked() {
         !manifest.contains("tauri-plugin-"),
         "plugins expose IPC surface"
     );
+}
+
+/// The isolation hook passes exactly Forge's commands plus event
+/// listen/unlisten, the same set the capability grants, and is inline
+/// (Tauri serves only `index.html` from the isolation directory).
+#[test]
+fn isolation_hook_allows_exactly_the_granted_commands() {
+    let html = std::fs::read_to_string(crate_dir().join("isolation/index.html")).unwrap();
+    assert!(
+        !html.contains("<script src"),
+        "the hook must be an inline script"
+    );
+    let start = html.find("new Set([").unwrap() + "new Set([".len();
+    let end = start + html[start..].find("])").unwrap();
+    let allowed: BTreeSet<String> = html[start..end]
+        .split(',')
+        .map(|item| item.trim().trim_matches('"').to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    let mut expected: BTreeSet<String> = DESKTOP_COMMANDS.iter().map(|c| c.to_string()).collect();
+    expected.insert("plugin:event|listen".into());
+    expected.insert("plugin:event|unlisten".into());
+    assert_eq!(allowed, expected);
+    assert!(html.contains("ALLOWED.has(payload.cmd) ? payload : null"));
+    let entries: Vec<String> = std::fs::read_dir(crate_dir().join("isolation"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["index.html".to_string()]);
 }

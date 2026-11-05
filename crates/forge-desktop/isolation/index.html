@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Forge isolation</title>
+  </head>
+  <body>
+    <!--
+      Tauri's isolation pattern: every IPC message from the app frame passes
+      through this sandboxed frame before it reaches Rust. Only Forge's own
+      commands and the event plugin's listen/unlisten pass; anything else a
+      compromised page sends is dropped here, on top of the capability check
+      Rust performs.
+
+      The script must be inline: Tauri serves only index.html from this
+      directory (any other path is a 404) and hashes inline scripts into the
+      frame's CSP.
+    -->
+    <script>
+      const ALLOWED = new Set([
+        "subscribe",
+        "submit_prompt",
+        "stop_turn",
+        "plugin:event|listen",
+        "plugin:event|unlisten",
+      ]);
+      window.__TAURI_ISOLATION_HOOK__ = (payload) =>
+        payload && ALLOWED.has(payload.cmd) ? payload : null;
+    </script>
+  </body>
+</html>

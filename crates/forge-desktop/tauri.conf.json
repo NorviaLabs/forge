@@ -17,11 +17,17 @@
       }
     ],
     "security": {
-      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; font-src 'self'; connect-src ipc: http://ipc.localhost; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; font-src 'self'; connect-src ipc: http://ipc.localhost; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'",
       "freezePrototype": true,
       "capabilities": [
         "main"
-      ]
+      ],
+      "pattern": {
+        "use": "isolation",
+        "options": {
+          "dir": "isolation"
+        }
+      }
     }
   },
   "bundle": {
