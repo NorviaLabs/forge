@@ -154,6 +154,44 @@ async fn resolve_target(
     }
 }
 
+/// Take repository ownership for the TUI, or explain why it runs without it.
+///
+/// Another Forge already owning the repository is fatal: falling back to a
+/// lease-less session there would journal into the same sessions directory
+/// as the owner, a second writer. Only a workspace that has no repository
+/// runtime storage (not a git repository) or whose storage cannot be opened
+/// still falls back to a lease-less session, with a startup notice for the
+/// latter.
+async fn acquire_repository(
+    cfg: &Config,
+    cwd: &std::path::Path,
+    startup_notices: &mut Vec<String>,
+) -> anyhow::Result<Option<forge_session::RepositoryBootstrap>> {
+    if forge_session::RepositoryRuntimeStorage::new(cwd).is_err() {
+        return Ok(None);
+    }
+    match forge_session::RepositoryBootstrap::acquire(cfg).await {
+        Ok(bootstrap) => {
+            match bootstrap.recover_interrupted_creations().await {
+                Ok(notices) => startup_notices.extend(notices),
+                Err(error) => {
+                    startup_notices.push(format!("Session recovery incomplete: {error}"));
+                }
+            }
+            Ok(Some(bootstrap))
+        }
+        Err(
+            error @ forge_session::RepositorySupervisorError::Control(
+                forge_session::RepositorySessionError::AlreadyOwned { .. },
+            ),
+        ) => Err(error.into()),
+        Err(error) => {
+            startup_notices.push(format!("Sessions unavailable: {error}"));
+            Ok(None)
+        }
+    }
+}
+
 fn config_for_workspace(cfg: &Config, workspace: &std::path::Path) -> Config {
     let mut bound = cfg.clone();
     bound.resolved_workspace = workspace.to_path_buf();
@@ -314,25 +352,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     // after `open_session` would let a losing process write session state
     // first and only then discover it does not own the repository.
     let mut startup_notices = Vec::new();
-    let bootstrap = if forge_session::RepositoryRuntimeStorage::new(&cwd).is_ok() {
-        match forge_session::RepositoryBootstrap::acquire(&cfg).await {
-            Ok(bootstrap) => {
-                match bootstrap.recover_interrupted_creations().await {
-                    Ok(notices) => startup_notices.extend(notices),
-                    Err(error) => {
-                        startup_notices.push(format!("Session recovery incomplete: {error}"));
-                    }
-                }
-                Some(bootstrap)
-            }
-            Err(error) => {
-                startup_notices.push(format!("Sessions unavailable: {error}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let bootstrap = acquire_repository(&cfg, &cwd, &mut startup_notices).await?;
 
     let (target, create_notice) = if decision.allow_resume_picker {
         if let Some(session_id) = cli.fork {
@@ -544,5 +564,92 @@ mod tests {
         let (target, notice) = resolve_target(&cfg, None).await.unwrap();
         assert_eq!(target, SessionTarget::New);
         assert!(notice.is_none());
+    }
+
+    fn git_repo() -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("tracked.txt"), "one\n").unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "forge@example.test"][..],
+            &["config", "user.name", "Forge Test"][..],
+            &["add", "tracked.txt"][..],
+            &["commit", "-q", "-m", "init"][..],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+        temp
+    }
+
+    fn workspace_config(workspace: &std::path::Path) -> Config {
+        let mut cfg = Config {
+            resolved_workspace: workspace.to_path_buf(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = workspace.join("journals").display().to_string();
+        cfg
+    }
+
+    #[tokio::test]
+    async fn second_process_on_an_owned_repository_is_refused_not_lease_less() {
+        let repo = git_repo();
+        let cfg = workspace_config(repo.path());
+        let owner = forge_session::RepositoryBootstrap::acquire(&cfg)
+            .await
+            .expect("first owner takes the lease");
+
+        let mut notices = Vec::new();
+        let error = acquire_repository(&cfg, repo.path(), &mut notices)
+            .await
+            .err()
+            .expect("an owned repository must refuse, not fall back to a lease-less session");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("already owns this repository"),
+            "refusal must name the ownership conflict: {message}"
+        );
+        assert!(
+            message.contains(&std::process::id().to_string()),
+            "refusal must name the owner's pid: {message}"
+        );
+        assert!(
+            notices.is_empty(),
+            "no lease-less startup notice: {notices:?}"
+        );
+        assert!(
+            !repo.path().join("journals").exists(),
+            "a refused launch must not write session state"
+        );
+        drop(owner);
+    }
+
+    #[tokio::test]
+    async fn free_repository_is_acquired() {
+        let repo = git_repo();
+        let cfg = workspace_config(repo.path());
+        let mut notices = Vec::new();
+        let bootstrap = acquire_repository(&cfg, repo.path(), &mut notices)
+            .await
+            .unwrap();
+        assert!(bootstrap.is_some());
+    }
+
+    #[tokio::test]
+    async fn non_git_workspace_still_runs_without_a_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = workspace_config(dir.path());
+        let mut notices = Vec::new();
+        let bootstrap = acquire_repository(&cfg, dir.path(), &mut notices)
+            .await
+            .unwrap();
+        assert!(bootstrap.is_none());
+        assert!(notices.is_empty());
     }
 }

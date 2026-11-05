@@ -33,7 +33,7 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
 ## Invariants
 
 - The binary is a thin composition layer: it must not reimplement session assembly, governance, or rendering.
-- In the TUI path, repository ownership is acquired before the primary session is created, and both are handed to `forge-session` together. If runtime storage or lease acquisition fails, the TUI opens and runs a lease-less session instead; `bench` never takes the lease.
+- In the TUI path, repository ownership is acquired before the primary session is created, and both are handed to `forge-session` together. If another Forge already owns the repository group (`AlreadyOwned`), `forge` exits non-zero with the owner's message and opens no session, so there is never a second writer. Only when the workspace has no repository runtime storage (not a git repository), or the bootstrap fails for another reason, does the TUI run a lease-less session; `bench` never takes the lease.
 
 ## Side Effects
 
