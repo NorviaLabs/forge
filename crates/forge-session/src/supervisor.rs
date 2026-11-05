@@ -558,6 +558,10 @@ struct SupervisorState {
     /// Turn drivers run as detached tasks holding the state; shutdown waits
     /// for every one of them before it releases the lease.
     drivers: Arc<DriverTracker>,
+    /// Tests only: pause a managed creation after its worktree exists on
+    /// disk and before the creation completes (`reached`, then `release`).
+    #[cfg(test)]
+    creation_pause: StdMutex<Option<(Arc<Notify>, Arc<Notify>)>>,
     /// Where operator-granted trust is recorded. `None` means the real
     /// user-global store; tests point it at a temporary file so granting
     /// trust for a fixture worktree never touches the developer's own.
@@ -1069,6 +1073,8 @@ impl RepositorySupervisor {
             lease_owner: lease.owner().clone(),
             lease: StdMutex::new(Some(lease)),
             drivers: Arc::new(DriverTracker::default()),
+            #[cfg(test)]
+            creation_pause: StdMutex::new(None),
             trust_store,
         });
         let (commands, receiver) = mpsc::channel(128);
@@ -1812,6 +1818,18 @@ async fn execute_command(
                 .control
                 .mark_worktree_created(pending.operation_id, &worktree.path, "")
                 .await?;
+            #[cfg(test)]
+            {
+                let pause = state
+                    .creation_pause
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .clone();
+                if let Some((reached, release)) = pause {
+                    reached.notify_one();
+                    release.notified().await;
+                }
+            }
             let mut task_cfg = state.cfg.clone();
             task_cfg.resolved_workspace = worktree.path.clone();
             task_cfg.workspace_root = Some(worktree.path.display().to_string());
@@ -7630,6 +7648,378 @@ mod tests {
                 .find(|task| task.id == background_id)
                 .is_some_and(|task| task.status.is_terminal())
         }));
+    }
+
+    /// After a restart's recovery, nothing is half-applied: no stale
+    /// creation remains, every Active row's worktree exists, and every
+    /// non-main worktree belongs to a session row.
+    async fn assert_repository_whole_after_recovery(
+        repo: &std::path::Path,
+        journals: &std::path::Path,
+    ) {
+        let mut cfg = Config {
+            resolved_workspace: repo.to_path_buf(),
+            workspace_root: Some(repo.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = journals.display().to_string();
+        let bootstrap = RepositoryBootstrap::acquire(&cfg).await.unwrap();
+        bootstrap.recover_interrupted_creations().await.unwrap();
+        let control = &bootstrap.control;
+        assert!(
+            control.stale_creations().await.unwrap().is_empty(),
+            "recovery left a stale creation"
+        );
+        let rows = control.sessions().await.unwrap();
+        for row in &rows {
+            if row.lifecycle == SessionLifecycle::Active {
+                assert!(row.workspace.exists(), "row without worktree: {row:?}");
+            }
+        }
+        let main = repo.canonicalize().unwrap();
+        for record in forge_storage::list_worktree_records(repo).unwrap() {
+            if record.path.canonicalize().ok().as_deref() == Some(main.as_path()) {
+                continue;
+            }
+            assert!(
+                rows.iter().any(|row| row.workspace == record.path),
+                "orphan worktree after recovery: {record:?}"
+            );
+        }
+    }
+
+    /// S3-F1: a creation paused AFTER its worktree exists on disk and
+    /// before it completes. Shutdown waits for it, and the result is whole.
+    #[tokio::test]
+    async fn shutdown_waits_for_a_creation_paused_after_its_worktree_exists() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let reached = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        *supervisor.state.creation_pause.lock().unwrap() = Some((reached.clone(), release.clone()));
+
+        let creation = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CreateSession {
+                        label: "half-way".into(),
+                        first_prompt: None,
+                        github_issue_number: None,
+                    })
+                    .await
+            }
+        });
+        reached.notified().await;
+        let pending = control.stale_creations().await.unwrap();
+        assert_eq!(pending.len(), 1, "the creation is recorded and pending");
+        assert!(
+            pending[0]
+                .workspace
+                .as_ref()
+                .is_some_and(|path| path.exists()),
+            "the worktree already exists on disk"
+        );
+
+        let shutdown = tokio::spawn(supervisor.shutdown());
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!shutdown.is_finished(), "shutdown returned mid-creation");
+        assert!(
+            matches!(
+                RepositoryLease::acquire(&control_dir, repo.path()),
+                Err(RepositorySessionError::AlreadyOwned { .. })
+            ),
+            "the lease was released while a creation was in flight"
+        );
+
+        release.notify_one();
+        let _ = creation.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), shutdown)
+            .await
+            .expect("shutdown must finish once the creation does")
+            .unwrap()
+            .unwrap();
+        drop(control);
+        assert_repository_whole_after_recovery(repo.path(), &scratch.path().join("journals")).await;
+    }
+
+    /// S3-F1: a creation parked on the trust prompt is not in flight;
+    /// shutdown must not wait for the user's answer, and a restart's
+    /// recovery rolls the parked creation back.
+    #[tokio::test]
+    async fn shutdown_does_not_wait_for_a_creation_parked_on_trust() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "parked".into(),
+                first_prompt: Some("waits for trust".into()),
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        loop {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("TrustRequired never arrived")
+            {
+                Ok(SupervisorEvent::TrustRequired { .. }) => break,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(error) => panic!("event stream ended: {error}"),
+            }
+        }
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), supervisor.shutdown())
+            .await
+            .expect("shutdown must not wait for the trust prompt")
+            .unwrap();
+        assert_eq!(
+            control.stale_creations().await.unwrap().len(),
+            1,
+            "the parked creation is left recoverable"
+        );
+        drop(control);
+        assert_repository_whole_after_recovery(repo.path(), &scratch.path().join("journals")).await;
+    }
+
+    /// S3-F1: a background shell still running when the app quits is
+    /// stopped (not waited for) and the lease is free once shutdown returns.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_stops_a_running_background_task_and_releases_the_lease() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let mut session = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap()
+            .session;
+        let session_id = session.session_id;
+        // A distinctive duration so the process can be found by its command
+        // line, and far longer than the shutdown deadline below.
+        let marker = format!("sleep 31.{}", std::process::id());
+        // The shell ignores SIGTERM, so only a real kill (SIGKILL, or TERM
+        // escalated to KILL) stops it.
+        session
+            .spawn_background_shell(format!("trap '' TERM; {marker}"), "outlive the app".into())
+            .await
+            .unwrap();
+        let task = task_for(session_id, "background", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let resume_cfg = cfg.clone();
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.details.as_ref().is_some_and(|details| {
+                details
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.status, forge_core::BackgroundTaskStatus::Running))
+            })
+        })
+        .await;
+        let running = || {
+            std::process::Command::new("pgrep")
+                .args(["-f", &marker])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        assert!(running(), "the background shell should be running");
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), supervisor.shutdown())
+            .await
+            .expect("shutdown must stop the task, not wait 31 s for it")
+            .unwrap();
+        // The kill is signalled before shutdown returns; the process is
+        // reaped a few milliseconds later. Allow that, bounded.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while running() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!running(), "the background shell outlived shutdown");
+        RepositoryLease::acquire(temp.path(), temp.path())
+            .expect("the lease must be free as soon as shutdown returns");
+
+        // A resumed session must not show the job as still running.
+        // (Background jobs are not journaled at all, so the resumed list is
+        // empty; the assertion guards against that ever changing into a
+        // phantom "running" entry.)
+        let resumed = open_session_with_model(
+            &resume_cfg,
+            SessionTarget::Resume(session_id),
+            Arc::new(MockModelClient::script(Vec::new())),
+        )
+        .await
+        .unwrap()
+        .session;
+        let background = SessionDetailsSnapshot::capture(&resumed).background;
+        assert!(
+            background
+                .iter()
+                .all(|task| !matches!(task.status, forge_core::BackgroundTaskStatus::Running)),
+            "a resumed session shows a phantom running job: {background:?}"
+        );
+    }
+
+    /// S3-F1: a detached worktree creation still in flight when the app
+    /// quits holds the lease until it finishes, and leaves the repository
+    /// whole: every session row's worktree exists and every Forge worktree
+    /// has a row (nothing half-applied).
+    #[tokio::test]
+    async fn shutdown_waits_for_an_in_flight_worktree_creation_and_leaves_it_whole() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.path().to_path_buf(),
+            workspace_root: Some(repo.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store.to_path_buf()),
+        )
+        .await
+        .unwrap();
+
+        // Hold the Git mutation gate so the creation is provably mid-flight.
+        let git_gate = supervisor.state.git_mutation.clone();
+        let gate = git_gate.lock().await;
+        let creation = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CreateSession {
+                        label: "in-flight".into(),
+                        first_prompt: None,
+                        github_issue_number: None,
+                    })
+                    .await
+            }
+        });
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !creation.is_finished(),
+            "creation should be waiting on the gate"
+        );
+
+        let shutdown = tokio::spawn(supervisor.shutdown());
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!shutdown.is_finished(), "shutdown returned mid-creation");
+        assert!(
+            matches!(
+                RepositoryLease::acquire(&control_dir, repo.path()),
+                Err(RepositorySessionError::AlreadyOwned { .. })
+            ),
+            "the lease was released while a creation was in flight"
+        );
+
+        drop(gate);
+        let _ = creation.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), shutdown)
+            .await
+            .expect("shutdown must finish once the creation does")
+            .unwrap()
+            .unwrap();
+        RepositoryLease::acquire(&control_dir, repo.path())
+            .expect("the lease must be free as soon as shutdown returns");
+
+        assert_repository_whole_after_recovery(repo.path(), &scratch.path().join("journals")).await;
     }
 
     #[tokio::test]
