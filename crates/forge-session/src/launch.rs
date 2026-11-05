@@ -776,6 +776,22 @@ mod tests {
             .collect()
     }
 
+    /// The user declines (or cancels) the trust screen: the plan is dropped
+    /// without a launch, and the repository is exactly as it was.
+    #[tokio::test]
+    async fn declined_trust_writes_nothing() {
+        let fixture = Fixture::new(false);
+        let before = tree(fixture.repo.path());
+        let plan = fixture.plan().await;
+        assert!(plan.needs_trust());
+        drop(plan);
+        assert_eq!(
+            changed(&before, &tree(fixture.repo.path())),
+            Vec::<PathBuf>::new()
+        );
+        assert!(!fixture.repo.path().join(".forge").exists());
+    }
+
     #[tokio::test]
     async fn prepare_writes_nothing() {
         for trusted in [false, true] {

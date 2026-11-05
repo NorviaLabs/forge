@@ -1391,6 +1391,7 @@ dependencies = [
  "forge-tools",
  "forge-types",
  "forge-workspace",
+ "libc",
  "serde",
  "serde_json",
  "sqlx",

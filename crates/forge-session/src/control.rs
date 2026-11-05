@@ -254,7 +254,8 @@ impl RepositoryLease {
     /// Read-only and safe on untrusted repository content: it never creates,
     /// writes or truncates anything; it ignores an `owner.lock` that is not
     /// a regular file (a symlink, FIFO or device could redirect or block
-    /// the read); it reads at most [`OWNER_RECORD_LIMIT`] bytes; and it
+    /// the read), and opens it with `O_NOFOLLOW | O_NONBLOCK` so a swap
+    /// after that check can neither be followed nor block; it reads at most [`OWNER_RECORD_LIMIT`] bytes; and it
     /// takes only a *shared* lock, so concurrent probes never see each
     /// other. A missing or unheld lock is free (`Ok`). A held lock is
     /// [`RepositorySessionError::AlreadyOwned`]. Advisory: the real
@@ -270,7 +271,12 @@ impl RepositoryLease {
             // Forge only ever writes a regular file here.
             return Ok(());
         }
-        let mut file = File::open(&path)?;
+        let mut file = match open_no_follow(&path) {
+            Ok(file) => file,
+            // Swapped for a symlink (ELOOP) or gone since the lstat: not a
+            // lock Forge wrote, so not an owner.
+            Err(_) => return Ok(()),
+        };
         if !same_file(&metadata, &file.metadata()?) {
             return Ok(());
         }
@@ -293,6 +299,22 @@ impl RepositoryLease {
             Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
         }
     }
+}
+
+/// Open for reading without following a final symlink and without blocking
+/// (a FIFO swapped in after the lstat would otherwise hang the open).
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_no_follow(path: &Path) -> std::io::Result<File> {
+    File::open(path)
 }
 
 /// Owner records are a short JSON object; never read more than this.
@@ -1879,6 +1901,36 @@ mod tests {
         std::fs::remove_file(dir.path().join("owner.lock")).unwrap();
         std::os::unix::fs::symlink(&fifo, dir.path().join("owner.lock")).unwrap();
         assert!(probe_promptly(dir.path()).is_ok());
+    }
+
+    /// The lstat check covers a static repository; this covers a swap
+    /// after it: the open itself neither follows a symlink nor blocks.
+    #[cfg(unix)]
+    #[test]
+    fn probe_open_neither_follows_symlinks_nor_blocks_on_a_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, b"{}").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(
+            open_no_follow(&link).is_err(),
+            "a symlink must not be followed"
+        );
+
+        let fifo = dir.path().join("pipe");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(open_no_follow(&fifo).is_ok());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("opening a FIFO must not block");
     }
 
     #[test]
