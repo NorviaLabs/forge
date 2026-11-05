@@ -1,0 +1,7 @@
+{
+  "identifier": "dev.forge.desktop.test",
+  "productName": "Forge Self-Test",
+  "build": {
+    "frontendDist": "ui/dist-self-test"
+  }
+}

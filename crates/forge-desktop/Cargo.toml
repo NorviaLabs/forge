@@ -25,6 +25,7 @@ self-test = ["dep:tempfile"]
 
 [build-dependencies]
 tauri-build = { version = "=2.7.3", features = ["isolation"] }
+serde_json = "1"
 
 [dependencies]
 tauri = { version = "=2.12.4", features = ["isolation"] }

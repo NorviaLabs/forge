@@ -2,12 +2,16 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
   "description": "The only capability: the main window may listen for events and call Forge's own commands. No core:default (it grants event emit and more), no plugins.",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
     "allow-subscribe",
     "allow-submit-prompt",
-    "allow-stop-turn"
+    "allow-stop-turn",
+    "allow-approve-once",
+    "allow-deny"
   ]
 }

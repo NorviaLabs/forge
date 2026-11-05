@@ -9,11 +9,7 @@ use std::path::Path;
 
 include!("../src/commands_list.rs");
 
-/// No `frame-src` on purpose: with the isolation pattern, Tauri appends its
-/// per-build isolation scheme (`isolation-<uuid>:`) to `default-src` only,
-/// and an explicit `frame-src` would override that and block the isolation
-/// frame. Frames therefore fall back to `default-src 'none'` + that scheme.
-const PINNED_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; font-src 'self'; connect-src ipc: http://ipc.localhost; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
+include!("../src/pinned.rs");
 
 fn crate_dir() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -99,12 +95,23 @@ fn release_configuration_is_locked_down() {
 
 #[test]
 fn self_test_builds_have_their_own_identity_and_the_same_security() {
-    let release = json("tauri.conf.json");
-    let self_test = json("tauri.self-test.conf.json");
-    assert_eq!(self_test["identifier"], "dev.forge.desktop.test");
-    assert_ne!(self_test["identifier"], release["identifier"]);
-    check_security(&self_test, "self-test");
-    assert_eq!(self_test["app"]["security"], release["app"]["security"]);
+    // Self-test builds are the release config plus this merge patch (see
+    // build.rs). It may change identity and the UI bundle, nothing else; the
+    // self-test re-checks the embedded result at runtime.
+    let patch = json("tauri.self-test.patch.json");
+    let keys: BTreeSet<&str> = patch
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, BTreeSet::from(["identifier", "productName", "build"]));
+    assert_eq!(
+        patch["build"],
+        serde_json::json!({"frontendDist": "ui/dist-self-test"})
+    );
+    assert_eq!(patch["identifier"], "dev.forge.desktop.test");
+    assert_ne!(patch["identifier"], json("tauri.conf.json")["identifier"]);
 }
 
 #[test]
@@ -203,4 +210,38 @@ fn isolation_hook_allows_exactly_the_granted_commands() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(entries, vec!["index.html".to_string()]);
+}
+
+/// Model output reaches the DOM through exactly one `{@html}`, the one in
+/// Markdown.svelte, behind markdown-it (`html: false`) and DOMPurify.
+#[test]
+fn exactly_one_html_insertion_site() {
+    let mut sites = Vec::new();
+    for entry in std::fs::read_dir(crate_dir().join("ui/src")).unwrap() {
+        let path = entry.unwrap().path();
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        for _ in text.matches("{@html") {
+            sites.push(path.file_name().unwrap().to_string_lossy().into_owned());
+        }
+        assert!(
+            !text.contains("innerHTML") || path.ends_with("selftest.js"),
+            "{path:?} writes innerHTML"
+        );
+    }
+    assert_eq!(sites, vec!["Markdown.svelte".to_string()]);
+    let markdown = std::fs::read_to_string(crate_dir().join("ui/src/markdown.js")).unwrap();
+    assert!(markdown.contains("html: false"));
+    assert!(markdown.contains("DOMPurify.sanitize("));
+}
+
+/// The release UI bundle carries none of the self-test probes (they are in
+/// a chunk only the `self-test` mode build imports).
+#[test]
+fn release_ui_bundle_has_no_self_test_code() {
+    let mut release = String::new();
+    for entry in std::fs::read_dir(crate_dir().join("ui/dist/assets")).unwrap() {
+        release.push_str(&std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default());
+    }
+    assert!(!release.contains("not_a_forge_command"));
+    assert!(!release.contains("selftest"));
 }

@@ -92,7 +92,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev xvfb
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev xvfb lsof
       # pnpm comes from Corepack at the exact version package.json pins.
       - name: Build the UI
         working-directory: crates/forge-desktop/ui
@@ -100,6 +100,7 @@ jobs:
           corepack enable
           pnpm install --frozen-lockfile
           pnpm build
+          pnpm build:self-test
       - name: Check formatting
         run: cargo fmt --check
       - name: Lint
@@ -134,6 +135,19 @@ jobs:
           cat refusal.txt
           test "$code" -eq 2
           grep -q 'unknown argument `--self-test`' refusal.txt
+      # The release binary carries the release identity and none of the
+      # self-test code. (Self-test builds once silently embedded the release
+      # config; this also guards the reverse.)
+      - name: Release binary identity and no self-test markers
+        run: |
+          strings target/release/forge-desktop > release-strings.txt
+          grep -q 'dev\.forge\.desktop' release-strings.txt
+          for marker in 'dev.forge.desktop.test' 'forge-selftest-emit-probe' 'SELF_TEST PASS' 'SELF_TEST FAIL'; do
+            if grep -qF "$marker" release-strings.txt; then
+              echo "release binary contains self-test marker: $marker" >&2
+              exit 1
+            fi
+          done
 
   # Dependency advisories, duplicate/wildcard bans, and source allow-listing.
   # Separate job so it reports independently of the test result and runs in

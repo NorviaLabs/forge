@@ -6,10 +6,13 @@
   "packageManager": "pnpm@10.18.3",
   "scripts": {
     "build": "vite build",
+    "build:self-test": "vite build --mode self-test",
     "dev": "vite"
   },
   "dependencies": {
-    "@tauri-apps/api": "2.12.4"
+    "@tauri-apps/api": "2.12.4",
+    "dompurify": "3.4.17",
+    "markdown-it": "15.0.3"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "7.3.1",

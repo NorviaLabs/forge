@@ -4,4 +4,10 @@
 
 /// Commands every build exposes.
 #[allow(dead_code)] // read by build.rs and the config tests
-pub const DESKTOP_COMMANDS: &[&str] = &["subscribe", "submit_prompt", "stop_turn"];
+pub const DESKTOP_COMMANDS: &[&str] = &[
+    "subscribe",
+    "submit_prompt",
+    "stop_turn",
+    "approve_once",
+    "deny",
+];

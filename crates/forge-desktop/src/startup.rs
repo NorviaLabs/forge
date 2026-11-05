@@ -38,6 +38,7 @@ struct Started {
     supervisor: RepositorySupervisor,
     handle: SupervisorHandle,
     session_id: SessionId,
+    initial: forge_session::SessionRuntimeSnapshot,
     /// Self-test only: the temporary workspace, kept alive for the run.
     _scratch: Option<Box<dyn std::any::Any + Send>>,
 }
@@ -69,6 +70,7 @@ pub fn run() -> i32 {
     };
     tauri::async_runtime::set(runtime.handle().clone());
 
+    #[cfg(feature = "self-test")]
     if args.self_test {
         // A scripted check must end on its own; never hang CI.
         std::thread::spawn(|| {
@@ -78,15 +80,43 @@ pub fn run() -> i32 {
         });
     }
 
-    let app = tauri::Builder::default()
-        .manage(DesktopState {
-            handle: started.handle,
-            session_id: started.session_id,
-            self_test: args.self_test,
-            self_test_submitted: Default::default(),
-        })
-        .invoke_handler(invoke_handler())
-        .build(context());
+    let supervisor = std::sync::Arc::new(tokio::sync::RwLock::new(Some(started.supervisor)));
+    #[allow(unused_mut)] // self-test builds attach their probe
+    let mut state = DesktopState::new(
+        started.handle,
+        supervisor.clone(),
+        started.session_id,
+        &started.initial,
+    );
+    #[cfg(feature = "self-test")]
+    let probe = args
+        .self_test
+        .then(|| std::sync::Arc::new(crate::self_test::Probe::new()));
+    #[cfg(feature = "self-test")]
+    {
+        state.self_test = probe.clone();
+    }
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
+        .manage(state)
+        .plugin(navigation_guard())
+        .invoke_handler(invoke_handler());
+    #[cfg(feature = "self-test")]
+    if let Some(probe) = probe {
+        let on_load = probe.clone();
+        builder = builder
+            .setup(move |app| {
+                probe.watch_emit(app.handle());
+                Ok(())
+            })
+            .on_page_load(move |webview, payload| {
+                if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished) {
+                    use tauri::Manager;
+                    on_load.on_page_load(webview.app_handle(), payload.url());
+                }
+            });
+    }
+    let app = builder.build(context());
     let app = match app {
         Ok(app) => app,
         Err(error) => {
@@ -94,11 +124,11 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    let mut supervisor = Some(started.supervisor);
     let _scratch = started._scratch;
     app.run(move |_, event| {
         if let tauri::RunEvent::Exit = event {
-            if let Some(supervisor) = supervisor.take() {
+            let taken = runtime.block_on(async { supervisor.write().await.take() });
+            if let Some(supervisor) = taken {
                 // Release the repository explicitly, bounded so a provider
                 // that never answers cannot keep the app from quitting.
                 let shutdown = runtime.block_on(async move {
@@ -116,17 +146,37 @@ pub fn run() -> i32 {
 }
 
 fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
-    tauri::generate_handler![bridge::subscribe, bridge::submit_prompt, bridge::stop_turn]
+    tauri::generate_handler![
+        bridge::subscribe,
+        bridge::submit_prompt,
+        bridge::stop_turn,
+        bridge::approve_once,
+        bridge::deny
+    ]
 }
 
-#[cfg(not(feature = "self-test"))]
+/// The webview may only ever show Forge's own bundled page: any navigation
+/// elsewhere (a link, `location = …`, a form) is refused. External links
+/// will open in the system browser through a dedicated command (M2).
+fn navigation_guard<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("forge-navigation-guard")
+        .on_navigation(|_, url| is_app_url(url))
+        .build()
+}
+
+pub fn is_app_url(url: &tauri::Url) -> bool {
+    match (url.scheme(), url.host_str()) {
+        ("tauri", Some("localhost")) => true,
+        // Windows and the http-scheme option serve the app from here.
+        ("http" | "https", Some("tauri.localhost")) => true,
+        _ => false,
+    }
+}
+
+/// One configuration for every build; self-test builds patch it through
+/// `TAURI_CONFIG` (see build.rs).
 fn context() -> tauri::Context {
     tauri::generate_context!()
-}
-
-#[cfg(feature = "self-test")]
-fn context() -> tauri::Context {
-    tauri::generate_context!("tauri.self-test.conf.json")
 }
 
 async fn start(args: &Args) -> anyhow::Result<Started> {
@@ -169,10 +219,15 @@ async fn open(
     let (supervisor, handle) = bootstrap
         .open_with_primary(&cfg, launched.opened.session)
         .await?;
+    let initial = supervisor
+        .snapshot(session_id)
+        .await
+        .context("the session is missing from the supervisor")?;
     Ok(Started {
         supervisor,
         handle,
         session_id,
+        initial,
         _scratch: scratch,
     })
 }
@@ -223,6 +278,34 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Args, String> {
         parse_args(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn only_the_bundled_app_may_be_navigated_to() {
+        for allowed in [
+            "tauri://localhost/",
+            "tauri://localhost/?selftest=1",
+            "http://tauri.localhost/index.html",
+        ] {
+            assert!(
+                is_app_url(&tauri::Url::parse(allowed).unwrap()),
+                "{allowed}"
+            );
+        }
+        for refused in [
+            "https://example.com/",
+            "http://127.0.0.1:8080/",
+            "http://localhost/",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "tauri://evil.com/",
+            "data:text/html,hi",
+        ] {
+            assert!(
+                !is_app_url(&tauri::Url::parse(refused).unwrap()),
+                "{refused}"
+            );
+        }
     }
 
     #[test]

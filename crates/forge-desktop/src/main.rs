@@ -9,6 +9,9 @@
 
 mod bridge;
 mod commands_list;
+mod pinned;
+#[cfg(feature = "self-test")]
+mod self_test;
 mod startup;
 
 fn main() {
