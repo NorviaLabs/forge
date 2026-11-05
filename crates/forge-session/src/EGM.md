@@ -53,10 +53,11 @@ command/event API, and immutable per-frame snapshots for frontends.
 - `SupervisorHandle::{command, submit, try_command, subscribe}`.
 - `RepositorySupervisorError` — `Control`, `Loop`, `Assembly`, `Model`, `Storage`, `Worktree`, `NoActor`, `Closed`, `Contention`, `Retiring`, `Command`.
 - `RepositoryBootstrap::{acquire, lease_owner, session, recover_interrupted_creations, open_with_primary}`.
-- `RepositorySupervisor::{open(cfg), open_with_primary(cfg, Option<AgentSession>), spawn, spawn_with_trust_store, snapshots, snapshot, selected_session_id, lease_owner}` — owns the actor map, roster, and event broadcast. `open`/`open_with_primary` acquire the lease themselves; `spawn` takes an already-held `RepositoryLease` and an explicit `max_concurrency`; `spawn_with_trust_store` exists so tests can redirect the trust store. The CLI path goes through `RepositoryBootstrap::open_with_primary`.
+- `RepositorySupervisor::{open(cfg), open_with_primary(cfg, Option<AgentSession>), spawn, spawn_with_trust_store, snapshots, snapshot, selected_session_id, lease_owner, shutdown(self)}` — owns the actor map, roster, and event broadcast. `open`/`open_with_primary` acquire the lease themselves; `spawn` takes an already-held `RepositoryLease` and an explicit `max_concurrency`; `spawn_with_trust_store` exists so tests can redirect the trust store. The CLI path goes through `RepositoryBootstrap::open_with_primary`.
 
 ## Invariants
 
+- `RepositorySupervisor::shutdown(self)` sends `Shutdown` (harmless if a handle already did), joins the command loop (which joins its detached operations), waits for every turn driver (`DriverTracker`), and only then drops the lease, which lives in `Option<RepositoryLease>` inside the shared state. When it returns `Ok`, the lease can be re-acquired immediately, in this process or another. The supervisor keeps its own command sender, so the command loop no longer ends merely because every `SupervisorHandle` was dropped while the supervisor is alive.
 - Exactly one Forge process owns a repository group: `RepositoryLease::acquire` uses a non-truncating `try_lock` on `owner.lock`, and a losing process reports the incumbent `LeaseOwner` parsed from that file.
 - The exclusive lease is taken before any session is created; the CLI acquires it, opens the primary session, then hands both to `open_with_primary`.
 - Governance pattern rules: a repo-scope `allow` rule is never honored (only `deny` from the workspace file is merged); deny always wins.

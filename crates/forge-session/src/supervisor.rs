@@ -13,7 +13,7 @@ use forge_types::{
     AskUserQuestionResult, BackgroundTaskId, GrantDecision, HitlDecision, ModelStreamEvent,
     SessionId, TaskLifecycle, ToolCall,
 };
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex, RwLock, Semaphore};
+use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -488,6 +488,54 @@ impl Drop for SessionDriverClaim<'_> {
     }
 }
 
+/// Counts live turn drivers so shutdown can wait for the last one to finish.
+#[derive(Default)]
+struct DriverTracker {
+    active: AtomicUsize,
+    idle: Notify,
+}
+
+/// Held by one running driver task; dropping it marks the driver finished.
+struct DriverToken(Arc<DriverTracker>);
+
+impl DriverTracker {
+    fn enter(self: &Arc<Self>) -> DriverToken {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        DriverToken(self.clone())
+    }
+
+    async fn wait_idle(&self) {
+        loop {
+            let idle = self.idle.notified();
+            tokio::pin!(idle);
+            idle.as_mut().enable();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            idle.await;
+        }
+    }
+}
+
+impl Drop for DriverToken {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.idle.notify_waiters();
+        }
+    }
+}
+
+/// Start a turn driver as a tracked task. The token is taken before the task
+/// is spawned, so shutdown can never observe zero drivers while one is about
+/// to start, and it is dropped only after the driver has released its state.
+fn spawn_driver(state: Arc<SupervisorState>, task_actor: Arc<SessionActor>, session_id: SessionId) {
+    let token = state.drivers.enter();
+    tokio::spawn(async move {
+        run_driver(state, task_actor, session_id).await;
+        drop(token);
+    });
+}
+
 struct SupervisorState {
     cfg: Config,
     model: Arc<dyn ModelClient>,
@@ -502,7 +550,14 @@ struct SupervisorState {
     unavailable_tasks: RwLock<Vec<RepositorySession>>,
     permits: Arc<Semaphore>,
     events: broadcast::Sender<SupervisorEvent>,
-    lease: RepositoryLease,
+    /// The repository lease. `Some` for the supervisor's whole life; only
+    /// [`RepositorySupervisor::shutdown`] takes it, once nothing that could
+    /// still write session state is running.
+    lease: StdMutex<Option<RepositoryLease>>,
+    lease_owner: crate::LeaseOwner,
+    /// Turn drivers run as detached tasks holding the state; shutdown waits
+    /// for every one of them before it releases the lease.
+    drivers: Arc<DriverTracker>,
     /// Where operator-granted trust is recorded. `None` means the real
     /// user-global store; tests point it at a temporary file so granting
     /// trust for a fixture worktree never touches the developer's own.
@@ -587,6 +642,8 @@ impl SupervisorState {
 
 pub struct RepositorySupervisor {
     state: Arc<SupervisorState>,
+    commands: mpsc::Sender<CommandEnvelope>,
+    command_loop: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Repository ownership taken *before* any session is created.
@@ -1004,15 +1061,22 @@ impl RepositorySupervisor {
             unavailable_tasks: RwLock::new(unavailable_tasks),
             permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
             events: events.clone(),
-            lease,
+            lease_owner: lease.owner().clone(),
+            lease: StdMutex::new(Some(lease)),
+            drivers: Arc::new(DriverTracker::default()),
             trust_store,
         });
         let (commands, receiver) = mpsc::channel(128);
-        let handle = SupervisorHandle { commands, events };
-        let supervisor = Self {
-            state: state.clone(),
+        let handle = SupervisorHandle {
+            commands: commands.clone(),
+            events,
         };
-        tokio::spawn(run_commands(state, receiver));
+        let command_loop = tokio::spawn(run_commands(state.clone(), receiver));
+        let supervisor = Self {
+            state,
+            commands,
+            command_loop: Some(command_loop),
+        };
         supervisor.publish_roster().await;
         for (session_id, _, _) in recovered {
             let _ = supervisor.state.events.send(SupervisorEvent::Attention {
@@ -1041,7 +1105,48 @@ impl RepositorySupervisor {
     }
 
     pub fn lease_owner(&self) -> &crate::LeaseOwner {
-        self.state.lease.owner()
+        &self.state.lease_owner
+    }
+
+    /// Stop every session and release the repository lease, provably.
+    ///
+    /// Sends `Shutdown` (a no-op if a frontend already sent it), joins the
+    /// command loop, which joins its detached operations, then waits for
+    /// every turn driver to finish. Only then is the lease dropped, so when
+    /// this returns `Ok` another owner can acquire the repository at once,
+    /// in this process or another, and nothing of this supervisor's is left
+    /// writing session state.
+    pub async fn shutdown(mut self) -> Result<(), RepositorySupervisorError> {
+        let (reply, response) = oneshot::channel();
+        let sent = self
+            .commands
+            .send(CommandEnvelope {
+                command: SupervisorCommand::Shutdown,
+                reply,
+            })
+            .await
+            .is_ok();
+        let shutdown_result = if sent {
+            // A closed reply means the loop ended before answering: a
+            // `Shutdown` already sent through a handle has done the work.
+            response.await.unwrap_or(Ok(()))
+        } else {
+            Ok(())
+        };
+        if let Some(command_loop) = self.command_loop.take() {
+            command_loop
+                .await
+                .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
+        }
+        self.state.drivers.wait_idle().await;
+        let lease = self
+            .state
+            .lease
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        drop(lease);
+        shutdown_result.map_err(RepositorySupervisorError::Command)
     }
 
     async fn publish_roster(&self) {
@@ -1455,7 +1560,7 @@ async fn resolve_approval(
         let _ = task_actor.request_continuation();
         drop(claim);
         if task_actor.try_start_driver() {
-            tokio::spawn(run_driver(state, task_actor.clone(), session_id));
+            spawn_driver(state, task_actor.clone(), session_id);
         }
     } else {
         start_continue_driver(state, session_id).await?;
@@ -2951,7 +3056,7 @@ async fn start_prompt_driver(
     if !task_actor.try_start_driver() {
         return Ok(());
     }
-    tokio::spawn(run_driver(state, task_actor, session_id));
+    spawn_driver(state, task_actor, session_id);
     Ok(())
 }
 
@@ -2966,7 +3071,7 @@ async fn start_continue_driver(
     if !task_actor.request_continuation() {
         return Ok(());
     }
-    tokio::spawn(run_driver(state, task_actor, session_id));
+    spawn_driver(state, task_actor, session_id);
     Ok(())
 }
 
@@ -6287,6 +6392,153 @@ mod tests {
             .iter()
             .any(|m| m.content.contains("recovered after failure")));
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_releases_the_lease_for_an_in_process_reacquire() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let session = scripted_session(&cfg, "unused").await;
+        let task = task_for(session.session_id, "primary", &cfg.resolved_workspace);
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, _handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        assert!(
+            matches!(
+                RepositoryLease::acquire(temp.path(), temp.path()),
+                Err(RepositorySessionError::AlreadyOwned { .. })
+            ),
+            "the live supervisor must hold the lease"
+        );
+        supervisor.shutdown().await.unwrap();
+        RepositoryLease::acquire(temp.path(), temp.path())
+            .expect("the lease must be free as soon as shutdown returns");
+    }
+
+    #[tokio::test]
+    async fn shutdown_after_a_handle_already_shut_down_still_releases_the_lease() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let session = scripted_session(&cfg, "unused").await;
+        let task = task_for(session.session_id, "primary", &cfg.resolved_workspace);
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        // The TUI's quit-all path sends `Shutdown` through its handle first.
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        supervisor.shutdown().await.unwrap();
+        RepositoryLease::acquire(temp.path(), temp.path())
+            .expect("the lease must be free as soon as shutdown returns");
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_an_in_flight_turn_driver_before_releasing() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let model: Arc<dyn ModelClient> = Arc::new(FirstCallGateModel {
+            calls: Arc::new(AtomicUsize::new(0)),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        });
+        let opened = open_session_with_model(&cfg, SessionTarget::New, model.clone())
+            .await
+            .unwrap();
+        let session_id = opened.session.session_id;
+        let task = task_for(session_id, "gated", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (supervisor, handle) = RepositorySupervisor::spawn(
+            control,
+            lease,
+            vec![(task, opened.session)],
+            1,
+            cfg,
+            model,
+        )
+        .await
+        .unwrap();
+        let drivers = Arc::clone(&supervisor.state.drivers);
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "first".into(),
+            })
+            .await
+            .unwrap();
+        // The model call is in flight, so a turn driver is running.
+        started.notified().await;
+        assert_eq!(drivers.active.load(Ordering::SeqCst), 1);
+
+        // Free the model only after shutdown has started, in case
+        // cancellation does not interrupt the gated call by itself.
+        let releaser = tokio::spawn({
+            let release = Arc::clone(&release);
+            async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                release.notify_one();
+            }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), supervisor.shutdown())
+            .await
+            .expect("shutdown must finish once the driver can")
+            .unwrap();
+        assert_eq!(
+            drivers.active.load(Ordering::SeqCst),
+            0,
+            "shutdown returned while a turn driver was still running"
+        );
+        RepositoryLease::acquire(temp.path(), temp.path())
+            .expect("the lease must be free as soon as shutdown returns");
+        releaser.await.unwrap();
     }
 
     #[tokio::test]

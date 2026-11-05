@@ -154,6 +154,10 @@ async fn resolve_target(
     }
 }
 
+/// How long quitting waits for the supervisor to stop its sessions and
+/// release the repository lease before exiting regardless.
+const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Take repository ownership for the TUI, or explain why it runs without it.
 ///
 /// Another Forge already owning the repository is fatal: falling back to a
@@ -455,7 +459,20 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
                 .snapshot(session_id)
                 .await
                 .ok_or_else(|| anyhow::anyhow!("primary session missing from supervisor"))?;
-            run_tui_supervised(initial, runtime, handle, launch).await
+            let summary = run_tui_supervised(initial, runtime, handle, launch).await;
+            // Release the repository explicitly rather than relying on
+            // process exit, so the lease is provably free once we return.
+            // Bounded: a provider that never answers must not keep the
+            // terminal from quitting; process exit then frees the lease.
+            match tokio::time::timeout(SUPERVISOR_SHUTDOWN_TIMEOUT, supervisor.shutdown()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("shutdown: {error}"),
+                Err(_) => eprintln!(
+                    "shutdown: sessions did not stop within {}s; exiting anyway",
+                    SUPERVISOR_SHUTDOWN_TIMEOUT.as_secs()
+                ),
+            }
+            summary
         }
         None => run_tui_with_launch(opened.session, runtime, launch).await,
     }
