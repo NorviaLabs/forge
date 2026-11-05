@@ -218,13 +218,18 @@ impl RepositoryLease {
             .read(true)
             .write(true)
             .open(&path)?;
-        if let Err(error) = file.try_lock() {
-            let mut text = String::new();
-            file.read_to_string(&mut text)?;
-            let owner = serde_json::from_str(&text).ok();
+        // A read-only `probe` holds a shared lock for an instant; retry
+        // briefly so a prober can never make a legitimate owner fail.
+        let mut attempt = 0;
+        while let Err(error) = file.try_lock() {
+            attempt += 1;
+            if attempt < LEASE_ATTEMPTS && matches!(error, std::fs::TryLockError::WouldBlock) {
+                std::thread::sleep(LEASE_RETRY_DELAY);
+                continue;
+            }
             return Err(RepositorySessionError::AlreadyOwned {
                 path,
-                owner,
+                owner: read_owner(&mut file),
                 source: error.into(),
             });
         }
@@ -243,6 +248,80 @@ impl RepositoryLease {
     pub fn owner(&self) -> &LeaseOwner {
         &self.owner
     }
+
+    /// Check, without taking it, whether another process holds the lease.
+    ///
+    /// Read-only and safe on untrusted repository content: it never creates,
+    /// writes or truncates anything; it ignores an `owner.lock` that is not
+    /// a regular file (a symlink, FIFO or device could redirect or block
+    /// the read); it reads at most [`OWNER_RECORD_LIMIT`] bytes; and it
+    /// takes only a *shared* lock, so concurrent probes never see each
+    /// other. A missing or unheld lock is free (`Ok`). A held lock is
+    /// [`RepositorySessionError::AlreadyOwned`]. Advisory: the real
+    /// [`acquire`](Self::acquire) still decides.
+    pub fn probe(control_dir: &Path) -> Result<(), RepositorySessionError> {
+        let path = control_dir.join("owner.lock");
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.file_type().is_file() {
+            // Forge only ever writes a regular file here.
+            return Ok(());
+        }
+        let mut file = File::open(&path)?;
+        if !same_file(&metadata, &file.metadata()?) {
+            return Ok(());
+        }
+        match file.try_lock_shared() {
+            Ok(()) => {
+                let _ = file.unlock();
+                Ok(())
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                // An owner writes its record just after locking; give a
+                // fresh owner that instant so the report names it, not a
+                // stale predecessor.
+                std::thread::sleep(LEASE_RETRY_DELAY);
+                Err(RepositorySessionError::AlreadyOwned {
+                    path,
+                    owner: read_owner(&mut file),
+                    source: std::io::ErrorKind::WouldBlock.into(),
+                })
+            }
+            Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+        }
+    }
+}
+
+/// Owner records are a short JSON object; never read more than this.
+const OWNER_RECORD_LIMIT: u64 = 4096;
+/// How many times `acquire` tries a lock that a prober may hold.
+const LEASE_ATTEMPTS: u32 = 4;
+const LEASE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// The owner record, read from the start and bounded; `None` if it does not
+/// parse.
+fn read_owner(file: &mut File) -> Option<LeaseOwner> {
+    let mut bytes = Vec::new();
+    file.seek(SeekFrom::Start(0)).ok()?;
+    Read::by_ref(file)
+        .take(OWNER_RECORD_LIMIT)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+#[cfg(unix)]
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev() && a.ino() == b.ino()
+}
+
+#[cfg(not(unix))]
+fn same_file(_: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    b.is_file()
 }
 
 impl Drop for RepositoryLease {
@@ -1743,6 +1822,151 @@ fn parse_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run `probe` on another thread and fail if it does not return.
+    fn probe_promptly(control_dir: &Path) -> Result<(), RepositorySessionError> {
+        probe_within(control_dir, std::time::Duration::from_secs(5))
+    }
+
+    fn probe_within(
+        control_dir: &Path,
+        timeout: std::time::Duration,
+    ) -> Result<(), RepositorySessionError> {
+        let control_dir = control_dir.to_path_buf();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(RepositoryLease::probe(&control_dir));
+        });
+        receiver
+            .recv_timeout(timeout)
+            .expect("probe must return promptly")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_ignores_a_fifo_owner_lock_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("owner.lock");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        assert!(probe_promptly(dir.path()).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_ignores_a_symlinked_owner_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        // A live lease elsewhere: following the link would report it.
+        let _held = RepositoryLease::acquire(elsewhere.path(), elsewhere.path()).unwrap();
+        std::os::unix::fs::symlink(
+            elsewhere.path().join("owner.lock"),
+            dir.path().join("owner.lock"),
+        )
+        .unwrap();
+        assert!(probe_promptly(dir.path()).is_ok());
+
+        // A symlink to a FIFO must not block either.
+        let fifo = elsewhere.path().join("pipe");
+        assert!(std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::remove_file(dir.path().join("owner.lock")).unwrap();
+        std::os::unix::fs::symlink(&fifo, dir.path().join("owner.lock")).unwrap();
+        assert!(probe_promptly(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn probe_reads_a_bounded_owner_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let _held = RepositoryLease::acquire(dir.path(), dir.path()).unwrap();
+        // A sparse 8 GiB owner record: no real disk use. A bounded read
+        // takes milliseconds; an unbounded one takes seconds (and gigabytes
+        // of memory), so it misses the 1 s deadline.
+        OpenOptions::new()
+            .write(true)
+            .open(dir.path().join("owner.lock"))
+            .unwrap()
+            .set_len(8 << 30)
+            .unwrap();
+        match probe_within(dir.path(), std::time::Duration::from_secs(1)) {
+            Err(RepositorySessionError::AlreadyOwned { owner, .. }) => {
+                assert!(owner.is_none(), "an oversized record must not parse");
+            }
+            other => panic!("expected AlreadyOwned, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn concurrent_probes_never_see_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        // An owner.lock left by a previous, exited owner.
+        drop(RepositoryLease::acquire(dir.path(), dir.path()).unwrap());
+        let probers: Vec<_> = (0..2)
+            .map(|_| {
+                let control_dir = dir.path().to_path_buf();
+                std::thread::spawn(move || {
+                    (0..500)
+                        .filter(|_| RepositoryLease::probe(&control_dir).is_err())
+                        .count()
+                })
+            })
+            .collect();
+        for prober in probers {
+            assert_eq!(prober.join().unwrap(), 0, "a probe reported another probe");
+        }
+    }
+
+    #[test]
+    fn probing_never_makes_a_legitimate_acquire_fail_and_names_live_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        // Seed a stale record naming a pid that is not this process.
+        std::fs::write(
+            dir.path().join("owner.lock"),
+            serde_json::to_string(&LeaseOwner {
+                pid: u32::MAX,
+                started_at: Utc::now(),
+                workspace: dir.path().to_path_buf(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let prober = {
+            let control_dir = dir.path().to_path_buf();
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut named = Vec::new();
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Err(RepositorySessionError::AlreadyOwned { owner, .. }) =
+                        RepositoryLease::probe(&control_dir)
+                    {
+                        named.push(owner.map(|owner| owner.pid));
+                    }
+                }
+                named
+            })
+        };
+        for _ in 0..500 {
+            let lease = RepositoryLease::acquire(dir.path(), dir.path())
+                .expect("a prober must never make a legitimate acquire fail");
+            drop(lease);
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        // A record caught mid-rewrite may not parse ("owner unknown"), but
+        // a refusal must never name the stale, dead owner.
+        for pid in prober.join().unwrap() {
+            assert_ne!(pid, Some(u32::MAX), "a refusal named a stale owner");
+            if let Some(pid) = pid {
+                assert_eq!(pid, std::process::id());
+            }
+        }
+    }
     use tempfile::TempDir;
 
     fn new_session(workspace: &Path, label: &str, slot: Option<u8>) -> NewRepositorySession {

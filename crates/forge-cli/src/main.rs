@@ -6,14 +6,14 @@ use std::{io::Read, path::PathBuf, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
 
-use forge_config::{is_trusted, Config, ConfigOverrides};
+use forge_config::{Config, ConfigOverrides};
 use forge_session::{
-    open_session, resolve_journal_dir, run_headless, ApprovalPolicy, ApprovalRequired,
+    open_session, run_headless, ApprovalPolicy, ApprovalRequired, LaunchPlan, LaunchTarget,
     SessionTarget,
 };
 use forge_tui::{
-    decide_launch, resume_session_items, run_setup, run_tui_supervised, run_tui_with_launch,
-    ExitCode, SetupRequest, SetupResult, TuiLaunch, TuiRuntimeConfig,
+    decide_launch, run_setup, run_tui_supervised, run_tui_with_launch, ExitCode, SetupRequest,
+    SetupResult, TuiLaunch, TuiRuntimeConfig,
 };
 use forge_types::SessionId;
 use tracing_subscriber::EnvFilter;
@@ -122,35 +122,22 @@ fn main() {
     std::process::exit(code.code());
 }
 
-/// Turn `--resume` into a concrete target. A bare `--resume` means "the most
-/// recent session", which requires looking one up; if there is none, fall back
-/// to a new session and say so.
-async fn resolve_target(
-    cfg: &Config,
-    resume: Option<Option<SessionId>>,
-) -> anyhow::Result<(SessionTarget, Option<String>)> {
-    match resume {
-        Some(Some(session_id)) => Ok((SessionTarget::Resume(session_id), None)),
-        Some(None) => {
-            let (journal_dir, _) = resolve_journal_dir(cfg);
-            let items = resume_session_items(&journal_dir, 10)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))?;
-            match items.first() {
-                Some(item) => {
-                    let session_id = item
-                        .id
-                        .parse::<SessionId>()
-                        .map_err(|e| anyhow::anyhow!(e))?;
-                    Ok((SessionTarget::Resume(session_id), None))
-                }
-                None => Ok((
-                    SessionTarget::New,
-                    Some("No previous session found; creating a new session.".to_string()),
-                )),
-            }
-        }
-        None => Ok((SessionTarget::New, None)),
+/// The session the flags ask for. First-run launches (setup still pending
+/// at start) always open a new session.
+fn launch_target(cli: &Cli, allow_resume_picker: bool) -> LaunchTarget {
+    if !allow_resume_picker {
+        return LaunchTarget::New;
+    }
+    if let Some(session_id) = cli.fork {
+        return LaunchTarget::Fork(session_id);
+    }
+    if cli.r#continue {
+        return LaunchTarget::Continue;
+    }
+    match cli.resume {
+        Some(Some(session_id)) => LaunchTarget::Resume(session_id),
+        Some(None) => LaunchTarget::Latest,
+        None => LaunchTarget::New,
     }
 }
 
@@ -172,60 +159,6 @@ async fn bounded_shutdown<E: std::fmt::Display>(
             timeout.as_secs()
         )),
     }
-}
-
-/// Take repository ownership for the TUI, or explain why it runs without it.
-///
-/// In a git repository, any failure to take ownership is fatal. Another
-/// Forge owning it (`AlreadyOwned`) is the common case, but an unreadable
-/// lock file or a control database the owner holds locked are no safer:
-/// falling back to a lease-less session there could journal into the same
-/// sessions directory as a live owner, a second writer. Only a workspace
-/// with no repository runtime storage (not a git repository) runs
-/// lease-less.
-async fn acquire_repository(
-    cfg: &Config,
-    cwd: &std::path::Path,
-    startup_notices: &mut Vec<String>,
-) -> anyhow::Result<Option<forge_session::RepositoryBootstrap>> {
-    let Ok(storage) = forge_session::RepositoryRuntimeStorage::new(cwd) else {
-        return Ok(None);
-    };
-    match forge_session::RepositoryBootstrap::acquire(cfg).await {
-        Ok(bootstrap) => {
-            match bootstrap.recover_interrupted_creations().await {
-                Ok(notices) => startup_notices.extend(notices),
-                Err(error) => {
-                    startup_notices.push(format!("Session recovery incomplete: {error}"));
-                }
-            }
-            Ok(Some(bootstrap))
-        }
-        Err(
-            error @ forge_session::RepositorySupervisorError::Control(
-                forge_session::RepositorySessionError::AlreadyOwned { .. },
-            ),
-        ) => Err(error.into()),
-        Err(error) => Err(anyhow::anyhow!(
-            "could not take ownership of this repository ({}): {error}. \
-             Fix the permissions or contents of that directory (or move it aside), \
-             then start Forge again; Forge will not run a second, unowned session beside it.",
-            storage
-                .main_worktree()
-                .join(".forge")
-                .join("local")
-                .display()
-        )),
-    }
-}
-
-fn config_for_workspace(cfg: &Config, workspace: &std::path::Path) -> Config {
-    let mut bound = cfg.clone();
-    bound.resolved_workspace = workspace.to_path_buf();
-    bound.workspace_root = Some(workspace.display().to_string());
-    let (journal_dir, _) = resolve_journal_dir(&bound);
-    bound.journal.path = journal_dir.display().to_string();
-    bound
 }
 
 async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
@@ -351,7 +284,10 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
     let cwd = cfg.workspace_root().to_path_buf();
-    let trusted_at_start = is_trusted(&cwd);
+    // Ownership first: a launch another Forge would make a second writer is
+    // refused here, before any setup screen and any trust or theme write.
+    let plan = LaunchPlan::prepare(&cfg).await?;
+    let trusted_at_start = !plan.needs_trust();
     // One provider registry for the launch decisions below.
     let registry = forge_connect::loaded_registry();
     let provider_connected = forge_connect::has_connected_profile(&registry);
@@ -374,50 +310,15 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         }
     }
 
-    // Repository ownership comes before any session exists. The exclusive
-    // lease is what enforces one Forge per repository group; acquiring it
-    // after `open_session` would let a losing process write session state
-    // first and only then discover it does not own the repository.
-    let mut startup_notices = Vec::new();
-    let bootstrap = acquire_repository(&cfg, &cwd, &mut startup_notices).await?;
-
-    let (target, create_notice) = if decision.allow_resume_picker {
-        if let Some(session_id) = cli.fork {
-            (SessionTarget::Fork(session_id), None)
-        } else if cli.r#continue {
-            resolve_target(&cfg, Some(None)).await?
-        } else {
-            resolve_target(&cfg, cli.resume).await?
-        }
-    } else {
-        (SessionTarget::New, None)
-    };
-    let mut open_target = target;
-    let mut fork_from = None;
-    let session_cfg = if let Some(bootstrap) = bootstrap.as_ref() {
-        match target {
-            SessionTarget::Resume(session_id) => {
-                let record = bootstrap.session(session_id).await?;
-                config_for_workspace(&cfg, &record.workspace)
-            }
-            SessionTarget::Fork(session_id) => {
-                let record = bootstrap.session(session_id).await?;
-                fork_from = Some(session_id);
-                open_target = SessionTarget::Resume(session_id);
-                config_for_workspace(&cfg, &record.workspace)
-            }
-            SessionTarget::New => cfg.clone(),
-        }
-    } else {
-        cfg.clone()
-    };
-    let opened = open_session(&session_cfg, open_target).await?;
-    let opened_session_id = opened.session.session_id;
-    let runtime_cwd = opened.session.workspace_root().to_path_buf();
-    startup_notices.extend(opened.notices);
-    if let Some(notice) = create_notice {
-        startup_notices.push(notice);
-    }
+    let launched = plan
+        .launch(launch_target(&cli, decision.allow_resume_picker))
+        .await?;
+    let opened_session_id = launched.opened.session.session_id;
+    let runtime_cwd = launched.opened.session.workspace_root().to_path_buf();
+    let startup_notices = launched.notices;
+    let bootstrap = launched.bootstrap;
+    let fork_from = launched.fork_from;
+    let opened = launched.opened;
 
     let cfg = Config::load(ConfigOverrides {
         config_path: None,
@@ -577,30 +478,11 @@ mod tests {
         assert!(resolve_profile_id("nobody/model").is_err());
     }
 
-    /// An explicit session id needs no journal lookup, so this maps straight
-    /// through without touching the filesystem.
-    #[tokio::test]
-    async fn explicit_resume_id_maps_to_a_resume_target() {
-        let session_id = SessionId::new_v4();
-        let cfg = Config::default();
-        let (target, notice) = resolve_target(&cfg, Some(Some(session_id))).await.unwrap();
-        assert_eq!(target, SessionTarget::Resume(session_id));
-        assert!(notice.is_none());
-    }
-
     #[test]
     fn print_and_approvals_are_not_offered() {
         assert!(Cli::try_parse_from(["forge", "-p", "hi"]).is_err());
         assert!(Cli::try_parse_from(["forge", "--print", "hi"]).is_err());
         assert!(Cli::try_parse_from(["forge", "--approvals", "ask"]).is_err());
-    }
-
-    #[tokio::test]
-    async fn no_resume_flag_maps_to_a_new_session() {
-        let cfg = Config::default();
-        let (target, notice) = resolve_target(&cfg, None).await.unwrap();
-        assert_eq!(target, SessionTarget::New);
-        assert!(notice.is_none());
     }
 
     fn git_repo() -> tempfile::TempDir {
@@ -706,8 +588,7 @@ mod tests {
         let control = repo.path().join(".forge");
         let before = snapshot(&control);
 
-        let mut notices = Vec::new();
-        let error = acquire_repository(&cfg, repo.path(), &mut notices)
+        let error = LaunchPlan::prepare(&cfg)
             .await
             .err()
             .expect("an owned repository must refuse, not fall back to a lease-less session");
@@ -729,10 +610,6 @@ mod tests {
         assert!(
             !message.contains(&format!("pid {},", std::process::id())),
             "refusal must not name this process: {message}"
-        );
-        assert!(
-            notices.is_empty(),
-            "no lease-less startup notice: {notices:?}"
         );
         let changed: Vec<_> = before
             .keys()
@@ -763,12 +640,19 @@ mod tests {
             return;
         }
 
-        let mut notices = Vec::new();
-        let result = acquire_repository(&cfg, repo.path(), &mut notices).await;
+        // The read-only probe in `prepare` cannot read the lock either and
+        // defers to the real acquisition, which runs after trust.
+        let trust = tempfile::tempdir().unwrap();
+        let store = trust.path().join("trust.toml");
+        forge_config::grant_trust_at(&store, repo.path()).unwrap();
+        let result =
+            match forge_session::LaunchPlan::prepare_with_trust_store(&cfg, Some(store)).await {
+                Ok(plan) => plan.launch(LaunchTarget::New).await.map(|_| ()),
+                Err(error) => Err(error),
+            };
         std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let error = result
-            .err()
-            .expect("an ownership failure other than AlreadyOwned must also refuse");
+        let error =
+            result.expect_err("an ownership failure other than AlreadyOwned must also refuse");
         let message = format!("{error:#}");
         assert!(message.contains("could not take ownership"), "{message}");
         assert!(
@@ -776,8 +660,8 @@ mod tests {
             "the refusal must name where the problem is: {message}"
         );
         assert!(
-            notices.is_empty(),
-            "no lease-less startup notice: {notices:?}"
+            !repo.path().join("journals").exists(),
+            "no lease-less session was opened"
         );
         drop(owner);
     }
@@ -801,26 +685,117 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn free_repository_is_acquired() {
-        let repo = git_repo();
-        let cfg = workspace_config(repo.path());
-        let mut notices = Vec::new();
-        let bootstrap = acquire_repository(&cfg, repo.path(), &mut notices)
-            .await
-            .unwrap();
-        assert!(bootstrap.is_some());
+    fn target_for(args: &[&str], allow_resume_picker: bool) -> LaunchTarget {
+        let cli = Cli::try_parse_from(args).unwrap();
+        launch_target(&cli, allow_resume_picker)
     }
 
+    #[test]
+    fn flags_map_to_launch_targets() {
+        let session_id = SessionId::new_v4();
+        let id = session_id.to_string();
+        assert_eq!(target_for(&["forge"], true), LaunchTarget::New);
+        assert_eq!(
+            target_for(&["forge", "--continue"], true),
+            LaunchTarget::Continue
+        );
+        assert_eq!(
+            target_for(&["forge", "--resume"], true),
+            LaunchTarget::Latest
+        );
+        assert_eq!(
+            target_for(&["forge", "--resume", &id], true),
+            LaunchTarget::Resume(session_id)
+        );
+        assert_eq!(
+            target_for(&["forge", "--fork", &id], true),
+            LaunchTarget::Fork(session_id)
+        );
+    }
+
+    #[test]
+    fn first_run_launches_ignore_resume_flags() {
+        let id = SessionId::new_v4().to_string();
+        for args in [
+            &["forge", "--continue"][..],
+            &["forge", "--resume"][..],
+            &["forge", "--resume", &id][..],
+            &["forge", "--fork", &id][..],
+        ] {
+            assert_eq!(target_for(args, false), LaunchTarget::New, "{args:?}");
+        }
+    }
+
+    /// Bare `--resume` must pick exactly what the in-app resume picker lists
+    /// first. Both order by the journal's `.db` modification time, so a
+    /// write that only touched the WAL moves neither.
     #[tokio::test]
-    async fn non_git_workspace_still_runs_without_a_lease() {
+    async fn latest_matches_the_resume_picker_order() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = workspace_config(dir.path());
-        let mut notices = Vec::new();
-        let bootstrap = acquire_repository(&cfg, dir.path(), &mut notices)
+        let mut cfg = Config {
+            resolved_workspace: dir.path().to_path_buf(),
+            workspace_root: Some(dir.path().display().to_string()),
+            ..Default::default()
+        };
+        let journals = dir.path().join("journals");
+        cfg.journal.path = journals.display().to_string();
+        cfg.model.mock = true;
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                open_session(&cfg, SessionTarget::New)
+                    .await
+                    .unwrap()
+                    .session
+                    .session_id,
+            );
+        }
+        // Dropped sessions close their journals asynchronously, and the close
+        // rewrites the `.db`. Wait (bounded) until every journal is closed
+        // (its WAL and shared-memory files are gone) before setting times.
+        let closed = |id: &SessionId| {
+            !journals.join(format!("{id}.db-wal")).exists()
+                && !journals.join(format!("{id}.db-shm")).exists()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !ids.iter().all(closed) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "journals never closed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Journal times disagree with creation order: the middle one is newest.
+        for (id, age) in [(ids[0], 7200), (ids[1], 0), (ids[2], 3600)] {
+            std::fs::File::options()
+                .write(true)
+                .open(journals.join(format!("{id}.db")))
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(age))
+                .unwrap();
+        }
+        // A WAL-only write on the oldest session: an (empty, valid) WAL file
+        // newer than every journal.
+        std::fs::write(journals.join(format!("{}.db-wal", ids[0])), b"").unwrap();
+        let trust = tempfile::tempdir().unwrap();
+        let store = trust.path().join("trust.toml");
+        forge_config::grant_trust_at(&store, dir.path()).unwrap();
+
+        // Launch first: the picker reads each journal for a title, which can
+        // itself move journal times, so it must not run before the choice.
+        let launched = forge_session::LaunchPlan::prepare_with_trust_store(&cfg, Some(store))
+            .await
+            .unwrap()
+            .launch(LaunchTarget::Latest)
             .await
             .unwrap();
-        assert!(bootstrap.is_none());
-        assert!(notices.is_empty());
+        let picker_first = forge_tui::resume_session_items(&journals, 10)
+            .await
+            .unwrap()
+            .first()
+            .map(|item| item.id.clone())
+            .expect("picker lists sessions");
+        assert_eq!(launched.opened.session.session_id.to_string(), picker_first);
+        assert_eq!(launched.opened.session.session_id, ids[1]);
     }
 }

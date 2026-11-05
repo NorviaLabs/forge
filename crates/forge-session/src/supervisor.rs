@@ -699,6 +699,11 @@ impl RepositoryBootstrap {
         self.lease.owner()
     }
 
+    /// The workspace's selected session, as recorded in the control database.
+    pub(crate) async fn selected(&self) -> Result<Option<SessionId>, RepositorySessionError> {
+        self.control.selected().await
+    }
+
     /// Roll back managed creations an earlier process left unresolved. A task
     /// stuck in `awaiting_trust` can never accept a prompt, so it is cancelled
     /// and its worktree removed when clean. Returns one notice per rollback.

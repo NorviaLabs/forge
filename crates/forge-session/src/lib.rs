@@ -13,6 +13,7 @@
 
 mod control;
 pub mod headless;
+mod launch;
 mod snapshot;
 mod supervisor;
 
@@ -24,6 +25,7 @@ pub use control::{
     SupervisorTurnState, WorktreeOwnership,
 };
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
+pub use launch::{config_for_workspace, LaunchError, LaunchPlan, LaunchTarget, Launched};
 pub use snapshot::{
     replayed_transcript, BackgroundTaskSnapshot, SessionDetailsSnapshot, SessionSnapshot,
     ShellExecutionSnapshot, TranscriptSnapshot,

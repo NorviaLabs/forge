@@ -25,7 +25,7 @@ command/event API, and immutable per-frame snapshots for frontends.
 - `WorktreeOwnership::{Primary, Managed, Attached}`; `SessionLifecycle::{Active, Archived, Unavailable, Removed, Retained}`; `SupervisorTurnState::{Idle, Queued, Running, Waiting, Completed, Failed, Cancelled, Interrupted}` with `label()`.
 - `RepositorySession { session_id, label, workspace, branch, base_sha, ownership, lifecycle, turn_state, slot, model_id, profile_id (SQL column still `route_id`; a stored legacy route id is mapped through `profile_id_for_stored_route` on read), reasoning_effort, created_at, updated_at, archived_at, github_* }`.
 - `NewRepositorySession`, `PendingCreation`, `CompletedCreation`, `StaleCreation`, `LeaseOwner { pid, started_at, workspace }`.
-- `RepositoryLease::{acquire(control_dir, workspace), owner()}` (releases on `Drop`).
+- `RepositoryLease::{acquire(control_dir, workspace), owner(), probe(control_dir)}` (`probe` is read-only; `acquire` retries a lock held only briefly by a prober, up to 4 attempts 20 ms apart, and reads the owner record bounded) (releases on `Drop`).
 - `RepositoryControl::{open, path, sessions, session, register_session, mark_unavailable, set_turn_state, archive, mark_retained, mark_worktree_removed, set_selected, selected, assign_slot, rename, set_session_model, set_base_sha, set_session_branch, reconcile_worktrees, begin_managed_creation, begin_managed_creation_for_issue, mark_worktree_created, complete_creation, cancel_creation, stale_creations, forget_unavailable_primary, enqueue_prompt, queued_prompts, interrupted_prompts, claim_next_prompt, finish_prompt, cancel_queued_prompt_at, cancel_queued_prompt_by_id, reconcile_running_prompt_claims, interrupt_prompt_claim, set_github_auto_pr, set_pr_url, set_github_issue, increment_github_retry, reset_github_retry, set_github_tests_passed}`.
 - `RepositorySessionError` — `Database`, `Io`, `Json`, `AlreadyOwned`, `WorkspaceInUse`, `InvalidStoredValue`, `InvalidSessionId`, `NotFound`, `MustStopBeforeArchive`, `TrustRequired`, `Archived`, `Retained`, `SlotOccupied`.
 
@@ -35,6 +35,14 @@ command/event API, and immutable per-frame snapshots for frontends.
 - `ApprovalRequired { payload: HitlPayload }` implementing `Display`/`Error`.
 - `pub const UNCONFINED_REFUSED_UNDER_APPROVE_ALL`.
 - `run_headless(AgentSession, prompt, ApprovalPolicy) -> anyhow::Result<ModelResponse>`.
+
+`launch.rs`:
+
+- `LaunchPlan::{prepare(&Config).await, prepare_with_trust_store(&Config, Option<PathBuf>).await, workspace, needs_trust, launch(self, LaunchTarget) -> Result<Launched, LaunchError>}`.
+- `LaunchTarget::{New, Continue, Latest, Resume(SessionId), Fork(SessionId)}`.
+- `Launched { bootstrap: Option<RepositoryBootstrap>, opened: OpenedSession, fork_from: Option<SessionId>, notices }` (`opened.notices` is moved into `notices`).
+- `LaunchError::{Untrusted { workspace }, Repository(RepositorySupervisorError), OwnershipUnavailable { control_dir, source }, Session(anyhow::Error)}`.
+- `config_for_workspace(&Config, &Path) -> Config`.
 
 `snapshot.rs`:
 
@@ -57,6 +65,8 @@ command/event API, and immutable per-frame snapshots for frontends.
 
 ## Invariants
 
+- `LaunchPlan::prepare` writes nothing. It probes ownership read-only (`RepositoryLease::probe`: never creates or writes; ignores an `owner.lock` that is not a regular file, so a symlink or FIFO can neither redirect nor block it; reads at most 4 KiB of the owner record; takes only a shared lock, so concurrent probes never see each other) and refuses with `AlreadyOwned` when another process holds the lease, so a doomed launch is refused before any setup screen or trust/theme write. It also reads `needs_trust`. `launch` re-reads trust first (`Untrusted` otherwise, with nothing written: no `.forge`, no exclude edit, no control database opened, so crafted or symlinked repository content is never acted on before consent), then takes the lease: `AlreadyOwned` → `Repository`; any other bootstrap failure where repository storage exists → `OwnershipUnavailable { control_dir, .. }`, naming `<main worktree>/.forge/local`; no repository storage → lease-less. Then it runs `recover_interrupted_creations`, resolves the target and opens the session; the caller opens the supervisor. The probe is advisory: a process that takes the lease between `prepare` and `launch` is still refused by `launch`.
+- `LaunchTarget::Continue` opens the control DB's selected session when it is `Active` and its journal exists; otherwise the most recent journal with a "selected session is no longer available" notice; with no journal at all, a new session with a "No previous session found" notice. Without a repository it behaves like `Latest`.
 - `RepositorySupervisor::shutdown(self)` sends `Shutdown` (harmless if a handle already did), joins the command loop (which joins its detached operations), waits for every turn driver (`DriverTracker`), and only then drops the lease, which lives in `Option<RepositoryLease>` inside the shared state. When it returns `Ok`, the lease can be re-acquired immediately, in this process or another. The supervisor keeps its own command sender, so the command loop no longer ends merely because every `SupervisorHandle` was dropped while the supervisor is alive.
 - Exactly one Forge process owns a repository group: `RepositoryLease::acquire` uses a non-truncating `try_lock` on `owner.lock`, and a losing process reports the incumbent `LeaseOwner` parsed from that file.
 - The exclusive lease is taken before any session is created; the CLI acquires it, opens the primary session, then hands both to `open_with_primary`.
