@@ -1133,11 +1133,17 @@ impl RepositorySupervisor {
         } else {
             Ok(())
         };
-        if let Some(command_loop) = self.command_loop.take() {
-            command_loop
-                .await
-                .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
-        }
+        // A command loop that panicked or was aborted is reported, but only
+        // after the drivers are waited for and the lease is dropped: every
+        // path out of shutdown leaves the repository provably free.
+        let loop_result = match self.command_loop.take() {
+            Some(command_loop) => command_loop.await.map_err(|error| {
+                RepositorySupervisorError::Command(format!(
+                    "supervisor command loop failed: {error}"
+                ))
+            }),
+            None => Ok(()),
+        };
         self.state.drivers.wait_idle().await;
         let lease = self
             .state
@@ -1146,6 +1152,7 @@ impl RepositorySupervisor {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .take();
         drop(lease);
+        loop_result?;
         shutdown_result.map_err(RepositorySupervisorError::Command)
     }
 
@@ -6394,6 +6401,147 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    /// An idle supervisor over one scripted session, owning `temp`'s lease.
+    async fn idle_supervisor(temp: &TempDir) -> (RepositorySupervisor, SupervisorHandle) {
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+        let session = scripted_session(&cfg, "unused").await;
+        let task = task_for(session.session_id, "primary", &cfg.resolved_workspace);
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+            .await
+            .unwrap()
+    }
+
+    fn lease_is_held(temp: &TempDir) -> bool {
+        matches!(
+            RepositoryLease::acquire(temp.path(), temp.path()),
+            Err(RepositorySessionError::AlreadyOwned { .. })
+        )
+    }
+
+    /// Discriminates the driver wait itself: the `Shutdown` command's retire
+    /// step drains every driver attached to an actor, so this models a
+    /// driver it did not drain (a tracked task outside any actor). Shutdown
+    /// must stay pending, with the lease held, until that driver finishes.
+    #[tokio::test]
+    async fn shutdown_holds_the_lease_until_an_undrained_driver_finishes() {
+        let temp = TempDir::new().unwrap();
+        let (supervisor, _handle) = idle_supervisor(&temp).await;
+        let release = Arc::new(Notify::new());
+        let token = supervisor.state.drivers.enter();
+        let driver = tokio::spawn({
+            let release = Arc::clone(&release);
+            async move {
+                release.notified().await;
+                drop(token);
+            }
+        });
+
+        let shutdown = tokio::spawn(supervisor.shutdown());
+        // Let shutdown run as far as it can without the driver finishing.
+        for _ in 0..64 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !shutdown.is_finished(),
+            "shutdown returned with a driver still running"
+        );
+        assert!(
+            lease_is_held(&temp),
+            "lease released with a driver still running"
+        );
+
+        release.notify_one();
+        driver.await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), shutdown)
+            .await
+            .expect("shutdown must finish once the driver does")
+            .unwrap()
+            .unwrap();
+        assert!(!lease_is_held(&temp));
+    }
+
+    #[tokio::test]
+    async fn shutdown_after_an_aborted_command_loop_still_releases_the_lease() {
+        let temp = TempDir::new().unwrap();
+        let (supervisor, _handle) = idle_supervisor(&temp).await;
+        // Anything that outlives shutdown holding the shared state (a
+        // straggling task) must not keep the lease alive.
+        let straggler = Arc::clone(&supervisor.state);
+        let command_loop = supervisor.command_loop.as_ref().unwrap();
+        command_loop.abort();
+        while !command_loop.is_finished() {
+            tokio::task::yield_now().await;
+        }
+
+        let result = supervisor.shutdown().await;
+        assert!(
+            result.is_err(),
+            "a failed command loop must be reported, not hidden"
+        );
+        assert!(
+            !lease_is_held(&temp),
+            "the lease must be released even when the command loop failed"
+        );
+        drop(straggler);
+    }
+
+    #[tokio::test]
+    async fn driver_tracker_is_idle_at_zero_and_wakes_on_the_last_token() {
+        let tracker = Arc::new(DriverTracker::default());
+        tokio::time::timeout(std::time::Duration::from_secs(5), tracker.wait_idle())
+            .await
+            .expect("no drivers means idle at once");
+
+        let first = tracker.enter();
+        let second = tracker.enter();
+        let waiter = tokio::spawn({
+            let tracker = Arc::clone(&tracker);
+            async move { tracker.wait_idle().await }
+        });
+        tokio::task::yield_now().await;
+        drop(first);
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished(), "one driver is still running");
+        drop(second);
+        tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+            .await
+            .expect("the last token must wake the waiter")
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn driver_tracker_never_loses_the_idle_wakeup() {
+        for _ in 0..50 {
+            let tracker = Arc::new(DriverTracker::default());
+            let tokens: Vec<_> = (0..1000).map(|_| tracker.enter()).collect();
+            let waiter = tokio::spawn({
+                let tracker = Arc::clone(&tracker);
+                async move { tracker.wait_idle().await }
+            });
+            let droppers: Vec<_> = tokens
+                .into_iter()
+                .map(|token| tokio::spawn(async move { drop(token) }))
+                .collect();
+            for dropper in droppers {
+                dropper.await.unwrap();
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+                .await
+                .expect("wait_idle missed the final wakeup")
+                .unwrap();
+            assert_eq!(tracker.active.load(Ordering::SeqCst), 0);
+        }
+    }
+
     #[tokio::test]
     async fn shutdown_releases_the_lease_for_an_in_process_reacquire() {
         let temp = TempDir::new().unwrap();
@@ -6518,18 +6666,17 @@ mod tests {
         started.notified().await;
         assert_eq!(drivers.active.load(Ordering::SeqCst), 1);
 
-        // Free the model only after shutdown has started, in case
-        // cancellation does not interrupt the gated call by itself.
-        let releaser = tokio::spawn({
-            let release = Arc::clone(&release);
-            async move {
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                release.notify_one();
-            }
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(10), supervisor.shutdown())
+        // Start shutdown, let it run until it blocks, then free the model in
+        // case cancellation does not interrupt the gated call by itself. No
+        // wall-clock sleep: `notify_one` stores a permit if the model has not
+        // reached its wait yet.
+        let shutdown = tokio::spawn(supervisor.shutdown());
+        tokio::task::yield_now().await;
+        release.notify_one();
+        tokio::time::timeout(std::time::Duration::from_secs(10), shutdown)
             .await
             .expect("shutdown must finish once the driver can")
+            .unwrap()
             .unwrap();
         assert_eq!(
             drivers.active.load(Ordering::SeqCst),
@@ -6538,7 +6685,6 @@ mod tests {
         );
         RepositoryLease::acquire(temp.path(), temp.path())
             .expect("the lease must be free as soon as shutdown returns");
-        releaser.await.unwrap();
     }
 
     #[tokio::test]

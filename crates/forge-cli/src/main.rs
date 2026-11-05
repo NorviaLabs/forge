@@ -158,22 +158,39 @@ async fn resolve_target(
 /// release the repository lease before exiting regardless.
 const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Run a supervisor shutdown, giving up after `timeout`. Returns what to
+/// report on stderr, if anything; it never changes the exit code.
+async fn bounded_shutdown<E: std::fmt::Display>(
+    shutdown: impl std::future::Future<Output = Result<(), E>>,
+    timeout: Duration,
+) -> Option<String> {
+    match tokio::time::timeout(timeout, shutdown).await {
+        Ok(Ok(())) => None,
+        Ok(Err(error)) => Some(format!("shutdown: {error}")),
+        Err(_) => Some(format!(
+            "shutdown: sessions did not stop within {}s; exiting anyway",
+            timeout.as_secs()
+        )),
+    }
+}
+
 /// Take repository ownership for the TUI, or explain why it runs without it.
 ///
-/// Another Forge already owning the repository is fatal: falling back to a
-/// lease-less session there would journal into the same sessions directory
-/// as the owner, a second writer. Only a workspace that has no repository
-/// runtime storage (not a git repository) or whose storage cannot be opened
-/// still falls back to a lease-less session, with a startup notice for the
-/// latter.
+/// In a git repository, any failure to take ownership is fatal. Another
+/// Forge owning it (`AlreadyOwned`) is the common case, but an unreadable
+/// lock file or a control database the owner holds locked are no safer:
+/// falling back to a lease-less session there could journal into the same
+/// sessions directory as a live owner, a second writer. Only a workspace
+/// with no repository runtime storage (not a git repository) runs
+/// lease-less.
 async fn acquire_repository(
     cfg: &Config,
     cwd: &std::path::Path,
     startup_notices: &mut Vec<String>,
 ) -> anyhow::Result<Option<forge_session::RepositoryBootstrap>> {
-    if forge_session::RepositoryRuntimeStorage::new(cwd).is_err() {
+    let Ok(storage) = forge_session::RepositoryRuntimeStorage::new(cwd) else {
         return Ok(None);
-    }
+    };
     match forge_session::RepositoryBootstrap::acquire(cfg).await {
         Ok(bootstrap) => {
             match bootstrap.recover_interrupted_creations().await {
@@ -189,10 +206,16 @@ async fn acquire_repository(
                 forge_session::RepositorySessionError::AlreadyOwned { .. },
             ),
         ) => Err(error.into()),
-        Err(error) => {
-            startup_notices.push(format!("Sessions unavailable: {error}"));
-            Ok(None)
-        }
+        Err(error) => Err(anyhow::anyhow!(
+            "could not take ownership of this repository ({}): {error}. \
+             Fix the permissions or contents of that directory (or move it aside), \
+             then start Forge again; Forge will not run a second, unowned session beside it.",
+            storage
+                .main_worktree()
+                .join(".forge")
+                .join("local")
+                .display()
+        )),
     }
 }
 
@@ -464,13 +487,10 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
             // process exit, so the lease is provably free once we return.
             // Bounded: a provider that never answers must not keep the
             // terminal from quitting; process exit then frees the lease.
-            match tokio::time::timeout(SUPERVISOR_SHUTDOWN_TIMEOUT, supervisor.shutdown()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => eprintln!("shutdown: {error}"),
-                Err(_) => eprintln!(
-                    "shutdown: sessions did not stop within {}s; exiting anyway",
-                    SUPERVISOR_SHUTDOWN_TIMEOUT.as_secs()
-                ),
+            if let Some(problem) =
+                bounded_shutdown(supervisor.shutdown(), SUPERVISOR_SHUTDOWN_TIMEOUT).await
+            {
+                eprintln!("{problem}");
             }
             summary
         }
@@ -614,13 +634,77 @@ mod tests {
         cfg
     }
 
+    /// Every file under `dir`, with its bytes, for before/after comparisons.
+    fn snapshot(dir: &std::path::Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&next) else {
+                continue;
+            };
+            for entry in entries {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    files.insert(path.clone(), std::fs::read(&path).unwrap_or_default());
+                }
+            }
+        }
+        files
+    }
+
+    fn find_file(dir: &std::path::Path, name: &str) -> Option<PathBuf> {
+        snapshot(dir)
+            .into_keys()
+            .find(|path| path.file_name().is_some_and(|file| file == name))
+    }
+
+    const LEASE_HOLDER_ENV: &str = "FORGE_TEST_LEASE_HOLDER_WORKSPACE";
+
+    /// Child half of the two-process test: when the parent sets
+    /// `LEASE_HOLDER_ENV`, take the repository lease, say so on stdout and
+    /// hold it until stdin closes. Without the variable it does nothing.
     #[tokio::test]
-    async fn second_process_on_an_owned_repository_is_refused_not_lease_less() {
+    async fn lease_holder_child() {
+        let Ok(workspace) = std::env::var(LEASE_HOLDER_ENV) else {
+            return;
+        };
+        let cfg = workspace_config(std::path::Path::new(&workspace));
+        let _owner = forge_session::RepositoryBootstrap::acquire(&cfg)
+            .await
+            .expect("child takes the lease");
+        println!("LEASE_HELD {}", std::process::id());
+        let mut sink = String::new();
+        let _ = std::io::stdin().read_to_string(&mut sink);
+    }
+
+    #[tokio::test]
+    async fn second_process_on_an_owned_repository_is_refused_naming_the_owner() {
+        use std::io::BufRead;
+
         let repo = git_repo();
         let cfg = workspace_config(repo.path());
-        let owner = forge_session::RepositoryBootstrap::acquire(&cfg)
-            .await
-            .expect("first owner takes the lease");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::lease_holder_child", "--nocapture"])
+            .env(LEASE_HOLDER_ENV, repo.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+        let child_pid = loop {
+            let line = lines
+                .next()
+                .expect("child exited before taking the lease")
+                .unwrap();
+            if let Some(pid) = line.strip_prefix("LEASE_HELD ") {
+                break pid.trim().to_string();
+            }
+        };
+        assert_eq!(child_pid, child.id().to_string());
+        let control = repo.path().join(".forge");
+        let before = snapshot(&control);
 
         let mut notices = Vec::new();
         let error = acquire_repository(&cfg, repo.path(), &mut notices)
@@ -628,23 +712,93 @@ mod tests {
             .err()
             .expect("an owned repository must refuse, not fall back to a lease-less session");
         let message = format!("{error:#}");
+        // Compare while the owner is still running: its own exit legitimately
+        // touches the control database.
+        let after = snapshot(&control);
+
+        drop(child.stdin.take());
+        child.wait().unwrap();
         assert!(
             message.contains("already owns this repository"),
             "refusal must name the ownership conflict: {message}"
         );
         assert!(
-            message.contains(&std::process::id().to_string()),
-            "refusal must name the owner's pid: {message}"
+            message.contains(&format!("pid {child_pid},")),
+            "refusal must name the owning process {child_pid}: {message}"
+        );
+        assert!(
+            !message.contains(&format!("pid {},", std::process::id())),
+            "refusal must not name this process: {message}"
         );
         assert!(
             notices.is_empty(),
             "no lease-less startup notice: {notices:?}"
         );
+        let changed: Vec<_> = before
+            .keys()
+            .chain(after.keys())
+            .filter(|path| before.get(*path) != after.get(*path))
+            .collect();
         assert!(
-            !repo.path().join("journals").exists(),
-            "a refused launch must not write session state"
+            changed.is_empty(),
+            "a refused launch must not change the owner's control directory: {changed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_lock_file_in_a_repository_is_refused_not_lease_less() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let repo = git_repo();
+        let cfg = workspace_config(repo.path());
+        let owner = forge_session::RepositoryBootstrap::acquire(&cfg)
+            .await
+            .expect("first owner takes the lease");
+        let lock = find_file(&repo.path().join(".forge"), "owner.lock").expect("owner.lock");
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&lock).is_ok() {
+            // Running as root: permissions do not apply, nothing to test.
+            std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+            return;
+        }
+
+        let mut notices = Vec::new();
+        let result = acquire_repository(&cfg, repo.path(), &mut notices).await;
+        std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = result
+            .err()
+            .expect("an ownership failure other than AlreadyOwned must also refuse");
+        let message = format!("{error:#}");
+        assert!(message.contains("could not take ownership"), "{message}");
+        assert!(
+            message.contains(".forge/local"),
+            "the refusal must name where the problem is: {message}"
+        );
+        assert!(
+            notices.is_empty(),
+            "no lease-less startup notice: {notices:?}"
         );
         drop(owner);
+    }
+
+    #[tokio::test]
+    async fn bounded_shutdown_gives_up_after_the_timeout() {
+        let problem = bounded_shutdown(
+            std::future::pending::<Result<(), String>>(),
+            Duration::from_millis(10),
+        )
+        .await
+        .expect("a shutdown that never finishes must be reported");
+        assert!(problem.contains("did not stop"), "{problem}");
+        assert_eq!(
+            bounded_shutdown(async { Ok::<(), String>(()) }, Duration::from_secs(10)).await,
+            None
+        );
+        assert_eq!(
+            bounded_shutdown(async { Err::<(), _>("boom") }, Duration::from_secs(10)).await,
+            Some("shutdown: boom".to_string())
+        );
     }
 
     #[tokio::test]
