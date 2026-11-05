@@ -1,0 +1,38 @@
+# The desktop app is its own Cargo workspace on purpose: Tauri pulls in
+# WebKitGTK/GTK on Linux, and the main workspace (forge-cli, the TUI, and
+# `cargo clippy --workspace` in CI) must build on headless machines without
+# them. The root workspace lists this directory under `exclude`.
+[workspace]
+
+[package]
+name = "forge-desktop"
+version = "0.1.0-beta.11"
+edition = "2021"
+license = "MIT"
+rust-version = "1.97.1"
+publish = false
+description = "Forge desktop app (Tauri 2): the walking skeleton."
+
+[[bin]]
+name = "forge-desktop"
+path = "src/main.rs"
+
+[features]
+# Builds with `--self-test` (a scripted end-to-end check) and the offline
+# mock model. Never enabled in release builds; such a build uses its own
+# bundle identifier (see tauri.self-test.conf.json).
+self-test = ["dep:tempfile"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.4", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tempfile = { version = "3", optional = true }
+forge-config = { path = "../forge-config" }
+forge-session = { path = "../forge-session" }
+forge-types = { path = "../forge-types" }

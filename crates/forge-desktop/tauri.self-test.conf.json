@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Forge Self-Test",
+  "version": "0.1.0-beta.11",
+  "identifier": "dev.forge.desktop.test",
+  "build": {
+    "frontendDist": "ui/dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Forge",
+        "width": 1200,
+        "height": 800
+      }
+    ],
+    "security": {
+      "csp": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset:; font-src 'self'; connect-src ipc: http://ipc.localhost; worker-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "freezePrototype": true,
+      "capabilities": [
+        "main"
+      ]
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

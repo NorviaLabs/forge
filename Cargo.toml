@@ -21,6 +21,9 @@ members = [
     "crates/forge-storage",
     "crates/forge-search",
 ]
+# The Tauri desktop app is a separate workspace so the main build (forge-cli,
+# the TUI, workspace clippy in CI) never depends on Tauri or WebKitGTK.
+exclude = ["crates/forge-desktop"]
 
 [workspace.package]
 version = "0.1.0-beta.11"
