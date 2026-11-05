@@ -1890,6 +1890,52 @@ mod tests {
     use super::*;
     use crate::validation::validate_args;
     use serde_json::json;
+
+    /// The group kill is what stops a background job at shutdown. It must
+    /// reach a grandchild that ignores SIGTERM: the shell's `sleep` is not
+    /// the group leader, so a kill aimed at the leader's pid alone would
+    /// leave it running.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn kill_process_group_reaches_a_term_ignoring_grandchild() {
+        let marker = format!("sleep 41.{}", std::process::id());
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg(format!("trap '' TERM; {marker} & wait"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        set_process_group(&mut command);
+        let mut child = command.spawn().unwrap();
+        let pgid = child.id().unwrap() as i32;
+        let running = || {
+            std::process::Command::new("pgrep")
+                .args(["-f", &marker])
+                .output()
+                .map(|output| output.status.success())
+                .unwrap_or(false)
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !running() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "grandchild never started"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        kill_process_group(pgid);
+        let _ = child.wait().await;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while running() && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            !running(),
+            "the TERM-ignoring grandchild survived the group kill"
+        );
+    }
     use tempfile::tempdir;
 
     #[tokio::test]
