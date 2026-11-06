@@ -28,7 +28,13 @@ pub(super) async fn complete_chatgpt(
     // them. It still accepts the top-level cache affinity key used by the
     // Responses API; omitting that key lets identical prefixes be routed to
     // different cache shards and sharply lowers the observed hit rate.
-    let body = request_body(client, &req, &target.bare_model, &aliases);
+    let body = request_body(
+        client,
+        &req,
+        &target.bare_model,
+        &aliases,
+        target.prompt_cache_key,
+    );
     let request_id = Uuid::new_v4().to_string();
     // Cache routing on the Codex backend is conversation-scoped. Keep that
     // identity stable across every model step; only the client request id is
@@ -154,7 +160,13 @@ pub(super) async fn complete_gateway(
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
     let aliases = tool_aliases(&req);
-    let body = request_body(client, &req, &target.bare_model, &aliases);
+    let body = request_body(
+        client,
+        &req,
+        &target.bare_model,
+        &aliases,
+        target.prompt_cache_key,
+    );
     let request = client
         .http
         .post(format!(
@@ -218,6 +230,7 @@ pub(super) fn request_body(
     req: &ModelRequest,
     model: &str,
     aliases: &BTreeMap<String, String>,
+    prompt_cache_key: bool,
 ) -> Value {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
@@ -317,7 +330,7 @@ pub(super) fn request_body(
     if !tools.is_empty() {
         body["tools"] = Value::Array(tools);
     }
-    if req.prompt_cache {
+    if req.prompt_cache && prompt_cache_key {
         body["prompt_cache_key"] =
             Value::String(crate::prompt_cache::prompt_cache_key(&req.workspace_root));
     }
@@ -607,7 +620,7 @@ mod tests {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let aliases = tool_aliases(&request);
 
-        let body = request_body(&client, &request, &request.model, &aliases);
+        let body = request_body(&client, &request, &request.model, &aliases, true);
 
         assert!(body["reasoning"].get("effort").is_none());
         assert_eq!(body["reasoning"]["summary"], "auto");
@@ -671,7 +684,7 @@ mod tests {
         let _ = client;
         let aliases = tool_aliases(&request);
 
-        let body = request_body(&client, &request, "gpt-test", &aliases);
+        let body = request_body(&client, &request, "gpt-test", &aliases, true);
 
         assert_eq!(body["model"], "gpt-test");
         assert_eq!(body["instructions"], "system prompt");
@@ -731,7 +744,7 @@ mod tests {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let aliases = tool_aliases(&request);
 
-        let body = request_body(&client, &request, &request.model, &aliases);
+        let body = request_body(&client, &request, &request.model, &aliases, true);
 
         assert!(
             !body.to_string().contains("cache_control"),
@@ -751,7 +764,7 @@ mod tests {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let aliases = tool_aliases(&request);
 
-        let body = request_body(&client, &request, &request.model, &aliases);
+        let body = request_body(&client, &request, &request.model, &aliases, true);
 
         assert!(body.get("prompt_cache_key").is_none());
     }
@@ -792,7 +805,7 @@ mod tests {
         let client = NativeModelClient::from_config(&Config::default()).unwrap();
         let aliases = tool_aliases(&request);
 
-        let body = request_body(&client, &request, &request.model, &aliases);
+        let body = request_body(&client, &request, &request.model, &aliases, true);
         let input = body["input"].as_array().unwrap();
 
         assert_eq!(input.len(), 2);

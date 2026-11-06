@@ -247,6 +247,10 @@ fn is_zero(value: &u16) -> bool {
     *value == 0
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Who authored the spec.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -328,6 +332,13 @@ pub struct ProviderSpec {
     pub billing_note: String,
     #[serde(default, skip_serializing_if = "EffortFamily::is_none")]
     pub effort_family: EffortFamily,
+    /// Whether the endpoint accepts OpenAI's `prompt_cache_key` request field.
+    ///
+    /// Strict OpenAI-compatible gateways reject unknown parameters with
+    /// `400 unsupported_parameter`, so this is opt-in. Built-in providers
+    /// that support the hint set it; custom providers default to off.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub prompt_cache_key: bool,
     /// The model-id prefix, always the profile id once loaded. Read from
     /// old entries only; a custom entry's older value is kept in
     /// `legacy_prefix` for normalization.
@@ -392,6 +403,7 @@ impl ProviderSpec {
             billing_url: String::new(),
             billing_note: String::new(),
             effort_family: EffortFamily::None,
+            prompt_cache_key: false,
             model_provider_prefix: String::new(),
             legacy_prefix: None,
             provider: String::new(),

@@ -33,7 +33,7 @@ is the one wire without HTTP: it drives the user's installed `claude`
   - `complete(client, req, target, wire, tx)` — `ChatCompletions` → `chat_completions::complete`; `AnthropicMessages` → `anthropic_messages::complete`; `Responses` with `Attach::BearerAccountId` → `responses::complete_chatgpt`, else `responses::complete_gateway`.
   - `prompt_projection(client, req, wire) -> Value` and `cache_key(wire) -> &'static str` (`"anthropic_messages"`, `"codex"`, `"openai_compat"`).
 - `chat_completions` (private): `complete` — POSTs `<base>/chat/completions`.
-- `responses` (private): `complete_chatgpt` (POSTs `<base>/codex/responses`), `complete_gateway` (POSTs `<base>/responses`), `request_body(client, req, model, aliases)`, `CodexStream{text, thinking, tool_calls, usage}` with `consume`/`finish`, `tool_aliases(req) -> BTreeMap<String, String>`.
+- `responses` (private): `complete_chatgpt` (POSTs `<base>/codex/responses`), `complete_gateway` (POSTs `<base>/responses`), `request_body(client, req, model, aliases, prompt_cache_key)`, `CodexStream{text, thinking, tool_calls, usage}` with `consume`/`finish`, `tool_aliases(req) -> BTreeMap<String, String>`.
 - `anthropic_messages` (private): `messages_endpoint(base_url) -> String` — `{base}/messages`, inserting `/v1` unless the base already ends in `/v1`; `complete(...)`, `messages_body(req, Option<client>)`, `prompt_projection(client, req)`.
 
 ## Invariants

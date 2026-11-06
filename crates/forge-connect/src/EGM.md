@@ -42,6 +42,7 @@ prefix (`<profile_id>/<model>`).
   `static_headers`, `session_header`, `default_models`, `manual_models`,
   `catalog`, `verify`, `models_dev_providers`, `auth_url`, `import_aliases`,
   `guidance`, `min_key_len`, `billing_url`/`billing_note`, `effort_family`,
+  `prompt_cache_key`,
   `model_provider_prefix`, `provider`, `provider_label`, `label`, `origin`.
   Methods: `default_model`, `has_multiple_routes(registry)`,
   `needs_tui_api_key_prompt`, `rejects_api_key_cli`, `is_user`,

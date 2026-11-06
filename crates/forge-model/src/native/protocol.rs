@@ -63,6 +63,7 @@ pub(super) fn prompt_projection(
                 req,
                 bare,
                 &responses::tool_aliases(req),
+                true,
             ))
         }
         WireKind::ChatCompletions => crate::prompt_wire::openai_compat_prompt_cached(req, client),

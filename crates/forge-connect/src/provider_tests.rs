@@ -26,6 +26,7 @@ mod openai {
         assert_eq!(p.id, "openai");
         assert!(p.needs_tui_api_key_prompt());
         assert!(p.default_models.iter().all(|m| m.starts_with("openai/")));
+        assert!(p.prompt_cache_key);
     }
 
     #[test]

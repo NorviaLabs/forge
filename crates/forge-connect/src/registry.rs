@@ -2017,6 +2017,10 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         let spec = registry.get("groq").expect("user spec loaded");
         assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
         assert_eq!(spec.origin, SpecOrigin::User);
+        assert!(
+            !spec.prompt_cache_key,
+            "custom gateways may reject unknown fields"
+        );
         assert!(registry.get("openai").is_some());
     }
 

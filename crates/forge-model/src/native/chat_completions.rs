@@ -47,7 +47,7 @@ pub(super) async fn complete(
     // measured stable boundary rather than applied blanket. This field is not
     // part of the compared prefix — `prompt_object_from_body` only projects
     // tools/system/instructions/messages/input.
-    if req.prompt_cache {
+    if req.prompt_cache && target.prompt_cache_key {
         body["prompt_cache_key"] =
             Value::String(crate::prompt_cache::prompt_cache_key(&req.workspace_root));
     }
@@ -524,6 +524,33 @@ mod tests {
         assert_eq!(target.base_url, "https://custom.example/v1");
         assert_eq!(target.bare_model, "org/model-a");
         assert_eq!(target.credential.unwrap().secret, "custom-key");
+    }
+
+    /// Strict OpenAI-compatible gateways reject unknown request fields, so
+    /// the OpenAI-only cache-affinity hint must be opt-in per profile.
+    #[tokio::test]
+    async fn a_strict_gateway_profile_omits_the_cache_hint() {
+        let sse = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
+        let Some((base_url, request_rx)) = serve_once("200 OK", "text/event-stream", sse).await
+        else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let mut profile = forge_connect::builtin::builtin_profile("openai");
+        profile.id = "isoquant".into();
+        profile.model_provider_prefix = "isoquant".into();
+        profile.prompt_cache_key = false;
+        let client = test_client(profile, &format!("{base_url}/v1"), key("secret"));
+        let mut req = request("isoquant/deepseek-v4.1-flash-1017-fast");
+        req.prompt_cache = true;
+
+        client.complete(req).await.unwrap();
+
+        let raw = request_rx.await.unwrap();
+        assert!(
+            !raw.contains("prompt_cache_key"),
+            "a strict gateway answers an unknown field with 400: {raw}"
+        );
     }
 
     #[test]

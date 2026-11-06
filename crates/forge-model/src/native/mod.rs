@@ -154,6 +154,7 @@ pub(super) struct Target {
     credential: Option<CredentialValue>,
     static_headers: Vec<StaticHeader>,
     session_header: Option<SessionHeaderKind>,
+    pub(super) prompt_cache_key: bool,
     definition: forge_connect::RouteDefinition,
 }
 
@@ -302,6 +303,7 @@ impl NativeModelClient {
                 credential: value,
                 static_headers: definition.static_headers.clone(),
                 session_header: definition.session_header,
+                prompt_cache_key: definition.prompt_cache_key,
                 definition: definition.clone(),
             },
             wire,

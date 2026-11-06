@@ -68,6 +68,8 @@ pub struct RouteDefinition {
     pub auth_kind: AuthKind,
     pub oauth_flavor: Option<OauthFlavor>,
     pub effort_family: EffortFamily,
+    /// See [`ProviderSpec::prompt_cache_key`].
+    pub prompt_cache_key: bool,
 }
 
 impl RouteDefinition {
@@ -334,6 +336,7 @@ fn definition_for(profile: &ProviderSpec) -> RouteDefinition {
         auth_kind: auth.kind,
         oauth_flavor: auth.flavor,
         effort_family: profile.effort_family,
+        prompt_cache_key: profile.prompt_cache_key,
     }
 }
 
