@@ -703,6 +703,17 @@
   async function send(text, images = [], targetSession = sessionId) {
     error = "";
     const attachment = fileAttachments[targetSession] ?? null;
+    // Show the operator's line before the supervisor's snapshot arrives.
+    // The next SessionUpdated replaces this local copy with the real message.
+    const local = targetSession === sessionId && text
+      ? { role: "user", text, attachments: [], optimistic: true }
+      : null;
+    const previousTurnState = turnState;
+    if (local) {
+      messages = [...messages, local];
+      turnState = "running";
+      stopping = false;
+    }
     let ok;
     if (!images.length) {
       ok = await command("submit_prompt", { sessionId: targetSession, text, attachment });
@@ -716,6 +727,10 @@
         })));
         ok = await command("submit_images", { sessionId: targetSession, text, images: encoded, attachment });
       } catch (cause) { error = String(cause); return false; }
+    }
+    if (!ok && local) {
+      messages = messages.filter((message) => message !== local);
+      if (turnState === "running") turnState = previousTurnState;
     }
     if (ok && attachment) {
       const { [targetSession]: _, ...rest } = fileAttachments;
