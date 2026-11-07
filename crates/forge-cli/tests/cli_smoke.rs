@@ -42,8 +42,12 @@ fn help_lists_core_options_and_native_bench_command() {
         .success();
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
 
-    // The default command launches the TUI, while `bench` is the supported
-    // frontend-independent entry point for automation.
+    // The default command launches the desktop app; `--tui` selects the
+    // terminal, while `bench` stays frontend-independent for automation.
+    assert!(
+        out.contains("--tui"),
+        "help must advertise the terminal frontend:\n{out}"
+    );
     assert!(
         out.contains("Commands:") && out.contains("bench"),
         "help must advertise the native bench command:\n{out}"

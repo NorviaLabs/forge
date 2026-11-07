@@ -67,6 +67,7 @@ async fn forge_on_an_owned_repository_exits_1_naming_the_owner_before_setup() {
 
     let assert = Command::cargo_bin("forge")
         .unwrap()
+        .arg("--tui")
         .current_dir(repo.path())
         .env("HOME", home.path())
         .env("XDG_CONFIG_HOME", home.path().join(".config"))

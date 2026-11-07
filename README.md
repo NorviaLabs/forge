@@ -6,14 +6,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.97.1+](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
-_Run, supervise, and resume AI coding work without leaving the terminal._
+_Run, supervise, and resume AI coding work in a desktop app or the terminal._
 
 ![Forge demo: a crash is caught in the terminal, fixed by hand in the editor, re-run to confirm—which surfaces the same bug next door—and that one is handed to the agent, all in one pane](.github/assets/demo.gif)
 
-Forge is an open-source terminal coding environment for engineering with AI
-agents. It combines agent conversations, a file explorer, Vim-style editing,
-an interactive shell, diffs, approvals, model selection, and multiple durable
-sessions in one keyboard-driven TUI.
+Forge is an open-source desktop and terminal coding environment for engineering
+with AI agents. It combines agent conversations, a file explorer, editing, an
+interactive shell, diffs, approvals, model selection, and multiple durable
+sessions in one workspace. The desktop app is the default; `forge --tui` opens
+the keyboard-driven terminal UI.
 
 Managed sessions keep their own durable state and isolated Git worktree, so one
 session can keep working while you inspect, edit, or direct another. Agent shell
@@ -97,10 +98,17 @@ cargo build --release --locked --package forge-cli
 ./target/release/forge --version
 ```
 
-To run the development build:
+To run the development build with the terminal UI:
 
 ```sh
-cargo run --locked --package forge-cli
+cargo run --locked --package forge-cli -- --tui
+```
+
+Bare `forge` launches the desktop app, which is a separate binary. Build it
+from its own workspace so it sits next to `forge`:
+
+```sh
+(cd crates/forge-desktop && cargo build --release --locked)
 ```
 
 ## Start Forge
@@ -114,11 +122,13 @@ forge
 The default workspace is the current directory. Forge also respects the
 `FORGE_WORKSPACE` environment variable.
 
-On first launch, Forge walks through theme, directory trust, and provider
-connect. A committed theme is stored in your user config; trust is stored
-per directory (children inherit). Esc during those steps quits without
-claiming setup is done. Later folders only ask for trust. Returning to a
-trusted folder opens the normal TUI.
+Bare `forge` opens the desktop app. Run `forge --tui` for the terminal UI; the
+resume flags (`--continue`, `--resume`, `--fork`) belong to that frontend.
+
+On first launch, Forge walks through directory trust and provider connect; the
+terminal UI also offers theme setup. Trust is stored per directory (children
+inherit). Esc during those steps quits without claiming setup is done. Later
+folders only ask for trust.
 
 ### GitHub issue workflow
 
@@ -249,8 +259,9 @@ Useful in-app commands:
 ```
 
 `/resume <session-id>` resumes a specific session. The command-line form
-`forge --resume <session-id>` does the same; bare `forge --resume` resumes the
-most recently modified session when one exists.
+`forge --tui --resume <session-id>` does the same; bare
+`forge --tui --resume` resumes the most recently modified session when one
+exists.
 
 ## Keyboard controls
 
@@ -670,15 +681,15 @@ prompt submitted in it.
 If Forge stops unexpectedly, start it with:
 
 ```sh
-forge --continue
+forge --tui --continue
 ```
 
 `--continue` resumes the most recently modified previous session in the
 current workspace. To browse or resume a specific session:
 
 ```sh
-forge --resume
-forge --resume <session-id>
+forge --tui --resume
+forge --tui --resume <session-id>
 ```
 
 Use `--fork <session-id>` to create a new session seeded with the selected

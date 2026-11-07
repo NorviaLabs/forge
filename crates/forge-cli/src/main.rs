@@ -1,6 +1,8 @@
-//! Forge CLI — launches the full-screen TUI by default.
+//! Forge CLI — launches the desktop app by default; `--tui` opens the
+//! full-screen terminal UI.
 
 mod egress_connect;
+mod launch;
 
 use std::{io::Read, path::PathBuf, time::Duration};
 
@@ -22,27 +24,29 @@ use tracing_subscriber::EnvFilter;
 #[command(
     name = "forge",
     version,
-    about = "Forge — an AI coding agent, editor, and shell in one terminal workspace.",
-    // The long form used to *replace* the description with "Open the
-    // full-screen TUI by default. Use --help or --version for CLI info." — so
-    // `--help`, the form people reach for when they want more, said less than
-    // `-h` and advised running the command they had just run.
-    long_about = "Forge — an AI coding agent, editor, and shell in one terminal workspace.\n\n\
-                  Running `forge` with no arguments opens the full-screen TUI in the current \
-                  directory. Sessions are journalled to .forge/local/sessions in the workspace, \
-                  so an interrupted one can be reopened with --continue or --resume.",
-    after_help = "Run `forge` with no arguments to start. Press ? inside for keyboard shortcuts."
+    about = "Forge — an AI coding agent with a desktop app and a terminal workspace.",
+    long_about = "Forge — an AI coding agent with a desktop app and a terminal workspace.\n\n\
+                  Running `forge` with no arguments opens the desktop app in the current \
+                  directory. Pass --tui for the full-screen terminal UI. Sessions are \
+                  journalled to .forge/local/sessions in the workspace, so an interrupted one \
+                  can be reopened with --continue or --resume.",
+    after_help = "`forge` opens the desktop app; `forge --tui` opens the terminal UI. \
+                  Press ? inside the terminal UI for keyboard shortcuts."
 )]
 struct Cli {
-    /// Reopen a previous session. Omit the id to pick from a list.
+    /// Open the terminal UI instead of the desktop app.
+    #[arg(long)]
+    tui: bool,
+
+    /// Reopen a previous session. Omit the id to pick from a list. Requires --tui.
     #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
     resume: Option<Option<SessionId>>,
 
-    /// Continue the most recent previous session in this workspace.
+    /// Continue the most recent previous session in this workspace. Requires --tui.
     #[arg(long, conflicts_with_all = ["resume", "fork"])]
     r#continue: bool,
 
-    /// Fork a previous session into a new conversation.
+    /// Fork a previous session into a new conversation. Requires --tui.
     #[arg(long, value_name = "SESSION_ID", conflicts_with_all = ["resume", "continue"])]
     fork: Option<SessionId>,
 
@@ -96,6 +100,25 @@ fn main() {
 
     let cli = Cli::parse();
 
+    // The desktop app is the default frontend. Resume flags are keyed to the
+    // TUI, so name the missing flag instead of silently ignoring it.
+    if cli.command.is_none() && !cli.tui {
+        if needs_tui(&cli) {
+            eprintln!(
+                "error: --resume, --continue and --fork belong to the terminal frontend; add --tui"
+            );
+            std::process::exit(2);
+        }
+        if !launch::display_available() {
+            eprintln!(
+                "No display available; the Forge GUI needs a desktop session. \
+                 Run `forge --tui` for the terminal frontend."
+            );
+            std::process::exit(1);
+        }
+        std::process::exit(launch::run(None));
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("error")),
@@ -120,6 +143,11 @@ fn main() {
     });
     runtime.shutdown_timeout(Duration::ZERO);
     std::process::exit(code.code());
+}
+
+/// A flag only the terminal frontend understands.
+fn needs_tui(cli: &Cli) -> bool {
+    cli.resume.is_some() || cli.r#continue || cli.fork.is_some()
 }
 
 /// The session the flags ask for. First-run launches (setup still pending
@@ -414,6 +442,26 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_desktop_app_is_the_default_and_tui_is_opt_in() {
+        let cli = Cli::try_parse_from(["forge"]).unwrap();
+        assert!(!cli.tui);
+        assert!(!needs_tui(&cli));
+        assert!(Cli::try_parse_from(["forge", "--tui"]).unwrap().tui);
+    }
+
+    #[test]
+    fn resume_flags_are_terminal_only() {
+        for args in [
+            vec!["forge", "--continue"],
+            vec!["forge", "--resume"],
+            vec!["forge", "--fork", "00000000-0000-0000-0000-000000000000"],
+        ] {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            assert!(needs_tui(&cli), "{args:?} should require --tui");
+        }
+    }
 
     #[test]
     fn cli_continue_and_fork_parse() {

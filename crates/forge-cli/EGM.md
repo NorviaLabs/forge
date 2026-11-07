@@ -9,10 +9,11 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
 
 - Binary target `forge` (`[[bin]] path = "src/main.rs"`, `default-run`); no
   library target, so nothing here is importable by other crates.
-- Command line: `forge [--resume [SESSION_ID] | --continue | --fork SESSION_ID]`
-  opens the TUI; `forge bench` runs one headless turn and prints JSON; the
-  hidden `forge __egress-connect` helper tunnels stdio through the egress
-  proxy. Details in [./src/EGM.md](./src/EGM.md).
+- Command line: `forge [--tui [--resume [SESSION_ID] | --continue | --fork SESSION_ID]]`
+  opens the desktop app by default, or the TUI with `--tui`; `forge bench`
+  runs one headless turn and prints JSON; the hidden
+  `forge __egress-connect` helper tunnels stdio through the egress proxy.
+  Details in [./src/EGM.md](./src/EGM.md).
 - Process exit codes are `forge_tui::ExitCode` values (`0` success, `1`
   failed, `2` awaiting HITL, `3` canceled, `4` config error); `__egress-connect`
   uses its own `0/1/2`. Clap exits on its own first: `2` on an argument error
@@ -23,7 +24,7 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
 
 ## Subdirectories & Boundaries
 
-- `src/`: [./src/EGM.md](./src/EGM.md) — clap CLI, TUI launch/startup sequencing, `bench` headless mode, `__egress-connect` proxy helper.
+- `src/`: [./src/EGM.md](./src/EGM.md) — clap CLI, desktop-app discovery, TUI launch/startup sequencing, `bench` headless mode, `__egress-connect` proxy helper.
 
 ## Notes
 
@@ -37,7 +38,9 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
 
 ## Side Effects
 
-- Process-wide effects only at startup: tracing installation, Tokio runtime construction, TUI preference installs, and `std::process::exit`.
+- Process-wide effects only at startup: tracing installation (TUI/bench only),
+  Tokio runtime construction (TUI/bench only), desktop-app launch, TUI
+  preference installs, and `std::process::exit`.
 - Delegated state changes (journals, control DB, worktrees) happen through `forge-session`.
 
 ## Verification

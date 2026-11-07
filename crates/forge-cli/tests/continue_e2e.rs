@@ -151,7 +151,7 @@ async fn continue_reopens_the_selected_session_in_the_tui() {
         Err(error) => panic!("open PTY: {error}"),
     };
     let mut command = CommandBuilder::new(std::env::var("CARGO_BIN_EXE_forge").unwrap());
-    command.arg("--continue");
+    command.args(["--tui", "--continue"]);
     command.cwd(repo.path());
     command.env("HOME", home.path());
     command.env("XDG_CONFIG_HOME", home.path().join(".config"));

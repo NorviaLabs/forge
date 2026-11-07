@@ -3,7 +3,7 @@ name = "forge-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Forge CLI — launches the full-screen TUI by default"
+description = "Forge CLI — launches the desktop app by default; --tui opens the terminal UI"
 default-run = "forge"
 
 [[bin]]
