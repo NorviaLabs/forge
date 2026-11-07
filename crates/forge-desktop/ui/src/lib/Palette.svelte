@@ -1,4 +1,5 @@
 <script>
+  import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
 
@@ -23,6 +24,11 @@
 
   $effect(() => {
     if (cursor >= filtered.length) cursor = Math.max(0, filtered.length - 1);
+  });
+
+  $effect(() => {
+    const active = filtered.length ? `palette-option-${cursor}` : null;
+    tick().then(() => input?.closest(".palette")?.querySelector(`#${active}`)?.scrollIntoView({ block: "nearest" }));
   });
 
   function focusInput(node) {
@@ -68,16 +74,25 @@
         bind:value={query}
         {placeholder}
         aria-label="Command palette"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded="true"
+        aria-controls="palette-results"
+        aria-activedescendant={filtered.length ? `palette-option-${cursor}` : undefined}
         spellcheck="false"
         onkeydown={keydown}
       />
       <kbd>esc</kbd>
     </div>
-    <ul class="results">
+    <ul class="results" id="palette-results" role="listbox" aria-label="Commands">
       {#each filtered as item, index (item.id)}
-        <li>
+        <li role="presentation">
           <button
             type="button"
+            id={`palette-option-${index}`}
+            role="option"
+            aria-selected={index === cursor}
+            tabindex="-1"
             class:active={index === cursor}
             onmouseenter={() => (cursor = index)}
             onclick={() => run(item)}
@@ -89,7 +104,7 @@
         </li>
       {/each}
       {#if filtered.length === 0}
-        <li class="empty">No matches.</li>
+        <li class="empty" role="presentation">No matches.</li>
       {/if}
     </ul>
   </div>

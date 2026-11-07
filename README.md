@@ -127,6 +127,11 @@ The default workspace is the current directory. Forge also respects the
 Bare `forge` opens the desktop app. Run `forge --tui` for the terminal UI; the
 resume flags (`--continue`, `--resume`, `--fork`) belong to that frontend.
 
+In desktop windows at or below 1120px wide, **Session details** opens the
+inspector with background-task approvals, queued prompts, and Git controls.
+Use **Close session details** or `Esc` to close it. In the desktop file editor,
+`Tab` and `Shift+Tab` move focus without changing the file.
+
 On first launch, Forge walks through directory trust and provider connect; the
 terminal UI also offers theme setup. Trust is stored per directory (children
 inherit). Esc during those steps quits without claiming setup is done. Later

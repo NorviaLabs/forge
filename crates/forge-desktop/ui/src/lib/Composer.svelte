@@ -135,7 +135,9 @@
   }
 
   .composer:focus-within {
-    border-color: var(--border-strong);
+    border-color: var(--accent);
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 
   textarea {

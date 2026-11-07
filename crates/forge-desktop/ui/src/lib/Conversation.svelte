@@ -410,4 +410,9 @@
       opacity: 0;
     }
   }
+
+  @media (prefers-reduced-motion: reduce) {
+    .transcript { scroll-behavior: auto; }
+    .message.streaming::after { animation: none; }
+  }
 </style>

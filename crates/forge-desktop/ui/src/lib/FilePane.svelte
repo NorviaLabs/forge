@@ -56,16 +56,6 @@
       return;
     }
     if (event.key === "Escape" && findOpen) { closeNavigation(); return; }
-    if (event.key !== "Tab") return;
-    event.preventDefault();
-    const element = event.currentTarget;
-    const start = element.selectionStart;
-    const end = element.selectionEnd;
-    onDraftChange(`${draft.slice(0, start)}  ${draft.slice(end)}`);
-    tick().then(() => {
-      element.selectionStart = start + 2;
-      element.selectionEnd = start + 2;
-    });
   }
 
   function select(start, end = start, focus = true) {

@@ -8,12 +8,17 @@ export function modal(node, options) {
       event.stopPropagation();
       if (!options.busy) options.onClose?.();
     } else if (event.key === "Tab") {
+      event.stopPropagation();
       const elements = focusable();
       const index = elements.indexOf(document.activeElement);
       if (!elements.length || (event.shiftKey && index <= 0) || (!event.shiftKey && (index === elements.length - 1 || index < 0))) {
         event.preventDefault();
         (event.shiftKey ? elements.at(-1) : elements[0])?.focus();
       }
+    } else if (event.metaKey || event.ctrlKey) {
+      // Stop workspace chords leaking behind the dialog, but let plain keys
+      // (Enter, letters) reach the dialog's own delegated handlers.
+      event.stopPropagation();
     }
   }
   node.addEventListener("keydown", keydown);

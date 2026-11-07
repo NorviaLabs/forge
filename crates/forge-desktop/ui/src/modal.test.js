@@ -10,9 +10,15 @@ test("modal traps Tab, respects busy Escape and restores launcher focus", () => 
   const node = { querySelectorAll: () => [first, last], addEventListener: (_, handler) => (listener = handler), removeEventListener() {} };
   const action = modal(node, { onClose: () => closed++ });
   assert.equal(document.activeElement, first);
-  listener({ key: "Tab", shiftKey: true, preventDefault: () => (prevented = true) });
+  listener({ key: "Tab", shiftKey: true, stopPropagation() {}, preventDefault: () => (prevented = true) });
   assert.equal(document.activeElement, last);
   assert.ok(prevented);
+  let stopped = false;
+  listener({ key: "s", metaKey: true, stopPropagation: () => (stopped = true) });
+  assert.ok(stopped, "workspace shortcuts must not escape the modal");
+  let enterStopped = false;
+  listener({ key: "Enter", stopPropagation: () => (enterStopped = true) });
+  assert.equal(enterStopped, false, "plain keys must still reach the dialog");
   action.update({ busy: true, onClose: () => closed++ });
   listener({ key: "Escape", stopPropagation() {} });
   assert.equal(closed, 0);

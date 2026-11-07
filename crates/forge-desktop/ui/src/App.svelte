@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { Channel, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import Conversation from "./lib/Conversation.svelte";
@@ -33,6 +33,15 @@
   let stopping = $state(false);
   let messages = $state([]);
   let streaming = $state("");
+  let inspectorOpen = $state(false);
+  let inspectorToggle;
+  let inspectorClose;
+
+  async function toggleInspector() {
+    inspectorOpen = !inspectorOpen;
+    await tick();
+    (inspectorOpen ? inspectorClose : inspectorToggle)?.focus();
+  }
   let approval = $state(null);
   let question = $state(null);
   let approveAll = $state(false);
@@ -1280,6 +1289,11 @@
 
   function onKeydown(event) {
     if (!booted) return;
+    if (event.key === "Escape" && inspectorOpen) {
+      event.preventDefault();
+      toggleInspector();
+      return;
+    }
     // The terminal owns Ctrl chords (Ctrl+W deletes a word, Ctrl+K kills a
     // line, Ctrl+S is XOFF). Only Ctrl+` still toggles the terminal.
     if (event.ctrlKey && !event.metaKey && activeTabId === "terminal") {
@@ -1448,6 +1462,9 @@
 
   <section class="center">
     <nav class="tabs" aria-label="Open views">
+      <button bind:this={inspectorToggle} type="button" class="btn inspector-toggle" aria-expanded={inspectorOpen} aria-controls="session-panel" onclick={toggleInspector}>
+        {inspectorOpen ? "Hide details" : "Session details"}
+      </button>
       {#each tabs as tab (tab.id)}
         <div class="tab" class:active={tab.id === activeTabId}>
           <button type="button" class="tab-main" onclick={() => (activeTabId = tab.id)}>
@@ -1542,6 +1559,8 @@
     />
   </section>
 
+  <div class="inspector-panel" class:open={inspectorOpen} id="session-panel">
+  <button bind:this={inspectorClose} class="btn inspector-close" type="button" onclick={toggleInspector}>Close session details</button>
   <Inspector
     sessionId={sessionId}
     workspace={info.workspace}
@@ -1593,6 +1612,11 @@
     onRename={() => activeSession && startRename(activeSession)}
     onPin={() => activeSession && pinSession(activeSession)}
   />
+  </div>
+
+  <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+    {question ? "Forge needs your answer." : approval ? "Forge needs your approval." : background.some((task) => task.awaiting_approval) ? "A background task needs your approval. Open Session details to review it." : `Forge: ${turnState}.`}
+  </div>
 
   {#if pickerOpen}
     <ModelPicker
@@ -1955,6 +1979,9 @@
     background: var(--bg);
   }
 
+  .inspector-panel { display: contents; }
+  .inspector-toggle, .inspector-close { display: none; }
+
   .center {
     display: flex;
     flex-direction: column;
@@ -2123,9 +2150,27 @@
       grid-template-columns: 240px minmax(0, 1fr);
     }
 
-    .app :global(.inspector) {
+    .inspector-toggle { display: inline-flex; flex: none; }
+    .inspector-close { display: inline-flex; flex: none; margin: 8px; }
+
+    .inspector-panel {
       display: none;
     }
+
+    .inspector-panel.open {
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 38px;
+      right: 0;
+      bottom: 0;
+      width: min(320px, 100vw);
+      z-index: 10;
+      box-shadow: var(--shadow);
+      background: var(--bg-deep);
+    }
+
+    .inspector-panel :global(.inspector) { flex: 1; min-width: 0; }
   }
 
   @media (max-width: 760px) {

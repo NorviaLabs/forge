@@ -84,12 +84,12 @@
 
   {#each question.questions as item (item.id)}
     <div class="item">
-      <h3>{item.header || item.question}</h3>
+      <h3 id={`question-${question.call_id}-${item.id}`}>{item.header || item.question}</h3>
       {#if item.header && item.header !== item.question}
         <p class="text">{item.question}</p>
       {/if}
       {#if item.options.length > 0}
-        <div class="options" role="group" aria-label={item.header}>
+        <div class="options" role="group" aria-labelledby={`question-${question.call_id}-${item.id}`}>
           {#each item.options as option (option.label)}
             <button
               type="button"
@@ -107,7 +107,7 @@
       <input
         class="field custom"
         placeholder={item.options.length > 0 ? "Or answer in your own words" : "Your answer"}
-        aria-label={item.options.length > 0 ? "Custom answer" : "Answer"}
+        aria-labelledby={`question-${question.call_id}-${item.id}`}
         bind:value={
           () => draftFor(item.id)?.custom ?? "",
           (value) => setCustom(item.id, value)
