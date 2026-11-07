@@ -66,7 +66,9 @@ appear in the root `Cargo.lock`.
   model catalog refresh, adopting a sign-in another CLI already completed
   (Codex, OpenCode, Grok) and native macOS hidden-input key collection. OAuth
   tokens/device secrets stay in Rust; only the sign-in URL/user code and the
-  imported source/account label cross IPC.
+  imported source/account label cross IPC. All provider paths share
+  `Credentials::shared()`, so a key typed in the native prompt also wins over
+  an environment variable for this process, as in the TUI.
   Missing keys on other platforms require environment variables or terminal setup.
 - `src/github.rs`: issue/PR/check views using `forge-workspace`'s bounded `gh`
   adapter, plus explicit PR creation, refresh and review-feedback application.

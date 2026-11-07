@@ -27,7 +27,7 @@ pub struct LoginView {
 
 pub fn list() -> Result<Vec<ProviderView>, String> {
     let registry = forge_connect::loaded_registry();
-    let credentials = Credentials::user_default();
+    let credentials = Credentials::shared();
     let preferences = PreferenceStore::user_default();
     let service = ConnectService {
         registry: &registry,
@@ -62,7 +62,7 @@ pub fn connect(
     emit: impl FnOnce(LoginView) -> Result<(), String>,
 ) -> Result<String, String> {
     let registry = forge_connect::loaded_registry();
-    let credentials = Credentials::user_default();
+    let credentials = Credentials::shared();
     let preferences = PreferenceStore::user_default();
     let mut service = ConnectService {
         registry: &registry,
@@ -98,10 +98,14 @@ pub fn connect(
             Ok(outcome) => outcome,
             Err(forge_connect::ConnectError::MissingKey(_)) => {
                 let key = prompt_key()?;
-                service.connect(id, Some(&key), false).map_err(|_| {
+                let outcome = service.connect(id, Some(&key), false).map_err(|_| {
                     "Provider rejected the key or it could not be saved. Check it and retry."
                         .to_string()
-                })?
+                })?;
+                // Same precedence as the TUI: a key typed now wins over an
+                // environment variable for this process.
+                credentials.set_session_key(profile, &key);
+                outcome
             }
             Err(error) => return Err(error.to_string()),
         }
@@ -128,7 +132,7 @@ pub fn import_login(id: &str) -> Result<String, String> {
     let profile = registry.get(id).ok_or("unknown provider")?;
     let login = forge_connect::login_for_profile(&forge_connect::discover_user_logins(), id)
         .ok_or("No reusable sign-in was found for that provider")?;
-    let credentials = Credentials::user_default();
+    let credentials = Credentials::shared();
     match &login.secret {
         forge_connect::DiscoveredSecret::ApiKey(key) => credentials.set_api_key(profile, key),
         forge_connect::DiscoveredSecret::Oauth(tokens) => {
@@ -163,7 +167,7 @@ fn login_view(pending: &forge_connect::OauthPending) -> LoginView {
 
 pub fn disconnect(id: &str) -> Result<String, String> {
     let registry = forge_connect::loaded_registry();
-    let credentials = Credentials::user_default();
+    let credentials = Credentials::shared();
     let preferences = PreferenceStore::user_default();
     ConnectService {
         registry: &registry,
@@ -190,7 +194,7 @@ fn wire_kind(wire: &str) -> Result<forge_connect::WireKind, String> {
 /// native connect prompt, never over IPC.
 pub fn save_custom(id: &str, base_url: &str, model: &str, wire: &str) -> Result<String, String> {
     let profile = forge_connect::save_custom_provider(id, base_url, model, wire_kind(wire)?)?;
-    let credentials = Credentials::user_default();
+    let credentials = Credentials::shared();
     let preferences = PreferenceStore::user_default();
     let registry = forge_connect::loaded_registry();
     ConnectService {
@@ -214,7 +218,7 @@ pub fn update_custom(id: &str, base_url: &str, model: &str) -> Result<String, St
 
 pub fn remove_custom(id: &str) -> Result<String, String> {
     let registry = forge_connect::loaded_registry();
-    let credentials = Credentials::user_default();
+    let credentials = Credentials::shared();
     let preferences = PreferenceStore::user_default();
     let report = ConnectService {
         registry: &registry,
