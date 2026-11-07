@@ -2455,11 +2455,19 @@ async fn execute_command(
             let actor = actor(&state, session_id).await?;
             if !actor.request_cancel().await {
                 let mut session = try_session(&actor)?;
+                let active = matches!(
+                    session.active_task.lifecycle,
+                    TaskLifecycle::Working | TaskLifecycle::Waiting
+                );
                 session.mark_cancelled().await?;
-                state
-                    .control
-                    .set_turn_state(session_id, SupervisorTurnState::Cancelled)
-                    .await?;
+                // Stop on an already-finished turn is a no-op: do not rewrite
+                // its completed/failed journal state as cancelled.
+                if active {
+                    state
+                        .control
+                        .set_turn_state(session_id, SupervisorTurnState::Cancelled)
+                        .await?;
+                }
                 refresh_actor(&state, &actor, &session).await?;
             }
         }
@@ -5510,6 +5518,86 @@ mod tests {
             };
             assert_eq!(cancelled.session.lifecycle, TaskLifecycle::Cancelled);
         }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stopping_a_waiting_question_clears_it() {
+        let question = ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "waiting-question".into(),
+                name: "ask_user_question".into(),
+                arguments: json!({
+                    "questions": [{
+                        "id": "choice",
+                        "header": "Choice",
+                        "question": "Continue?",
+                        "options": [
+                            {"label": "Yes", "description": "Go."},
+                            {"label": "No", "description": "Stop."}
+                        ]
+                    }]
+                }),
+            }],
+            usage: None,
+            thinking: None,
+        };
+        let model = MockModelClient::script(vec![question, text_response("done")]);
+        let (_temp, _supervisor, handle, id_a, _id_b) =
+            two_session_supervisor(Arc::new(model)).await;
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: id_a,
+                text: "ask first".into(),
+            })
+            .await
+            .unwrap();
+        let waiting = wait_for_task_state(&handle, id_a, |snapshot| {
+            snapshot.session.pending_question.is_some()
+        })
+        .await;
+        assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+
+        handle
+            .command(SupervisorCommand::StopTurn { session_id: id_a })
+            .await
+            .unwrap();
+        let stopped = wait_for_task_state(&handle, id_a, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Cancelled
+        })
+        .await;
+        assert!(stopped.session.pending_question.is_none());
+        assert!(stopped.session.pending_hitl.is_none());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stopping_a_finished_turn_does_not_rewrite_completed() {
+        let (_temp, supervisor, handle, id_a, _id_b) = two_session_supervisor(Arc::new(
+            MockModelClient::script(vec![text_response("done")]),
+        ))
+        .await;
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: id_a,
+                text: "finish this turn".into(),
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, id_a, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert_eq!(done.session.lifecycle, TaskLifecycle::Completed);
+
+        handle
+            .command(SupervisorCommand::StopTurn { session_id: id_a })
+            .await
+            .unwrap();
+        let after = supervisor.snapshot(id_a).await.unwrap();
+        assert_eq!(after.task.turn_state, SupervisorTurnState::Completed);
+        assert_eq!(after.session.lifecycle, TaskLifecycle::Completed);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

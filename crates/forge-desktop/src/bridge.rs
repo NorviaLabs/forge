@@ -998,9 +998,40 @@ pub fn subscribe(
                 DesktopEvent::Selected { session_id } => Some(*session_id),
                 _ => None,
             };
+            // A fast stream can overrun the 512-event broadcast buffer. The
+            // dropped events may include the turn's final SessionUpdated, so
+            // re-send the live roster and selection after the notice.
+            let lagged = matches!(&event, DesktopEvent::Lagged { .. });
             if channel.send(event).is_err() {
                 // The webview is gone.
                 break;
+            }
+            if lagged {
+                let guard = supervisor.read().await;
+                if let Some(supervisor) = guard.as_ref() {
+                    let snapshots = supervisor.snapshots().await;
+                    let roster = DesktopEvent::Roster {
+                        sessions: session_rows(&snapshots),
+                    };
+                    if channel.send(roster).is_err() {
+                        break;
+                    }
+                    if let Ok(Some(session_id)) = supervisor.selected_session_id().await {
+                        if channel
+                            .send(DesktopEvent::Selected {
+                                session_id: Some(session_id),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                        if let Some(snapshot) = supervisor.snapshot(session_id).await {
+                            if channel.send(session_event(&snapshot)).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             // Selecting emits only the id, but the page needs that session's
             // transcript. Send it right after the selection.
