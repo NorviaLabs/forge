@@ -232,6 +232,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::trust_status,
         bridge::trust_workspace,
         bridge::subscribe,
+        bridge::current_session,
         bridge::submit_prompt,
         bridge::submit_images,
         bridge::stop_turn,

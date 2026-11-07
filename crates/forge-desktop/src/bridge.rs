@@ -1607,6 +1607,16 @@ pub async fn answer_question(
         .map_err(|error| error.to_string())
 }
 
+/// The selected session's live snapshot, used to resync after the window
+/// regains focus in case an event was missed while it was hidden.
+#[tauri::command]
+pub async fn current_session(
+    state: State<'_, DesktopState>,
+) -> Result<Option<DesktopEvent>, String> {
+    let session_id = selected_session(&state).await?;
+    Ok(selected_snapshot(&state.supervisor, Some(session_id)).await)
+}
+
 /// Resume the selected session's stopped or interrupted turn.
 #[tauri::command]
 pub async fn continue_turn(state: State<'_, DesktopState>) -> Result<(), String> {

@@ -11,6 +11,7 @@
     "allow-trust-status",
     "allow-trust-workspace",
     "allow-subscribe",
+    "allow-current-session",
     "allow-submit-prompt",
     "allow-submit-images",
     "allow-stop-turn",

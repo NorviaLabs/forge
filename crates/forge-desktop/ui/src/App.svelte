@@ -403,6 +403,27 @@
     return () => clearInterval(timer);
   });
 
+  // A missed event leaves the page on a stale turn state. The bridge resyncs
+  // broadcast lag, but also fetch the live snapshot when the window returns
+  // to the user.
+  let syncing = false;
+  async function syncSession() {
+    if (!booted || !sessionId || syncing) return;
+    syncing = true;
+    try {
+      const snapshot = await invoke("current_session");
+      if (!snapshot || snapshot.session_id !== sessionId) return;
+      const questionId = snapshot.pending_question?.call_id ?? "";
+      const approvalId = snapshot.pending_approval?.call_id ?? "";
+      if (snapshot.turn_state !== turnState
+          || questionId !== (question?.call_id ?? "")
+          || approvalId !== (approval?.call_id ?? "")) {
+        applySession(snapshot);
+      }
+    } catch {}
+    finally { syncing = false; }
+  }
+
   let filesRequest = 0;
   async function refreshFiles() {
     if (!sessionId) return;
@@ -1343,6 +1364,7 @@
     window.matchMedia(DARK_QUERY).addEventListener("change", (event) => (systemDark = event.matches));
     loadThemes();
     window.addEventListener("keydown", onKeydown);
+    window.addEventListener("focus", syncSession);
     let unlisten = null;
     listen("close_requested", () => {
       quitRequested = true;
@@ -1369,6 +1391,7 @@
     })();
     return () => {
       window.removeEventListener("keydown", onKeydown);
+      window.removeEventListener("focus", syncSession);
       unlisten?.();
     };
   });

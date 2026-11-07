@@ -8,6 +8,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "trust_status",
     "trust_workspace",
     "subscribe",
+    "current_session",
     "submit_prompt",
     "submit_images",
     "stop_turn",
