@@ -6,12 +6,38 @@
 //! There is no extra IPC command, so a self-test build has exactly the
 //! release command surface. Rust then adds its own checks and decides.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Deserialize;
 use tauri::Listener;
 
+use crate::bridge::DesktopEvent;
 use crate::pinned::PINNED_CSP;
+
+/// The scripted model behind the journey, one step per model request:
+/// - the markdown prompt's answer;
+/// - a gated `git reset --hard` the page approves once, then its answer;
+/// - a gated `git clean -f` the page denies, then its answer;
+/// - a model call held mid-stream until the page presses Stop.
+///
+/// It is strict: any request beyond these fails the turn.
+pub const SCENARIO: &str = r#"{"strict": true, "steps": [
+  {"text": {"text": "self-test **pong**", "chunks": ["self-test ", "**pong**"]}},
+  {"tool_calls": {"calls": [{"id": "approve-me", "name": "git", "arguments": {"subcommand": "reset", "args": ["--hard", "HEAD"]}}]}},
+  {"text": {"text": "after approve"}},
+  {"tool_calls": {"calls": [{"id": "deny-me", "name": "git", "arguments": {"subcommand": "clean", "args": ["-f"]}}]}},
+  {"text": {"text": "after deny"}},
+  {"hold": {"id": "stop-me", "before": "working on it", "then": {"text": {"text": "held answer"}}}}
+]}"#;
+
+/// Untracked file in the self-test repository; only the denied
+/// `git clean -f` would delete it.
+pub const UNTRACKED: &str = "untracked.txt";
+
+/// The answer the held model call would give if Stop did not cancel it.
+const HELD_ANSWER: &str = "held answer";
 
 /// The event the page tries to emit; the capability does not grant
 /// `event:emit`, so Rust must never receive it.
@@ -19,16 +45,26 @@ pub const EMIT_PROBE_EVENT: &str = "forge-selftest-emit-probe";
 
 #[derive(Default)]
 pub struct Probe {
+    repo: PathBuf,
     submitted: AtomicBool,
     completed_delivered: AtomicBool,
     emit_received: std::sync::Arc<AtomicBool>,
     egress_port: Option<u16>,
     decided: AtomicBool,
+    /// What Rust itself delivered to the page.
+    approvals_shown: Mutex<Vec<String>>,
+    last_turn_state: Mutex<&'static str>,
+    held_answer_delivered: AtomicBool,
 }
 
 /// What the page observed. Every field must be true to pass.
 #[derive(Debug, Deserialize)]
 struct PageResults {
+    shell_survives_switch: bool,
+    editor_navigation_and_reload: bool,
+    #[serde(default)]
+    editor_debug: String,
+    theme_switches: bool,
     rendered_markdown: bool,
     unknown_command_blocked: bool,
     emit_blocked: bool,
@@ -39,11 +75,15 @@ struct PageResults {
     iframe_blocked: bool,
     egress_fetch_blocked: bool,
     egress_websocket_blocked: bool,
+    approved_turn_completed: bool,
+    denied_turn_completed: bool,
+    stopped_during_hold: bool,
 }
 
 impl Probe {
-    pub fn new() -> Self {
+    pub fn new(repo: PathBuf) -> Self {
         Self {
+            repo,
             egress_port: listening_tcp()
                 .ok()
                 .and_then(|addresses| addresses.first().and_then(|a| port_of(a))),
@@ -62,8 +102,30 @@ impl Probe {
         self.submitted.store(true, Ordering::SeqCst);
     }
 
-    pub fn completed_delivered(&self) {
-        self.completed_delivered.store(true, Ordering::SeqCst);
+    /// Record an event about to be delivered to the page.
+    pub fn delivering(&self, event: &DesktopEvent) {
+        let DesktopEvent::Session {
+            turn_state,
+            messages,
+            pending_approval,
+            ..
+        } = event
+        else {
+            return;
+        };
+        if *turn_state == "completed" {
+            self.completed_delivered.store(true, Ordering::SeqCst);
+        }
+        *self.last_turn_state.lock().unwrap() = turn_state;
+        if let Some(approval) = pending_approval {
+            let mut shown = self.approvals_shown.lock().unwrap();
+            if !shown.contains(&approval.call_id) {
+                shown.push(approval.call_id.clone());
+            }
+        }
+        if messages.iter().any(|message| message.text == HELD_ANSWER) {
+            self.held_answer_delivered.store(true, Ordering::SeqCst);
+        }
     }
 
     /// Listen for the event the page must not be able to emit.
@@ -103,6 +165,12 @@ impl Probe {
         match serde_json::from_str::<PageResults>(report) {
             Ok(page) => {
                 let checks = [
+                    ("shell_survives_switch", page.shell_survives_switch),
+                    (
+                        "editor_navigation_and_reload",
+                        page.editor_navigation_and_reload,
+                    ),
+                    ("theme_switches", page.theme_switches),
                     ("rendered_markdown", page.rendered_markdown),
                     ("unknown_command_blocked", page.unknown_command_blocked),
                     ("emit_blocked", page.emit_blocked),
@@ -113,11 +181,17 @@ impl Probe {
                     ("iframe_blocked", page.iframe_blocked),
                     ("egress_fetch_blocked", page.egress_fetch_blocked),
                     ("egress_websocket_blocked", page.egress_websocket_blocked),
+                    ("approved_turn_completed", page.approved_turn_completed),
+                    ("denied_turn_completed", page.denied_turn_completed),
+                    ("stopped_during_hold", page.stopped_during_hold),
                 ];
                 for (name, passed) in checks {
                     if !passed {
                         failures.push(format!("page: {name}"));
                     }
+                }
+                if !page.editor_navigation_and_reload {
+                    failures.push(format!("editor diagnostic: {}", page.editor_debug));
                 }
             }
             Err(error) => failures.push(format!("unreadable page report: {error}")),
@@ -131,8 +205,40 @@ impl Probe {
         if self.emit_received.load(Ordering::SeqCst) {
             failures.push("the page emitted an event it has no permission for".into());
         }
+        failures.extend(self.journey_failures());
         failures.extend(config_failures(app));
         failures.extend(listener_failures());
+        failures
+    }
+}
+
+impl Probe {
+    /// The approval journey's effects, checked on disk and against what
+    /// Rust delivered, not taken from the page.
+    fn journey_failures(&self) -> Vec<String> {
+        let mut failures = Vec::new();
+        let shown = self.approvals_shown.lock().unwrap().clone();
+        if shown != ["approve-me", "deny-me"] {
+            failures.push(format!(
+                "expected approvals approve-me then deny-me, showed {shown:?}"
+            ));
+        }
+        match std::fs::read_to_string(self.repo.join("README.md")) {
+            Ok(text) if text == "self-test\n" => {}
+            other => failures.push(format!(
+                "the approved `git reset --hard` did not run: README.md is {other:?}"
+            )),
+        }
+        if !self.repo.join(UNTRACKED).exists() {
+            failures.push("the denied `git clean -f` ran: the untracked file is gone".into());
+        }
+        let last = *self.last_turn_state.lock().unwrap();
+        if !matches!(last, "cancelled" | "interrupted") {
+            failures.push(format!("the held turn ended {last:?}, not stopped"));
+        }
+        if self.held_answer_delivered.load(Ordering::SeqCst) {
+            failures.push("a stopped turn still delivered the held answer".into());
+        }
         failures
     }
 }

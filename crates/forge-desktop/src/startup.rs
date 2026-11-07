@@ -1,5 +1,5 @@
 //! Process startup: arguments, ownership and trust, the supervisor, then
-//! the Tauri event loop. Every refusal happens before a window opens.
+//! the Tauri event loop. Untrusted workspaces defer launch behind a trust screen.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -34,13 +34,29 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
     Ok(parsed)
 }
 
-struct Started {
-    supervisor: RepositorySupervisor,
-    handle: SupervisorHandle,
-    session_id: SessionId,
-    initial: forge_session::SessionRuntimeSnapshot,
+pub(crate) struct Started {
+    pub(crate) supervisor: RepositorySupervisor,
+    pub(crate) handle: SupervisorHandle,
+    pub(crate) session_id: SessionId,
+    pub(crate) initial: forge_session::SessionRuntimeSnapshot,
+    /// The live sessions at startup, for the switcher's first paint.
+    pub(crate) sessions: Vec<crate::bridge::SessionRow>,
     /// Self-test only: the temporary workspace, kept alive for the run.
-    _scratch: Option<Box<dyn std::any::Any + Send>>,
+    pub(crate) _scratch: Option<Box<dyn std::any::Any + Send>>,
+    /// Self-test only: the throwaway repository the journey acts on.
+    #[cfg(feature = "self-test")]
+    pub(crate) self_test_repo: Option<PathBuf>,
+}
+
+/// What startup produced: either a running session, or a workspace the
+/// operator must trust first. Trusting it starts the session in this same
+/// process; nothing is written into the workspace before that.
+pub enum Startup {
+    Ready(Box<Started>),
+    NeedsTrust {
+        workspace: PathBuf,
+        deferred: Box<Config>,
+    },
 }
 
 pub fn run() -> i32 {
@@ -61,8 +77,8 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    let started = match runtime.block_on(start(&args)) {
-        Ok(started) => started,
+    let startup = match runtime.block_on(start(&args)) {
+        Ok(startup) => startup,
         Err(error) => {
             eprintln!("forge-desktop: {error:#}");
             return 1;
@@ -80,27 +96,48 @@ pub fn run() -> i32 {
         });
     }
 
-    let supervisor = std::sync::Arc::new(tokio::sync::RwLock::new(Some(started.supervisor)));
-    #[allow(unused_mut)] // self-test builds attach their probe
-    let mut state = DesktopState::new(
-        started.handle,
-        supervisor.clone(),
-        started.session_id,
-        &started.initial,
-    );
-    #[cfg(feature = "self-test")]
-    let probe = args
-        .self_test
-        .then(|| std::sync::Arc::new(crate::self_test::Probe::new()));
-    #[cfg(feature = "self-test")]
-    {
-        state.self_test = probe.clone();
-    }
+    // The page asks `trust_status` first: an untrusted workspace gets the
+    // trust screen, and `trust_workspace` starts the session in place.
+    let (trust, ready) = match startup {
+        Startup::Ready(started) => (
+            bridge::TrustState::ready(started.initial.task.workspace.clone()),
+            Some(started),
+        ),
+        Startup::NeedsTrust {
+            workspace,
+            deferred,
+        } => (bridge::TrustState::pending(workspace, *deferred), None),
+    };
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
-        .manage(state)
+        .manage(trust)
         .plugin(navigation_guard())
         .invoke_handler(invoke_handler());
+    #[cfg(feature = "self-test")]
+    let mut probe = None;
+    let mut _scratch: Option<Box<dyn std::any::Any + Send>> = None;
+    if let Some(started) = ready {
+        let started = *started;
+        _scratch = started._scratch;
+        let supervisor = std::sync::Arc::new(tokio::sync::RwLock::new(Some(started.supervisor)));
+        #[allow(unused_mut)] // self-test builds attach their probe
+        let mut state = DesktopState::new(
+            started.handle,
+            supervisor,
+            started.session_id,
+            &started.initial,
+            started.sessions,
+        );
+        #[cfg(feature = "self-test")]
+        {
+            probe = started
+                .self_test_repo
+                .clone()
+                .map(|repo| std::sync::Arc::new(crate::self_test::Probe::new(repo)));
+            state.self_test = probe.clone();
+        }
+        builder = builder.manage(state);
+    }
     #[cfg(feature = "self-test")]
     if let Some(probe) = probe {
         let on_load = probe.clone();
@@ -124,14 +161,37 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    let _scratch = started._scratch;
-    app.run(move |_, event| {
+    let runtime_handle = runtime.handle().clone();
+    app.run(move |handle, event| {
+        match &event {
+            tauri::RunEvent::WindowEvent {
+                label,
+                event: tauri::WindowEvent::CloseRequested { api, .. },
+                ..
+            } if label == "main" && quit_risk(handle) => {
+                api.prevent_close();
+                ask_before_quitting(handle);
+            }
+            tauri::RunEvent::ExitRequested { api, .. } if quit_risk(handle) => {
+                api.prevent_exit();
+                ask_before_quitting(handle);
+            }
+            _ => {}
+        }
         if let tauri::RunEvent::Exit = event {
-            let taken = runtime.block_on(async { supervisor.write().await.take() });
+            use tauri::Manager;
+            // No `DesktopState` yet means the trust screen never got past
+            // itself; there is no session and nothing to release.
+            let Some(state) = handle.try_state::<DesktopState>() else {
+                return;
+            };
+            state.shells.close_all();
+            let supervisor = state.supervisor.clone();
+            let taken = runtime_handle.block_on(async { supervisor.write().await.take() });
             if let Some(supervisor) = taken {
                 // Release the repository explicitly, bounded so a provider
                 // that never answers cannot keep the app from quitting.
-                let shutdown = runtime.block_on(async move {
+                let shutdown = runtime_handle.block_on(async move {
                     tokio::time::timeout(SHUTDOWN_TIMEOUT, supervisor.shutdown()).await
                 });
                 match shutdown {
@@ -142,16 +202,107 @@ pub fn run() -> i32 {
             }
         }
     });
+    // Provider/device-login workers must not hold process exit for minutes.
+    // The supervisor's durable work was already shut down above.
+    runtime.shutdown_background();
     0
+}
+
+/// Unsaved editor buffers or live turns, and no confirmation yet: a close
+/// must not discard either silently.
+fn quit_risk(handle: &tauri::AppHandle) -> bool {
+    use std::sync::atomic::Ordering;
+    use tauri::Manager;
+    let Some(state) = handle.try_state::<DesktopState>() else {
+        return false;
+    };
+    (state.unsaved.load(Ordering::Relaxed) || state.busy.load(Ordering::Relaxed))
+        && !state.quitting.load(Ordering::Relaxed)
+}
+
+/// The page shows its discard dialog; `quit_app` ends the process if the
+/// user goes through with it.
+fn ask_before_quitting(handle: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let _ = handle.emit("close_requested", ());
 }
 
 fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
+        bridge::trust_status,
+        bridge::trust_workspace,
         bridge::subscribe,
         bridge::submit_prompt,
+        bridge::submit_images,
         bridge::stop_turn,
         bridge::approve_once,
-        bridge::deny
+        bridge::deny,
+        bridge::decide_approval,
+        bridge::answer_question,
+        bridge::set_approve_all,
+        bridge::clear_approvals,
+        bridge::continue_turn,
+        bridge::stop_session,
+        bridge::close_session,
+        bridge::fork_session,
+        bridge::resume_session,
+        bridge::list_resumable_sessions,
+        bridge::rename_session,
+        bridge::pin_session,
+        bridge::cancel_queued,
+        bridge::compact_context,
+        bridge::set_thinking,
+        bridge::cancel_background,
+        bridge::resolve_child_approval,
+        bridge::child_transcript,
+        bridge::message_detail,
+        bridge::create_session,
+        bridge::select_session,
+        bridge::archive_session,
+        bridge::list_files,
+        bridge::read_file,
+        bridge::git_status,
+        bridge::github_issues,
+        bridge::github_details,
+        bridge::github_logs,
+        bridge::github_create_pr,
+        bridge::github_refresh_pr,
+        bridge::github_apply_feedback,
+        bridge::git_diff,
+        bridge::git_operation,
+        bridge::write_file,
+        bridge::create_file,
+        bridge::create_dir,
+        bridge::rename_path,
+        bridge::delete_path,
+        bridge::search_files,
+        bridge::git_stage,
+        bridge::git_unstage,
+        bridge::git_commit,
+        bridge::git_branches,
+        bridge::git_switch_branch,
+        bridge::git_create_branch,
+        bridge::git_merge_branch,
+        bridge::git_rename_branch,
+        bridge::set_unsaved,
+        bridge::quit_app,
+        bridge::git_restore,
+        bridge::git_discard_hunk,
+        bridge::git_last_turn_files,
+        bridge::list_models,
+        bridge::session_details,
+        bridge::list_providers,
+        bridge::connect_provider,
+        bridge::disconnect_provider,
+        bridge::add_model,
+        bridge::save_custom_provider,
+        bridge::update_custom_provider,
+        bridge::remove_custom_provider,
+        bridge::set_model,
+        bridge::shell_open,
+        bridge::shell_write,
+        bridge::shell_resize,
+        bridge::shell_close
     ]
 }
 
@@ -179,9 +330,9 @@ fn context() -> tauri::Context {
     tauri::generate_context!()
 }
 
-async fn start(args: &Args) -> anyhow::Result<Started> {
+async fn start(args: &Args) -> anyhow::Result<Startup> {
     if args.self_test {
-        return start_self_test().await;
+        return Ok(Startup::Ready(Box::new(start_self_test().await?)));
     }
     let workspace = match &args.workspace {
         Some(path) => path.clone(),
@@ -195,16 +346,18 @@ async fn start(args: &Args) -> anyhow::Result<Started> {
     .map_err(|error| anyhow::anyhow!(error))?;
     let plan = LaunchPlan::prepare(&cfg).await?;
     if plan.needs_trust() {
-        anyhow::bail!(
-            "{} is not trusted yet. Open it once with `forge` in a terminal and trust it there; \
-             the desktop trust prompt arrives in a later release.",
-            plan.workspace().display()
-        );
+        // Trust is the operator's decision, asked in the window rather than
+        // in the terminal. `launch` still re-reads it, so nothing is written
+        // into the workspace before the operator says yes.
+        return Ok(Startup::NeedsTrust {
+            workspace: plan.workspace().to_path_buf(),
+            deferred: Box::new(cfg),
+        });
     }
-    open(cfg, plan, None).await
+    Ok(Startup::Ready(Box::new(open(cfg, plan, None).await?)))
 }
 
-async fn open(
+pub(crate) async fn open(
     cfg: Config,
     plan: LaunchPlan,
     scratch: Option<Box<dyn std::any::Any + Send>>,
@@ -223,12 +376,16 @@ async fn open(
         .snapshot(session_id)
         .await
         .context("the session is missing from the supervisor")?;
+    let sessions = bridge::session_rows(&supervisor.snapshots().await);
     Ok(Started {
         supervisor,
         handle,
         session_id,
         initial,
+        sessions,
         _scratch: scratch,
+        #[cfg(feature = "self-test")]
+        self_test_repo: None,
     })
 }
 
@@ -237,7 +394,7 @@ async fn start_self_test() -> anyhow::Result<Started> {
     unreachable!("--self-test is rejected by parse_args outside self-test builds")
 }
 
-/// A throwaway trusted git repository, the offline mock model, and a
+/// A throwaway trusted git repository, the scripted fake provider, and a
 /// private trust store: nothing of the user's is touched.
 #[cfg(feature = "self-test")]
 async fn start_self_test() -> anyhow::Result<Started> {
@@ -260,6 +417,13 @@ async fn start_self_test() -> anyhow::Result<Started> {
             .context("self-test needs git")?;
         anyhow::ensure!(status.success(), "git {args:?} failed");
     }
+    // Fixtures for the approval journey (see `self_test::SCENARIO`): the
+    // approved `git reset --hard` restores README.md, and the denied
+    // `git clean -f` must leave the untracked file alone.
+    std::fs::write(repo.join("README.md"), "modified\n")?;
+    std::fs::write(repo.join(crate::self_test::UNTRACKED), "keep\n")?;
+    let scenario = scratch.path().join("scenario.json");
+    std::fs::write(&scenario, crate::self_test::SCENARIO)?;
     let store = scratch.path().join("trust.toml");
     forge_config::grant_trust_at(&store, &repo)?;
     let mut cfg = Config {
@@ -268,8 +432,11 @@ async fn start_self_test() -> anyhow::Result<Started> {
         ..Default::default()
     };
     cfg.model.mock = true;
+    cfg.model.mock_script = Some(scenario);
     let plan = LaunchPlan::prepare_with_trust_store(&cfg, Some(store)).await?;
-    open(cfg, plan, Some(Box::new(scratch))).await
+    let mut started = open(cfg, plan, Some(Box::new(scratch))).await?;
+    started.self_test_repo = Some(repo);
+    Ok(started)
 }
 
 #[cfg(test)]

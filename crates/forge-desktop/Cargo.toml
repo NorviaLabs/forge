@@ -18,10 +18,10 @@ name = "forge-desktop"
 path = "src/main.rs"
 
 [features]
-# Builds with `--self-test` (a scripted end-to-end check) and the offline
-# mock model. Never enabled in release builds; such a build uses its own
+# Builds with `--self-test` (a scripted end-to-end check) and the scripted
+# fake provider. Never enabled in release builds; such a build uses its own
 # bundle identifier (see tauri.self-test.conf.json).
-self-test = ["dep:tempfile"]
+self-test = ["dep:tempfile", "forge-session/fake-provider"]
 
 [build-dependencies]
 tauri-build = { version = "=2.7.3", features = ["isolation"] }
@@ -35,5 +35,16 @@ tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tempfile = { version = "3", optional = true }
 forge-config = { path = "../forge-config" }
+forge-core = { path = "../forge-core" }
+forge-connect = { path = "../forge-connect" }
 forge-session = { path = "../forge-session" }
 forge-types = { path = "../forge-types" }
+forge-transcript = { path = "../forge-transcript" }
+forge-workspace = { path = "../forge-workspace" }
+portable-pty = "0.9"
+base64 = "0.22"
+sha2 = "0.10"
+
+[dev-dependencies]
+# Constructing a session snapshot in the bridge's roster tests.
+chrono = "0.4"

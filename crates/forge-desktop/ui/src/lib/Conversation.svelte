@@ -1,0 +1,335 @@
+<script>
+  import { tick } from "svelte";
+  import Markdown from "../Markdown.svelte";
+  import Icon from "./Icon.svelte";
+
+  let { messages = [], streaming = "", turnState = "idle", onSuggest, onExpand } = $props();
+
+  let scroller = $state();
+  let pinned = $state(true);
+
+  const suggestions = [
+    "Explain the architecture of this codebase",
+    "Find the riskiest bug in the changes",
+    "Run the tests and diagnose failures",
+  ];
+
+  // Follow new output unless the reader scrolled up.
+  $effect(() => {
+    void messages.length;
+    void streaming.length;
+    if (!pinned || !scroller) return;
+    tick().then(() => {
+      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+    });
+  });
+
+  function onScroll() {
+    if (!scroller) return;
+    const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    pinned = distance < 48;
+  }
+
+  function toolName(message) {
+    return message.name || "tool";
+  }
+</script>
+
+<div class="transcript" bind:this={scroller} onscroll={onScroll} aria-label="Transcript">
+  {#if messages.length === 0 && !streaming}
+    <div class="intro">
+      <div class="intro-mark"><Icon name="chat" size={20} /></div>
+      <h2>Ask Forge to work the repository</h2>
+      <p>It can inspect files, change code, run commands, and review diffs. Every risky step waits for your approval.</p>
+      <div class="suggestions">
+        {#each suggestions as suggestion}
+          <button type="button" class="suggestion" onclick={() => onSuggest(suggestion)}>
+            {suggestion}
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#each messages as message, index (index)}
+    <div class="turn {message.role}">
+      <div class="who">
+        {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}Tool{/if}
+        {#if message.role === "tool"}<span class="tool-name">{toolName(message)}</span>{/if}
+      </div>
+      {#if message.thinking}
+        <details class="thinking">
+          <summary>Reasoning</summary>
+          <pre>{message.thinking}</pre>
+        </details>
+      {/if}
+      <article
+        class="message {message.role}"
+        data-role={message.role}
+      >
+        {#if message.role === "tool"}
+          <pre>{message.text}</pre>
+          {#if onExpand && message.text.endsWith("…")}
+            <button class="expand" type="button" onclick={() => onExpand(index)}>Show full output</button>
+          {/if}
+        {:else}
+          <Markdown text={message.text} />
+        {/if}
+      </article>
+    </div>
+  {/each}
+
+  {#if streaming}
+    <div class="turn assistant">
+      <div class="who">Forge</div>
+      <article class="message assistant streaming" data-role="assistant-streaming">
+        <Markdown text={streaming} />
+      </article>
+    </div>
+  {/if}
+</div>
+
+<style>
+  .transcript {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 18px 28px 8px;
+    scroll-behavior: smooth;
+  }
+
+  .intro {
+    max-width: 34rem;
+    margin: 12vh auto 0;
+    text-align: center;
+    color: var(--secondary);
+  }
+
+  .intro-mark {
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    margin: 0 auto 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--accent);
+  }
+
+  .intro h2 {
+    margin: 0 0 6px;
+    color: var(--text);
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .intro p {
+    margin: 0 auto;
+    max-width: 30rem;
+    font-size: 13px;
+  }
+
+  .suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 18px;
+  }
+
+  .suggestion {
+    height: 30px;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--secondary);
+    font-size: 12px;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+
+  .suggestion:hover {
+    background: var(--hover);
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+
+  .turn {
+    max-width: 52rem;
+    margin: 0 auto 18px;
+  }
+
+  .who {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    margin-bottom: 5px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .tool-name {
+    color: var(--secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  .message {
+    font-size: 13.5px;
+    line-height: 1.62;
+    overflow-wrap: anywhere;
+  }
+
+  .message.user {
+    padding: 10px 13px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .message.assistant :global(p) {
+    margin: 0 0 0.7em;
+  }
+
+  .message.assistant :global(p:last-child) {
+    margin-bottom: 0;
+  }
+
+  .message.assistant :global(strong) {
+    color: var(--strong);
+    font-weight: 600;
+  }
+
+  .message.assistant :global(em) {
+    color: #c7d96b;
+  }
+
+  .message.assistant :global(a) {
+    color: #4fc9df;
+    text-decoration: none;
+  }
+
+  .message.assistant :global(code),
+  .message.assistant :global(pre) {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .message.assistant :global(code) {
+    padding: 1px 5px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-deep);
+  }
+
+  .message.assistant :global(pre) {
+    margin: 0.6em 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-deep);
+    overflow: auto;
+  }
+
+  .message.assistant :global(pre code) {
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+
+  .message.assistant :global(ul),
+  .message.assistant :global(ol) {
+    margin: 0.4em 0 0.7em;
+    padding-left: 1.3em;
+  }
+
+  .message.assistant :global(blockquote) {
+    margin: 0.6em 0;
+    padding-left: 10px;
+    border-left: 2px solid var(--border-strong);
+    color: var(--secondary);
+  }
+
+  .message.assistant :global(h1),
+  .message.assistant :global(h2),
+  .message.assistant :global(h3) {
+    margin: 1em 0 0.4em;
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .message.tool {
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-deep);
+    overflow: hidden;
+  }
+
+  .message.tool pre {
+    margin: 0;
+    padding: 10px 12px;
+    max-height: 260px;
+    overflow: auto;
+    color: var(--secondary);
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+
+  .message.tool .expand {
+    margin: 0 12px 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--secondary);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .thinking {
+    margin: 2px 0 4px;
+    color: var(--muted);
+    font-size: 11.5px;
+  }
+
+  .thinking summary {
+    cursor: pointer;
+  }
+
+  .thinking pre {
+    margin: 6px 0 0;
+    padding: 8px 10px;
+    max-height: 220px;
+    overflow: auto;
+    border-left: 2px solid var(--border-strong);
+    color: var(--secondary);
+    font-family: var(--font-ui);
+    white-space: pre-wrap;
+  }
+
+  .message.streaming::after {
+    content: "";
+    display: inline-block;
+    width: 7px;
+    height: 14px;
+    margin-left: 2px;
+    background: var(--accent);
+    vertical-align: -2px;
+    animation: blink 1s steps(2, start) infinite;
+  }
+
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+</style>

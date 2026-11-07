@@ -9,10 +9,14 @@
 
 mod bridge;
 mod commands_list;
+mod github;
 mod pinned;
+mod providers;
 #[cfg(feature = "self-test")]
 mod self_test;
+mod shell;
 mod startup;
+mod workspace;
 
 fn main() {
     std::process::exit(startup::run());
