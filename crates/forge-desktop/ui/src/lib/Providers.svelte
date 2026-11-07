@@ -35,6 +35,8 @@
         const channel = new Channel();
         channel.onmessage = (view) => (login = view);
         message = await invoke("connect_provider", { profileId, channel });
+      } else if (action === "importLogin") {
+        message = await invoke("import_provider_login", { profileId });
       } else if (action === "disconnect") {
         message = await invoke("disconnect_provider", { profileId });
       } else if (action === "saveCustom") {
@@ -86,7 +88,7 @@
     <label>Provider
       <select class="field" bind:value={profileId} disabled={busy} onchange={() => { disconnecting = false; message = ""; error = ""; }}>
         {#each providers as provider (provider.id)}
-          <option value={provider.id}>{provider.title}{provider.connected ? " — connected" : ""}</option>
+          <option value={provider.id}>{provider.title}{provider.connected ? " — connected" : provider.reuse ? " — sign-in available" : ""}</option>
         {/each}
       </select>
     </label>
@@ -111,7 +113,12 @@
         </div>
       {:else}
         <div class="actions">
-          <button class="btn primary" type="button" disabled={busy} onclick={() => run("connect")}>Connect</button>
+          {#if selected.reuse && !selected.connected}
+            <button class="btn primary" type="button" disabled={busy} onclick={() => run("importLogin")}>
+              Reuse {selected.reuse} sign-in{selected.reuse_account ? ` (${selected.reuse_account})` : ""}
+            </button>
+          {/if}
+          <button class={selected.reuse && !selected.connected ? "btn" : "btn primary"} type="button" disabled={busy} onclick={() => run("connect")}>Connect</button>
           <button class="btn" type="button" disabled={busy} onclick={() => (disconnecting = true)}>Disconnect…</button>
           {#if selected.custom}
             <button

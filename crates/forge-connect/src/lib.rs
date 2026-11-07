@@ -39,8 +39,8 @@ pub use catalog::{
 pub use cost::provider_cost_report;
 pub use credentials::Credentials;
 pub use import::{
-    discover_logins, discover_logins_in, login_for_profile, xdg_data_home, DiscoveredLogin,
-    DiscoveredSecret,
+    discover_logins, discover_logins_in, discover_user_logins, login_for_profile, xdg_data_home,
+    DiscoveredLogin, DiscoveredSecret,
 };
 pub use normalize::{normalize_saved_model_id, old_prefix_hint, profile_id_for_stored_route};
 pub use oauth_dispatch::OauthError;

@@ -69,7 +69,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | --- | --- | --- | --- |
 | Context usage meter | yes | yes | inspector |
 | Model + effort picker | yes | yes | `⌘M` |
-| Provider connect / add model | yes | **partial** | custom provider add/edit/remove; native hidden key prompt on macOS; OAuth browser flow has no cancel (it expires) |
+| Provider connect / add model | yes | **partial** | custom provider add/edit/remove; reuses a Codex/OpenCode/Grok sign-in found on the machine; native hidden key prompt on macOS; OAuth browser flow has no cancel (it expires) |
 | Disconnect provider | yes | yes | explicit confirmation; environment credentials remain unchanged |
 | Token counts, cache hits, tool count, skills | yes | yes | inspector and expanded status; cost/usage via existing provider service |
 | Plan view | yes | yes | newest `plan_update` checklist |
@@ -131,8 +131,9 @@ parity. Remaining work is tracked here:
   managed-worktree cleanup with dirty retention.
 - [x] Agents/queue: child reader, result insertion, run-scoped cancellation,
   queued-text editing and interrupted-prompt recovery.
-- [x] Providers/models: custom provider add/edit/remove and synchronized model
-  capabilities. Session-only keys and importing another CLI's login remain absent.
+- [x] Providers/models: custom provider add/edit/remove, synchronized model
+  capabilities and reusing another CLI's completed sign-in. Session-only keys
+  remain absent.
 - [x] GitHub: issue-linked sessions, explicit PR creation and feedback workflows.
 - [ ] Context/transcript: attachment/image inspection in history.
 - [ ] Chrome: installed/system themes and OS attention notifications.

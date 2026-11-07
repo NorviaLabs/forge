@@ -74,6 +74,7 @@
     "allow-session-details",
     "allow-list-providers",
     "allow-connect-provider",
+    "allow-import-provider-login",
     "allow-disconnect-provider",
     "allow-add-model",
     "allow-save-custom-provider",

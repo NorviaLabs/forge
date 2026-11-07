@@ -1487,10 +1487,7 @@ impl TuiApp {
     /// signing in to `codex` in another terminal while Forge is running should
     /// show up here, and the read is three small files.
     pub(super) fn reusable_logins(&self) -> Vec<forge_connect::DiscoveredLogin> {
-        let Some(home) = dirs::home_dir() else {
-            return Vec::new();
-        };
-        forge_connect::discover_logins_in(&home, forge_connect::xdg_data_home().as_deref())
+        forge_connect::discover_user_logins()
     }
 
     /// Adopt a discovered login for `profile_id`, if one exists.

@@ -13,6 +13,10 @@ pub struct ProviderView {
     /// A provider defined by the user, not a built-in.
     pub custom: bool,
     pub base_url: String,
+    /// The tool whose completed sign-in could be reused, when one was found.
+    pub reuse: Option<String>,
+    /// Which account that sign-in belongs to, when the source says.
+    pub reuse_account: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -33,16 +37,22 @@ pub fn list() -> Result<Vec<ProviderView>, String> {
         active_model: None,
     };
     let status = service.status().map_err(|error| error.to_string())?;
+    let logins = forge_connect::discover_user_logins();
     Ok(registry
         .profiles()
         .iter()
-        .map(|profile| ProviderView {
-            id: profile.id.clone(),
-            title: profile.title.clone(),
-            auth: profile.effective_auth().label().into(),
-            connected: status.connected_profile_ids.contains(&profile.id),
-            custom: profile.is_user(),
-            base_url: profile.base_url.clone(),
+        .map(|profile| {
+            let login = forge_connect::login_for_profile(&logins, &profile.id);
+            ProviderView {
+                id: profile.id.clone(),
+                title: profile.title.clone(),
+                auth: profile.effective_auth().label().into(),
+                connected: status.connected_profile_ids.contains(&profile.id),
+                custom: profile.is_user(),
+                base_url: profile.base_url.clone(),
+                reuse: login.as_ref().map(|login| login.source.clone()),
+                reuse_account: login.and_then(|login| login.account),
+            }
         })
         .collect())
 }
@@ -108,6 +118,39 @@ pub fn connect(
     } else {
         "Saved, but provider verification failed. Check connectivity before using this provider."
             .into()
+    })
+}
+
+/// Adopt a sign-in another CLI already completed. Only a provider the user
+/// explicitly chose reaches this, and the secret stays in the credential store.
+pub fn import_login(id: &str) -> Result<String, String> {
+    let registry = forge_connect::loaded_registry();
+    let profile = registry.get(id).ok_or("unknown provider")?;
+    let login = forge_connect::login_for_profile(&forge_connect::discover_user_logins(), id)
+        .ok_or("No reusable sign-in was found for that provider")?;
+    let credentials = Credentials::user_default();
+    match &login.secret {
+        forge_connect::DiscoveredSecret::ApiKey(key) => credentials.set_api_key(profile, key),
+        forge_connect::DiscoveredSecret::Oauth(tokens) => {
+            credentials.set_oauth(profile, (**tokens).clone())
+        }
+    }
+    .map_err(|error| error.to_string())?;
+    let catalog = forge_connect::refresh_profile_catalog(
+        profile,
+        credentials.store(),
+        &forge_connect::ModelCatalogCache::user_default(),
+    );
+    Ok(if catalog.is_err() {
+        format!(
+            "Reused the {} sign-in, but the model catalog could not be refreshed.",
+            login.source
+        )
+    } else {
+        format!(
+            "Reused the {} sign-in. Choose a model to use this provider.",
+            login.source
+        )
     })
 }
 

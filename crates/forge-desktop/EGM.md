@@ -63,8 +63,10 @@ appear in the root `Cargo.lock`.
   and accepts keystrokes and resize events. Closing kills the child. No agent
   tools, sandbox, or approvals are involved.
 - `src/providers.rs`: existing `forge-connect` services for connect/disconnect,
-  model catalog refresh and native macOS hidden-input key collection. OAuth
-  tokens/device secrets stay in Rust; only the sign-in URL/user code cross IPC.
+  model catalog refresh, adopting a sign-in another CLI already completed
+  (Codex, OpenCode, Grok) and native macOS hidden-input key collection. OAuth
+  tokens/device secrets stay in Rust; only the sign-in URL/user code and the
+  imported source/account label cross IPC.
   Missing keys on other platforms require environment variables or terminal setup.
 - `src/github.rs`: issue/PR/check views using `forge-workspace`'s bounded `gh`
   adapter, plus explicit PR creation, refresh and review-feedback application.

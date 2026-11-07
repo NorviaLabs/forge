@@ -2290,6 +2290,23 @@ pub async fn disconnect_provider(
     Ok(message)
 }
 
+/// Adopt a sign-in another CLI already completed for this provider.
+#[tauri::command]
+pub async fn import_provider_login(
+    state: State<'_, DesktopState>,
+    profile_id: String,
+) -> Result<String, String> {
+    let message = tokio::task::spawn_blocking(move || crate::providers::import_login(&profile_id))
+        .await
+        .map_err(|error| error.to_string())??;
+    state
+        .handle
+        .command(SupervisorCommand::ReloadProviders)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(message)
+}
+
 /// Push the linked issue branch and open its pull request.
 #[tauri::command]
 pub async fn github_create_pr(

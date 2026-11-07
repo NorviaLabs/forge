@@ -94,6 +94,15 @@ pub fn discover_logins(home: &Path) -> Vec<DiscoveredLogin> {
 /// pure function of its arguments: reading `XDG_DATA_HOME` inside meant that
 /// with the var set, discovery ignored `home` and read the real user's file —
 /// which would have made the tests below pass only by luck.
+/// [`discover_logins`] for the current user, including OpenCode's data
+/// directory. Every frontend wants the same one, so none re-derives it.
+pub fn discover_user_logins() -> Vec<DiscoveredLogin> {
+    match dirs::home_dir() {
+        Some(home) => discover_logins_in(&home, xdg_data_home().as_deref()),
+        None => Vec::new(),
+    }
+}
+
 pub fn discover_logins_in(home: &Path, data_home: Option<&Path>) -> Vec<DiscoveredLogin> {
     let mut found = Vec::new();
     found.extend(from_codex(home));
