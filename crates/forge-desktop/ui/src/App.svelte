@@ -415,9 +415,16 @@
       if (!snapshot || snapshot.session_id !== sessionId) return;
       const questionId = snapshot.pending_question?.call_id ?? "";
       const approvalId = snapshot.pending_approval?.call_id ?? "";
+      const localTotal = messages.length + (clearedFrom[sessionId] ?? 0);
+      const remoteLast = snapshot.messages[snapshot.messages.length - 1];
+      const localLast = messages[messages.length - 1];
+      const transcriptMoved = snapshot.messages.length !== localTotal
+        || (remoteLast?.text ?? "") !== (localLast?.text ?? "")
+        || (remoteLast?.role ?? "") !== (localLast?.role ?? "");
       if (snapshot.turn_state !== turnState
           || questionId !== (question?.call_id ?? "")
-          || approvalId !== (approval?.call_id ?? "")) {
+          || approvalId !== (approval?.call_id ?? "")
+          || transcriptMoved) {
         applySession(snapshot);
       }
     } catch {}
