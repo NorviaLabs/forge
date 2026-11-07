@@ -220,6 +220,8 @@
         { id: "diff:combined", group: "Git", label: "Review HEAD to working tree", action: () => openDiff(activeTab.path, "combined") },
         { id: "diff:staged", group: "Git", label: "Review staged changes", action: () => openDiff(activeTab.path, "staged") },
         { id: "diff:unstaged", group: "Git", label: "Review unstaged changes", action: () => openDiff(activeTab.path, "unstaged") },
+        { id: "git:stage", group: "Git", label: `Stage ${basename(activeTab.path)}`, action: () => stagePath(activeTab.path) },
+        { id: "git:unstage", group: "Git", label: `Unstage ${basename(activeTab.path)}`, action: () => unstagePath(activeTab.path) },
       );
     }
     for (const path of lastTurnFiles) {
@@ -266,6 +268,13 @@
         action: toggleApproveAll,
       },
       {
+        id: "action:thinking",
+        group: "Actions",
+        label: thinking ? "Hide model reasoning" : "Show model reasoning",
+        detail: thinking ? "on" : "off",
+        action: toggleThinking,
+      },
+      {
         id: "action:continue",
         group: "Actions",
         label: "Continue the last turn",
@@ -301,6 +310,8 @@
       { id: "git:fetch", group: "Git", label: "Fetch upstream", action: () => performGitOperation({ kind: "fetch" }) },
       { id: "git:pull", group: "Git", label: "Pull upstream…", action: () => requestGitOperation({ kind: "pull" }) },
       { id: "git:push", group: "Git", label: "Push upstream…", action: () => requestGitOperation({ kind: "push" }) },
+      { id: "git:commit", group: "Git", label: "Commit staged changes…", action: openCommit },
+      { id: "git:branches", group: "Git", label: "Branches and merges…", action: openBranches },
       {
         id: "action:fork",
         group: "Actions",
@@ -1189,6 +1200,15 @@
 
   function onKeydown(event) {
     if (!booted) return;
+    // The terminal owns Ctrl chords (Ctrl+W deletes a word, Ctrl+K kills a
+    // line, Ctrl+S is XOFF). Only Ctrl+` still toggles the terminal.
+    if (event.ctrlKey && !event.metaKey && activeTabId === "terminal") {
+      if (event.key === "`") {
+        event.preventDefault();
+        toggleTerminal();
+      }
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
       if (activeTabId !== "chat") {
         event.preventDefault();
@@ -1213,7 +1233,7 @@
       event.preventDefault();
       openModelPicker();
     }
-    if (event.metaKey && event.key.toLowerCase() === "k") {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
       event.preventDefault();
       paletteOpen = true;
     }
@@ -1501,7 +1521,7 @@
 
   {#if childView}
     <div class="modal">
-      <div class="dialog child-dialog" role="dialog" aria-modal="true" aria-labelledby="child-title">
+      <div class="dialog child-dialog" role="dialog" aria-modal="true" aria-labelledby="child-title" tabindex="-1" use:modal={{ onClose: () => (childView = null) }}>
         <header class="child-head">
           <h2 id="child-title">Agent · {childView.label}</h2>
           <button class="icon-btn" type="button" aria-label="Close" onclick={() => (childView = null)}>
@@ -1523,7 +1543,7 @@
 
   {#if approveAllPending}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="approve-all-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="approve-all-title" tabindex="-1" use:modal={{ onClose: () => (approveAllPending = false) }}>
         <h2 id="approve-all-title">Auto-approve review prompts?</h2>
         <p>
           Every review prompt in this session is approved without being shown.
@@ -1540,7 +1560,7 @@
 
   {#if quitRequested}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1" use:modal={{ onClose: () => (quitRequested = false) }}>
         <h2 id="quit-title">Quit Forge?</h2>
         <p>
           {#if tabs.some((tab) => tab.dirty)}The editor has unsaved changes. {/if}
@@ -1561,7 +1581,7 @@
 
   {#if archiveTarget}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title" tabindex="-1" use:modal={{ onClose: () => (archiveTarget = null) }}>
         <h2 id="archive-title">
           {archiveTarget.lifecycle === "active"
             ? `Archive “${archiveTarget.label}”?`
@@ -1599,7 +1619,7 @@
 
   {#if attachOpen}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="attach-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="attach-title" tabindex="-1" use:modal={{ onClose: () => (attachOpen = false), busy: attachBusy }}>
         <form onsubmit={submitAttach}>
           <h2 id="attach-title">Attach an existing worktree</h2>
           <p>
@@ -1624,7 +1644,7 @@
 
   {#if commitOpen}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="commit-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="commit-title" tabindex="-1" use:modal={{ onClose: () => (commitOpen = false), busy: gitBusy }}>
         <form onsubmit={submitCommit}>
           <h2 id="commit-title">{commitAll ? "Stage all and commit" : "Commit staged changes"}</h2>
           <p>{commitAll ? "Every tracked and untracked change in this session's workspace will be staged and committed." : "Only what is staged is committed. Unstaged files stay in the working tree."}</p>
@@ -1647,7 +1667,7 @@
 
   {#if pathTarget}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="path-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="path-title" tabindex="-1" use:modal={{ onClose: () => (pathTarget = null) }}>
         <form onsubmit={confirmRenamePath}>
           <h2 id="path-title">Rename “{pathTarget.path}”</h2>
           <input class="field" bind:value={pathTarget.value} aria-label="New path" spellcheck="false" />
@@ -1662,7 +1682,7 @@
 
   {#if deleteTarget}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title" tabindex="-1" use:modal={{ onClose: () => (deleteTarget = null) }}>
         <h2 id="delete-title">Delete “{deleteTarget.path}”?</h2>
         <p>
           {deleteTarget.is_dir
@@ -1695,7 +1715,7 @@
 
   {#if renameTarget}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="rename-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="rename-title" tabindex="-1" use:modal={{ onClose: () => (renameTarget = null) }}>
         <form onsubmit={confirmRename}>
           <h2 id="rename-title">Rename session</h2>
           <input class="field" bind:value={renameLabel} aria-label="Session name" />
@@ -1710,7 +1730,7 @@
 
   {#if pendingClose || pendingSwitch}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="discard-title">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="discard-title" tabindex="-1" use:modal={{ onClose: () => { pendingClose = ""; pendingSwitch = ""; } }}>
         <h2 id="discard-title">Discard unsaved changes?</h2>
         <p>
           {pendingSwitch

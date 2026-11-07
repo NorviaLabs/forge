@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import { modal } from "../modal.js";
 
   let {
     models = [],
@@ -67,7 +68,7 @@
 </script>
 
 <div class="overlay" role="presentation" onclick={(event) => event.target === event.currentTarget && onClose()}>
-  <div class="picker" role="dialog" aria-modal="true" aria-label="Choose a model">
+  <div class="picker" role="dialog" aria-modal="true" aria-label="Choose a model" tabindex="-1" use:modal={{ onClose, busy: applying }}>
     <header>
       <h2>Model</h2>
       <button class="icon-btn" type="button" aria-label="Close" onclick={onClose}>

@@ -108,8 +108,10 @@
   <header class="workspace">
     <span class="mark">F</span>
     <div class="names">
-      <strong>Forge</strong>
-      <button class="btn ghost" type="button" onclick={onHelp}>Help</button>
+      <div class="title">
+        <strong>Forge</strong>
+        <button class="help" type="button" onclick={onHelp}>Help</button>
+      </div>
       <span class="where" title={workspace}>{workspace || "No session"}</span>
     </div>
     {#if branch}
@@ -461,9 +463,29 @@
     line-height: 1.25;
   }
 
+  .title {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    min-width: 0;
+  }
+
   .names strong {
     font-size: 13px;
     letter-spacing: 0.01em;
+  }
+
+  .help {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .help:hover {
+    color: var(--text);
+    text-decoration: underline;
   }
 
   .where {
@@ -545,6 +567,7 @@
   }
 
   .session-list li {
+    position: relative;
     display: flex;
     align-items: center;
     border-radius: var(--radius-sm);
@@ -591,10 +614,36 @@
     gap: 1px;
     margin-right: 3px;
     opacity: 0;
+    pointer-events: none;
   }
 
   li:hover .row-actions,
   li:focus-within .row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Session actions float over the row so they do not squeeze the name when
+     hidden; the gradient keeps the icons readable on hover. */
+  .session-list .row-actions {
+    position: absolute;
+    top: 50%;
+    right: 3px;
+    translate: 0 -50%;
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    padding-left: 14px;
+    background: linear-gradient(90deg, transparent, var(--hover) 14px);
+    opacity: 0;
+  }
+
+  .session-list li.active .row-actions {
+    background: linear-gradient(90deg, transparent, var(--selection) 14px);
+  }
+
+  .session-list li:hover .row-actions,
+  .session-list li:focus-within .row-actions {
     opacity: 1;
   }
 

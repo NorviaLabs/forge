@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import { modal } from "../modal.js";
 
   let { items = [], placeholder = "Search sessions, files and actions", onClose } = $props();
 
@@ -58,7 +59,7 @@
 </script>
 
 <div class="overlay" role="presentation" onclick={(event) => event.target === event.currentTarget && onClose()}>
-  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette">
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Command palette" tabindex="-1" use:modal={{ onClose }}>
     <div class="search">
       <Icon name="search" size={14} />
       <input

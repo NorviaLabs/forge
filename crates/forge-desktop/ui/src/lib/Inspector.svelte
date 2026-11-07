@@ -67,7 +67,7 @@
       </dd>
       <dt>Model</dt>
       <dd class="model">
-        <button type="button" class="model-button" title="Choose a model" onclick={onPickModel}>
+        <button type="button" class="model-button" title={model ? `${model} — choose a model` : "Choose a model"} onclick={onPickModel}>
           <span>{model || "Choose a model"}</span>
           <span class="change-hint">Change</span>
         </button>
@@ -101,7 +101,7 @@
         </button>
       </dd>
       <dt>Session</dt>
-      <dd class="mono dim">{sessionId.slice(0, 8)}</dd>
+      <dd class="mono dim" title={sessionId}>{sessionId.slice(0, 8)}</dd>
     </dl>
     <div class="row">
       {#if turnState === "running" || turnState === "waiting"}

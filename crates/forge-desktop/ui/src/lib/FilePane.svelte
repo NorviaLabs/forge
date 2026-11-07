@@ -79,12 +79,12 @@
     }
   }
 
-  function find(backwards = false) {
+  function find(backwards = false, focus = true) {
     if (!query) return;
     const from = backwards ? (editor?.selectionStart ?? 0) - 1 : editor?.selectionEnd ?? 0;
     const range = findText(draft, query, from, backwards);
     navigationError = range ? "" : "No matches.";
-    if (range) select(...range);
+    if (range) select(...range, focus);
   }
 
   function jump() {
@@ -97,7 +97,7 @@
     if (!query) return;
     const start = editor?.selectionStart ?? 0;
     const end = editor?.selectionEnd ?? 0;
-    const range = draft.slice(start, end) === query
+    const range = draft.slice(start, end).toLowerCase() === query.toLowerCase()
       ? [start, end]
       : findText(draft, query, end);
     if (!range) { navigationError = "No matches."; return; }
@@ -107,7 +107,7 @@
     tick().then(() => {
       // Keep the caret in the replace field so Enter repeats.
       select(from + replacement.length, from + replacement.length, false);
-      find();
+      find(false, false);
     });
   }
 

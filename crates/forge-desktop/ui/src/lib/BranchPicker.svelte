@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import { modal } from "../modal.js";
 
   let {
     branches = [],
@@ -26,7 +27,7 @@
 </script>
 
 <div class="modal">
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="branches-title">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="branches-title" tabindex="-1" use:modal={{ onClose, busy }}>
     <header>
       <h2 id="branches-title">Branches</h2>
       <button class="icon-btn" type="button" aria-label="Close" onclick={onClose}>

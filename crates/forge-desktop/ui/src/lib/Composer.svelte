@@ -31,6 +31,11 @@
     resize();
   });
 
+  $effect(() => {
+    void sessionId;
+    imageError = "";
+  });
+
   async function submit() {
     const text = prompt.trim();
     if ((!text && !images.length) || sending) return;
@@ -41,6 +46,7 @@
       const ok = await onSend(text, attached, id);
       if (ok) {
         imageDrafts[id] = [];
+        imageError = "";
         if (sessionId === id && prompt.trim() === text) prompt = "";
         resize();
       }
