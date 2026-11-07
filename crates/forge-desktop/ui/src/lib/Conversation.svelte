@@ -81,7 +81,7 @@
         data-role={message.role}
       >
         {#if message.role === "tool"}
-          <pre>{message.text}</pre>
+          <pre class:empty={!message.text.trim()}>{message.text.trim() ? message.text : "No output."}</pre>
           {#if onExpand && message.text.endsWith("…")}
             <button class="expand" type="button" onclick={() => onExpand(index)}>Show full output</button>
           {/if}
@@ -344,6 +344,11 @@
     font-size: 11.5px;
     line-height: 1.5;
     white-space: pre-wrap;
+  }
+
+  .message.tool pre.empty {
+    color: var(--muted);
+    font-style: italic;
   }
 
   .message.tool .expand {
