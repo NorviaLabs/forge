@@ -71,7 +71,7 @@ async function stopDuringHold() {
   return stopped && !said("held answer");
 }
 
-export async function runSelfTest(params) {
+export async function runSelfTest(params, sessionId) {
   const violations = [];
   document.addEventListener("securitypolicyviolation", (event) => {
     violations.push({ directive: event.effectiveDirective, uri: event.blockedURI });
@@ -169,6 +169,7 @@ export async function runSelfTest(params) {
   // 1. The journey: a prompt with markdown and hostile HTML goes through
   //    IPC, the turn completes, and the transcript renders it safely.
   await invoke("submit_prompt", {
+    sessionId,
     text: 'self-test **ping** <script>window.__forge_xss=1</script> <iframe src="https://example.invalid/x"></iframe>',
   });
   const rendered = await waitFor(

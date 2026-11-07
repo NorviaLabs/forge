@@ -86,7 +86,7 @@
       <button class="icon-btn" type="button" aria-label="Close providers" onclick={onClose}><Icon name="close" size={13} /></button>
     </header>
     <label>Provider
-      <select class="field" bind:value={profileId} disabled={busy} onchange={() => { disconnecting = false; message = ""; error = ""; }}>
+      <select class="field" bind:value={profileId} disabled={busy} onchange={() => { disconnecting = false; removing = false; customOpen = false; customEditing = false; message = ""; error = ""; }}>
         {#each providers as provider (provider.id)}
           <option value={provider.id}>{provider.title}{provider.connected ? " — connected" : provider.reuse ? " — sign-in available" : ""}</option>
         {/each}

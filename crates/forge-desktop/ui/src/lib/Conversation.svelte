@@ -71,6 +71,9 @@
         <details class="thinking">
           <summary>Reasoning</summary>
           <pre>{message.thinking}</pre>
+          {#if onExpand && message.thinking.endsWith("…")}
+            <button class="expand" type="button" onclick={() => onExpand(index)}>Show full reasoning</button>
+          {/if}
         </details>
       {/if}
       <article
@@ -373,6 +376,17 @@
     color: var(--secondary);
     font-family: var(--font-ui);
     white-space: pre-wrap;
+  }
+
+  .thinking .expand {
+    margin: 6px 0 0 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--secondary);
+    font-size: 11px;
+    cursor: pointer;
   }
 
   .message.streaming::after {

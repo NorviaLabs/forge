@@ -369,6 +369,7 @@ pub fn write(
     let parent = path
         .parent()
         .ok_or_else(|| "the file has no parent directory".to_string())?;
+    let permissions = std::fs::metadata(&path).ok().map(|meta| meta.permissions());
     // Never reuse a predictable temp path: it could already be a symlink to a
     // file outside the workspace. `create_new` makes the name ours or fails.
     let mut temp = None;
@@ -392,6 +393,12 @@ pub fn write(
         break;
     }
     let temp = temp.ok_or_else(|| "cannot save: no free temporary name".to_string())?;
+    if let Some(permissions) = permissions {
+        if let Err(error) = std::fs::set_permissions(&temp, permissions) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("cannot save: {error}"));
+        }
+    }
     std::fs::rename(&temp, &path).map_err(|error| {
         let _ = std::fs::remove_file(&temp);
         format!("cannot save: {error}")
@@ -709,7 +716,9 @@ pub fn search(root: &Path, query: &str) -> Result<Vec<SearchHit>, String> {
         if hits.len() >= MAX_SEARCH_HITS || read >= MAX_SEARCH_FILES {
             break;
         }
-        let path = resolve(root, &entry.path)?;
+        let Ok(path) = resolve(root, &entry.path) else {
+            continue;
+        };
         let Ok(metadata) = std::fs::metadata(&path) else {
             continue;
         };
@@ -942,6 +951,29 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn saving_keeps_the_executable_bit() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir();
+        let path = dir.join("run.sh");
+        fs::write(&path, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        let file = read(&dir, "run.sh").unwrap();
+        write(
+            &dir,
+            "run.sh",
+            "#!/bin/sh\necho hi\n",
+            &file.fingerprint,
+            false,
+        )
+        .unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+        fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn a_stale_fingerprint_refuses_the_save() {
         let dir = tempdir();
@@ -1082,6 +1114,21 @@ mod tests {
         assert!(search(&dir, "   ").unwrap().is_empty());
         assert!(search(&dir, "absent").unwrap().is_empty());
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn search_skips_links_that_escape_the_workspace() {
+        let dir = tempdir();
+        let outside = tempdir();
+        fs::write(outside.join("secret.txt"), "needle\n").unwrap();
+        std::os::unix::fs::symlink(outside.join("secret.txt"), dir.join("leak.txt")).unwrap();
+        fs::write(dir.join("ok.txt"), "needle\n").unwrap();
+        let hits = search(&dir, "needle").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "ok.txt");
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(outside).ok();
     }
 
     fn git_repo() -> PathBuf {

@@ -68,5 +68,7 @@
   {:else if name === "layers"}
     <path d="M12 3 3 8l9 5 9-5Z" />
     <path d="M3 13l9 5 9-5" />
+  {:else if name === "chevron"}
+    <path d="M9 6l6 6-6 6" />
   {/if}
 </svg>

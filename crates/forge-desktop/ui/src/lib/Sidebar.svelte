@@ -39,6 +39,8 @@
   let query = $state("");
   let hits = $state([]);
   let searching = $state(false);
+  let searchError = $state("");
+  let collapsed = $state([]);
 
   const live = $derived(sessions.filter((session) => session.lifecycle === "active"));
   const closed = $derived(sessions.filter((session) => session.lifecycle !== "active"));
@@ -49,6 +51,31 @@
       return entry.path.toLowerCase().includes(filter.trim().toLowerCase());
     }),
   );
+
+  // While filtering, show every matching entry so a hit inside a collapsed
+  // folder still appears.
+  const visible = $derived(
+    filter.trim()
+      ? broken
+      : broken.filter((entry) => !collapsed.some((dir) => entry.path.startsWith(`${dir}/`))),
+  );
+
+  function toggleDir(path) {
+    collapsed = collapsed.includes(path)
+      ? collapsed.filter((entry) => entry !== path)
+      : [...collapsed, path];
+  }
+
+  // Tree filters and collapse state belong to one workspace.
+  $effect(() => {
+    void activeId;
+    collapsed = [];
+    filter = "";
+    query = "";
+    hits = [];
+    searching = false;
+    searchError = "";
+  });
 
   // Exposed to the command palette.
   export function startNewSession() {
@@ -87,15 +114,20 @@
     if (!value.trim() || !onSearch) {
       hits = [];
       searching = false;
+      searchError = "";
       return;
     }
     searching = true;
+    searchError = "";
     searchTimer = setTimeout(async () => {
       try {
         const found = await onSearch(value);
         if (query === value && activeId === owner) hits = found;
-      } catch {
-        if (query === value && activeId === owner) hits = [];
+      } catch (cause) {
+        if (query === value && activeId === owner) {
+          hits = [];
+          searchError = String(cause);
+        }
       } finally {
         if (query === value && activeId === owner) searching = false;
       }
@@ -360,7 +392,7 @@
           </li>
         {/each}
         {#if hits.length === 0 && !searching}
-          <li class="empty">No matches.</li>
+          <li class="empty">{searchError || "No matches."}</li>
         {/if}
       </ul>
     {:else}
@@ -368,13 +400,22 @@
       <p class="panel-error">{filesError}</p>
     {:else}
       <ul class="tree">
-        {#each broken as entry (entry.path)}
+        {#each visible as entry (entry.path)}
           <li class:dir={entry.is_dir} style="--depth: {entry.depth}">
             {#if entry.is_dir}
-              <span class="tree-row dir-row" title={entry.path}>
+              <button
+                type="button"
+                class="tree-row dir-row"
+                title={entry.path}
+                aria-expanded={!collapsed.includes(entry.path)}
+                onclick={() => toggleDir(entry.path)}
+              >
+                <span class="caret" class:open={!collapsed.includes(entry.path)}>
+                  <Icon name="chevron" size={10} />
+                </span>
                 <Icon name="files" size={12} />
                 <span class="tree-name">{entry.name}</span>
-              </span>
+              </button>
             {:else}
               <button
                 type="button"
@@ -747,7 +788,16 @@
 
   .dir-row {
     color: var(--muted);
-    cursor: default;
+  }
+
+  .caret {
+    display: inline-flex;
+    color: var(--muted);
+    transition: transform 120ms ease;
+  }
+
+  .caret.open {
+    transform: rotate(90deg);
   }
 
   .tree-name {

@@ -58,6 +58,9 @@
   let fileAttachments = $state({});
   // `/clear` is view-only in the TUI: the model keeps its context.
   let clearedFrom = $state({});
+  // Full text of messages the operator expanded, re-applied after each
+  // snapshot so a background update does not collapse them.
+  let messageDetails = $state({});
   const fullMessageCount = {};
 
   let creating = $state(false);
@@ -146,9 +149,14 @@
 
   // Tell Rust whether a close would discard work; it asks before quitting.
   // Before the trust screen is answered there is no session to guard.
+  function dirtyAnywhere() {
+    return tabs.some((tab) => tab.dirty)
+      || Object.values(views).some((view) => view.tabs?.some((tab) => tab.dirty));
+  }
+
   $effect(() => {
     if (!booted) return;
-    const unsaved = tabs.some((tab) => tab.dirty);
+    const unsaved = dirtyAnywhere();
     const busy = sessions.some((session) => ["running", "waiting"].includes(session.turn_state))
       || Object.keys(attention).length > 0;
     invoke("set_unsaved", { unsaved, busy }).catch(() => {});
@@ -353,7 +361,11 @@
     sessionId = event.session_id;
     turnState = event.turn_state;
     fullMessageCount[event.session_id] = event.messages.length;
-    messages = event.messages.slice(clearedFrom[event.session_id] ?? 0);
+    const from = clearedFrom[event.session_id] ?? 0;
+    messages = event.messages.slice(from).map((message, index) => {
+      const full = messageDetails[`${event.session_id}:${from + index}`];
+      return full ? { ...message, text: full.text, thinking: full.thinking } : message;
+    });
     approval = event.pending_approval;
     question = event.pending_question ?? null;
     approveAll = event.approve_all;
@@ -451,6 +463,12 @@
         queue = [];
         interrupted = [];
         streaming = "";
+        // These dialogs act on the previously selected session.
+        branchesOpen = false;
+        commitOpen = false;
+        gitConfirm = null;
+        fileAction = null;
+        childView = null;
         if (next) {
           const { [next]: _, ...rest } = attention;
           attention = rest;
@@ -462,6 +480,9 @@
           tabs = kept.tabs;
           activeTabId = kept.activeTabId;
           draft = kept.draft;
+          // Only parked sessions live in `views`; the active one is `tabs`.
+          const { [next]: ignored, ...remaining } = views;
+          views = remaining;
         } else {
           tabs = [{ id: "chat", kind: "chat", title: "Conversation" }];
           activeTabId = "chat";
@@ -480,7 +501,9 @@
     if (event.type === "attention") {
       setRowState(event.session_id, event.turn_state);
       if (event.session_id !== sessionId) attention = { ...attention, [event.session_id]: true };
-      if (event.session_id === sessionId) error = event.message;
+      // Finishing, stopping or waiting for input is normal; only a failed
+      // turn deserves the red banner.
+      if (event.session_id === sessionId && event.turn_state === "failed") error = event.message;
       return;
     }
     if (event.type === "error") {
@@ -496,8 +519,11 @@
     const mutatesGit = name.startsWith("git_");
     if (mutatesGit && gitBusy) { error = "Wait for the current Git operation to finish."; return false; }
     // These commands can select another workspace and replace the tab set.
-    if (dirtyTabs() && (["create_session", "resume_session", "fork_session", "attach_worktree"].includes(name)
-        || (["close_session", "archive_session", "remove_worktree"].includes(name) && args?.sessionId === sessionId))) {
+    if (["create_session", "resume_session", "fork_session", "attach_worktree"].includes(name) && dirtyTabs()) {
+      error = "Save or close unsaved files before changing this session.";
+      return false;
+    }
+    if (["close_session", "archive_session", "remove_worktree"].includes(name) && dirtySession(args?.sessionId)) {
       error = "Save or close unsaved files before changing this session.";
       return false;
     }
@@ -567,6 +593,7 @@
       : await command("archive_session", { sessionId: session.session_id });
     if (!ok) return;
     archiveTarget = null;
+    forgetAttention(session.session_id);
     dropShell(session.session_id);
   }
 
@@ -634,7 +661,7 @@
     const attachment = fileAttachments[targetSession] ?? null;
     let ok;
     if (!images.length) {
-      ok = await command("submit_prompt", { text, attachment });
+      ok = await command("submit_prompt", { sessionId: targetSession, text, attachment });
     } else {
       try {
         const encoded = await Promise.all(images.map((image) => new Promise((resolve, reject) => {
@@ -694,6 +721,7 @@
     try {
       const absolute = (clearedFrom[sessionId] ?? 0) + index;
       const full = await invoke("message_detail", { sessionId, index: absolute });
+      messageDetails = { ...messageDetails, [`${sessionId}:${absolute}`]: full };
       messages = messages.map((message, at) =>
         at === index ? { ...message, text: full.text, thinking: full.thinking } : message);
     } catch (cause) {
@@ -753,8 +781,15 @@
     await command("stop_session", { sessionId: session.session_id });
   }
 
+  function forgetAttention(id) {
+    if (!attention[id]) return;
+    const { [id]: ignored, ...rest } = attention;
+    attention = rest;
+  }
+
   async function closeSession(session) {
     if (await command("close_session", { sessionId: session.session_id })) {
+      forgetAttention(session.session_id);
       dropShell(session.session_id);
     }
   }
@@ -985,6 +1020,11 @@
     return tabs.filter((tab) => tab.dirty).length > 0;
   }
 
+  function dirtySession(id) {
+    if (!id || id === sessionId) return dirtyTabs();
+    return !!views[id]?.tabs?.some((tab) => tab.dirty);
+  }
+
   function changeDraft(value) {
     const tab = activeTab;
     if (!tab || tab.kind !== "file" || tab.file?.read_only) return;
@@ -1125,6 +1165,9 @@
     const id = pendingSwitch;
     pendingSwitch = "";
     pendingClose = "";
+    // The dialog promises to discard; do not park the dirty tabs for later.
+    tabs = tabs.filter((tab) => !tab.dirty);
+    if (!tabs.some((tab) => tab.id === activeTabId)) activeTabId = "chat";
     await command("select_session", { sessionId: id });
   }
 
@@ -1250,6 +1293,15 @@
   let trusting = $state(false);
   let channel = null;
 
+  async function loadThemes() {
+    try {
+      themes = await invoke("list_themes");
+    } catch {}
+    finally {
+      themeReady = true;
+    }
+  }
+
   async function boot() {
     channel = new Channel();
     channel.onmessage = onEvent;
@@ -1259,11 +1311,13 @@
     loadResumable();
     applySession(hello.initial);
     channel.onmessage = onEvent;
+    // Theme discovery needs the session state, which exists only after trust.
+    if (!themes.length) await loadThemes();
     booted = true;
     refreshFiles();
     if (import.meta.env.MODE === "self-test" && hello.self_test) {
       const { runSelfTest } = await import("./selftest.js");
-      runSelfTest(hello.self_test);
+      runSelfTest(hello.self_test, hello.session_id);
     }
   }
 
@@ -1287,10 +1341,7 @@
       themeChoice = stored === "light" ? "forge-light" : stored === "dark" ? "forge-dark" : stored || "forge-dark";
     } catch {}
     window.matchMedia(DARK_QUERY).addEventListener("change", (event) => (systemDark = event.matches));
-    invoke("list_themes")
-      .then((loaded) => (themes = loaded))
-      .catch(() => {})
-      .finally(() => (themeReady = true));
+    loadThemes();
     window.addEventListener("keydown", onKeydown);
     let unlisten = null;
     listen("close_requested", () => {
@@ -1563,7 +1614,7 @@
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1" use:modal={{ onClose: () => (quitRequested = false) }}>
         <h2 id="quit-title">Quit Forge?</h2>
         <p>
-          {#if tabs.some((tab) => tab.dirty)}The editor has unsaved changes. {/if}
+          {#if dirtyAnywhere()}The editor has unsaved changes. {/if}
           {#if sessions.some((session) => ["running", "waiting"].includes(session.turn_state)) || Object.keys(attention).length > 0}
             Work is still running, queued or waiting for an answer in another session.
           {/if}

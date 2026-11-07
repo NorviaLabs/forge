@@ -18,13 +18,9 @@
   let applying = $state(false);
   let localError = $state("");
 
-  const selected = $derived(
-    models.find((model) => model.id === selectedId) ?? models[0] ?? null,
-  );
-
-  const groups = $derived.by(() => {
+  const filtered = $derived.by(() => {
     const needle = query.trim().toLowerCase();
-    const filtered = needle
+    return needle
       ? models.filter(
           (model) =>
             model.name.toLowerCase().includes(needle) ||
@@ -32,6 +28,12 @@
             model.provider.toLowerCase().includes(needle),
         )
       : models;
+  });
+
+  // Only a model visible under the current filter can be applied.
+  const selected = $derived(filtered.find((model) => model.id === selectedId) ?? null);
+
+  const groups = $derived.by(() => {
     const map = new Map();
     for (const model of filtered) {
       const provider = model.provider || model.profile_id;

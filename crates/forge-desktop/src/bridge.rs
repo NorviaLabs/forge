@@ -1057,13 +1057,16 @@ async fn selected_session(state: &DesktopState) -> Result<SessionId, String> {
 #[tauri::command]
 pub async fn submit_prompt(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     text: String,
     attachment: Option<crate::workspace::PromptAttachment>,
 ) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("prompt is empty".into());
     }
-    let session_id = selected_session(&state).await?;
+    if selected_session(&state).await? != session_id {
+        return Err("the selected session changed; send the prompt again".into());
+    }
     let text = match attachment {
         Some(attachment) => {
             let root = workspace_of(&state, session_id).await?;

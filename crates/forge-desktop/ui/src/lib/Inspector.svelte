@@ -200,7 +200,7 @@
                   Read
                 </button>
               {/if}
-              {#if task.latest_message || task.detail}
+              {#if ["succeeded", "failed", "cancelled"].includes(task.status) && (task.latest_message || task.detail)}
                 <button type="button" class="btn" onclick={() => onInsertTask(task)}>
                   Insert result
                 </button>
