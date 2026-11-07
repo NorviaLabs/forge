@@ -3,6 +3,7 @@
 
   let {
     turnState = "idle",
+    stopping = false,
     sessionId = "",
     imageInput = false,
     attachment = null,
@@ -106,9 +107,9 @@
     <span class="hint"><kbd>⌘</kbd><kbd>↵</kbd> to send{imageInput ? " · Paste images here" : ""}</span>
     <span class="spacer"></span>
     {#if running}
-      <button class="btn" type="button" onclick={onStop}>
+      <button class="btn" type="button" disabled={stopping} onclick={onStop}>
         <Icon name="stop" size={13} />
-        Stop
+        {stopping ? "Stopping…" : "Stop"}
       </button>
     {/if}
     <button class="btn primary" type="submit" disabled={sending || (!prompt.trim() && !images.length) || (images.length > 0 && !imageInput)}>

@@ -30,6 +30,7 @@
     ...resumable.filter((row) => !sessions.some((session) => session.session_id === row.session_id)),
   ]);
   let turnState = $state("idle");
+  let stopping = $state(false);
   let messages = $state([]);
   let streaming = $state("");
   let approval = $state(null);
@@ -160,6 +161,12 @@
     const busy = sessions.some((session) => ["running", "waiting"].includes(session.turn_state))
       || Object.keys(attention).length > 0;
     invoke("set_unsaved", { unsaved, busy }).catch(() => {});
+  });
+
+  // The Stop button reports its request until the turn reaches a terminal
+  // state, so a slow cancellation is visible instead of silent.
+  $effect(() => {
+    if (turnState !== "running" && turnState !== "waiting") stopping = false;
   });
 
   // A session waiting out of sight is still a session waiting: the window
@@ -709,7 +716,9 @@
   }
 
   async function stop() {
-    await command("stop_turn");
+    if (stopping) return;
+    stopping = true;
+    if (!(await command("stop_turn"))) stopping = false;
   }
 
   async function decide(callId, decision, note, confirmed) {
@@ -1520,6 +1529,7 @@
     <Composer
       bind:prompt={draft}
       {turnState}
+      {stopping}
       {sessionId}
       {imageInput}
       attachment={fileAttachments[sessionId] ?? null}
