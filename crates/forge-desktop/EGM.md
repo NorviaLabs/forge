@@ -33,7 +33,8 @@ appear in the root `Cargo.lock`.
     pin/stop, worktree attach and managed-worktree removal (archive first;
     a dirty checkout returns retained until the operator opts into
     discarding), queued-prompt edit/cancel/recovery, child transcripts and
-    background tasks, workspace tree/read/write/search/file operations,
+    background tasks (cancellation is scoped to one run, so a stale click
+    cannot stop a replacement), workspace tree/read/write/search/file operations,
     typed Git verbs (stage/unstage/commit/branch/remote/merge abort/hunk
     discard), GitHub issue/PR/check views plus explicit PR creation, refresh
     and feedback, provider connect/disconnect/custom add-edit-remove, model

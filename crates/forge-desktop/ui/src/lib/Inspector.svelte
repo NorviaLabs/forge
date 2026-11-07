@@ -191,7 +191,7 @@
                   Don't run
                 </button>
               {:else if !["succeeded", "failed", "cancelled"].includes(task.status)}
-                <button type="button" class="btn" onclick={() => onCancelBackground(task.id)}>
+                <button type="button" class="btn" onclick={() => onCancelBackground(task)}>
                   Stop
                 </button>
               {/if}

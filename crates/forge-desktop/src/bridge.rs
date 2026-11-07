@@ -419,6 +419,9 @@ pub struct TokenView {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct BackgroundView {
     pub id: u64,
+    /// Identifies this execution of the task, so cancelling cannot stop a
+    /// replacement that reused the same task id.
+    pub run_id: String,
     pub label: String,
     /// `shell` or `subagent`.
     pub kind: String,
@@ -546,6 +549,7 @@ fn background_views(
             };
             BackgroundView {
                 id: task.id.0,
+                run_id: task.run_id.to_string(),
                 label: escape_invisible(&task.label),
                 kind: kind.into(),
                 status: status.into(),
@@ -1749,18 +1753,25 @@ pub async fn set_thinking(state: State<'_, DesktopState>, enabled: bool) -> Resu
         .map_err(|error| error.to_string())
 }
 
-/// Stop one background task (or one run of it).
+/// Stop one run of a background task. Scoping by `run_id` keeps a late click
+/// from cancelling a replacement run that reused the task id.
 #[tauri::command]
 pub async fn cancel_background(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     task_id: u64,
+    run_id: String,
 ) -> Result<(), String> {
+    let run_id: forge_core::BackgroundRunId = run_id
+        .trim()
+        .parse()
+        .map_err(|_| "that background run is no longer valid".to_string())?;
     state
         .handle
-        .submit(SupervisorCommand::CancelBackgroundTask {
+        .submit(SupervisorCommand::CancelBackgroundRun {
             session_id,
             task_id: forge_types::BackgroundTaskId(task_id),
+            run_id,
         })
         .map(drop)
         .map_err(|error| error.to_string())

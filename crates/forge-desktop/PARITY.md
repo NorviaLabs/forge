@@ -59,7 +59,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Attach the open file to a prompt | yes | yes | palette toggles it; cursor line and 150-line excerpt |
 | Reasoning and full tool output | yes | yes | reasoning in a collapsible block; tool rows expand past the 2k snapshot limit |
 | Background agents/tasks list | yes | yes | inspector; child transcript reader and result insertion |
-| Cancel background task / run | yes | **partial** | task cancellation, not individual run history |
+| Cancel background task / run | yes | yes | run-scoped: a stale click cannot stop a replacement that reused the task id |
 | Child-agent approval | yes | yes | exact `request_id` + `call_id`; arguments shown; privileged choices require confirmation |
 | Trust prompt for an untrusted workspace | yes | yes | deferred launch; workspace writes begin only after consent |
 
@@ -129,8 +129,8 @@ parity. Remaining work is tracked here:
   branch deletion, merge abort, hunk and last-turn review.
 - [x] Sessions: durable close/resume, per-session views, worktree attach and
   managed-worktree cleanup with dirty retention.
-- [x] Agents/queue: child reader, result insertion, queued-text editing and
-  interrupted-prompt recovery. Run-specific actions remain partial.
+- [x] Agents/queue: child reader, result insertion, run-scoped cancellation,
+  queued-text editing and interrupted-prompt recovery.
 - [x] Providers/models: custom provider add/edit/remove and synchronized model
   capabilities. Session-only keys and importing another CLI's login remain absent.
 - [x] GitHub: issue-linked sessions, explicit PR creation and feedback workflows.

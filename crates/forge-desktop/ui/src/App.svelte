@@ -1433,7 +1433,7 @@
       command("cancel_queued", { sessionId: sessionIdOf, queueId, position, source })}
     onEditQueued={editQueued}
     onRestoreInterrupted={restoreInterrupted}
-    onCancelBackground={(taskId) => command("cancel_background", { sessionId, taskId })}
+    onCancelBackground={(task) => command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id })}
     onOpenChild={openChild}
     onInsertTask={insertTask}
     onResolveChild={(taskId, approve, callId, requestId, confirmed) =>
