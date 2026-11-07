@@ -121,79 +121,34 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Multi-file tabs | no | yes | desktop advantage |
 | Mouse selection / scrollback | partial | yes | desktop advantage |
 
-## Prioritized gaps
+## Remaining gaps
 
-The numbered list below records the first implementation pass, not completed
-parity. Remaining work is tracked here:
+Scratchpad stays out by product decision. Every other TUI workflow now has a
+desktop surface. What is left is explicit limits, not missing workflows:
 
-- [x] Git: truthful staged/worktree review, stage-all commit, remote sync,
-  branch deletion, merge abort, hunk and last-turn review.
-- [x] Sessions: durable close/resume, per-session views, worktree attach and
-  managed-worktree cleanup with dirty retention.
-- [x] Agents/queue: child reader, result insertion, run-scoped cancellation,
-  queued-text editing and interrupted-prompt recovery.
-- [x] Providers/models: custom provider add/edit/remove, synchronized model
-  capabilities, reusing another CLI's completed sign-in, and a typed key
-  winning over environment variables for the process.
-- [x] GitHub: issue-linked sessions, explicit PR creation and feedback workflows.
-- [x] Context/transcript: attachment/image inspection in history.
-- [x] Chrome: installed/system themes and OS attention requests.
-- [ ] Verify workflow correctness and safety regressions before claiming parity.
+- **Auto-named labels** are sent by the desktop but not derived from the first
+  prompt the way the TUI derives them.
+- **Egress hosts** can be granted when a pending request asks; there is no
+  proactive host editor.
+- **Provider connect** covers custom providers, reused CLI sign-ins and typed
+  keys; an OAuth browser flow has no cancel and expires on its own.
+- **Syntax highlighting** is lexical for common code/config, plain above 64 KiB,
+  and edit-mode only.
+- **Attention** badges the sidebar and title and asks the OS for attention while
+  unfocused; no notification-centre banner is raised.
+- **Scratchpad** is intentionally absent.
 
-Ordered by "how badly does the missing piece break the product", not by size.
+Before release, verify the live workflows that automated checks cannot cover:
 
-### P0 — the turn cannot finish
+- [ ] Real provider sign-in, billing/usage and GitHub account access.
+- [ ] Theme switching (including System) and installed/user/workspace themes.
+- [ ] Managed worktree attach, archive-with-removal, dirty refusal and discard.
+- [ ] Image preview and pasted-attachment reopening in a real webview.
+- [ ] Native confirmation dialogs and OS attention on an unfocused window.
 
-1. **Answer `ask_user_question`.** `SessionSnapshot.pending_question` exists and
-   `ResolveQuestion` is ready, but `DesktopEvent::Session` drops it, so the GUI
-   shows a session that looks idle while it waits forever. Fix: carry
-   `pending_question` in the `Session` event, render a question card
-   (single/multi choice, free text), send `ResolveQuestion`. Small; nothing else
-   unblocks a stalled turn.
-
-### P1 — correct, safe, and recoverable
-
-2. **Approve-all + typed grant decisions.** `SetApproveAll` and `DecideApproval`
-   already exist; the GUI only has once/deny, so long agent runs stop every few
-   seconds. Also `ClearSessionApprovals` and `GrantEgressHost` for the escape
-   hatches.
-3. **Session lifecycle commands.** `ContinueTurn`, `CloseSession`, `ForkSession`,
-   `ResumeSession`, `RenameSession`, `PinSession`. Each is a small IPC wrapper plus
-   one menu item.
-4. **Reload a stale buffer.** Right now the only recovery from "changed on disk"
-   is close-and-reopen, which loses the tab. Add `read_file` re-fetch on the
-   refusal, with an explicit discard confirmation.
-5. **Attention for sessions you are not looking at.** The supervisor already
-   emits `Attention`; the sidebar should badge it and the window should stop
-   being silent (title/dock). Otherwise parallel sessions are a trap: work sits
-   waiting on a decision in a hidden tab.
-
-### P2 — the daily workflow is cut in half
-
-6. **Git writes: stage, unstage, commit, branch switch/merge.** The GUI can read
-   git but never finishes the loop the agent started, so users drop to a terminal
-   mid-task.
-7. **File create / rename / delete + workspace search.** `write_file` already
-   refuses paths outside the workspace; extend the same confinement.
-8. **Background tasks and child approvals.** Without it, parallel agents exist in
-   the supervisor and are invisible in the GUI — the exact failure mode a desktop
-   app should make better than the TUI.
-9. **Context commands: `/status`, `/context`, `/compact`, `/plan`, `/thinking`.**
-   Mostly rendering fields the snapshot already carries; `update_plan` events are
-   currently dropped.
-10. **Trust prompt in-app.** `TrustRequired` is emitted and ignored; a first-run
-    on a new repo dead-ends into "open a terminal first".
-11. **Keep the PTY alive across session switches.** Recreating a shell per switch
-    loses running commands, which is a data-loss-shaped bug for long builds.
-
-### P3 — parity polish
-
-12. Provider connect / add model / disconnect.
-13. Editor find + jump-to-line + syntax highlighting.
-14. GitHub issues / PR / CI.
-15. Image paste into the composer.
-16. Token/cost/tool/skill detail, theme picker, help page.
-17. Queue rows with per-prompt cancel.
+The desktop command surface is kept in step with the TUI by tests: every IPC
+command is listed in `commands_list.rs`, `capabilities/main.json`,
+`isolation/index.html` and `startup.rs`, and config tests fail if one is missing.
 
 ## Not worth copying from the TUI
 
