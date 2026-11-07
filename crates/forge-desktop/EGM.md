@@ -163,6 +163,10 @@ appear in the root `Cargo.lock`.
   - Image paste validates up to four 5 MiB images by bytes in Rust, rejects
     unsupported models and confines new attachment files to `.forge/attachments`.
     The page never supplies an attachment filesystem path.
+  - An `Attention` event for an unfocused window calls the core window API
+    (`request_user_attention`), so the dock/taskbar asks for the user without
+    adding a notification plugin. The event still carries the session and
+    message for the in-app badge and title.
   - Help and the theme picker are available from the sidebar. `list_themes`
     returns the built-ins plus `~/.config/forge/themes` and workspace
     `.forge/themes` as CSS-token palettes, so a drop-in theme works in both
@@ -171,7 +175,7 @@ appear in the root `Cargo.lock`.
 - Remaining limits:
   - It needs a git repository (non-git arrives with track D).
   - Native key collection is macOS-only, syntax colors are lexical, GitHub is
-    read-only, and desktop OS notifications/proactive host editing remain absent.
+    read-only, notification-centre banners and proactive host editing remain absent.
 
 ## Verification
 

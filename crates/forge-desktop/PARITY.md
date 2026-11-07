@@ -116,7 +116,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Command palette | yes | yes | `⌘K` |
 | Help / key reference | yes | yes | sidebar Help and palette |
 | Theme picker | yes | yes | built-ins, `~/.config/forge/themes` and workspace `.forge/themes`; System follows the OS. Preference is local to the desktop |
-| Notifications when a session needs attention | yes | **partial** | sidebar attention badge and document title; no OS notification/dock integration |
+| Notifications when a session needs attention | yes | yes | sidebar badge and document title; when the window is unfocused, the OS is asked for attention (dock/taskbar). No notification-centre banner |
 | Quit guard | yes | yes | unsaved buffers, running/waiting turns and queued work |
 | Multi-file tabs | no | yes | desktop advantage |
 | Mouse selection / scrollback | partial | yes | desktop advantage |
@@ -137,7 +137,7 @@ parity. Remaining work is tracked here:
   winning over environment variables for the process.
 - [x] GitHub: issue-linked sessions, explicit PR creation and feedback workflows.
 - [x] Context/transcript: attachment/image inspection in history.
-- [ ] Chrome: OS attention notifications.
+- [x] Chrome: installed/system themes and OS attention requests.
 - [ ] Verify workflow correctness and safety regressions before claiming parity.
 
 Ordered by "how badly does the missing piece break the product", not by size.

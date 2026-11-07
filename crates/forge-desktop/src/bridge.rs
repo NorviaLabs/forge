@@ -959,7 +959,11 @@ pub struct Hello {
 
 /// Stream supervisor events into `channel` until the window goes away.
 #[tauri::command]
-pub fn subscribe(state: State<'_, DesktopState>, channel: Channel<DesktopEvent>) -> Hello {
+pub fn subscribe(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    channel: Channel<DesktopEvent>,
+) -> Hello {
     let mut events = state.handle.subscribe();
     let supervisor = state.supervisor.clone();
     #[cfg(feature = "self-test")]
@@ -974,6 +978,18 @@ pub fn subscribe(state: State<'_, DesktopState>, channel: Channel<DesktopEvent>)
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             };
             let Some(event) = event else { continue };
+            // A background session needs the user: ask the OS for attention
+            // when the window is not already in front of them. This uses the
+            // core window API, so no notification plugin is added.
+            if matches!(event, DesktopEvent::Attention { .. }) {
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    if !window.is_focused().unwrap_or(true) {
+                        let _ = window
+                            .request_user_attention(Some(tauri::UserAttentionType::Informational));
+                    }
+                }
+            }
             #[cfg(feature = "self-test")]
             if let Some(probe) = &probe {
                 probe.delivering(&event);
