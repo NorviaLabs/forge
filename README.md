@@ -104,11 +104,13 @@ To run the development build with the terminal UI:
 cargo run --locked --package forge-cli -- --tui
 ```
 
-Bare `forge` launches the desktop app, which is a separate binary. Build it
-from its own workspace so it sits next to `forge`:
+Bare `forge` launches the desktop app, which is a separate binary built from
+its own workspace. Point the CLI at it:
 
 ```sh
 (cd crates/forge-desktop && cargo build --release --locked)
+FORGE_DESKTOP_BIN=crates/forge-desktop/target/release/forge-desktop \
+  cargo run --locked --package forge-cli
 ```
 
 ## Start Forge
