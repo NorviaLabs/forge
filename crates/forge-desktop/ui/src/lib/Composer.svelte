@@ -1,5 +1,6 @@
 <script>
   import Icon from "./Icon.svelte";
+  import { filterSlashCommands, slashKeyAction } from "../slash.js";
 
   let {
     turnState = "idle",
@@ -7,6 +8,7 @@
     sessionId = "",
     imageInput = false,
     attachment = null,
+    commands = [],
     onRemoveAttachment = () => {},
     onSend,
     onStop,
@@ -17,9 +19,25 @@
   let imageDrafts = $state({});
   let sending = $state(false);
   let imageError = $state("");
+  let slashIndex = $state(0);
+  let slashHidden = $state(false);
   const images = $derived(imageDrafts[sessionId] ?? []);
 
   const running = $derived(turnState === "running" || turnState === "waiting");
+  const slashMatches = $derived(filterSlashCommands(commands, prompt));
+  const slashOpen = $derived(!slashHidden && slashMatches.length > 0);
+
+  $effect(() => {
+    void prompt;
+    slashIndex = 0;
+    slashHidden = false;
+  });
+
+  function complete(command) {
+    prompt = `${command.name} `;
+    slashHidden = true;
+    box?.focus();
+  }
 
   function resize() {
     if (!box) return;
@@ -67,6 +85,19 @@
   }
 
   function onkeydown(event) {
+    const action = slashKeyAction(event, {
+      open: slashOpen,
+      matches: slashMatches,
+      index: slashIndex,
+      value: prompt,
+    });
+    if (action) {
+      event.preventDefault();
+      if (action.type === "move") slashIndex = action.index;
+      else if (action.type === "complete") complete(action.command);
+      else slashHidden = true;
+      return;
+    }
     if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       event.preventDefault();
       submit();
@@ -75,6 +106,25 @@
 </script>
 
 <form class="composer" aria-label="Compose" onsubmit={(event) => { event.preventDefault(); submit(); }}>
+  {#if slashOpen}
+    <ul class="slash" role="listbox" aria-label="Commands">
+      {#each slashMatches as command, index (command.name)}
+        <li role="presentation">
+          <button
+            type="button"
+            role="option"
+            aria-selected={index === slashIndex}
+            class:active={index === slashIndex}
+            onmouseenter={() => (slashIndex = index)}
+            onclick={() => complete(command)}
+          >
+            <span class="slash-name">{command.name}</span>
+            <span class="slash-help">{command.help}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
   <textarea
     bind:this={box}
     bind:value={prompt}
@@ -123,6 +173,7 @@
   .attachments { display: flex; flex-wrap: wrap; gap: 5px; }
   .error { margin: 0; color: var(--error); font-size: 12px; }
   .composer {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -132,6 +183,55 @@
     border-radius: 10px;
     background: var(--surface);
     box-shadow: var(--shadow);
+  }
+
+  .slash {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 6px);
+    left: 0;
+    z-index: 20;
+    max-height: 15rem;
+    margin: 0;
+    padding: 4px;
+    overflow: auto;
+    list-style: none;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--raised);
+    box-shadow: var(--shadow);
+  }
+
+  .slash button {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    text-align: left;
+  }
+
+  .slash button:hover,
+  .slash button.active {
+    background: var(--hover);
+  }
+
+  .slash-name {
+    flex: none;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+
+  .slash-help {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: 11.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .composer:focus-within {

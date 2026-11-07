@@ -185,6 +185,39 @@
     document.title = waiting ? `(${waiting}) Forge — needs you` : "Forge";
   });
 
+  // Slash commands the desktop can run. Autocomplete only offers these, and a
+  // submitted exact match runs here instead of reaching the model.
+  const slashCommands = [
+    { name: "/help", help: "Show help and keyboard shortcuts", run: () => (helpOpen = true) },
+    { name: "/connect", help: "Connect a provider or add a model", run: () => (providersOpen = true) },
+    { name: "/disconnect", help: "Disconnect a provider", run: () => (providersOpen = true) },
+    { name: "/model", help: "Switch model for future turns", run: openModelPicker },
+    { name: "/effort", help: "Set the model's reasoning effort", run: openModelPicker },
+    { name: "/theme", help: "Switch the desktop theme", run: () => (helpOpen = true) },
+    { name: "/status", help: "Show session status and token usage", run: () => (detailsOpen = true) },
+    { name: "/context", help: "Show the context breakdown", run: () => (detailsOpen = true) },
+    { name: "/plan", help: "Show the latest execution plan", run: () => (inspectorOpen = true) },
+    { name: "/tasks", help: "Show background tasks and queued prompts", run: () => (inspectorOpen = true) },
+    { name: "/approve-all", help: "Toggle approve-all for this session", run: toggleApproveAll },
+    { name: "/thinking", help: "Toggle model reasoning", run: toggleThinking },
+    { name: "/compact", help: "Continue in a fresh context", run: compactContext },
+    { name: "/continue", help: "Continue the last stopped or failed turn", run: continueTurn },
+    { name: "/new", help: "Start a new session", run: () => sidebar?.startNewSession() },
+    { name: "/sessions", help: "Switch to another session", run: () => (paletteOpen = true) },
+    { name: "/resume", help: "Switch to a previous session", run: () => (paletteOpen = true) },
+    { name: "/fork", help: "Fork this conversation into a new session", run: forkSession },
+    { name: "/terminal", help: "Open the terminal panel", run: openTerminal },
+    { name: "/clear", help: "Clear the transcript view", run: clearTranscript },
+    {
+      name: "/context-file",
+      help: "Attach the open file to the next prompt",
+      run: () => {
+        if (activeTab?.kind === "file") toggleFileAttachment(activeTab);
+        else error = "Open a file before attaching it.";
+      },
+    },
+  ];
+
   const paletteItems = $derived.by(() => {
     const items = sessions.map((session) => {
       const closed = session.lifecycle !== "active";
@@ -702,6 +735,13 @@
 
   async function send(text, images = [], targetSession = sessionId) {
     error = "";
+    if (!images.length) {
+      const command = slashCommands.find((entry) => entry.name === text.trim());
+      if (command) {
+        command.run();
+        return true;
+      }
+    }
     const attachment = fileAttachments[targetSession] ?? null;
     // Show the operator's line before the supervisor's snapshot arrives.
     // The next SessionUpdated replaces this local copy with the real message.
@@ -1563,6 +1603,7 @@
       {turnState}
       {stopping}
       {sessionId}
+      commands={slashCommands}
       {imageInput}
       attachment={fileAttachments[sessionId] ?? null}
       onRemoveAttachment={() => {
