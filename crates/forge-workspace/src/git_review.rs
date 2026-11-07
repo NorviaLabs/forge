@@ -154,7 +154,7 @@ pub fn restore_path(root: &Path, path: &Path) -> Result<(), String> {
 }
 
 /// Keep review subprocesses scoped to ordinary paths inside the selected worktree.
-pub(crate) fn validated_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
+pub fn validated_relative_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
     let root = root
         .canonicalize()
         .map_err(|e| format!("workspace root: {e}"))?;

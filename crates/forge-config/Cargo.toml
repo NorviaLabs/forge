@@ -12,5 +12,10 @@ toml = { workspace = true }
 dirs = { workspace = true }
 forge-types = { workspace = true }
 
+[features]
+# Reads FORGE_FAKE_PROVIDER_SCRIPT into `model.mock_script`. Never enabled in
+# release builds.
+fake-provider = []
+
 [dev-dependencies]
 tempfile = { workspace = true }

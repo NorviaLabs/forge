@@ -6,6 +6,8 @@ mod native;
 mod normalize;
 mod prompt_cache;
 mod prompt_wire;
+#[cfg(any(test, feature = "fake-provider"))]
+pub mod scripted;
 
 pub use forge_connect::RouteTable;
 pub use image::{apply_missing_image_notes, freeze_attachments};
@@ -273,6 +275,10 @@ pub trait ModelClient: Send + Sync {
 
 /// Build the native production client or the offline mock.
 pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelError> {
+    #[cfg(feature = "fake-provider")]
+    if let Some(script) = &cfg.model.mock_script {
+        return Ok(Box::new(scripted::ScriptedModelClient::from_file(script)?));
+    }
     if cfg.model.mock {
         return Ok(Box::new(MockModelClient::script(vec![ModelResponse {
             text: "mock idle — configure a response script in tests".into(),

@@ -1115,6 +1115,18 @@ impl RepositorySupervisor {
         Ok(self.state.control.selected().await?)
     }
 
+    /// Durable session rows, including sessions this process has closed.
+    pub async fn session_records(
+        &self,
+    ) -> Result<Vec<RepositorySession>, RepositorySupervisorError> {
+        Ok(self.state.control.sessions().await?)
+    }
+
+    /// Where every durable journal for this repository lives.
+    pub fn journal_dir(&self) -> std::path::PathBuf {
+        std::path::PathBuf::from(&self.state.cfg.journal.path)
+    }
+
     pub fn lease_owner(&self) -> &crate::LeaseOwner {
         &self.state.lease_owner
     }
@@ -3700,6 +3712,242 @@ mod tests {
                 Ok(ToolOutput::success("approved tool finished"))
             })
         }
+    }
+
+    /// Counts how many times it actually ran.
+    struct CountingTool {
+        runs: Arc<AtomicUsize>,
+    }
+
+    impl Tool for CountingTool {
+        fn name(&self) -> &str {
+            "probe"
+        }
+
+        fn description(&self) -> &str {
+            "Count runs"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+
+        fn side_effect_class(&self) -> forge_types::SideEffectClass {
+            forge_types::SideEffectClass::Exec
+        }
+
+        fn call<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _ctx: &'life1 ToolContext,
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ToolOutput, ToolError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                self.runs.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolOutput::success("probe ran"))
+            })
+        }
+    }
+
+    /// K-exit journey on the scripted fake provider: approve once, deny,
+    /// then Stop during a held model call; Rust checks each outcome.
+    #[tokio::test]
+    async fn scripted_journey_approve_deny_and_stop_during_a_hold() {
+        use forge_model::scripted::ScriptedModelClient;
+
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let scripted = Arc::new(
+            ScriptedModelClient::from_json(
+                r#"{"steps": [
+                    {"tool_calls": {"calls": [{"id": "approve-me", "name": "probe", "arguments": {}}]}},
+                    {"text": {"text": "after approve"}},
+                    {"tool_calls": {"calls": [{"id": "deny-me", "name": "probe", "arguments": {}}]}},
+                    {"text": {"text": "after deny"}},
+                    {"hold": {"id": "stop-me", "before": "working", "then": {"text": {"text": "never"}}}}
+                ]}"#,
+            )
+            .unwrap(),
+        );
+        let model: Arc<dyn ModelClient> = scripted.clone();
+        let runs = Arc::new(AtomicUsize::new(0));
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(CountingTool { runs: runs.clone() }));
+        let mut session = AgentSession::create(loop_cfg, model.clone(), tools)
+            .await
+            .unwrap();
+        session
+            .set_governance(forge_governance::Governance::default().require_hitl_for_tool("probe"));
+        let session_id = session.session_id;
+        let task = task_for(session_id, "journey", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        let pending = |call_id: &'static str| {
+            move |snapshot: &SessionRuntimeSnapshot| {
+                snapshot
+                    .session
+                    .pending_hitl
+                    .as_ref()
+                    .is_some_and(|payload| payload.call_id == call_id)
+            }
+        };
+        let finished_with = |text: &'static str| {
+            move |snapshot: &SessionRuntimeSnapshot| {
+                snapshot.task.turn_state == SupervisorTurnState::Completed
+                    && snapshot
+                        .transcript
+                        .messages()
+                        .iter()
+                        .any(|message| message.content == text)
+            }
+        };
+        let resolve = |call_id: &str, decision: HitlDecision| SupervisorCommand::ResolveApproval {
+            session_id,
+            expected_call_id: Some(call_id.to_string()),
+            decision,
+            actor: "test".into(),
+            feedback: None,
+        };
+
+        // 1. Approve once: the tool runs.
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "first".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, pending("approve-me")).await;
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            0,
+            "nothing runs before approval"
+        );
+        handle
+            .command(resolve("approve-me", HitlDecision::Approve))
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, finished_with("after approve")).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the approved call ran once");
+
+        // 2. Deny: the tool never runs.
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "second".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, pending("deny-me")).await;
+        handle
+            .command(resolve("deny-me", HitlDecision::Deny))
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, finished_with("after deny")).await;
+        assert_eq!(runs.load(Ordering::SeqCst), 1, "the denied call never ran");
+
+        // 3. Stop during a held model call: the turn ends without its answer.
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "third".into(),
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(30), scripted.held("stop-me"))
+            .await
+            .expect("the model call reached the hold");
+        // The hold really holds: give a broken hold time to finish the turn,
+        // and require the turn to be still running with no answer recorded.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let held = supervisor.snapshot(session_id).await.unwrap();
+        assert_eq!(held.task.turn_state, SupervisorTurnState::Running);
+        assert!(!held
+            .transcript
+            .messages()
+            .iter()
+            .any(|message| message.content == "never"));
+        handle
+            .command(SupervisorCommand::StopTurn { session_id })
+            .await
+            .unwrap();
+        let stopped = wait_for_task_state(&handle, session_id, |snapshot| {
+            matches!(
+                snapshot.task.turn_state,
+                SupervisorTurnState::Cancelled | SupervisorTurnState::Interrupted
+            )
+        })
+        .await;
+        assert!(
+            !stopped
+                .transcript
+                .messages()
+                .iter()
+                .any(|message| message.content == "never"),
+            "a stopped turn must not record the held answer"
+        );
+        // Releasing the hold after Stop changes nothing: the request is gone.
+        scripted.release("stop-me");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let after = supervisor.snapshot(session_id).await.unwrap();
+        assert!(!after
+            .transcript
+            .messages()
+            .iter()
+            .any(|message| message.content == "never"));
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            scripted.requests().len(),
+            5,
+            "every scripted step was requested once"
+        );
+
+        supervisor.shutdown().await.unwrap();
     }
 
     struct CredentialTrackingModel {

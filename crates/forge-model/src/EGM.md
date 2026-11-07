@@ -26,12 +26,18 @@ under the module bullets below are crate-internal seams used by `native/`.
 - `ModelRequest { messages, tools, model, workspace_root, session_id, reasoning_effort, thinking_enabled, prompt_cache }` — no route or profile field; `model` (`<provider>/<model>`) selects the profile.
 - `ModelClient` trait (`Send + Sync`): required `complete`; defaulted `complete_with_stream(req, Option<StreamEventTx>)`, `set_route_table(RouteTable)` (no-op), `prompt_wire(&ModelRequest) -> Value` (OpenAI-compat projection), `prompt_transport_key(&ModelRequest) -> &'static str` (`"mock"`).
 - `StreamEventTx = std::sync::mpsc::Sender<ModelStreamEvent>`.
-- `client_from_config(&Config) -> Result<Box<dyn ModelClient>, ModelError>` — `cfg.model.mock` → scripted `MockModelClient`; otherwise `NativeModelClient::from_config`.
+- `client_from_config(&Config) -> Result<Box<dyn ModelClient>, ModelError>`: in `fake-provider` builds, `cfg.model.mock_script` selects `ScriptedModelClient::from_file`. Otherwise `cfg.model.mock` selects the scripted `MockModelClient`, and anything else uses `NativeModelClient::from_config`.
 - `normalize`: `complete_result_from_value`, `forge_messages_to_wire`, `tools_to_openai_functions` (re-exported); `forge_messages_to_wire_in(messages, workspace)` and `forge_messages_to_wire_in_cached(messages, workspace, client)` (crate-internal; the latter loads images through the native client's cache).
 - `prompt_wire`: `PromptTransport{OpenaiCompat, Anthropic, Codex, Mock}` with `as_str()` (`"openai_compat"`, `"anthropic_messages"`, `"codex"`, `"mock"`); `PromptSnapshot{bytes, sha256}`; `prompt_wire`, `strip_cache_control`, `snapshot_prompt`, `common_prefix_len`, `part_pointer_at`, `first_json_pointer` (re-exported); `prompt_object_from_body`, `openai_compat_prompt`, `openai_compat_prompt_cached` (crate-internal).
 - `prompt_cache` (crate-internal): `InputTokens{Total, UncachedOnly}`, `usage_from_provider(raw, input, completion, semantics) -> Usage`, `cache_tokens_from_usage(&Value) -> (u32, u32)`, `prompt_cache_key(&Path) -> String`, `apply_anthropic_prompt_cache(&mut Value)` (adds Anthropic `cache_control` breakpoints to a request body).
 - `image`: crate-internal `LoadedImage{mime, bytes}`, `resolve_image_path`, `load_image_ref`, and per-wire image-part builders (`openai_`, `anthropic_`, `codex_input_image_part_with_loaded`); re-exported `freeze_attachments(workspace, cache_dir, content, attachments) -> Vec<ImageRef>`, `apply_missing_image_notes(&mut [Message], workspace)`.
 - `mock`: `MockModelClient::{script, stream_error, stream_error_kind, stream_error_then, last_request}`.
+- `scripted` (only with the `fake-provider` feature, or in this crate's tests): `ScriptedModelClient::{new(Scenario), from_json, from_file, requests, release(id), held(id)}`, plus `Scenario { strict (default true), steps }` and `Step::{Text { text, chunks }, ToolCalls { text, calls }, Error { message }, Hold { id, before, then }}`.
+  - Steps are JSON in snake_case with unknown fields denied, and chunks must join to the text.
+  - A strict scenario fails with `ModelError::Other(SCRIPT_EXHAUSTED)` past the end; a lenient one answers "done".
+  - A hold blocks until `release` is called, or until the request future is dropped (a stopped turn).
+  - Every request is recorded.
+  - The feature is never enabled in release builds; forge-session enables it only as a dev-dependency.
 - Subdirectory: [native](./native/EGM.md) — native wire-protocol transports and per-profile dispatch.
 
 ## Invariants

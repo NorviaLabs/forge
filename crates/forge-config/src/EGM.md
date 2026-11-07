@@ -15,7 +15,7 @@ All submodules are private; the crate surface is `lib.rs` plus its `pub use` re-
 
 - `CONFIG_SCHEMA_VERSION: u32 = 1`.
 - `ConfigError` — `Io`, `Toml`, `InvalidProvider` (declared but never constructed), `Message`, `UnsupportedSchemaVersion { path, found, supported }`.
-- Sections with `Default`: `ModelConfig { request_timeout_secs (300), mock (serde-skipped; set only in code to use the offline mock client) }`, `JournalConfig { backend: "sqlite", path }`, `McpServerConfig`, `McpSection`, `TuiConfig`, `CommandConfig`, `ValidationConfig`, `ToolsConfig`, `AgentConfig`.
+- Sections with `Default`: `ModelConfig { request_timeout_secs (300), mock (serde-skipped; set only in code to use the offline mock client), mock_script (only with the `fake-provider` feature; serde-skipped) }`. With that feature, `Config::load` calls `apply_fake_provider`: a non-empty `FORGE_FAKE_PROVIDER_SCRIPT` sets `mock = true` and `mock_script`. Builds without the feature never read the variable, `JournalConfig { backend: "sqlite", path }`, `McpServerConfig`, `McpSection`, `TuiConfig`, `CommandConfig`, `ValidationConfig`, `ToolsConfig`, `AgentConfig`.
 - `default_journal_path() -> ".forge/sessions"`, `expand_sandbox_read_path(raw, home) -> Result<PathBuf, String>`.
 - Enums: `McpSandboxWorkspace{ReadOnly (default), ReadWrite}`, `FileIconMode{Unicode (default), Off}`, `NotifyMode`.
 - `Config { workspace_root, model, journal, mcp, tui, validation, tools, resolved_workspace (skip), refused_project_keys (skip), removed_model_keys (skip) }` with `workspace_root()`, `journal_dir()`, `refused_key_notices()` (also one notice per `removed_model_keys` entry, pointing at `/connect`), `load(ConfigOverrides) -> Result<Self, ConfigError>`.

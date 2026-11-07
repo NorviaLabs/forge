@@ -74,6 +74,12 @@ pub struct ModelConfig {
     /// Use the offline mock client (tests and CI). Set only in code.
     #[serde(skip)]
     pub mock: bool,
+    /// `fake-provider` builds only: a scenario file for the scripted fake
+    /// provider, from `FORGE_FAKE_PROVIDER_SCRIPT`. Never read from config
+    /// files.
+    #[cfg(feature = "fake-provider")]
+    #[serde(skip)]
+    pub mock_script: Option<PathBuf>,
 }
 
 fn default_request_timeout() -> u64 {
@@ -85,6 +91,8 @@ impl Default for ModelConfig {
         Self {
             request_timeout_secs: default_request_timeout(),
             mock: false,
+            #[cfg(feature = "fake-provider")]
+            mock_script: None,
         }
     }
 }
@@ -522,6 +530,21 @@ pub struct ConfigOverrides {
     pub journal_path: Option<String>,
 }
 
+/// `fake-provider` builds only: the scenario file for the scripted fake
+/// provider. Release builds never read it.
+#[cfg(feature = "fake-provider")]
+pub const FAKE_PROVIDER_SCRIPT_ENV: &str = "FORGE_FAKE_PROVIDER_SCRIPT";
+
+/// Select the scripted fake provider when a scenario is given. It also turns
+/// on `mock`, so sessions start on the offline "mock" model.
+#[cfg(feature = "fake-provider")]
+pub fn apply_fake_provider(cfg: &mut Config, script: Option<std::ffi::OsString>) {
+    if let Some(script) = script.filter(|script| !script.is_empty()) {
+        cfg.model.mock = true;
+        cfg.model.mock_script = Some(PathBuf::from(script));
+    }
+}
+
 impl Config {
     pub fn workspace_root(&self) -> &Path {
         &self.resolved_workspace
@@ -583,6 +606,8 @@ impl Config {
 
         apply_env(&mut cfg)?;
         apply_overrides(&mut cfg, &overrides)?;
+        #[cfg(feature = "fake-provider")]
+        apply_fake_provider(&mut cfg, env::var_os(FAKE_PROVIDER_SCRIPT_ENV));
 
         let cwd = env::current_dir().map_err(ConfigError::Io)?;
         cfg.resolved_workspace =
@@ -1522,6 +1547,33 @@ sandbox_workspace = "read_write"
             .expect("validation.command must be set after apply");
         assert_eq!(command.executable, "just");
         assert_eq!(command.args, vec!["check".to_string()]);
+    }
+
+    /// Release builds (no `fake-provider` feature) ignore the scenario
+    /// variable entirely: no mock model, no script.
+    #[cfg(not(feature = "fake-provider"))]
+    #[test]
+    fn release_builds_ignore_the_fake_provider_script_variable() {
+        let g = EnvGuard::clear_forge_env();
+        g.set("FORGE_FAKE_PROVIDER_SCRIPT", "/tmp/scenario.json");
+        let cfg = Config::load(ConfigOverrides::default()).unwrap();
+        assert!(!cfg.model.mock);
+    }
+
+    #[cfg(feature = "fake-provider")]
+    #[test]
+    fn fake_provider_builds_select_the_scripted_model() {
+        let mut cfg = Config::default();
+        apply_fake_provider(&mut cfg, None);
+        assert!(!cfg.model.mock && cfg.model.mock_script.is_none());
+        apply_fake_provider(&mut cfg, Some("".into()));
+        assert!(!cfg.model.mock, "an empty value selects nothing");
+        apply_fake_provider(&mut cfg, Some("/tmp/scenario.json".into()));
+        assert!(cfg.model.mock);
+        assert_eq!(
+            cfg.model.mock_script.as_deref(),
+            Some(Path::new("/tmp/scenario.json"))
+        );
     }
 
     #[test]

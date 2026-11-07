@@ -19,6 +19,11 @@ reqwest = { workspace = true, features = ["stream"] }
 sha2 = { workspace = true }
 uuid = { workspace = true }
 
+[features]
+# The scripted fake provider (`scripted`), selected by the config's
+# `mock_script`. Never enabled in release builds.
+fake-provider = ["forge-config/fake-provider"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 forge-test-support = { workspace = true }

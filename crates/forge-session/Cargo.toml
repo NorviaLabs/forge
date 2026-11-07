@@ -28,7 +28,12 @@ tokio-util = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[features]
+fake-provider = ["forge-model/fake-provider", "forge-config/fake-provider"]
+
 [dev-dependencies]
+# The scripted fake provider for end-to-end journeys in tests.
+forge-model = { workspace = true, features = ["fake-provider"] }
 async-trait = { workspace = true }
 forge-test-support = { workspace = true }
 tempfile = { workspace = true }
