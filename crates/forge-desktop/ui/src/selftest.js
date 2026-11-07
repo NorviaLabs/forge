@@ -157,7 +157,7 @@ export async function runSelfTest(params) {
     await sleep(50);
     const select = document.querySelector(".help select");
     const previous = select.value;
-    select.value = "light";
+    select.value = "forge-light";
     select.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(50);
     results.theme_switches = document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).color === "rgb(32, 41, 54)";

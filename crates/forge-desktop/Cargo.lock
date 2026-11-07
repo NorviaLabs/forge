@@ -1434,6 +1434,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "chrono",
+ "dirs 7.0.0",
  "forge-config",
  "forge-connect",
  "forge-core",

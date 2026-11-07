@@ -2294,6 +2294,19 @@ pub async fn list_providers() -> Result<Vec<crate::providers::ProviderView>, Str
         .map_err(|error| error.to_string())?
 }
 
+/// Installed themes, from the same built-ins and drop-in directories as the
+/// terminal. The page resolves `system` itself because only it can observe the
+/// OS preference.
+#[tauri::command]
+pub async fn list_themes(
+    state: State<'_, DesktopState>,
+) -> Result<Vec<crate::themes::ThemeView>, String> {
+    let workspace = active_workspace(&state).await.ok();
+    tokio::task::spawn_blocking(move || crate::themes::list(workspace.as_deref()))
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn connect_provider(
     state: State<'_, DesktopState>,

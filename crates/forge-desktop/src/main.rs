@@ -16,6 +16,7 @@ mod providers;
 mod self_test;
 mod shell;
 mod startup;
+mod themes;
 mod workspace;
 
 fn main() {

@@ -74,6 +74,7 @@
     "allow-list-models",
     "allow-session-details",
     "allow-list-providers",
+    "allow-list-themes",
     "allow-connect-provider",
     "allow-import-provider-login",
     "allow-disconnect-provider",

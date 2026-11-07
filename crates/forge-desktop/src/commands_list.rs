@@ -71,6 +71,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "list_models",
     "session_details",
     "list_providers",
+    "list_themes",
     "connect_provider",
     "import_provider_login",
     "disconnect_provider",

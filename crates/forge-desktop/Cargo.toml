@@ -41,6 +41,7 @@ forge-session = { path = "../forge-session" }
 forge-types = { path = "../forge-types" }
 forge-transcript = { path = "../forge-transcript" }
 forge-workspace = { path = "../forge-workspace" }
+dirs = "7"
 portable-pty = "0.9"
 base64 = "0.22"
 sha2 = "0.10"

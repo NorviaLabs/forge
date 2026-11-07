@@ -69,12 +69,32 @@
   let githubOpen = $state(false);
   let detailsOpen = $state(false);
   let helpOpen = $state(false);
-  let theme = $state("dark");
+  const DARK_QUERY = "(prefers-color-scheme: dark)";
+  let themes = $state([]);
+  let themeChoice = $state("forge-dark");
+  let systemDark = $state(window.matchMedia(DARK_QUERY).matches);
   let themeReady = $state(false);
+  // `system` is resolved here: only the webview can observe the OS preference.
+  const systemTheme = $derived(
+    themes.find((entry) => entry.id === (systemDark ? "forge-dark" : "forge-light")) ??
+      themes.find((entry) => entry.dark === systemDark) ??
+      null,
+  );
+  const activeTheme = $derived(
+    themeChoice === "system"
+      ? systemTheme
+      : (themes.find((entry) => entry.id === themeChoice) ?? systemTheme),
+  );
   $effect(() => {
-    if (!themeReady) return;
-    document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem("forge.desktop.theme", theme); } catch {}
+    const palette = activeTheme;
+    if (!themeReady || !palette) return;
+    const root = document.documentElement;
+    for (const [name, value] of Object.entries(palette.colors)) {
+      root.style.setProperty(`--${name}`, value);
+    }
+    root.dataset.theme = palette.dark ? "dark" : "light";
+    root.style.colorScheme = palette.dark ? "dark" : "light";
+    try { localStorage.setItem("forge.desktop.theme", themeChoice); } catch {}
   });
   let models = $state([]);
   let modelsLoading = $state(false);
@@ -1242,8 +1262,15 @@
   }
 
   onMount(() => {
-    try { if (localStorage.getItem("forge.desktop.theme") === "light") theme = "light"; } catch {}
-    themeReady = true;
+    try {
+      const stored = localStorage.getItem("forge.desktop.theme");
+      themeChoice = stored === "light" ? "forge-light" : stored === "dark" ? "forge-dark" : stored || "forge-dark";
+    } catch {}
+    window.matchMedia(DARK_QUERY).addEventListener("change", (event) => (systemDark = event.matches));
+    invoke("list_themes")
+      .then((loaded) => (themes = loaded))
+      .catch(() => {})
+      .finally(() => (themeReady = true));
     window.addEventListener("keydown", onKeydown);
     let unlisten = null;
     listen("close_requested", () => {
@@ -1376,7 +1403,7 @@
           class="terminal-host"
           class:hidden={!(activeTab?.kind === "terminal" && id === sessionId)}
         >
-          <TerminalComponent sessionId={id} themeMode={theme} />
+          <TerminalComponent sessionId={id} themeMode={activeTheme?.id ?? "dark"} />
         </div>
       {/each}
     {/if}
@@ -1755,7 +1782,7 @@
     {#key sessionId}<Details onClose={() => (detailsOpen = false)} />{/key}
   {/if}
   {#if helpOpen}
-    <Help bind:theme onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={() => { helpOpen = false; githubOpen = true; }} />
+    <Help bind:theme={themeChoice} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={() => { helpOpen = false; githubOpen = true; }} />
   {/if}
 
   {#if gitConfirm}

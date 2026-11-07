@@ -38,8 +38,9 @@ appear in the root `Cargo.lock`.
     operations and image reading,
     typed Git verbs (stage/unstage/commit/branch/remote/merge abort/hunk
     discard), GitHub issue/PR/check views plus explicit PR creation, refresh
-    and feedback, provider connect/disconnect/custom add-edit-remove, model
-    switching, per-session PTYs, transcript detail (`message_detail`) and
+    and feedback, provider connect/disconnect/custom add-edit-remove,
+    installed theme listing, model switching, per-session PTYs, transcript
+    detail (`message_detail`) and
     quit. Approvals always send `expected_call_id`; child approvals also send
     `request_id`. Prompt, stop, approval and workspace commands resolve
     their session from the supervisor's current selection, not from a copy
@@ -162,8 +163,11 @@ appear in the root `Cargo.lock`.
   - Image paste validates up to four 5 MiB images by bytes in Rust, rejects
     unsupported models and confines new attachment files to `.forge/attachments`.
     The page never supplies an attachment filesystem path.
-  - Help and Forge Dark/Light are available from the sidebar; theme preference
-    is local to the desktop and the PTY emulator follows it.
+  - Help and the theme picker are available from the sidebar. `list_themes`
+    returns the built-ins plus `~/.config/forge/themes` and workspace
+    `.forge/themes` as CSS-token palettes, so a drop-in theme works in both
+    frontends; `system` follows the OS preference in the page. The preference
+    is local to the desktop and the PTY emulator follows the resolved palette.
 - Remaining limits:
   - It needs a git repository (non-git arrives with track D).
   - Native key collection is macOS-only, syntax colors are lexical, GitHub is
