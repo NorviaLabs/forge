@@ -259,6 +259,8 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::create_session,
         bridge::select_session,
         bridge::archive_session,
+        bridge::attach_worktree,
+        bridge::remove_worktree,
         bridge::list_files,
         bridge::read_file,
         bridge::git_status,

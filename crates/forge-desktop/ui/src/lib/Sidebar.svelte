@@ -14,6 +14,7 @@
     attention = [],
     onSelect,
     onCreate,
+    onAttach,
     onArchive,
     onRename,
     onPin,
@@ -122,15 +123,26 @@
   <section class="panel sessions">
     <div class="section-head">
       <span class="label">Sessions</span>
-      <button
-        class="icon-btn"
-        type="button"
-        title="New session"
-        aria-label="New session"
-        onclick={() => (composing = !composing)}
-      >
-        <Icon name="plus" size={14} />
-      </button>
+      <span class="head-actions">
+        <button
+          class="icon-btn"
+          type="button"
+          title="Attach an existing worktree"
+          aria-label="Attach an existing worktree"
+          onclick={onAttach}
+        >
+          <Icon name="layers" size={14} />
+        </button>
+        <button
+          class="icon-btn"
+          type="button"
+          title="New session"
+          aria-label="New session"
+          onclick={() => (composing = !composing)}
+        >
+          <Icon name="plus" size={14} />
+        </button>
+      </span>
     </div>
 
     {#if composing}
@@ -244,6 +256,17 @@
                 <span class="session-name">{session.label}</span>
                 <span class="session-state">{session.lifecycle}</span>
               </button>
+              {#if session.ownership === "managed" && ["archived", "retained"].includes(session.lifecycle)}
+                <button
+                  type="button"
+                  class="icon-btn"
+                  title="Archive and remove this session's worktree"
+                  aria-label={`Remove the worktree for ${session.label}`}
+                  onclick={() => onArchive(session)}
+                >
+                  <Icon name="trash" size={12} />
+                </button>
+              {/if}
             </li>
           {/each}
         </ul>

@@ -38,6 +38,8 @@
     "allow-create-session",
     "allow-select-session",
     "allow-archive-session",
+    "allow-attach-worktree",
+    "allow-remove-worktree",
     "allow-list-files",
     "allow-read-file",
     "allow-git-status",

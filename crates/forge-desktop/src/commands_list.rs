@@ -35,6 +35,8 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "create_session",
     "select_session",
     "archive_session",
+    "attach_worktree",
+    "remove_worktree",
     "list_files",
     "read_file",
     "git_status",

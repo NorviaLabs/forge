@@ -84,6 +84,13 @@
   let filePane = $state();
   let fileAction = $state(null);
   let archiveTarget = $state(null);
+  let archiveRemove = $state(false);
+  let archiveDiscard = $state(false);
+  let attachOpen = $state(false);
+  let attachPath = $state("");
+  let attachLabel = $state("");
+  let attachBranch = $state("");
+  let attachBusy = $state(false);
   let renameTarget = $state(null);
   let renameLabel = $state("");
   let pathTarget = $state(null);
@@ -281,6 +288,12 @@
         action: forkSession,
       },
       {
+        id: "action:attach",
+        group: "Sessions",
+        label: "Attach an existing worktree…",
+        action: openAttach,
+      },
+      {
         id: "action:rename",
         group: "Actions",
         label: "Rename this session…",
@@ -452,15 +465,15 @@
     const mutatesGit = name.startsWith("git_");
     if (mutatesGit && gitBusy) { error = "Wait for the current Git operation to finish."; return false; }
     // These commands can select another workspace and replace the tab set.
-    if (dirtyTabs() && (["create_session", "resume_session", "fork_session"].includes(name)
-        || (["close_session", "archive_session"].includes(name) && args?.sessionId === sessionId))) {
+    if (dirtyTabs() && (["create_session", "resume_session", "fork_session", "attach_worktree"].includes(name)
+        || (["close_session", "archive_session", "remove_worktree"].includes(name) && args?.sessionId === sessionId))) {
       error = "Save or close unsaved files before changing this session.";
       return false;
     }
     if (mutatesGit) gitBusy = true;
     try {
       await invoke(name, args);
-      if (["resume_session", "close_session", "archive_session"].includes(name)) loadResumable();
+      if (["resume_session", "close_session", "archive_session", "remove_worktree"].includes(name)) loadResumable();
       return true;
     } catch (cause) {
       error = String(cause);
@@ -505,14 +518,51 @@
 
   async function archiveSession(session) {
     // Opening the confirmation is the whole action; `confirmArchive` runs it.
+    // A row that is already closed was opened from its cleanup button, so its
+    // dialog starts with removal ticked; an active row archives by default.
+    archiveRemove = session.lifecycle !== "active" && session.ownership === "managed";
+    archiveDiscard = false;
     archiveTarget = session;
   }
 
   async function confirmArchive() {
     const session = archiveTarget;
+    if (!session) return;
+    const ok = archiveRemove
+      ? await command("remove_worktree", {
+          sessionId: session.session_id,
+          discardDirty: archiveDiscard,
+        })
+      : await command("archive_session", { sessionId: session.session_id });
+    if (!ok) return;
     archiveTarget = null;
-    if (session && await command("archive_session", { sessionId: session.session_id })) {
-      dropShell(session.session_id);
+    dropShell(session.session_id);
+  }
+
+  function openAttach() {
+    if (dirtyTabs()) {
+      error = "Save or close unsaved files before attaching a worktree.";
+      return;
+    }
+    attachPath = "";
+    attachLabel = "";
+    attachBranch = "";
+    attachOpen = true;
+  }
+
+  async function submitAttach(event) {
+    event.preventDefault();
+    attachBusy = true;
+    try {
+      if (await command("attach_worktree", {
+        workspace: attachPath.trim(),
+        label: attachLabel.trim(),
+        branch: attachBranch.trim(),
+      })) {
+        attachOpen = false;
+      }
+    } finally {
+      attachBusy = false;
     }
   }
 
@@ -1229,6 +1279,7 @@
     attention={Object.keys(attention)}
     onSelect={selectSession}
     onCreate={createSession}
+    onAttach={openAttach}
     onArchive={archiveSession}
     onRename={startRename}
     onPin={pinSession}
@@ -1472,15 +1523,62 @@
   {#if archiveTarget}
     <div class="modal">
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title">
-        <h2 id="archive-title">Archive “{archiveTarget.label}”?</h2>
+        <h2 id="archive-title">
+          {archiveTarget.lifecycle === "active"
+            ? `Archive “${archiveTarget.label}”?`
+            : `Clean up “${archiveTarget.label}”?`}
+        </h2>
         <p>
-          It disappears from the switcher, but its journal and worktree are kept and it can be
-          resumed later. A session with a running turn cannot be archived.
+          {archiveTarget.lifecycle === "active"
+            ? "It disappears from the switcher, but its journal is kept and it can be resumed later. A running turn is stopped first."
+            : "This session is already closed. Only its git worktree can be cleaned up from here."}
         </p>
+        {#if archiveTarget.ownership === "managed"}
+          <label>
+            <input type="checkbox" bind:checked={archiveRemove} />
+            Remove its git worktree after archiving
+          </label>
+          {#if archiveRemove}
+            <label class="danger-line">
+              <input type="checkbox" bind:checked={archiveDiscard} />
+              Remove even if it holds uncommitted work (that work is lost)
+            </label>
+          {/if}
+        {:else}
+          <p>{archiveTarget.ownership === "attached" ? "This worktree belongs to you; only the session is archived." : "The primary worktree is never removed."}</p>
+        {/if}
+        {#if error}<p class="dialog-error" role="alert">{error}</p>{/if}
         <div class="dialog-actions">
-          <button class="btn danger" type="button" onclick={confirmArchive}>Archive</button>
+          <button class="btn danger" type="button" onclick={confirmArchive}>
+            {archiveRemove ? "Archive and remove worktree" : "Archive"}
+          </button>
           <button class="btn" type="button" onclick={() => (archiveTarget = null)}>Cancel</button>
         </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if attachOpen}
+    <div class="modal">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="attach-title">
+        <form onsubmit={submitAttach}>
+          <h2 id="attach-title">Attach an existing worktree</h2>
+          <p>
+            Enter an absolute path that Git already lists as a worktree of this repository, plus
+            the branch checked out there. A new session opens in place; the checkout is never
+            modified or removed.
+          </p>
+          <input class="field" bind:value={attachPath} aria-label="Worktree path" placeholder="/absolute/path/to/worktree" required />
+          <input class="field" bind:value={attachBranch} aria-label="Checked-out branch" placeholder="branch checked out there" required />
+          <input class="field" bind:value={attachLabel} aria-label="Session name" placeholder="Session name (defaults to the folder name)" />
+          {#if error}<p class="dialog-error" role="alert">{error}</p>{/if}
+          <div class="dialog-actions">
+            <button class="btn primary" type="submit" disabled={attachBusy || !attachPath.trim() || !attachBranch.trim()}>
+              {attachBusy ? "Attaching…" : "Attach"}
+            </button>
+            <button class="btn" type="button" onclick={() => (attachOpen = false)}>Cancel</button>
+          </div>
+        </form>
       </div>
     </div>
   {/if}
@@ -1864,6 +1962,10 @@
     margin: 0 0 10px;
     color: var(--error);
     font-size: 12px;
+  }
+
+  .danger-line {
+    color: var(--error);
   }
 
   @media (max-width: 1120px) {

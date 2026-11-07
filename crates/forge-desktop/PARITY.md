@@ -27,13 +27,14 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Create session | yes | yes | `create_session(label)` |
 | Select session | yes | yes | sidebar click |
 | Archive session | yes | yes | confirm dialog |
+| Archive and remove a managed worktree | yes | yes | archive dialog option; dirty checkouts are retained until the operator ticks discard |
 | Rename session | yes | yes | sidebar and inspector |
 | Pin session to slot | yes | yes | first free slot; click again to unpin |
 | Fork session | yes | yes | inspector and palette |
 | Resume another session | yes | yes | closed-session list; requires a current session |
 | Close without archiving | yes | yes | sidebar and inspector; the last open session refuses to close |
 | Stop another session's turn | yes | yes | stop button on any running row; composer stops the selected one |
-| Attach a worktree | yes | **no** | `AttachWorktree` unused |
+| Attach a worktree | yes | yes | sidebar/palette dialog; supervisor validates repository membership and branch; attached checkouts are never removed |
 | Auto-named labels | yes | **partial** | desktop sends the label it is given |
 | Queue: view | yes | yes | durable and actor queue rows |
 | Queue: cancel one | yes | yes | source + stable ID; never cancels a replacement by position |
@@ -126,8 +127,8 @@ parity. Remaining work is tracked here:
 
 - [x] Git: truthful staged/worktree review, stage-all commit, remote sync,
   branch deletion, merge abort, hunk and last-turn review.
-- [x] Sessions: durable close/resume, per-session views. Worktree attach/cleanup
-  remains absent.
+- [x] Sessions: durable close/resume, per-session views, worktree attach and
+  managed-worktree cleanup with dirty retention.
 - [x] Agents/queue: child reader, result insertion, queued-text editing and
   interrupted-prompt recovery. Run-specific actions remain partial.
 - [x] Providers/models: custom provider add/edit/remove and synchronized model

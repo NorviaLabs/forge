@@ -124,6 +124,17 @@ pub struct SessionRow {
     /// `active`, `archived` or `retained`. Archived and retained rows are
     /// listed so the operator can resume them; they are not selectable.
     pub lifecycle: &'static str,
+    /// `primary`, `managed` or `attached`. Only a managed worktree can be
+    /// removed with the session; an attached one belongs to the operator.
+    pub ownership: &'static str,
+}
+
+fn ownership_label(ownership: forge_session::WorktreeOwnership) -> &'static str {
+    match ownership {
+        forge_session::WorktreeOwnership::Primary => "primary",
+        forge_session::WorktreeOwnership::Managed => "managed",
+        forge_session::WorktreeOwnership::Attached => "attached",
+    }
 }
 
 fn session_row(task: &RepositorySession) -> SessionRow {
@@ -139,6 +150,7 @@ fn session_row(task: &RepositorySession) -> SessionRow {
             SessionLifecycle::Unavailable => "unavailable",
             SessionLifecycle::Removed => "removed",
         },
+        ownership: ownership_label(task.ownership),
     }
 }
 
@@ -1150,6 +1162,118 @@ pub async fn archive_session(
         .map_err(|error| error.to_string())
 }
 
+/// Attach an existing linked worktree as a session. The supervisor owns the
+/// membership and branch checks, so a typo cannot create a stray session.
+#[tauri::command]
+pub async fn attach_worktree(
+    state: State<'_, DesktopState>,
+    workspace: String,
+    label: String,
+    branch: String,
+) -> Result<(), String> {
+    let (workspace, label, branch) = attach_fields(&workspace, &label, &branch)?;
+    state
+        .handle
+        .command(SupervisorCommand::AttachWorktree {
+            workspace,
+            label,
+            branch,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The dialog may leave the name blank, but never the path or branch.
+fn attach_fields(
+    workspace: &str,
+    label: &str,
+    branch: &str,
+) -> Result<(std::path::PathBuf, String, String), String> {
+    let path = std::path::PathBuf::from(workspace.trim());
+    let branch = branch.trim();
+    if path.as_os_str().is_empty() || branch.is_empty() {
+        return Err("a worktree path and its checked-out branch are required".into());
+    }
+    if !path.is_absolute() {
+        return Err("enter the worktree's absolute path".into());
+    }
+    let label = match label.trim() {
+        "" => path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("worktree")
+            .to_string(),
+        label => label.to_string(),
+    };
+    Ok((path, label, branch.to_string()))
+}
+
+/// Archive a managed session, then remove its worktree and its children's.
+/// `discard_dirty` must only be set after the operator confirms the loss.
+#[tauri::command]
+pub async fn remove_worktree(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    discard_dirty: bool,
+) -> Result<(), String> {
+    let record = {
+        let supervisor = state.supervisor.read().await;
+        let supervisor = supervisor.as_ref().ok_or("Forge is shutting down")?;
+        supervisor
+            .session_records()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|record| record.session_id == session_id)
+            .ok_or("that session no longer exists")?
+    };
+    if record.ownership != forge_session::WorktreeOwnership::Managed {
+        return Err(
+            "Only a worktree Forge created is removed with its session; close or archive this one instead"
+                .into(),
+        );
+    }
+    // A retained row is a cleanup that already failed once; archiving it again
+    // would be refused, so only a live session needs the archive step.
+    if record.lifecycle == SessionLifecycle::Active {
+        state
+            .handle
+            .command(SupervisorCommand::ArchiveSession { session_id })
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    state
+        .handle
+        .command(SupervisorCommand::RemoveManagedWorktree {
+            session_id,
+            discard_dirty,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    // A dirty worktree leaves the session retained instead of removed: say so
+    // rather than reporting a cleanup that never happened.
+    let lifecycle = {
+        let supervisor = state.supervisor.read().await;
+        let Some(supervisor) = supervisor.as_ref() else {
+            return Err("Forge is shutting down".into());
+        };
+        supervisor
+            .session_records()
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|record| record.session_id == session_id)
+            .map(|record| record.lifecycle)
+    };
+    if lifecycle == Some(SessionLifecycle::Retained) {
+        return Err(
+            "Its worktree still has uncommitted work. Tick “remove even if it holds uncommitted work” to discard it."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 async fn resolve(
     state: &DesktopState,
     call_id: String,
@@ -1500,6 +1624,7 @@ pub async fn list_resumable_sessions(
             turn_state: "idle",
             slot: record.slot,
             lifecycle: "closed",
+            ownership: ownership_label(record.ownership),
         })
         .collect())
 }
@@ -2595,6 +2720,7 @@ mod tests {
                         turn_state: "running",
                         slot: None,
                         lifecycle: "active",
+                        ownership: "primary",
                     },
                     SessionRow {
                         session_id: archived,
@@ -2602,6 +2728,7 @@ mod tests {
                         turn_state: "idle",
                         slot: None,
                         lifecycle: "archived",
+                        ownership: "primary",
                     },
                 ]
             }
@@ -2836,6 +2963,18 @@ mod tests {
         assert!(!trust_view(&pending).needs_trust);
         assert_eq!(pending.fail("cannot start".into()), "cannot start");
         assert_eq!(trust_view(&pending).error, "cannot start");
+    }
+
+    #[test]
+    fn attaching_a_worktree_requires_a_path_branch_and_absolute_path() {
+        assert!(attach_fields("", "name", "main").is_err());
+        assert!(attach_fields("/work/linked", "name", " ").is_err());
+        assert!(attach_fields("relative/linked", "name", "main").is_err());
+        let (path, label, branch) =
+            attach_fields("/work/linked", " ", "feature/x").expect("valid attach");
+        assert_eq!(path, std::path::PathBuf::from("/work/linked"));
+        assert_eq!(label, "linked");
+        assert_eq!(branch, "feature/x");
     }
 
     #[test]
