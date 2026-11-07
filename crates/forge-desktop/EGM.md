@@ -34,7 +34,8 @@ appear in the root `Cargo.lock`.
     a dirty checkout returns retained until the operator opts into
     discarding), queued-prompt edit/cancel/recovery, child transcripts and
     background tasks (cancellation is scoped to one run, so a stale click
-    cannot stop a replacement), workspace tree/read/write/search/file operations,
+    cannot stop a replacement), workspace tree/read/write/search/file
+    operations and image reading,
     typed Git verbs (stage/unstage/commit/branch/remote/merge abort/hunk
     discard), GitHub issue/PR/check views plus explicit PR creation, refresh
     and feedback, provider connect/disconnect/custom add-edit-remove, model
@@ -52,7 +53,9 @@ appear in the root `Cargo.lock`.
   files, and shells out to Git for status/diff/restore, stage/unstage, staged-only
   commits and branch operations. `read` returns a SHA-256 fingerprint, LF-normalized
   text and whether the file used CRLF; files above the size cap or not valid
-  UTF-8 are marked read-only. `write` refuses a fingerprint that no longer
+  UTF-8 are marked read-only. `read_image` returns a magic-byte-checked
+  5 MiB-capped data URL, so the page can show a file or a transcript
+  attachment without filesystem access. `write` refuses a fingerprint that no longer
   matches (an agent may have edited the file), restores CRLF, and saves
   through a sibling temp file so an interrupted save leaves the original.
   A close request with unsaved buffers is held by the run loop, which emits

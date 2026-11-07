@@ -537,6 +537,43 @@ pub fn discard_hunk(root: &Path, relative: &str, hunk_index: usize) -> Result<()
     forge_workspace::git_review::discard_hunk(root, Path::new(relative), hunk_index)
 }
 
+/// An image the webview can display: magic-byte checked, size capped, and
+/// inlined as a data URL because the page cannot read the filesystem.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageContents {
+    pub path: String,
+    pub mime: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub byte_len: u64,
+    pub data_url: String,
+}
+
+pub fn read_image(root: &Path, relative: &str) -> Result<ImageContents, String> {
+    use base64::Engine;
+    let path = resolve(root, relative)?;
+    let byte_len = std::fs::metadata(&path)
+        .map_err(|_| "no such file in the workspace".to_string())?
+        .len();
+    if byte_len > forge_types::MAX_IMAGE_BYTES {
+        return Err("image is too large to preview (limit 5 MiB)".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    let meta = forge_types::inspect_image(&bytes).map_err(|error| error.to_string())?;
+    Ok(ImageContents {
+        path: relative.into(),
+        mime: meta.mime.into(),
+        width: meta.width,
+        height: meta.height,
+        byte_len,
+        data_url: format!(
+            "data:{};base64,{}",
+            meta.mime,
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        ),
+    })
+}
+
 /// Store pasted images in the workspace and return their references.
 pub fn store_images(root: &Path, images: &[String]) -> Result<Vec<forge_types::ImageRef>, String> {
     use base64::Engine;
@@ -977,6 +1014,28 @@ mod tests {
         assert!(!dir.join("sub").exists());
         assert!(delete(&dir, "not-there.txt").is_err());
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_image_preview_is_magic_checked_and_confined() {
+        use base64::Engine;
+        let dir = tempdir();
+        let image =
+            base64::engine::general_purpose::STANDARD.encode(forge_types::sample_png_bytes());
+        let refs = store_images(&dir, std::slice::from_ref(&image)).unwrap();
+        let preview = read_image(&dir, &refs[0].path).unwrap();
+        assert_eq!(preview.mime, "image/png");
+        assert_eq!((preview.width, preview.height), (Some(1), Some(1)));
+        assert!(preview.data_url.starts_with("data:image/png;base64,"));
+
+        fs::write(dir.join("notes.txt"), "not an image").unwrap();
+        assert!(read_image(&dir, "notes.txt").is_err());
+        assert!(read_image(&dir, "../outside.png").is_err());
+        let outside = tempdir();
+        fs::write(outside.join("outside.png"), forge_types::sample_png_bytes()).unwrap();
+        assert!(read_image(&dir, outside.join("outside.png").to_str().unwrap()).is_err());
+        fs::remove_dir_all(dir).ok();
+        fs::remove_dir_all(outside).ok();
     }
 
     #[test]

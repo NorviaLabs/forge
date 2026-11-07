@@ -3,7 +3,7 @@
   import Markdown from "../Markdown.svelte";
   import Icon from "./Icon.svelte";
 
-  let { messages = [], streaming = "", turnState = "idle", onSuggest, onExpand } = $props();
+  let { messages = [], streaming = "", turnState = "idle", onSuggest, onExpand, onOpenImage } = $props();
 
   let scroller = $state();
   let pinned = $state(true);
@@ -32,6 +32,16 @@
 
   function toolName(message) {
     return message.name || "tool";
+  }
+
+  function imageName(path) {
+    return path.split("/").pop() || path;
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
 </script>
 
@@ -76,6 +86,24 @@
           <Markdown text={message.text} />
         {/if}
       </article>
+      {#if message.attachments?.length}
+        <div class="attachments">
+          {#each message.attachments as image}
+            <button
+              type="button"
+              class="attachment"
+              title={image.path}
+              onclick={() => onOpenImage?.(image.path)}
+            >
+              <Icon name="file" size={12} />
+              <span>{imageName(image.path)}</span>
+              <span class="size">
+                {image.mime} · {formatBytes(image.byte_len)}{#if image.width} · {image.width}×{image.height}{/if}
+              </span>
+            </button>
+          {/each}
+        </div>
+      {/if}
     </div>
   {/each}
 
@@ -178,6 +206,37 @@
     font-size: 11px;
     letter-spacing: 0;
     text-transform: none;
+  }
+
+  .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    max-width: 100%;
+    padding: 0 10px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--secondary);
+    font-size: 12px;
+  }
+
+  .attachment:hover {
+    background: var(--hover);
+    border-color: var(--border-strong);
+    color: var(--text);
+  }
+
+  .attachment .size {
+    color: var(--muted);
   }
 
   .message {

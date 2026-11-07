@@ -55,7 +55,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | **Answer `ask_user_question`** | yes | yes | choices, custom answers, skip; backend validation |
 | Thinking toggle | yes | yes | inspector |
 | Compact context | yes | yes | inspector / palette |
-| Image attachments | yes | yes | paste into composer, 4 × 5 MiB maximum; backend content validation |
+| Image attachments | yes | yes | paste into composer, 4 × 5 MiB maximum; backend content validation; history chips reopen the image |
 | Attach the open file to a prompt | yes | yes | palette toggles it; cursor line and 150-line excerpt |
 | Reasoning and full tool output | yes | yes | reasoning in a collapsible block; tool rows expand past the 2k snapshot limit |
 | Background agents/tasks list | yes | yes | inspector; child transcript reader and result insertion |
@@ -84,6 +84,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Stale-write refusal | yes | yes | fingerprint |
 | Reload a stale buffer in place | yes | yes | command palette; unsaved reload requires app-level discard confirmation |
 | Binary / non-UTF-8 / oversized guard | yes | yes | read-only banner |
+| Image preview and image attachments | yes | yes | file pane renders PNG/JPEG/GIF/WebP up to 5 MiB; transcript chips reopen pasted and `view_image` images |
 | CRLF preservation | yes | yes | |
 | Create / rename / delete file | yes | yes | confined paths; deletion only files or empty folders |
 | Content search across files | yes | yes | literal case-insensitive search, capped at 200 hits; a hit opens at its line |
@@ -135,7 +136,7 @@ parity. Remaining work is tracked here:
   capabilities, reusing another CLI's completed sign-in, and a typed key
   winning over environment variables for the process.
 - [x] GitHub: issue-linked sessions, explicit PR creation and feedback workflows.
-- [ ] Context/transcript: attachment/image inspection in history.
+- [x] Context/transcript: attachment/image inspection in history.
 - [ ] Chrome: installed/system themes and OS attention notifications.
 - [ ] Verify workflow correctness and safety regressions before claiming parity.
 

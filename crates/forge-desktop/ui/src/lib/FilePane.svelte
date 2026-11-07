@@ -141,6 +141,12 @@
     return draft.slice(0, offset).split("\n").length - 1;
   }
 
+  function formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   function closeNavigation() {
     findOpen = false;
     editor?.focus();
@@ -195,6 +201,14 @@
     <div class="state">Loading…</div>
   {:else if tab.kind === "diff" && !diff?.text?.trim()}
     <div class="state">No working-tree changes in this file.</div>
+  {:else if tab.image}
+    <figure class="image-preview">
+      <img src={tab.image.data_url} alt={tab.path} />
+      <figcaption>
+        {tab.image.mime} · {formatBytes(tab.image.byte_len)}
+        {#if tab.image.width}· {tab.image.width}×{tab.image.height}{/if}
+      </figcaption>
+    </figure>
   {:else if editable}
     <div class="editor-wrap">
       <pre class="syntax" aria-hidden="true" bind:this={syntax}>{#each colored as token, index (index)}<span class={token.kind}>{token.text}</span>{/each}{"\n"}</pre>
@@ -258,6 +272,9 @@
   }
 
   .editor-wrap { position: relative; flex: 1; min-height: 0; background: var(--bg-deep); }
+  .image-preview { display: grid; place-items: center; gap: 10px; flex: 1; min-height: 0; margin: 0; padding: 24px; overflow: auto; }
+  .image-preview img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-sm); background: var(--bg-deep); }
+  .image-preview figcaption { color: var(--muted); font-size: 12px; }
   .navigation { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--border); }
   .navigation .field { width: 160px; }
   .navigation .line-number { width: 64px; }

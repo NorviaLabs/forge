@@ -39,6 +39,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "remove_worktree",
     "list_files",
     "read_file",
+    "read_image",
     "git_status",
     "github_issues",
     "github_details",

@@ -110,6 +110,34 @@ pub struct MessageView {
     /// Assistant reasoning, when the provider exposed any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<String>,
+    /// Images this message carried (a pasted prompt or a `view_image` result).
+    /// Paths only; the page asks for the bytes when it shows one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentView>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AttachmentView {
+    pub path: String,
+    pub mime: String,
+    pub byte_len: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+fn attachment_views(attachments: &[forge_types::ImageRef]) -> Vec<AttachmentView> {
+    attachments
+        .iter()
+        .map(|image| AttachmentView {
+            path: escape_invisible(&image.path),
+            mime: image.mime.clone(),
+            byte_len: image.byte_len,
+            width: image.width,
+            height: image.height,
+        })
+        .collect()
 }
 
 /// One row in the session switcher. No workspace path, branch, model or
@@ -658,6 +686,7 @@ fn message_view(message: &forge_types::Message, full: bool) -> Option<MessageVie
         name: message.name.clone(),
         text,
         thinking,
+        attachments: attachment_views(&message.attachments),
     })
 }
 
@@ -1930,6 +1959,18 @@ pub async fn read_file(
 ) -> Result<crate::workspace::FileContents, String> {
     let root = active_workspace(&state).await?;
     tokio::task::spawn_blocking(move || crate::workspace::read(&root, &path))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// An image as a size-capped data URL, for the file pane and transcript chips.
+#[tauri::command]
+pub async fn read_image(
+    state: State<'_, DesktopState>,
+    path: String,
+) -> Result<crate::workspace::ImageContents, String> {
+    let root = active_workspace(&state).await?;
+    tokio::task::spawn_blocking(move || crate::workspace::read_image(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }

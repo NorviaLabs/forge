@@ -935,7 +935,10 @@
     if (!tab) return;
     updateTab(id, { loading: true, error: "" });
     try {
-      if (tab.kind === "file") {
+      if (tab.kind === "file" && isImage(tab.path)) {
+        const image = await invoke("read_image", { path: tab.path });
+        updateTab(id, { image, loading: false });
+      } else if (tab.kind === "file") {
         const file = await invoke("read_file", { path: tab.path });
         updateTab(id, { file, draft: file.text, dirty: false, loading: false });
       } else {
@@ -1111,7 +1114,10 @@
     if (!tab || tab.kind === "chat" || tab.file || tab.diff) return;
     updateTab(id, { loading: true, error: "" });
     try {
-      if (tab.kind === "file") {
+      if (tab.kind === "file" && isImage(tab.path)) {
+        const image = await invoke("read_image", { path: tab.path });
+        updateTab(id, { image, loading: false });
+      } else if (tab.kind === "file") {
         const file = await invoke("read_file", { path: tab.path });
         updateTab(id, { file, loading: false, draft: file.text, dirty: false });
       } else {
@@ -1121,6 +1127,12 @@
     } catch (cause) {
       updateTab(id, { error: String(cause), loading: false });
     }
+  }
+
+  // Sniffing happens in Rust; this only decides which command to ask.
+  const IMAGE_FILE = /\.(png|jpe?g|gif|webp)$/i;
+  function isImage(path) {
+    return IMAGE_FILE.test(path);
   }
 
   function openFile(path) {
@@ -1341,7 +1353,7 @@
     {/if}
 
     {#if activeTab?.kind === "chat"}
-      <Conversation {messages} {streaming} {turnState} onSuggest={(text) => (draft = text)} onExpand={expandMessage} />
+      <Conversation {messages} {streaming} {turnState} onSuggest={(text) => (draft = text)} onExpand={expandMessage} onOpenImage={openFile} />
     {:else if activeTab?.kind === "terminal"}
       <!-- The terminal pane below stays mounted while another tab is shown. -->
     {:else}

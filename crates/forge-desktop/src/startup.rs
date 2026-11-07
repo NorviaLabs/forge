@@ -263,6 +263,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::remove_worktree,
         bridge::list_files,
         bridge::read_file,
+        bridge::read_image,
         bridge::git_status,
         bridge::github_issues,
         bridge::github_details,
