@@ -178,6 +178,17 @@
     if (turnState !== "running" && turnState !== "waiting") stopping = false;
   });
 
+  // Keep the active tab reachable when the strip scrolls.
+  $effect(() => {
+    void activeTabId;
+    tick().then(() => {
+      document.querySelector(".tabs .tab.active")?.scrollIntoView({
+        inline: "nearest",
+        block: "nearest",
+      });
+    });
+  });
+
   // A session waiting out of sight is still a session waiting: the window
   // title is the only surface a background tab has.
   $effect(() => {
@@ -2063,7 +2074,9 @@
     padding: 0 10px;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
   }
 
   .tab {

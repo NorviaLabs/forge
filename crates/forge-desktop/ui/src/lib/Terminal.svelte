@@ -51,6 +51,7 @@
       scrollback: 5000,
       allowProposedApi: true,
       macOptionIsMeta: true,
+      screenReaderMode: true,
     });
     fit = new FitAddon();
     terminal.loadAddon(fit);
@@ -105,7 +106,13 @@
   });
 </script>
 
-<div class="terminal" bind:this={host} data-session={sessionId}></div>
+<div
+  class="terminal"
+  bind:this={host}
+  data-session={sessionId}
+  role="application"
+  aria-label="Terminal for {sessionId}"
+></div>
 
 <style>
   .terminal {

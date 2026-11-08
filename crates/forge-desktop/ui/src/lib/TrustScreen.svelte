@@ -5,7 +5,7 @@
   let { workspace = "", error = "", busy = false, onTrust, onQuit } = $props();
 </script>
 
-<div class="trust" role="dialog" aria-modal="true" aria-labelledby="trust-title" tabindex="-1" use:modal={{ onClose: onQuit, busy }}>
+<div class="trust" role="dialog" aria-modal="true" aria-labelledby="trust-title" tabindex="-1" use:modal={{ busy }}>
   <div class="card">
     <span class="badge"><Icon name="alert" size={14} /> Untrusted workspace</span>
     <h1 id="trust-title">Trust this folder?</h1>

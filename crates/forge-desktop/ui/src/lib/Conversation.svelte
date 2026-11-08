@@ -45,7 +45,7 @@
   }
 </script>
 
-<div class="transcript" bind:this={scroller} onscroll={onScroll} aria-label="Transcript">
+<div class="transcript" bind:this={scroller} onscroll={onScroll} role="log" aria-label="Transcript">
   {#if messages.length === 0 && !streaming}
     <div class="intro">
       <div class="intro-mark"><Icon name="chat" size={20} /></div>
@@ -270,7 +270,7 @@
   }
 
   .message.assistant :global(em) {
-    color: #c7d96b;
+    color: var(--strong);
   }
 
   .message.assistant :global(a) {

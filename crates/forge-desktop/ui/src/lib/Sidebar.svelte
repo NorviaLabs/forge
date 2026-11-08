@@ -654,12 +654,14 @@
     align-items: center;
     gap: 1px;
     margin-right: 3px;
+    visibility: hidden;
     opacity: 0;
     pointer-events: none;
   }
 
   li:hover .row-actions,
   li:focus-within .row-actions {
+    visibility: visible;
     opacity: 1;
     pointer-events: auto;
   }
