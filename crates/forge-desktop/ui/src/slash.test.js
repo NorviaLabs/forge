@@ -27,7 +27,8 @@ test("slash keys move, complete, hide, or submit an exact command", () => {
   assert.deepEqual(slashKeyAction({ key: "Tab" }, state), { type: "complete", command: commands[0] });
   assert.deepEqual(slashKeyAction({ key: "Escape" }, state), { type: "hide" });
   assert.deepEqual(slashKeyAction({ key: "Enter" }, state), { type: "complete", command: commands[0] });
-  assert.equal(slashKeyAction({ key: "Enter" }, { ...state, value: "/help" }), null);
-  assert.equal(slashKeyAction({ key: "Enter", metaKey: true }, state), null);
+  assert.deepEqual(slashKeyAction({ key: "Enter" }, { ...state, value: "/help" }), { type: "submit" });
+  assert.deepEqual(slashKeyAction({ key: "Enter", metaKey: true }, state), { type: "complete", command: commands[0] });
+  assert.equal(slashKeyAction({ key: "Enter", metaKey: true }, { ...state, value: "/help" }), null);
   assert.equal(slashKeyAction({ key: "Enter" }, { ...state, open: false }), null);
 });

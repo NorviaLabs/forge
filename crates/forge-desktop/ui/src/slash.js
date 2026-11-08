@@ -17,9 +17,20 @@ export function slashKeyAction(event, { open, matches, index, value }) {
   if (event.key === "ArrowUp") return { type: "move", index: (index - 1 + matches.length) % matches.length };
   if (event.key === "Tab") return { type: "complete", command: matches[index] };
   if (event.key === "Escape") return { type: "hide" };
+  if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    const match = matches[index];
+    return match && value.trim() !== match.name
+      ? { type: "complete", command: match }
+      : null;
+  }
   if (event.key === "Enter" && !event.metaKey && !event.ctrlKey) {
     const match = matches[index];
-    if (match && value.trim() !== match.name) return { type: "complete", command: match };
+    if (!match) return null;
+    // The composer is a textarea, so plain Enter would insert a newline.
+    // An exact command submits here; a prefix completes first.
+    return value.trim() === match.name
+      ? { type: "submit" }
+      : { type: "complete", command: match };
   }
   return null;
 }

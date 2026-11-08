@@ -95,6 +95,7 @@
       event.preventDefault();
       if (action.type === "move") slashIndex = action.index;
       else if (action.type === "complete") complete(action.command);
+      else if (action.type === "submit") submit();
       else slashHidden = true;
       return;
     }
@@ -107,10 +108,11 @@
 
 <form class="composer" aria-label="Compose" onsubmit={(event) => { event.preventDefault(); submit(); }}>
   {#if slashOpen}
-    <ul class="slash" role="listbox" aria-label="Commands">
+    <ul class="slash" id="composer-commands" role="listbox" aria-label="Commands">
       {#each slashMatches as command, index (command.name)}
         <li role="presentation">
           <button
+            id={`composer-command-${index}`}
             type="button"
             role="option"
             aria-selected={index === slashIndex}
@@ -133,6 +135,11 @@
     onpaste={paste}
     rows="2"
     aria-label="Prompt"
+    role="combobox"
+    aria-autocomplete="list"
+    aria-expanded={slashOpen}
+    aria-controls="composer-commands"
+    aria-activedescendant={slashOpen ? `composer-command-${slashIndex}` : undefined}
     placeholder="Ask Forge, or describe what to change…"
     spellcheck="false"
   ></textarea>
