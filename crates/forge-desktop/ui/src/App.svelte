@@ -19,6 +19,7 @@
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
   import Icon from "./lib/Icon.svelte";
+  import { withSkills } from "./slash.js";
 
   let sessionId = $state("");
   let sessions = $state([]);
@@ -32,6 +33,8 @@
   let turnState = $state("idle");
   let stopping = $state(false);
   let messages = $state([]);
+  let promptHistory = $state([]);
+  let skillDescriptions = $state([]);
   let streaming = $state("");
   let inspectorOpen = $state(false);
   let inspectorToggle;
@@ -45,6 +48,7 @@
   let approval = $state(null);
   let question = $state(null);
   let questionDrafts = $state({});
+  let approvalDrafts = $state({});
   let approveAll = $state(false);
   let thinking = $state(false);
   let imageInput = $state(false);
@@ -229,6 +233,8 @@
       },
     },
   ];
+
+  const composerCommands = $derived(withSkills(slashCommands, skillDescriptions));
 
   const paletteItems = $derived.by(() => {
     const items = sessions.map((session) => {
@@ -422,6 +428,9 @@
     sessionId = event.session_id;
     turnState = event.turn_state;
     fullMessageCount[event.session_id] = event.messages.length;
+    promptHistory = event.messages.filter((message) => message.role === "user" && message.text.trim())
+      .map((message) => message.text).slice(-500);
+    skillDescriptions = event.skill_descriptions ?? [];
     const from = clearedFrom[event.session_id] ?? 0;
     messages = event.messages.slice(from).map((message, index) => {
       const full = messageDetails[`${event.session_id}:${from + index}`];
@@ -451,7 +460,9 @@
     };
     githubIssue = event.github_issue_number ?? null;
     githubPr = event.github_pr_url ?? "";
-    streaming = "";
+    // Keep the live delta while the turn runs; a mid-turn snapshot would
+    // wipe it. Clear once the turn settles so the final transcript owns it.
+    if (!["running", "waiting"].includes(event.turn_state)) streaming = "";
   }
 
   // The TUI watches the filesystem; a light poll keeps the tree and status
@@ -545,13 +556,15 @@
         if (previous) views[previous] = { tabs, activeTabId, draft };
         sessionId = next;
         messages = [];
+        promptHistory = [];
+        skillDescriptions = [];
+        streaming = "";
         approval = null;
         question = null;
         plan = null;
         background = [];
         queue = [];
         interrupted = [];
-        streaming = "";
         // These dialogs act on the previously selected session.
         branchesOpen = false;
         commitOpen = false;
@@ -630,7 +643,13 @@
     }
     if (mutatesGit) gitBusy = true;
     try {
-      await invoke(name, invokeArgs);
+      const result = await invoke(name, invokeArgs);
+      if (name === "select_session") {
+        // Selection must update the pane even if channel delivery is stalled.
+        onEvent({ type: "selected", session_id: result.session_id });
+        onEvent(result);
+      }
+      if (name === "stop_session" || name === "stop_turn") onEvent(result);
       if (["resume_session", "close_session", "archive_session", "remove_worktree"].includes(name)) loadResumable();
       return true;
     } catch (cause) {
@@ -814,9 +833,9 @@
   }
 
   async function stop() {
-    if (stopping) return;
+    if (stopping || !sessionId) return;
     stopping = true;
-    if (!(await command("stop_turn"))) stopping = false;
+    if (!(await command("stop_session", { sessionId }))) stopping = false;
   }
 
   async function decide(callId, decision, note, confirmed) {
@@ -1659,7 +1678,19 @@
     {/if}
 
     {#if approval}
-      <ApprovalCard {approval} onDecide={decide} />
+      <ApprovalCard
+        {approval}
+        onDecide={decide}
+        savedDraft={approvalDrafts[`${sessionId}:${approval.call_id}`] ?? null}
+        onDraft={(draft) => {
+          const key = `${sessionId}:${approval.call_id}`;
+          if (draft) approvalDrafts = { ...approvalDrafts, [key]: draft };
+          else {
+            const { [key]: _, ...rest } = approvalDrafts;
+            approvalDrafts = rest;
+          }
+        }}
+      />
     {/if}
 
     <Composer
@@ -1667,7 +1698,8 @@
       {turnState}
       {stopping}
       {sessionId}
-      commands={slashCommands}
+      commands={composerCommands}
+      history={promptHistory}
       {imageInput}
       attachment={fileAttachments[sessionId] ?? null}
       onRemoveAttachment={() => {

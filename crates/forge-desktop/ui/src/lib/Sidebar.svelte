@@ -659,15 +659,20 @@
     pointer-events: none;
   }
 
-  li:hover .row-actions,
-  li:focus-within .row-actions {
+  .tree li:hover .row-actions,
+  .tree li:focus-within .row-actions,
+  .session-list li.active:hover .row-actions,
+  .session-list li.active:focus-within .row-actions {
     visibility: visible;
     opacity: 1;
+  }
+
+  .row-actions button {
     pointer-events: auto;
   }
 
-  /* Session actions float over the row so they do not squeeze the name when
-     hidden; the gradient keeps the icons readable on hover. */
+  /* Only the selected row exposes overlaid actions: a running row's extra
+     Stop button would otherwise steal the click intended to select it. */
   .session-list .row-actions {
     position: absolute;
     top: 50%;
@@ -685,8 +690,8 @@
     background: linear-gradient(90deg, transparent, var(--selection) 14px);
   }
 
-  .session-list li:hover .row-actions,
-  .session-list li:focus-within .row-actions {
+  .session-list li.active:hover .row-actions,
+  .session-list li.active:focus-within .row-actions {
     opacity: 1;
   }
 

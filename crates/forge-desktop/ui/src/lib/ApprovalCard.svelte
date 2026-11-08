@@ -1,7 +1,7 @@
 <script>
   import Icon from "./Icon.svelte";
 
-  let { approval, onDecide } = $props();
+  let { approval, onDecide, savedDraft = null, onDraft = null } = $props();
 
   let note = $state("");
   let noting = $state(false);
@@ -9,15 +9,26 @@
   let noteError = $state("");
   let lastCallId = "";
 
+  function saveDraft() {
+    onDraft?.({
+      note,
+      noting,
+      confirmDecision: confirm?.decision ?? null,
+    });
+  }
+
   // Background snapshots replace the approval object but keep its call id.
   // Reset only for a genuinely different request, not for a fresh copy.
+  // A parked draft survives session switches.
   $effect(() => {
     const callId = approval.call_id;
     if (callId === lastCallId) return;
     lastCallId = callId;
-    note = "";
-    noting = false;
-    confirm = null;
+    note = savedDraft?.note ?? "";
+    noting = savedDraft?.noting ?? false;
+    confirm = savedDraft?.confirmDecision
+      ? approval.options.find((option) => option.decision === savedDraft.confirmDecision) ?? null
+      : null;
     noteError = "";
   });
 
@@ -26,16 +37,19 @@
   function choose(option) {
     if (option.decision === "deny_with_note") {
       noting = true;
+      saveDraft();
       return;
     }
     if (option.privileged) {
       confirm = option;
+      saveDraft();
       return;
     }
     send(option, false);
   }
 
   function send(option, confirmed) {
+    onDraft?.(null);
     onDecide(
       approval.call_id,
       option.decision,
@@ -79,7 +93,7 @@
         <button type="button" class="btn danger" onclick={() => send(confirm, true)}>
           {confirm.label}
         </button>
-        <button type="button" class="btn" onclick={() => (confirm = null)}>Cancel</button>
+        <button type="button" class="btn" onclick={() => { confirm = null; saveDraft(); }}>Cancel</button>
       </div>
     </div>
   {:else if noting}
@@ -88,6 +102,7 @@
       <input
         class="field"
         bind:value={note}
+        oninput={saveDraft}
         placeholder="The agent reads this"
         aria-label="Reason for refusing"
       />
@@ -95,7 +110,7 @@
     {#if noteError}<p class="error">{noteError}</p>{/if}
     <div class="actions">
       <button type="button" class="btn danger" onclick={sendNote}>Don't run, send note</button>
-      <button type="button" class="btn" onclick={() => (noting = false)}>Cancel</button>
+      <button type="button" class="btn" onclick={() => { noting = false; saveDraft(); }}>Cancel</button>
     </div>
   {:else}
     <div class="actions">

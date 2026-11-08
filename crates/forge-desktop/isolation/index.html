@@ -8,8 +8,9 @@
     <!--
       Tauri's isolation pattern: every IPC message from the app frame passes
       through this sandboxed frame before it reaches Rust. Only Forge's own
-      commands and the event plugin's listen/unlisten pass; anything else a
-      compromised page sends is dropped here, on top of the capability check
+      commands, event listen/unlisten, and Tauri's per-webview channel fetch
+      pass; anything else a compromised page sends is dropped here, on top of
+      the capability check
       Rust performs.
 
       The script must be inline: Tauri serves only index.html from this
@@ -100,6 +101,7 @@
         "shell_close",
         "plugin:event|listen",
         "plugin:event|unlisten",
+        "plugin:__TAURI_CHANNEL__|fetch",
       ]);
       window.__TAURI_ISOLATION_HOOK__ = (payload) =>
         payload && ALLOWED.has(payload.cmd) ? payload : null;

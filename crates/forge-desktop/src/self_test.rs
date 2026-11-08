@@ -61,6 +61,7 @@ pub struct Probe {
 #[derive(Debug, Deserialize)]
 struct PageResults {
     shell_survives_switch: bool,
+    session_selection_round_trip: bool,
     editor_navigation_and_reload: bool,
     #[serde(default)]
     editor_debug: String,
@@ -68,6 +69,7 @@ struct PageResults {
     slash_command_ran: bool,
     optimistic_prompt_visible: bool,
     rendered_markdown: bool,
+    prompt_history_recall: bool,
     unknown_command_blocked: bool,
     emit_blocked: bool,
     no_global_tauri: bool,
@@ -169,6 +171,10 @@ impl Probe {
                 let checks = [
                     ("shell_survives_switch", page.shell_survives_switch),
                     (
+                        "session_selection_round_trip",
+                        page.session_selection_round_trip,
+                    ),
+                    (
                         "editor_navigation_and_reload",
                         page.editor_navigation_and_reload,
                     ),
@@ -176,6 +182,7 @@ impl Probe {
                     ("slash_command_ran", page.slash_command_ran),
                     ("optimistic_prompt_visible", page.optimistic_prompt_visible),
                     ("rendered_markdown", page.rendered_markdown),
+                    ("prompt_history_recall", page.prompt_history_recall),
                     ("unknown_command_blocked", page.unknown_command_blocked),
                     ("emit_blocked", page.emit_blocked),
                     ("no_global_tauri", page.no_global_tauri),

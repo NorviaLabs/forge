@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterSlashCommands, slashKeyAction } from "./slash.js";
+import { filterSlashCommands, slashKeyAction, withSkills } from "./slash.js";
 
 const commands = [
   { name: "/help", help: "Help" },
@@ -32,4 +32,22 @@ test("slash keys move, complete, hide, or submit an exact command", () => {
   assert.deepEqual(slashKeyAction({ key: "Enter", metaKey: true }, state), { type: "complete", command: commands[0] });
   assert.equal(slashKeyAction({ key: "Enter", metaKey: true }, { ...state, value: "/help" }), null);
   assert.equal(slashKeyAction({ key: "Enter" }, { ...state, open: false }), null);
+});
+
+test("installed skills complete alongside commands without shadowing builtins", () => {
+  const combined = withSkills(commands, [["review", "Review changes"], ["help", "A skill"]]);
+  assert.equal(combined.length, commands.length + 1);
+  assert.deepEqual(filterSlashCommands(combined, "/rev"), [{ name: "/review", help: "Review changes" }]);
+  assert.equal(filterSlashCommands(combined, "/help")[0], commands[0]);
+  const matches = filterSlashCommands(combined, "/rev");
+  assert.deepEqual(slashKeyAction({ key: "Tab" }, { open: true, matches, index: 0, value: "/rev" }), {
+    type: "complete", command: matches[0],
+  });
+  assert.deepEqual(withSkills(commands, []), commands);
+});
+
+test("Shift+Enter and IME composition bypass slash completion", () => {
+  const state = { open: true, matches: commands, index: 0, value: "/help" };
+  assert.equal(slashKeyAction({ key: "Enter", shiftKey: true }, state), null);
+  assert.equal(slashKeyAction({ key: "Enter", isComposing: true }, state), null);
 });

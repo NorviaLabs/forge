@@ -52,10 +52,9 @@
 
   function onScroll() {
     if (!scroller) return;
+    // Paging is explicit; layout-induced scroll events must not hide live output.
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     pinned = distance < 48;
-    if (!pinned && pageEnd === null) pageEnd = messages.length;
-    else if (pinned && pageEnd === messages.length) pageEnd = null;
   }
 
   function toolName(message) {

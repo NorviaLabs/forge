@@ -94,6 +94,7 @@ export async function runSelfTest(params, sessionId) {
   // A real shell must keep process state and its original emulator across
   // session selection. Closing the extra session releases its egress proxy.
   results.shell_survives_switch = false;
+  results.session_selection_round_trip = false;
   const activeSession = () => document.querySelector('.session-list li.active [data-session-id]')?.dataset.sessionId;
   const primary = activeSession();
   let extra = null;
@@ -109,8 +110,20 @@ export async function runSelfTest(params, sessionId) {
     extra = activeSession();
     if (extra === primary) throw new Error("Session creation failed");
     await invoke("shell_write", { sessionId: primary, data: 'printf "forge-shell-%s\\n" "$FORGE_DESKTOP_CHECK"\n' });
-    await invoke("select_session", { sessionId: primary });
+    const selected = await invoke("select_session", { sessionId: primary });
     await waitFor(() => activeSession() === primary, 10000);
+    const selectRow = async (id) => {
+      const row = document.querySelector(`[data-session-id="${id}"]`);
+      const rect = row.getBoundingClientRect();
+      // Hit-test the actual row center, including any action overlay.
+      document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2).click();
+      return waitFor(() => activeSession() === id, 10000);
+    };
+    const toExtra = await selectRow(extra);
+    const back = await selectRow(primary);
+    results.session_selection_round_trip = selected?.type === "session"
+      && selected.session_id === primary && Array.isArray(selected.messages)
+      && toExtra && back;
     document.querySelector('button[aria-label="Terminal"]').click();
     results.shell_survives_switch = await waitFor(() => original === document.querySelector(`.terminal[data-session="${primary}"]`) && original.textContent.includes("forge-shell-42"), 10000);
     document.querySelector('.tab.active button[aria-label="Close tab"]').click();
@@ -208,6 +221,29 @@ export async function runSelfTest(params, sessionId) {
     rendered &&
     window.__forge_xss === undefined &&
     document.querySelector(".transcript iframe, .transcript script") === null;
+
+  results.prompt_history_recall = false;
+  try {
+    const box = document.querySelector('textarea[aria-label="Prompt"]');
+    box.value = "unfinished draft";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+    const key = (value) => box.dispatchEvent(new KeyboardEvent("keydown", {
+      key: value, bubbles: true, cancelable: true,
+    }));
+    key("ArrowUp");
+    await tick();
+    const recalled = box.value.startsWith("self-test **ping**");
+    key("ArrowDown");
+    await tick();
+    const wrapped = box.value.startsWith("self-test **ping**");
+    key("Escape");
+    await tick();
+    results.prompt_history_recall = recalled && wrapped && box.value === "unfinished draft";
+    box.value = "";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+  } catch (error) { console.error("history self-test", error); }
 
   // 2. The approval journey: approve once, deny, then Stop during a held
   //    model call. Rust checks the effects on disk independently.

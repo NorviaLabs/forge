@@ -183,8 +183,8 @@ fn no_tauri_plugins_are_linked() {
     );
 }
 
-/// The isolation hook passes exactly Forge's commands plus event
-/// listen/unlisten, the same set the capability grants, and is inline
+/// The isolation hook passes exactly Forge's commands, event listen/unlisten,
+/// and Tauri's built-in channel transport, and is inline
 /// (Tauri serves only `index.html` from the isolation directory).
 #[test]
 fn isolation_hook_allows_exactly_the_granted_commands() {
@@ -203,6 +203,7 @@ fn isolation_hook_allows_exactly_the_granted_commands() {
     let mut expected: BTreeSet<String> = DESKTOP_COMMANDS.iter().map(|c| c.to_string()).collect();
     expected.insert("plugin:event|listen".into());
     expected.insert("plugin:event|unlisten".into());
+    expected.insert("plugin:__TAURI_CHANNEL__|fetch".into());
     assert_eq!(allowed, expected);
     assert!(html.contains("ALLOWED.has(payload.cmd) ? payload : null"));
     let entries: Vec<String> = std::fs::read_dir(crate_dir().join("isolation"))

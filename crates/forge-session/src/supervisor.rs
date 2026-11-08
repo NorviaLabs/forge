@@ -156,6 +156,8 @@ pub enum SupervisorCommand {
     /// roster rather than stopping at the first that refuses to retire, and
     /// reports how many did not close.
     CloseAllSessions,
+    /// Cancel the foreground turn; success acknowledges settled session state,
+    /// not just delivery of the cancellation signal.
     StopTurn {
         session_id: SessionId,
     },
@@ -1246,15 +1248,11 @@ async fn run_commands(state: Arc<SupervisorState>, mut receiver: mpsc::Receiver<
                 next = receiver.recv(), if !stops_everything => {
                     if let Some(next) = next {
                         if let SupervisorCommand::StopTurn { session_id } = next.command {
-                            let cancelled = match actor(&state, session_id).await {
-                                Ok(actor) => actor.request_cancel().await,
-                                Err(_) => false,
-                            };
-                            if cancelled {
-                                let _ = next.reply.send(Ok(()));
-                            } else {
-                                deferred.push_back(next);
+                            if let Ok(actor) = actor(&state, session_id).await {
+                                actor.request_cancel().await;
                             }
+                            // Signal now, but acknowledge only after the turn settles.
+                            deferred.push_back(next);
                         } else {
                             if stops_every_session(&next.command) {
                                 for actor in state.actors.read().await.values() {
@@ -1319,6 +1317,7 @@ fn runs_outside_command_loop(command: &SupervisorCommand) -> bool {
     matches!(
         command,
         SupervisorCommand::CreateSession { .. }
+            | SupervisorCommand::StopTurn { .. }
             | SupervisorCommand::AttachWorktree { .. }
             | SupervisorCommand::RemoveManagedWorktree { .. }
             | SupervisorCommand::CompactContext { .. }
@@ -1349,6 +1348,7 @@ fn stops_every_session(command: &SupervisorCommand) -> bool {
 fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
     match command {
         SupervisorCommand::RemoveManagedWorktree { session_id, .. }
+        | SupervisorCommand::StopTurn { session_id }
         | SupervisorCommand::CompactContext { session_id }
         | SupervisorCommand::CloseSession { session_id }
         | SupervisorCommand::ResolveApproval { session_id, .. }
@@ -2093,6 +2093,9 @@ async fn execute_command(
         SupervisorCommand::RenameSession { session_id, label } => {
             state.control.rename(session_id, &label).await?;
             publish_actor(&state, session_id).await?;
+            let _ = state
+                .events
+                .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::PinSession {
             session_id,
@@ -2392,6 +2395,10 @@ async fn execute_command(
                     .control
                     .rename(session_id, &forge_types::session_name_from_prompt(&text))
                     .await?;
+                publish_actor(&state, session_id).await?;
+                let _ = state
+                    .events
+                    .send(SupervisorEvent::Roster(snapshots(&state).await));
             }
             // Mark the turn queued before the prompt exists: once it is
             // enqueued, a running driver can claim and finish it at once, and
@@ -2416,6 +2423,10 @@ async fn execute_command(
                     .control
                     .rename(session_id, &forge_types::session_name_from_prompt(&text))
                     .await?;
+                publish_actor(&state, session_id).await?;
+                let _ = state
+                    .events
+                    .send(SupervisorEvent::Roster(snapshots(&state).await));
             }
             let attachments = serde_json::to_string(&attachments)
                 .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
@@ -2453,23 +2464,24 @@ async fn execute_command(
         }
         SupervisorCommand::StopTurn { session_id } => {
             let actor = actor(&state, session_id).await?;
-            if !actor.request_cancel().await {
-                let mut session = try_session(&actor)?;
-                let active = matches!(
-                    session.active_task.lifecycle,
-                    TaskLifecycle::Working | TaskLifecycle::Waiting
-                );
-                session.mark_cancelled().await?;
-                // Stop on an already-finished turn is a no-op: do not rewrite
-                // its completed/failed journal state as cancelled.
-                if active {
-                    state
-                        .control
-                        .set_turn_state(session_id, SupervisorTurnState::Cancelled)
-                        .await?;
-                }
-                refresh_actor(&state, &actor, &session).await?;
+            actor.request_cancel().await;
+            // Retry outside the command loop until cancellation has released
+            // the session; a successful reply must describe a settled turn.
+            let mut session = try_session(&actor)?;
+            let active = matches!(
+                session.active_task.lifecycle,
+                TaskLifecycle::Working | TaskLifecycle::Waiting
+            );
+            session.mark_cancelled().await?;
+            // Stop on an already-finished turn is a no-op: do not rewrite
+            // its completed/failed journal state as cancelled.
+            if active {
+                state
+                    .control
+                    .set_turn_state(session_id, SupervisorTurnState::Cancelled)
+                    .await?;
             }
+            refresh_actor(&state, &actor, &session).await?;
         }
         SupervisorCommand::ResolveApproval {
             session_id,
@@ -3920,17 +3932,15 @@ mod tests {
             .messages()
             .iter()
             .any(|message| message.content == "never"));
-        handle
-            .command(SupervisorCommand::StopTurn { session_id })
-            .await
-            .unwrap();
-        let stopped = wait_for_task_state(&handle, session_id, |snapshot| {
-            matches!(
-                snapshot.task.turn_state,
-                SupervisorTurnState::Cancelled | SupervisorTurnState::Interrupted
-            )
-        })
-        .await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle.command(SupervisorCommand::StopTurn { session_id }),
+        )
+        .await
+        .expect("Stop must cancel a held stream before acknowledging")
+        .unwrap();
+        let stopped = supervisor.snapshot(session_id).await.unwrap();
+        assert_eq!(stopped.task.turn_state, SupervisorTurnState::Cancelled);
         assert!(
             !stopped
                 .transcript
@@ -5497,26 +5507,16 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline, "turn never started");
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            handle
-                .command(SupervisorCommand::StopTurn { session_id })
-                .await
-                .unwrap();
-        }
-        for session_id in [primary_id, managed_id] {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            let cancelled = loop {
-                let snapshot = supervisor.snapshot(session_id).await.unwrap();
-                if snapshot.task.turn_state == SupervisorTurnState::Cancelled {
-                    break snapshot;
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "turn did not cancel; last state: {:?}",
-                    snapshot.task.turn_state
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            };
-            assert_eq!(cancelled.session.lifecycle, TaskLifecycle::Cancelled);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                handle.command(SupervisorCommand::StopTurn { session_id }),
+            )
+            .await
+            .expect("Stop must finish even while the model request is in flight")
+            .unwrap();
+            let stopped = supervisor.snapshot(session_id).await.unwrap();
+            assert_eq!(stopped.task.turn_state, SupervisorTurnState::Cancelled);
+            assert_eq!(stopped.session.lifecycle, TaskLifecycle::Cancelled);
         }
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
@@ -5923,6 +5923,32 @@ mod tests {
             .is_err());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
         assert_eq!(supervisor.snapshots().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn renaming_session_publishes_updated_roster() {
+        let (_temp, _supervisor, handle, id_a, id_b) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let mut events = handle.subscribe();
+        handle
+            .command(SupervisorCommand::RenameSession {
+                session_id: id_a,
+                label: "Renamed session".into(),
+            })
+            .await
+            .unwrap();
+
+        let mut renamed = false;
+        while let Ok(event) = events.try_recv() {
+            if let SupervisorEvent::Roster(roster) = event {
+                assert!(roster.iter().any(|entry| entry.task.session_id == id_b));
+                renamed |= roster.iter().any(|entry| {
+                    entry.task.session_id == id_a && entry.task.label == "Renamed session"
+                });
+            }
+        }
+        assert!(renamed, "rename must publish the new name to session lists");
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]
@@ -8705,6 +8731,7 @@ mod tests {
     fn command_classification_and_path_helpers_cover_operator_boundaries() {
         let id = SessionId::nil();
         let detached = [
+            SupervisorCommand::StopTurn { session_id: id },
             SupervisorCommand::CreateSession {
                 label: "x".into(),
                 first_prompt: None,
@@ -8798,7 +8825,6 @@ mod tests {
                 current_session_id: id,
                 session_id: id,
             },
-            SupervisorCommand::StopTurn { session_id: id },
             SupervisorCommand::ResolveApproval {
                 session_id: id,
                 expected_call_id: None,

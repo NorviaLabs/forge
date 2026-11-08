@@ -60,6 +60,7 @@ pub enum DesktopEvent {
         interrupted: Vec<QueueView>,
         tools: usize,
         skills: usize,
+        skill_descriptions: Vec<(String, String)>,
         pattern_allows: usize,
         image_input: bool,
         /// The active session's workspace, branch and model, for the
@@ -728,6 +729,19 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .collect(),
         tools: snapshot.session.tool_count,
         skills: snapshot.session.loaded_skills_count,
+        skill_descriptions: snapshot
+            .details
+            .as_ref()
+            .map(|details| {
+                details
+                    .skill_descriptions
+                    .iter()
+                    .map(|(name, description)| {
+                        (escape_invisible(name), escape_invisible(description))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         pattern_allows: snapshot
             .details
             .as_ref()
@@ -969,6 +983,22 @@ pub fn subscribe(
     #[cfg(feature = "self-test")]
     let probe = state.self_test.clone();
     tauri::async_runtime::spawn(async move {
+        // Force Tauri's large-message fetch path before the normal event
+        // stream: blocking it stalls delivery of every subsequent frame.
+        #[cfg(feature = "self-test")]
+        if probe.is_some()
+            && channel
+                .send(DesktopEvent::Stream {
+                    session_id: SessionId::nil(),
+                    event: serde_json::json!({
+                        "type": "channel_transport_probe",
+                        "padding": "x".repeat(16 * 1024),
+                    }),
+                })
+                .is_err()
+        {
+            return;
+        }
         loop {
             let event = match events.recv().await {
                 Ok(event) => translate(event),
@@ -1123,13 +1153,9 @@ pub async fn submit_prompt(
 }
 
 #[tauri::command]
-pub async fn stop_turn(state: State<'_, DesktopState>) -> Result<(), String> {
+pub async fn stop_turn(state: State<'_, DesktopState>) -> Result<DesktopEvent, String> {
     let session_id = selected_session(&state).await?;
-    state
-        .handle
-        .submit(SupervisorCommand::StopTurn { session_id })
-        .map(drop)
-        .map_err(|error| error.to_string())
+    stop_session(state, session_id).await
 }
 
 /// Image bytes, not page-supplied filesystem paths, enter at this boundary.
@@ -1221,14 +1247,17 @@ pub async fn create_session(
 pub async fn select_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<(), String> {
+) -> Result<DesktopEvent, String> {
     state
         .handle
         .command(SupervisorCommand::SelectSession {
             session_id: Some(session_id),
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    selected_snapshot(&state.supervisor, Some(session_id))
+        .await
+        .ok_or_else(|| "the selected session is gone".into())
 }
 
 /// Archive a session. The supervisor picks the next selection and publishes
@@ -1633,12 +1662,15 @@ pub async fn continue_turn(state: State<'_, DesktopState>) -> Result<(), String>
 pub async fn stop_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<(), String> {
+) -> Result<DesktopEvent, String> {
     state
         .handle
-        .submit(SupervisorCommand::StopTurn { session_id })
-        .map(drop)
-        .map_err(|error| error.to_string())
+        .command(SupervisorCommand::StopTurn { session_id })
+        .await
+        .map_err(|error| error.to_string())?;
+    selected_snapshot(&state.supervisor, Some(session_id))
+        .await
+        .ok_or_else(|| "the stopped session is gone".into())
 }
 
 /// Stop managing a session without archiving it; it can be resumed later.
@@ -2960,6 +2992,41 @@ mod tests {
                 text: "next prompt".into()
             }]
         );
+    }
+
+    #[test]
+    fn session_snapshots_include_skill_completion_metadata() {
+        let mut snapshot = snapshot(
+            SessionId::new_v4(),
+            "skills",
+            SessionLifecycle::Active,
+            forge_session::SupervisorTurnState::Idle,
+        );
+        snapshot.details = Some(forge_session::SessionDetailsSnapshot {
+            journal_dir: Default::default(),
+            active_model: String::new(),
+            active_profile_id: String::new(),
+            reasoning_effort: None,
+            thinking_enabled: false,
+            image_input_supported: false,
+            token_usage_report: Default::default(),
+            tools: Vec::new(),
+            skills: vec!["review".into()],
+            skill_descriptions: vec![("review".into(), "Review changes".into())],
+            context_state: Default::default(),
+            compaction: Default::default(),
+            queue: Vec::new(),
+            background: Vec::new(),
+            session_pattern_allow_count: 0,
+        });
+        let json = serde_json::to_value(session_event(&snapshot)).unwrap();
+        assert_eq!(
+            json["skill_descriptions"],
+            serde_json::json!([["review", "Review changes"]])
+        );
+        snapshot.details = None;
+        let json = serde_json::to_value(session_event(&snapshot)).unwrap();
+        assert_eq!(json["skill_descriptions"], serde_json::json!([]));
     }
 
     fn payload(sandbox_escalation: bool, denied_host: Option<&str>) -> HitlPayload {

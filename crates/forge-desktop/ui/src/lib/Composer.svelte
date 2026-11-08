@@ -1,6 +1,8 @@
 <script>
+  import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { filterSlashCommands, slashKeyAction } from "../slash.js";
+  import { historyKeyAction } from "../history.js";
 
   let {
     turnState = "idle",
@@ -9,6 +11,7 @@
     imageInput = false,
     attachment = null,
     commands = [],
+    history = [],
     onRemoveAttachment = () => {},
     onSend,
     onStop,
@@ -21,11 +24,13 @@
   let imageError = $state("");
   let slashIndex = $state(0);
   let slashHidden = $state(false);
+  let historyIndex = $state(null);
+  let historyDraft = "";
   const images = $derived(imageDrafts[sessionId] ?? []);
 
   const running = $derived(turnState === "running" || turnState === "waiting");
   const slashMatches = $derived(filterSlashCommands(commands, prompt));
-  const slashOpen = $derived(!slashHidden && slashMatches.length > 0);
+  const slashOpen = $derived(historyIndex === null && !slashHidden && slashMatches.length > 0);
 
   $effect(() => {
     void prompt;
@@ -53,6 +58,8 @@
   $effect(() => {
     void sessionId;
     imageError = "";
+    historyIndex = null;
+    historyDraft = "";
   });
 
   async function submit() {
@@ -64,6 +71,8 @@
     try {
       const ok = await onSend(text, attached, id);
       if (ok) {
+        historyIndex = null;
+        historyDraft = "";
         imageDrafts[id] = [];
         imageError = "";
         if (sessionId === id && prompt.trim() === text) prompt = "";
@@ -84,7 +93,7 @@
     imageDrafts[sessionId] = [...images, ...pasted];
   }
 
-  function onkeydown(event) {
+  async function onkeydown(event) {
     const action = slashKeyAction(event, {
       open: slashOpen,
       matches: slashMatches,
@@ -99,7 +108,22 @@
       else slashHidden = true;
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    const recalled = historyKeyAction(event, {
+      entries: history, value: prompt,
+      start: box.selectionStart, end: box.selectionEnd,
+      index: historyIndex, draft: historyDraft,
+    });
+    if (recalled) {
+      event.preventDefault();
+      prompt = recalled.value;
+      historyIndex = recalled.index;
+      historyDraft = recalled.draft;
+      await tick();
+      const caret = event.key === "ArrowUp" ? 0 : prompt.length;
+      box?.setSelectionRange(caret, caret);
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       submit();
     }
@@ -108,7 +132,7 @@
 
 <form class="composer" aria-label="Compose" onsubmit={(event) => { event.preventDefault(); submit(); }}>
   {#if slashOpen}
-    <ul class="slash" id="composer-commands" role="listbox" aria-label="Commands">
+    <ul class="slash" id="composer-commands" role="listbox" aria-label="Commands and skills">
       {#each slashMatches as command, index (command.name)}
         <li role="presentation">
           <button
@@ -130,11 +154,12 @@
   <textarea
     bind:this={box}
     bind:value={prompt}
-    oninput={resize}
+    oninput={() => { historyIndex = null; historyDraft = ""; resize(); }}
     onkeydown={onkeydown}
     onpaste={paste}
     rows="2"
     aria-label="Prompt"
+    title="↑/↓ cycle prompt history at the first/last line; Esc restores your draft"
     role="combobox"
     aria-autocomplete="list"
     aria-expanded={slashOpen}
@@ -161,7 +186,7 @@
   {/if}
   {#if imageError}<p class="error" role="alert">{imageError}</p>{/if}
   <footer>
-    <span class="hint"><kbd>⌘</kbd><kbd>↵</kbd> to send{imageInput ? " · Paste images here" : ""}</span>
+    <span class="hint"><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> newline{imageInput ? " · Paste images" : ""}</span>
     <span class="spacer"></span>
     {#if running}
       <button class="btn" type="button" disabled={stopping} onclick={onStop}>

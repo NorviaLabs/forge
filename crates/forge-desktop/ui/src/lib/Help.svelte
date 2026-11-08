@@ -4,7 +4,10 @@
   let { onClose, onProviders, onGithub, themes = [], theme = $bindable("forge-dark") } = $props();
   const shortcuts = [
     ["⌘ / Ctrl K", "Command palette: files, sessions and actions"],
-    ["⌘ / Ctrl Enter", "Send prompt (in composer)"],
+    ["Enter", "Send prompt (Shift+Enter for a new line)"],
+    ["↑ / ↓", "Cycle this session's prompt history at the first/last line"],
+    ["Esc", "Restore your draft when browsing prompt history"],
+    ["/ then Tab", "Complete a command or installed skill"],
     ["⌘ / Ctrl S", "Save current file"],
     ["⌘ / Ctrl W", "Close current file or terminal tab"],
     ["⌘ M", "Choose model and reasoning effort"],
