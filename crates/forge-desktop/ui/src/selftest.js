@@ -143,8 +143,8 @@ export async function runSelfTest(params, sessionId) {
     await sleep(50);
     key(line, "Enter");
     const jumped = editor.selectionStart === 14;
-    const file = await invoke("read_file", { path: "README.md" });
-    await invoke("write_file", { path: "README.md", text: "external change\n", fingerprint: file.fingerprint, crlf: file.crlf });
+    const file = await invoke("read_file", { sessionId, path: "README.md" });
+    await invoke("write_file", { sessionId, path: "README.md", text: "external change\n", fingerprint: file.fingerprint, crlf: file.crlf });
     key(editor, "s", { metaKey: true });
     await waitFor(() => document.querySelector(".file-pane .banner"), 5000);
     key(window, "k", { metaKey: true });

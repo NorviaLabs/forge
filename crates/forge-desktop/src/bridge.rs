@@ -1978,12 +1978,6 @@ pub async fn message_detail(
         .ok_or_else(|| "that message is no longer in the transcript".to_string())
 }
 
-/// The active session's workspace root.
-async fn active_workspace(state: &DesktopState) -> Result<std::path::PathBuf, String> {
-    let session_id = selected_session(state).await?;
-    workspace_of(state, session_id).await
-}
-
 /// One session's workspace root, by id.
 async fn workspace_of(
     state: &DesktopState,
@@ -2000,24 +1994,34 @@ async fn workspace_of(
         .ok_or_else(|| "the session is gone".to_string())
 }
 
-/// The active session's workspace tree, minus runtime and dependency dirs.
+/// The active session's workspace root. Kept for callers that truly need the
+/// current selection; workspace-mutating commands should take `session_id`.
+#[allow(dead_code)]
+async fn active_workspace(state: &DesktopState) -> Result<std::path::PathBuf, String> {
+    let session_id = selected_session(state).await?;
+    workspace_of(state, session_id).await
+}
+
+/// A session's workspace tree, minus runtime and dependency dirs.
 #[tauri::command]
 pub async fn list_files(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
 ) -> Result<Vec<crate::workspace::FileEntry>, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::list(&root))
         .await
         .map_err(|error| error.to_string())?
 }
 
-/// One UTF-8 file from the active session's workspace.
+/// One UTF-8 file from a session's workspace.
 #[tauri::command]
 pub async fn read_file(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     path: String,
 ) -> Result<crate::workspace::FileContents, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::read(&root, &path))
         .await
         .map_err(|error| error.to_string())?
@@ -2027,20 +2031,22 @@ pub async fn read_file(
 #[tauri::command]
 pub async fn read_image(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     path: String,
 ) -> Result<crate::workspace::ImageContents, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::read_image(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }
 
-/// Branch and changed files for the active session's workspace.
+/// Branch and changed files for a session's workspace.
 #[tauri::command]
 pub async fn git_status(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
 ) -> Result<crate::workspace::WorkspaceStatus, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::status(&root))
         .await
         .map_err(|error| error.to_string())?
@@ -2050,12 +2056,13 @@ pub async fn git_status(
 #[tauri::command]
 pub async fn git_diff(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     path: String,
     side: Option<crate::workspace::DiffSide>,
 ) -> Result<crate::workspace::FileDiff, String> {
     let side = side.unwrap_or_default();
     if side == crate::workspace::DiffSide::LastTurn {
-        let cards = last_turn_cards(&state).await?;
+        let cards = last_turn_cards(&state, session_id).await?;
         let (_, lines) = cards
             .into_iter()
             .find(|(card_path, _)| *card_path == path)
@@ -2067,7 +2074,7 @@ pub async fn git_diff(
             side,
         });
     }
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::diff(&root, &path, side))
         .await
         .map_err(|error| error.to_string())?
@@ -2075,8 +2082,10 @@ pub async fn git_diff(
 
 /// The files the most recent assistant turn wrote, read from the transcript's
 /// own diff cards so "last turn" stays honest after the tree moves on.
-async fn last_turn_cards(state: &DesktopState) -> Result<Vec<(String, Vec<String>)>, String> {
-    let session_id = selected_session(state).await?;
+async fn last_turn_cards(
+    state: &DesktopState,
+    session_id: SessionId,
+) -> Result<Vec<(String, Vec<String>)>, String> {
     let supervisor = state.supervisor.read().await;
     let snapshot = supervisor
         .as_ref()
@@ -2111,8 +2120,11 @@ async fn last_turn_cards(state: &DesktopState) -> Result<Vec<(String, Vec<String
 
 /// Paths written during the most recent assistant turn.
 #[tauri::command]
-pub async fn git_last_turn_files(state: State<'_, DesktopState>) -> Result<Vec<String>, String> {
-    Ok(last_turn_cards(&state)
+pub async fn git_last_turn_files(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<Vec<String>, String> {
+    Ok(last_turn_cards(&state, session_id)
         .await?
         .into_iter()
         .map(|(path, _)| path)
@@ -2126,40 +2138,46 @@ pub async fn git_operation(
     session_id: SessionId,
     operation: crate::workspace::GitOperation,
 ) -> Result<String, String> {
-    if selected_session(&state).await? != session_id {
-        return Err("Session changed; reopen this Git action in the intended session".into());
-    }
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::git_operation(&root, operation))
         .await
         .map_err(|error| error.to_string())?
 }
 
-/// Create an empty file in the active session's workspace.
+/// Create an empty file in a session's workspace.
 #[tauri::command]
-pub async fn create_file(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn create_file(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::create_file(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn create_dir(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn create_dir(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::create_dir(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }
 
-/// Rename or move a path inside the workspace.
+/// Rename or move a path inside a session's workspace.
 #[tauri::command]
 pub async fn rename_path(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     from: String,
     to: String,
 ) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::rename(&root, &from, &to))
         .await
         .map_err(|error| error.to_string())?
@@ -2167,78 +2185,109 @@ pub async fn rename_path(
 
 /// Delete one file or empty directory.
 #[tauri::command]
-pub async fn delete_path(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn delete_path(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::delete(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }
 
-/// Case-insensitive content search across the workspace.
+/// Case-insensitive content search across a session's workspace.
 #[tauri::command]
 pub async fn search_files(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     query: String,
 ) -> Result<Vec<crate::workspace::SearchHit>, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::search(&root, &query))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn git_stage(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_stage(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::stage(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn git_unstage(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_unstage(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::unstage(&root, &path))
         .await
         .map_err(|error| error.to_string())?
 }
 
-/// Commit what is staged, then publish the new status on the event channel
-/// through the session's own lease (the page refreshes on completion).
+/// Commit what is staged.
 #[tauri::command]
-pub async fn git_commit(state: State<'_, DesktopState>, message: String) -> Result<String, String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_commit(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    message: String,
+) -> Result<String, String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::commit(&root, &message))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn git_branches(state: State<'_, DesktopState>) -> Result<Vec<String>, String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_branches(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<Vec<String>, String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::branches(&root))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn git_switch_branch(state: State<'_, DesktopState>, name: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_switch_branch(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    name: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::switch_branch(&root, &name))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn git_create_branch(state: State<'_, DesktopState>, name: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_create_branch(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    name: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::create_branch(&root, &name))
         .await
         .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub async fn git_merge_branch(state: State<'_, DesktopState>, name: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_merge_branch(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    name: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::merge_branch(&root, &name))
         .await
         .map_err(|error| error.to_string())?
@@ -2247,10 +2296,11 @@ pub async fn git_merge_branch(state: State<'_, DesktopState>, name: String) -> R
 #[tauri::command]
 pub async fn git_rename_branch(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     from: String,
     to: String,
 ) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::rename_branch(&root, &from, &to))
         .await
         .map_err(|error| error.to_string())?
@@ -2580,17 +2630,18 @@ pub async fn set_model(
         .map_err(|error| error.to_string())
 }
 
-/// Save an edited file back into the active session's workspace. Refused if
-/// the file changed since `read_file` returned that fingerprint.
+/// Save an edited file back into a session's workspace. Refused if the file
+/// changed since `read_file` returned that fingerprint.
 #[tauri::command]
 pub async fn write_file(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     path: String,
     text: String,
     fingerprint: String,
     crlf: bool,
 ) -> Result<crate::workspace::FileContents, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || {
         crate::workspace::write(&root, &path, &text, &fingerprint, crlf)
     })
@@ -2621,12 +2672,12 @@ pub fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
-/// Discard the working-tree change to one tracked file.
 #[tauri::command]
 pub async fn github_issues(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::github::issues(&root))
         .await
         .map_err(|error| error.to_string())?
@@ -2635,10 +2686,11 @@ pub async fn github_issues(
 #[tauri::command]
 pub async fn github_details(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     issue_number: Option<u64>,
     pr_number: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::github::details(&root, issue_number, pr_number))
         .await
         .map_err(|error| error.to_string())?
@@ -2647,10 +2699,11 @@ pub async fn github_details(
 #[tauri::command]
 pub async fn github_logs(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     run_id: u64,
     job_id: Option<u64>,
 ) -> Result<serde_json::Value, String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || {
         let logs = forge_workspace::gh::ci_logs(
             &root,
@@ -2667,8 +2720,12 @@ pub async fn github_logs(
 
 /// Discard the working-tree change to one tracked file.
 #[tauri::command]
-pub async fn git_restore(state: State<'_, DesktopState>, path: String) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+pub async fn git_restore(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    path: String,
+) -> Result<(), String> {
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::restore(&root, &path))
         .await
         .map_err(|error| error.to_string())?
@@ -2679,10 +2736,11 @@ pub async fn git_restore(state: State<'_, DesktopState>, path: String) -> Result
 #[tauri::command]
 pub async fn git_discard_hunk(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     path: String,
     hunk_index: usize,
 ) -> Result<(), String> {
-    let root = active_workspace(&state).await?;
+    let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::discard_hunk(&root, &path, hunk_index))
         .await
         .map_err(|error| error.to_string())?

@@ -1,11 +1,12 @@
 <script>
   import Icon from "./Icon.svelte";
 
-  let { question, onAnswer } = $props();
+  let { question, onAnswer, savedDrafts = null, onDrafts = null } = $props();
 
   // One draft per question id; rebuilt only when a different call arrives.
   // Snapshots replace this object on every background update, so comparing
-  // object identity would erase answers mid-edit.
+  // object identity would erase answers mid-edit. A parked draft survives
+  // session switches.
   let drafts = $state([]);
   let error = $state("");
   let lastCallId = "";
@@ -14,17 +15,24 @@
     const callId = question.call_id;
     if (callId === lastCallId) return;
     lastCallId = callId;
-    drafts = question.questions.map((item) => ({
-      id: item.id,
-      selected: [],
-      custom: "",
-      callId,
-    }));
+    drafts = question.questions.map((item) => {
+      const saved = savedDrafts?.find((draft) => draft.id === item.id);
+      return {
+        id: item.id,
+        selected: saved?.selected ? [...saved.selected] : [],
+        custom: saved?.custom ?? "",
+        callId,
+      };
+    });
     error = "";
   });
 
   function draftFor(id) {
     return drafts.find((draft) => draft.id === id);
+  }
+
+  function saveDrafts() {
+    onDrafts?.(drafts.map(({ id, selected, custom }) => ({ id, selected: [...selected], custom })));
   }
 
   function choose(item, label) {
@@ -39,6 +47,7 @@
     }
     drafts = drafts;
     error = "";
+    saveDrafts();
   }
 
   function setCustom(id, value) {
@@ -46,6 +55,7 @@
     if (!draft) return;
     draft.custom = value;
     drafts = drafts;
+    saveDrafts();
   }
 
   function send() {
@@ -62,6 +72,7 @@
         return;
       }
     }
+    onDrafts?.(null);
     onAnswer(
       question.call_id,
       drafts.map((draft) => ({
@@ -120,7 +131,7 @@
 
   <div class="actions">
     <button type="button" class="btn primary" onclick={send}>Send answer</button>
-    <button type="button" class="btn" onclick={() => onAnswer(question.call_id, [], true)}>
+    <button type="button" class="btn" onclick={() => { onDrafts?.(null); onAnswer(question.call_id, [], true); }}>
       Skip
     </button>
   </div>

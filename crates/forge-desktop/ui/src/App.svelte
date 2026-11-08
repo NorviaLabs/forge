@@ -44,6 +44,7 @@
   }
   let approval = $state(null);
   let question = $state(null);
+  let questionDrafts = $state({});
   let approveAll = $state(false);
   let thinking = $state(false);
   let imageInput = $state(false);
@@ -500,9 +501,9 @@
     filesError = "";
     try {
       const [entries, nextStatus, written] = await Promise.all([
-        invoke("list_files"),
-        invoke("git_status"),
-        invoke("git_last_turn_files"),
+        invoke("list_files", { sessionId: owner }),
+        invoke("git_status", { sessionId: owner }),
+        invoke("git_last_turn_files", { sessionId: owner }),
       ]);
       if (request !== filesRequest || owner !== sessionId) return;
       files = entries;
@@ -603,6 +604,14 @@
     }
   }
 
+  const WORKSPACE_COMMANDS = new Set([
+    "list_files", "read_file", "read_image", "git_status", "git_diff", "git_last_turn_files",
+    "write_file", "create_file", "create_dir", "rename_path", "delete_path", "search_files",
+    "git_stage", "git_unstage", "git_commit", "git_branches", "git_switch_branch",
+    "git_create_branch", "git_merge_branch", "git_rename_branch", "git_restore", "git_discard_hunk",
+    "github_issues", "github_details", "github_logs",
+  ]);
+
   async function command(name, args) {
     const mutatesGit = name.startsWith("git_");
     if (mutatesGit && gitBusy) { error = "Wait for the current Git operation to finish."; return false; }
@@ -615,9 +624,13 @@
       error = "Save or close unsaved files before changing this session.";
       return false;
     }
+    let invokeArgs = args;
+    if (WORKSPACE_COMMANDS.has(name) && sessionId && !invokeArgs?.sessionId) {
+      invokeArgs = { sessionId, ...(invokeArgs ?? {}) };
+    }
     if (mutatesGit) gitBusy = true;
     try {
-      await invoke(name, args);
+      await invoke(name, invokeArgs);
       if (["resume_session", "close_session", "archive_session", "remove_worktree"].includes(name)) loadResumable();
       return true;
     } catch (cause) {
@@ -756,8 +769,9 @@
     const attachment = fileAttachments[targetSession] ?? null;
     // Show the operator's line before the supervisor's snapshot arrives.
     // The next SessionUpdated replaces this local copy with the real message.
+    const localId = `local:${Date.now()}:${Math.random().toString(36).slice(2)}`;
     const local = targetSession === sessionId && text
-      ? { role: "user", text, attachments: [], optimistic: true }
+      ? { role: "user", text, attachments: [], optimistic: true, localId }
       : null;
     const previousTurnState = turnState;
     if (local) {
@@ -765,23 +779,32 @@
       turnState = "running";
       stopping = false;
     }
-    let ok;
-    if (!images.length) {
-      ok = await command("submit_prompt", { sessionId: targetSession, text, attachment });
-    } else {
-      try {
-        const encoded = await Promise.all(images.map((image) => new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result).split(",")[1]);
-          reader.onerror = () => reject(new Error("Cannot read pasted image"));
-          reader.readAsDataURL(image);
-        })));
-        ok = await command("submit_images", { sessionId: targetSession, text, images: encoded, attachment });
-      } catch (cause) { error = String(cause); return false; }
+    let ok = false;
+    try {
+      if (!images.length) {
+        ok = await command("submit_prompt", { sessionId: targetSession, text, attachment });
+      } else {
+        try {
+          const encoded = await Promise.all(images.map((image) => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(",")[1]);
+            reader.onerror = () => reject(new Error("Cannot read pasted image"));
+            reader.readAsDataURL(image);
+          })));
+          ok = await command("submit_images", { sessionId: targetSession, text, images: encoded, attachment });
+        } catch (cause) {
+          error = String(cause);
+          ok = false;
+        }
+      }
+    } catch (cause) {
+      error = String(cause);
+      ok = false;
     }
     if (!ok && local) {
-      messages = messages.filter((message) => message !== local);
-      if (turnState === "running") turnState = previousTurnState;
+      messages = messages.filter((message) => message.localId !== localId);
+      if (targetSession === sessionId && turnState === "running") turnState = previousTurnState;
+      stopping = false;
     }
     if (ok && attachment) {
       const { [targetSession]: _, ...rest } = fileAttachments;
@@ -830,14 +853,18 @@
   }
 
   async function expandMessage(index) {
+    const target = sessionId;
     try {
-      const absolute = (clearedFrom[sessionId] ?? 0) + index;
-      const full = await invoke("message_detail", { sessionId, index: absolute });
-      messageDetails = { ...messageDetails, [`${sessionId}:${absolute}`]: full };
-      messages = messages.map((message, at) =>
-        at === index ? { ...message, text: full.text, thinking: full.thinking } : message);
+      const absolute = (clearedFrom[target] ?? 0) + index;
+      const full = await invoke("message_detail", { sessionId: target, index: absolute });
+      const key = `${target}:${absolute}`;
+      messageDetails = { ...messageDetails, [key]: full };
+      if (target === sessionId) {
+        messages = messages.map((message, at) =>
+          at === index ? { ...message, text: full.text, thinking: full.thinking } : message);
+      }
     } catch (cause) {
-      error = String(cause);
+      if (target === sessionId) error = String(cause);
     }
   }
 
@@ -1008,7 +1035,7 @@
       if (gitBusy) return;
       gitBusy = true;
       if (commitAll) await invoke("git_operation", { sessionId, operation: { kind: "commit_all", message: commitMessage } });
-      else await invoke("git_commit", { message: commitMessage });
+      else await invoke("git_commit", { sessionId, message: commitMessage });
       commitOpen = false;
       refreshFiles();
     } catch (cause) {
@@ -1052,20 +1079,24 @@
     branchesOpen = true;
     branchesError = "";
     branchesLoading = true;
+    const owner = sessionId;
     try {
-      branches = await invoke("git_branches");
+      const names = await invoke("git_branches", { sessionId: owner });
+      if (owner === sessionId) branches = names;
     } catch (cause) {
-      branchesError = String(cause);
+      if (owner === sessionId) branchesError = String(cause);
     } finally {
-      branchesLoading = false;
+      if (owner === sessionId) branchesLoading = false;
     }
   }
 
   async function reloadBranches() {
+    const owner = sessionId;
     try {
-      branches = await invoke("git_branches");
+      const names = await invoke("git_branches", { sessionId: owner });
+      if (owner === sessionId) branches = names;
     } catch (cause) {
-      branchesError = String(cause);
+      if (owner === sessionId) branchesError = String(cause);
     }
     refreshFiles();
   }
@@ -1111,20 +1142,21 @@
   async function reloadTab(id) {
     const tab = tabs.find((entry) => entry.id === id);
     if (!tab) return;
+    const owner = sessionId;
     updateTab(id, { loading: true, error: "" });
     try {
       if (tab.kind === "file" && isImage(tab.path)) {
-        const image = await invoke("read_image", { path: tab.path });
-        updateTab(id, { image, loading: false });
+        const image = await invoke("read_image", { sessionId: owner, path: tab.path });
+        if (owner === sessionId) updateTab(id, { image, loading: false });
       } else if (tab.kind === "file") {
-        const file = await invoke("read_file", { path: tab.path });
-        updateTab(id, { file, draft: file.text, dirty: false, loading: false });
+        const file = await invoke("read_file", { sessionId: owner, path: tab.path });
+        if (owner === sessionId) updateTab(id, { file, draft: file.text, dirty: false, loading: false });
       } else {
-        const diff = await invoke("git_diff", { path: tab.path, side: tab.side });
-        updateTab(id, { diff, loading: false });
+        const diff = await invoke("git_diff", { sessionId: owner, path: tab.path, side: tab.side });
+        if (owner === sessionId) updateTab(id, { diff, loading: false });
       }
     } catch (cause) {
-      updateTab(id, { error: String(cause), loading: false });
+      if (owner === sessionId) updateTab(id, { error: String(cause), loading: false });
     }
   }
 
@@ -1146,15 +1178,18 @@
   async function saveActive() {
     const tab = activeTab;
     if (!tab || tab.kind !== "file" || tab.file?.read_only || !tab.dirty || tab.saving) return;
+    const owner = sessionId;
     const text = tab.draft;
     updateTab(tab.id, { saving: true });
     try {
       const file = await invoke("write_file", {
+        sessionId: owner,
         path: tab.path,
         text,
         fingerprint: tab.file.fingerprint,
         crlf: tab.file.crlf,
       });
+      if (owner !== sessionId) return;
       const current = tabs.find((entry) => entry.id === tab.id);
       // Keep typing that happened while the write was in flight; only the
       // saved baseline moves.
@@ -1194,30 +1229,34 @@
   async function discardHunk(target) {
     const tab = tabs.find((entry) => entry.id === target.id);
     if (!tab || gitBusy) return;
+    const owner = sessionId;
     gitBusy = true;
     error = "";
     try {
-      await invoke("git_discard_hunk", { path: target.path, hunkIndex: target.index });
+      await invoke("git_discard_hunk", { sessionId: owner, path: target.path, hunkIndex: target.index });
+      if (owner !== sessionId) return;
       updateTab(target.id, { diff: null, loading: true, error: "" });
       await loadTab(target.id);
       refreshFiles();
     } catch (cause) {
-      updateTab(target.id, { error: String(cause) });
+      if (owner === sessionId) updateTab(target.id, { error: String(cause) });
     } finally {
-      gitBusy = false;
+      if (owner === sessionId) gitBusy = false;
     }
   }
 
   async function restoreTab(id) {
     const tab = tabs.find((entry) => entry.id === id);
     if (!tab || tab.kind !== "diff") return;
+    const owner = sessionId;
     try {
-      await invoke("git_restore", { path: tab.path });
+      await invoke("git_restore", { sessionId: owner, path: tab.path });
+      if (owner !== sessionId) return;
       updateTab(tab.id, { diff: null, loading: true, error: "" });
       await loadTab(tab.id);
       refreshFiles();
     } catch (cause) {
-      updateTab(tab.id, { error: String(cause) });
+      if (owner === sessionId) updateTab(tab.id, { error: String(cause) });
     }
   }
 
@@ -1298,20 +1337,21 @@
   async function loadTab(id) {
     const tab = tabs.find((entry) => entry.id === id);
     if (!tab || tab.kind === "chat" || tab.file || tab.diff) return;
+    const owner = sessionId;
     updateTab(id, { loading: true, error: "" });
     try {
       if (tab.kind === "file" && isImage(tab.path)) {
-        const image = await invoke("read_image", { path: tab.path });
-        updateTab(id, { image, loading: false });
+        const image = await invoke("read_image", { sessionId: owner, path: tab.path });
+        if (owner === sessionId) updateTab(id, { image, loading: false });
       } else if (tab.kind === "file") {
-        const file = await invoke("read_file", { path: tab.path });
-        updateTab(id, { file, loading: false, draft: file.text, dirty: false });
+        const file = await invoke("read_file", { sessionId: owner, path: tab.path });
+        if (owner === sessionId) updateTab(id, { file, loading: false, draft: file.text, dirty: false });
       } else {
-        const diff = await invoke("git_diff", { path: tab.path, side: tab.side });
-        updateTab(id, { diff, loading: false });
+        const diff = await invoke("git_diff", { sessionId: owner, path: tab.path, side: tab.side });
+        if (owner === sessionId) updateTab(id, { diff, loading: false });
       }
     } catch (cause) {
-      updateTab(id, { error: String(cause), loading: false });
+      if (owner === sessionId) updateTab(id, { error: String(cause), loading: false });
     }
   }
 
@@ -1522,7 +1562,7 @@
     onCreateDir={(path) => createPath("dir", path)}
     onRenamePath={startRenamePath}
     onDeletePath={requestDelete}
-    onSearch={(value) => invoke("search_files", { query: value })}
+    onSearch={(value) => invoke("search_files", { sessionId, query: value })}
     onHelp={() => (helpOpen = true)}
   />
 
@@ -1572,13 +1612,12 @@
       </div>
     {/if}
 
-    {#if activeTab?.kind === "chat"}
-      {#key sessionId}
+    {#key sessionId}
+      <div class="chat-host" class:hidden={activeTab?.kind !== "chat"}>
         <Conversation {messages} {streaming} {turnState} onSuggest={(text) => (draft = text)} onExpand={expandMessage} onOpenImage={openFile} />
-      {/key}
-    {:else if activeTab?.kind === "terminal"}
-      <!-- The terminal pane below stays mounted while another tab is shown. -->
-    {:else}
+      </div>
+    {/key}
+    {#if activeTab?.kind !== "chat" && activeTab?.kind !== "terminal"}
       <FilePane
         bind:this={filePane}
         tab={activeTab}
@@ -1604,7 +1643,19 @@
     {/if}
 
     {#if question}
-      <QuestionCard {question} onAnswer={answerQuestion} />
+      <QuestionCard
+        {question}
+        onAnswer={answerQuestion}
+        savedDrafts={questionDrafts[`${sessionId}:${question.call_id}`] ?? null}
+        onDrafts={(drafts) => {
+          const key = `${sessionId}:${question.call_id}`;
+          if (drafts) questionDrafts = { ...questionDrafts, [key]: drafts };
+          else {
+            const { [key]: _, ...rest } = questionDrafts;
+            questionDrafts = rest;
+          }
+        }}
+      />
     {/if}
 
     {#if approval}
@@ -2056,6 +2107,16 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+  }
+
+  .chat-host {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+  }
+
+  .chat-host.hidden {
+    display: none;
   }
 
   .terminal-host {

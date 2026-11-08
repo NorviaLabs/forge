@@ -38,6 +38,13 @@
   $effect(() => {
     void tab.id;
     navigationError = "";
+    tick().then(() => {
+      if (!editor) return;
+      editor.setSelectionRange(0, 0);
+      editor.scrollTop = 0;
+      editor.scrollLeft = 0;
+      syncScroll();
+    });
   });
 
   function diffClass(line) {
