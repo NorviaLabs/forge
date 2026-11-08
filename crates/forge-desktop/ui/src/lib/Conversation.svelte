@@ -7,6 +7,32 @@
 
   let scroller = $state();
   let pinned = $state(true);
+  const PAGE_SIZE = 100;
+  let pageEnd = $state(null);
+  const end = $derived(Math.min(pageEnd ?? messages.length, messages.length));
+  const start = $derived(Math.max(0, end - PAGE_SIZE));
+  const visible = $derived(messages.slice(start, end));
+
+  $effect(() => {
+    if (messages.length === 0) {
+      pageEnd = null;
+      pinned = true;
+    }
+  });
+
+  async function page(direction) {
+    pinned = false;
+    pageEnd = Math.min(messages.length, Math.max(PAGE_SIZE, end + direction * PAGE_SIZE));
+    await tick();
+    if (scroller) scroller.scrollTop = 0;
+  }
+
+  async function latest() {
+    pageEnd = null;
+    pinned = true;
+    await tick();
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
 
   const suggestions = [
     "Explain the architecture of this codebase",
@@ -18,7 +44,7 @@
   $effect(() => {
     void messages.length;
     void streaming.length;
-    if (!pinned || !scroller) return;
+    if (!pinned || pageEnd !== null || !scroller) return;
     tick().then(() => {
       if (scroller) scroller.scrollTop = scroller.scrollHeight;
     });
@@ -28,6 +54,8 @@
     if (!scroller) return;
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     pinned = distance < 48;
+    if (!pinned && pageEnd === null) pageEnd = messages.length;
+    else if (pinned && pageEnd === messages.length) pageEnd = null;
   }
 
   function toolName(message) {
@@ -46,6 +74,14 @@
 </script>
 
 <div class="transcript" bind:this={scroller} onscroll={onScroll} role="log" aria-label="Transcript">
+  {#if messages.length > PAGE_SIZE || (pageEnd !== null && pageEnd < messages.length)}
+    <nav class="history" aria-label="Transcript history">
+      <button class="btn" type="button" disabled={start === 0} onclick={() => page(-1)}>Older</button>
+      <span>{start + 1}–{end} of {messages.length} messages</span>
+      <button class="btn" type="button" disabled={end === messages.length} onclick={() => page(1)}>Newer</button>
+      <button class="btn" type="button" onclick={latest}>Latest</button>
+    </nav>
+  {/if}
   {#if messages.length === 0 && !streaming}
     <div class="intro">
       <div class="intro-mark"><Icon name="chat" size={20} /></div>
@@ -61,7 +97,7 @@
     </div>
   {/if}
 
-  {#each messages as message, index (index)}
+  {#each visible as message, index (start + index)}
     <div class="turn {message.role}">
       <div class="who">
         {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}Tool{/if}
@@ -72,7 +108,7 @@
           <summary>Reasoning</summary>
           <pre>{message.thinking}</pre>
           {#if onExpand && message.thinking.endsWith("…")}
-            <button class="expand" type="button" onclick={() => onExpand(index)}>Show full reasoning</button>
+            <button class="expand" type="button" onclick={() => onExpand(start + index)}>Show full reasoning</button>
           {/if}
         </details>
       {/if}
@@ -84,7 +120,7 @@
         {#if message.role === "tool"}
           <pre class:empty={!message.text.trim()}>{message.text.trim() ? message.text : "No output."}</pre>
           {#if onExpand && message.text.endsWith("…")}
-            <button class="expand" type="button" onclick={() => onExpand(index)}>Show full output</button>
+            <button class="expand" type="button" onclick={() => onExpand(start + index)}>Show full output</button>
           {/if}
         {:else}
           <Markdown text={message.text} />
@@ -111,7 +147,7 @@
     </div>
   {/each}
 
-  {#if streaming}
+  {#if streaming && end === messages.length}
     <div class="turn assistant">
       <div class="who">Forge</div>
       <article class="message assistant streaming" data-role="assistant-streaming">
@@ -122,6 +158,7 @@
 </div>
 
 <style>
+  .history { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; color: var(--muted); font-size: 12px; }
   .transcript {
     flex: 1;
     min-height: 0;

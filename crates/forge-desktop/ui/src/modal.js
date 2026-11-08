@@ -2,7 +2,8 @@
 export function modal(node, options) {
   const previous = document.activeElement;
   const focusable = () => [...node.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex="0"]')].filter((element) => element.getClientRects().length);
-  (focusable()[0] ?? node).focus();
+  const initial = options.initialFocus ? node.querySelector(options.initialFocus) : null;
+  (initial ?? focusable()[0] ?? node).focus();
   function keydown(event) {
     if (event.key === "Escape") {
       event.stopPropagation();

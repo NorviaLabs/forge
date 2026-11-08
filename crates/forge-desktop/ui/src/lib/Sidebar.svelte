@@ -752,7 +752,6 @@
     min-width: 0;
     border: 0;
     background: none;
-    outline: none;
     font-size: 12px;
   }
 

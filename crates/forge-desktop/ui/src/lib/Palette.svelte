@@ -147,7 +147,6 @@
     min-width: 0;
     border: 0;
     background: none;
-    outline: none;
     font-size: 13.5px;
   }
 

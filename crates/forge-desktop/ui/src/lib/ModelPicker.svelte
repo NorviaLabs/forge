@@ -103,6 +103,7 @@
               type="button"
               class="model"
               class:selected={model.id === selectedId}
+              aria-pressed={model.id === selectedId}
               onclick={() => pick(model)}
             >
               <span class="name">{model.name}</span>
@@ -129,6 +130,7 @@
                 type="button"
                 class="level"
                 class:on={level === effort}
+                aria-pressed={level === effort}
                 onclick={() => (effort = level)}
               >
                 {level}
@@ -199,7 +201,6 @@
     min-width: 0;
     border: 0;
     background: none;
-    outline: none;
   }
 
   .list {

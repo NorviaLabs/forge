@@ -297,6 +297,7 @@
     font-variant-ligatures: none;
   }
   .syntax { color: var(--secondary); pointer-events: none; scrollbar-width: none; }
+  .editor:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .syntax::-webkit-scrollbar { display: none; }
   .syntax .keyword { color: var(--accent); }
   .syntax .string { color: var(--success); }

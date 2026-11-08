@@ -77,6 +77,7 @@ fn colors(palette: &ThemePalette) -> BTreeMap<&'static str, String> {
         ("secondary", palette.text_secondary),
         ("muted", palette.text_muted),
         ("accent", palette.accent),
+        ("accent-text", accent_text(palette.accent)),
         ("accent-soft", palette.accent_soft),
         ("success", palette.success),
         ("warning", palette.warning),
@@ -89,6 +90,23 @@ fn colors(palette: &ThemePalette) -> BTreeMap<&'static str, String> {
     .into_iter()
     .map(|(name, color): (&'static str, Rgb)| (name, color.to_string()))
     .collect()
+}
+
+fn accent_text(Rgb(r, g, b): Rgb) -> Rgb {
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    if luminance > 0.179 {
+        Rgb(0, 0, 0)
+    } else {
+        Rgb(255, 255, 255)
+    }
 }
 
 fn discovery_directories(workspace: Option<&Path>) -> Vec<PathBuf> {
@@ -212,6 +230,23 @@ mod tests {
                     "{id}: border-strong on {bg} = {ratio:.2} < 3.0"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn primary_labels_contrast_with_custom_accents() {
+        for accent in [
+            Rgb(0, 0, 0),
+            Rgb(255, 255, 255),
+            Rgb(128, 128, 128),
+            Rgb(255, 0, 0),
+            Rgb(0, 0, 255),
+        ] {
+            let foreground = accent_text(accent);
+            assert!(contrast(&foreground.to_string(), &accent.to_string()) >= 4.5);
+        }
+        for theme in list(None) {
+            assert!(contrast(&theme.colors["accent-text"], &theme.colors["accent"]) >= 4.5);
         }
     }
 

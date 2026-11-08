@@ -74,6 +74,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Token counts, cache hits, tool count, skills | yes | yes | inspector and expanded status; cost/usage via existing provider service |
 | Plan view | yes | yes | newest `plan_update` checklist |
 | Clear the transcript view | yes | yes | palette; view-only, the model keeps its context |
+| Browse long transcript history | yes | yes | desktop renders 100 messages per page; Older, Newer and Latest retain access to the full history |
 
 ## Files and editing
 

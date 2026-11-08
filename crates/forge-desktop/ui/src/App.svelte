@@ -1573,7 +1573,9 @@
     {/if}
 
     {#if activeTab?.kind === "chat"}
-      <Conversation {messages} {streaming} {turnState} onSuggest={(text) => (draft = text)} onExpand={expandMessage} onOpenImage={openFile} />
+      {#key sessionId}
+        <Conversation {messages} {streaming} {turnState} onSuggest={(text) => (draft = text)} onExpand={expandMessage} onOpenImage={openFile} />
+      {/key}
     {:else if activeTab?.kind === "terminal"}
       <!-- The terminal pane below stays mounted while another tab is shown. -->
     {:else}
@@ -1742,7 +1744,7 @@
 
   {#if quitRequested}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1" use:modal={{ onClose: () => (quitRequested = false) }}>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1" use:modal={{ onClose: () => (quitRequested = false), initialFocus: "#quit-cancel" }}>
         <h2 id="quit-title">Quit Forge?</h2>
         <p>
           {#if dirtyAnywhere()}The editor has unsaved changes. {/if}
@@ -1755,7 +1757,7 @@
           <button class="btn danger" type="button" onclick={() => invoke("quit_app")}>
             Quit Forge
           </button>
-          <button class="btn" type="button" onclick={() => (quitRequested = false)}>Cancel</button>
+          <button id="quit-cancel" class="btn" type="button" onclick={() => (quitRequested = false)}>Cancel</button>
         </div>
       </div>
     </div>
@@ -2167,6 +2169,8 @@
 
   .dialog {
     width: min(26rem, calc(100vw - 48px));
+    max-height: calc(100dvh - 48px);
+    overflow: auto;
     padding: 18px;
     border: 1px solid var(--border-strong);
     border-radius: 10px;
@@ -2190,6 +2194,7 @@
     display: flex;
     justify-content: flex-end;
     gap: 6px;
+    flex-wrap: wrap;
   }
 
   .dialog-actions .btn {
