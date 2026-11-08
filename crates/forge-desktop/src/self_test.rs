@@ -65,6 +65,8 @@ struct PageResults {
     #[serde(default)]
     editor_debug: String,
     theme_switches: bool,
+    slash_command_ran: bool,
+    optimistic_prompt_visible: bool,
     rendered_markdown: bool,
     unknown_command_blocked: bool,
     emit_blocked: bool,
@@ -171,6 +173,11 @@ impl Probe {
                         page.editor_navigation_and_reload,
                     ),
                     ("theme_switches", page.theme_switches),
+                    ("slash_command_ran", page.slash_command_ran),
+                    (
+                        "optimistic_prompt_visible",
+                        page.optimistic_prompt_visible,
+                    ),
                     ("rendered_markdown", page.rendered_markdown),
                     ("unknown_command_blocked", page.unknown_command_blocked),
                     ("emit_blocked", page.emit_blocked),

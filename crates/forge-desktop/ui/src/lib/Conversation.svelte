@@ -79,6 +79,7 @@
       <article
         class="message {message.role}"
         data-role={message.role}
+        data-optimistic={message.optimistic ? "true" : undefined}
       >
         {#if message.role === "tool"}
           <pre class:empty={!message.text.trim()}>{message.text.trim() ? message.text : "No output."}</pre>

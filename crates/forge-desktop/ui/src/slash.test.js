@@ -18,6 +18,7 @@ test("slash completion stops once an argument starts", () => {
   assert.deepEqual(filterSlashCommands(commands, "/model "), []);
   assert.deepEqual(filterSlashCommands(commands, "/model gpt"), []);
   assert.deepEqual(filterSlashCommands(commands, "hello"), []);
+  assert.deepEqual(filterSlashCommands(commands, "/nope"), []);
 });
 
 test("slash keys move, complete, hide, or submit an exact command", () => {

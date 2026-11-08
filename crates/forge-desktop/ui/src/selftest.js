@@ -4,6 +4,7 @@
 // `/?selftest=<json>`; Rust adds its own checks and decides.
 import { invoke } from "@tauri-apps/api/core";
 import { emit } from "@tauri-apps/api/event";
+import { tick } from "svelte";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -59,16 +60,28 @@ async function decide(prompt, callId, label, answer) {
 // The scripted model holds its answer mid-stream; Stop must end the turn
 // without it.
 async function stopDuringHold() {
-  await send("stop journey");
+  const box = document.querySelector('textarea[aria-label="Prompt"]');
+  const form = box.closest("form");
+  box.value = "stop journey";
+  box.dispatchEvent(new Event("input", { bubbles: true }));
+  await tick();
+  button(form, "Send").click();
+  // The local line must paint before the supervisor snapshot arrives.
+  await tick();
+  const optimistic = !!document
+    .querySelector('[data-role="user"][data-optimistic="true"]')
+    ?.textContent.includes("stop journey");
   const streaming = () =>
     document.querySelector('[data-role="assistant-streaming"]')?.textContent.includes("working on it");
-  if (!(await waitFor(() => streaming() && turnState() === "running", 20000))) return false;
+  if (!(await waitFor(() => streaming() && turnState() === "running", 20000))) {
+    return { stopped: false, optimistic };
+  }
   await sleep(300);
-  if (turnState() !== "running") return false;
-  button(document.querySelector("textarea[aria-label=\"Prompt\"]").closest("form"), "Stop").click();
+  if (turnState() !== "running") return { stopped: false, optimistic };
+  button(form, "Stop").click();
   const stopped = await waitFor(() => ["cancelled", "interrupted"].includes(turnState()), 20000);
   await sleep(300);
-  return stopped && !said("held answer");
+  return { stopped: stopped && !said("held answer"), optimistic };
 }
 
 export async function runSelfTest(params, sessionId) {
@@ -166,6 +179,19 @@ export async function runSelfTest(params, sessionId) {
     document.querySelector('button[aria-label="Close help"]').click();
   } catch (error) { console.error("theme self-test", error); }
 
+  // A slash command completes and runs through the composer's Enter path; it
+  // must not become a model prompt.
+  results.slash_command_ran = false;
+  try {
+    const box = document.querySelector('textarea[aria-label="Prompt"]');
+    box.value = "/help";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(50);
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    results.slash_command_ran = await waitFor(() => document.querySelector(".help"), 5000);
+    document.querySelector('button[aria-label="Close help"]')?.click();
+  } catch (error) { console.error("slash self-test", error); }
+
   // 1. The journey: a prompt with markdown and hostile HTML goes through
   //    IPC, the turn completes, and the transcript renders it safely.
   await invoke("submit_prompt", {
@@ -187,7 +213,9 @@ export async function runSelfTest(params, sessionId) {
   //    model call. Rust checks the effects on disk independently.
   results.approved_turn_completed = await decide("approve journey", "approve-me", "Run once", "after approve");
   results.denied_turn_completed = await decide("deny journey", "deny-me", "Don't run", "after deny");
-  results.stopped_during_hold = await stopDuringHold();
+  const stopResult = await stopDuringHold();
+  results.stopped_during_hold = stopResult.stopped;
+  results.optimistic_prompt_visible = stopResult.optimistic;
 
   // 3. Commands outside the allowlist, and an event the page may not emit.
   results.unknown_command_blocked = await blocked(() => invoke("not_a_forge_command"));
