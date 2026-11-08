@@ -3,15 +3,15 @@
 :root {
   color-scheme: dark;
   --bg: #14171b;
-  --bg-deep: #0e1115;
+  --bg-deep: #101318;
   --surface: #1d2229;
   --raised: #252c35;
   --hover: #2a333e;
   --border: #2a333e;
-  --border-strong: #3a4757;
+  --border-strong: #65778c;
   --text: #edf0f5;
   --secondary: #b5becb;
-  --muted: #8b98aa;
+  --muted: #a2aebf;
   --accent: #86b5ff;
   --accent-soft: #26364d;
   --success: #9bd1ad;
@@ -36,7 +36,7 @@
   --surface: #ebeff4;
   --raised: #ffffff;
   --hover: #dde4ee;
-  --border: #b2bfd0;
+  --border: #d5dde8;
   --border-strong: #7285a2;
   --text: #202936;
   --secondary: #47576a;
@@ -189,7 +189,7 @@ button:disabled {
   width: 100%;
   height: 30px;
   padding: 0 9px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   background: var(--bg-deep);
   color: var(--text);

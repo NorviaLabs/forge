@@ -186,7 +186,7 @@
     gap: 6px;
     margin: 0 24px 16px;
     padding: 9px 10px 8px;
-    border: 1px solid var(--border);
+    border: 1px solid var(--border-strong);
     border-radius: 10px;
     background: var(--surface);
     box-shadow: var(--shadow);

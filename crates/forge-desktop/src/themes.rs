@@ -158,6 +158,63 @@ mod tests {
         assert!(!light.dark);
     }
 
+    fn contrast(a: &str, b: &str) -> f64 {
+        fn luminance(hex: &str) -> f64 {
+            let hex = hex.trim_start_matches('#');
+            let channel = |index: usize| {
+                let value = u8::from_str_radix(&hex[index..index + 2], 16).unwrap();
+                let value = f64::from(value) / 255.0;
+                if value <= 0.04045 {
+                    value / 12.92
+                } else {
+                    ((value + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4)
+        }
+        let (la, lb) = (luminance(a), luminance(b));
+        let (hi, lo) = if la > lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The desktop's mapped tokens must keep the same AA floor as the TUI:
+    /// 4.5:1 for text and 3:1 for the control border.
+    #[test]
+    fn builtin_desktop_tokens_meet_wcag_aa() {
+        let themes = list(None);
+        let grounds = ["bg", "bg-deep", "surface", "raised"];
+        let text = [
+            "text",
+            "secondary",
+            "muted",
+            "accent",
+            "success",
+            "warning",
+            "error",
+            "strong",
+        ];
+        for id in ["forge-dark", "forge-light"] {
+            let colors = &themes
+                .iter()
+                .find(|theme| theme.id == id)
+                .unwrap_or_else(|| panic!("{id} missing"))
+                .colors;
+            for fg in text {
+                for bg in grounds {
+                    let ratio = contrast(&colors[fg], &colors[bg]);
+                    assert!(ratio >= 4.5, "{id}: {fg} on {bg} = {ratio:.2} < 4.5");
+                }
+            }
+            for bg in grounds {
+                let ratio = contrast(&colors["border-strong"], &colors[bg]);
+                assert!(
+                    ratio >= 3.0,
+                    "{id}: border-strong on {bg} = {ratio:.2} < 3.0"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_workspace_drop_in_overrides_the_builtin() {
         let dir = tempdir("override");

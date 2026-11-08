@@ -174,10 +174,7 @@ impl Probe {
                     ),
                     ("theme_switches", page.theme_switches),
                     ("slash_command_ran", page.slash_command_ran),
-                    (
-                        "optimistic_prompt_visible",
-                        page.optimistic_prompt_visible,
-                    ),
+                    ("optimistic_prompt_visible", page.optimistic_prompt_visible),
                     ("rendered_markdown", page.rendered_markdown),
                     ("unknown_command_blocked", page.unknown_command_blocked),
                     ("emit_blocked", page.emit_blocked),
