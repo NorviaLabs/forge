@@ -91,6 +91,30 @@ export async function runSelfTest(params, sessionId) {
   });
   const results = {};
 
+  results.session_rename = false;
+  try {
+    const row = document.querySelector(".session-list li.active");
+    const oldName = row.querySelector(".session-name").textContent;
+    row.querySelector('button[title="Rename session"]').click();
+    await waitFor(() => document.querySelector('input[aria-label="Session name"]'), 3000);
+    const name = document.querySelector('input[aria-label="Session name"]');
+    name.value = "Renamed from the desktop";
+    name.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(50);
+    button(name.closest("form"), "Rename").click();
+    results.session_rename = await waitFor(() => document.querySelector(".session-list li.active .session-name")?.textContent === "Renamed from the desktop", 5000);
+    document.querySelector('.session-list li.active button[title="Rename session"]').click();
+    await waitFor(() => document.querySelector('input[aria-label="Session name"]'), 3000);
+    const keyboardName = document.querySelector('input[aria-label="Session name"]');
+    keyboardName.value = "Renamed with Enter";
+    keyboardName.dispatchEvent(new Event("input", { bubbles: true }));
+    await sleep(50);
+    keyboardName.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    results.session_rename &&= await waitFor(() => document.querySelector(".session-list li.active .session-name")?.textContent === "Renamed with Enter", 5000);
+    const id = document.querySelector(".session-list li.active [data-session-id]")?.dataset.sessionId;
+    if (id) await invoke("rename_session", { sessionId: id, label: oldName });
+  } catch (error) { console.error("rename self-test", error); }
+
   // A real shell must keep process state and its original emulator across
   // session selection. Closing the extra session releases its egress proxy.
   results.shell_survives_switch = false;

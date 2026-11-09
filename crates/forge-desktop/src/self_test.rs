@@ -60,6 +60,7 @@ pub struct Probe {
 /// What the page observed. Every field must be true to pass.
 #[derive(Debug, Deserialize)]
 struct PageResults {
+    session_rename: bool,
     shell_survives_switch: bool,
     session_selection_round_trip: bool,
     editor_navigation_and_reload: bool,
@@ -169,6 +170,7 @@ impl Probe {
         match serde_json::from_str::<PageResults>(report) {
             Ok(page) => {
                 let checks = [
+                    ("session_rename", page.session_rename),
                     ("shell_survives_switch", page.shell_survives_switch),
                     (
                         "session_selection_round_trip",

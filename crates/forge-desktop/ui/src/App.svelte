@@ -1985,7 +1985,9 @@
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="rename-title" tabindex="-1" use:modal={{ onClose: () => (renameTarget = null) }}>
         <form onsubmit={confirmRename}>
           <h2 id="rename-title">Rename session</h2>
-          <input class="field" bind:value={renameLabel} aria-label="Session name" />
+          <input class="field" bind:value={renameLabel} aria-label="Session name" onkeydown={(event) => {
+            if (event.key === "Enter" && !event.isComposing) confirmRename(event);
+          }} />
           <div class="dialog-actions">
             <button class="btn primary" type="submit" disabled={!renameLabel.trim()}>Rename</button>
             <button class="btn" type="button" onclick={() => (renameTarget = null)}>Cancel</button>
