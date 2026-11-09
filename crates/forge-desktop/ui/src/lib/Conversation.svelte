@@ -1,12 +1,20 @@
 <script>
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
   import Markdown from "../Markdown.svelte";
   import Icon from "./Icon.svelte";
 
-  let { messages = [], streaming = "", turnState = "idle", onSuggest, onExpand, onOpenImage } = $props();
+  let {
+    messages = [],
+    streaming = "",
+    turnState = "idle",
+    scroll = $bindable(0),
+    pinned = $bindable(true),
+    onSuggest,
+    onExpand,
+    onOpenImage,
+  } = $props();
 
   let scroller = $state();
-  let pinned = $state(true);
   const PAGE_SIZE = 100;
   let pageEnd = $state(null);
   const end = $derived(Math.min(pageEnd ?? messages.length, messages.length));
@@ -16,8 +24,13 @@
   $effect(() => {
     if (messages.length === 0) {
       pageEnd = null;
-      pinned = true;
     }
+  });
+
+  // The transcript is remounted per session, so restore where the reader was.
+  onMount(async () => {
+    await tick();
+    if (scroller) scroller.scrollTop = scroll;
   });
 
   async function page(direction) {
@@ -55,6 +68,7 @@
     // Paging is explicit; layout-induced scroll events must not hide live output.
     const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
     pinned = distance < 48;
+    scroll = scroller.scrollTop;
   }
 
   function toolName(message) {

@@ -70,5 +70,7 @@
     <path d="M3 13l9 5 9-5" />
   {:else if name === "chevron"}
     <path d="M9 6l6 6-6 6" />
+  {:else if name === "expand"}
+    <path d="M14.25 3.75h6v6M9.75 20.25h-6v-6M20.25 3.75L13.5 10.5M3.75 20.25L10.5 13.5" />
   {/if}
 </svg>

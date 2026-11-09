@@ -122,10 +122,19 @@ export async function runSelfTest(params, sessionId) {
   const activeSession = () => document.querySelector('.session-list li.active [data-session-id]')?.dataset.sessionId;
   const primary = activeSession();
   let extra = null;
+  const hostOf = (id) => document.querySelector(`.terminal[data-session="${id}"]`)?.closest(".terminal-host");
+  const backToSession = () => button(document.querySelector(".focus-head"), "Session").click();
   try {
-    document.querySelector('button[aria-label="Terminal"]').click();
+    // One host element carries the shell through drawer, focus and back.
+    document.querySelector('.composer button[aria-label="Show terminal"]').click();
     await waitFor(() => document.querySelector(`.terminal[data-session="${primary}"] .xterm`), 10000);
     const original = document.querySelector(`.terminal[data-session="${primary}"]`);
+    const asDrawer = hostOf(primary)?.classList.contains("drawer");
+    document.querySelector('.drawer-head button[aria-label="Focus terminal"]').click();
+    const asFocused = await waitFor(() => hostOf(primary)?.classList.contains("focused"), 5000);
+    backToSession();
+    const backToDrawer = await waitFor(() => hostOf(primary)?.classList.contains("drawer"), 5000);
+    const sameHost = original === document.querySelector(`.terminal[data-session="${primary}"]`);
     // shell_open returns after spawn; wait for input to become available.
     await sleep(300);
     await invoke("shell_write", { sessionId: primary, data: "FORGE_DESKTOP_CHECK=42\n" });
@@ -148,9 +157,13 @@ export async function runSelfTest(params, sessionId) {
     results.session_selection_round_trip = selected?.type === "session"
       && selected.session_id === primary && Array.isArray(selected.messages)
       && toExtra && back;
-    document.querySelector('button[aria-label="Terminal"]').click();
-    results.shell_survives_switch = await waitFor(() => original === document.querySelector(`.terminal[data-session="${primary}"]`) && original.textContent.includes("forge-shell-42"), 10000);
-    document.querySelector('.tab.active button[aria-label="Close tab"]').click();
+    // The drawer is per session, so it is still open on return.
+    const survived = await waitFor(() => original === document.querySelector(`.terminal[data-session="${primary}"]`)
+      && hostOf(primary)?.classList.contains("drawer")
+      && original.textContent.includes("forge-shell-42"), 10000);
+    results.shell_survives_switch = asDrawer && asFocused && backToDrawer && sameHost && survived;
+    document.querySelector('.drawer-head button[aria-label="Hide terminal"]').click();
+    await waitFor(() => hostOf(primary)?.classList.contains("hidden"), 5000);
   } catch (error) { console.error("terminal self-test", error); }
   finally {
     if (extra && extra !== primary) await invoke("close_session", { sessionId: extra });
@@ -158,6 +171,7 @@ export async function runSelfTest(params, sessionId) {
 
   results.editor_navigation_and_reload = false;
   try {
+    document.querySelector('.session-head button[title^="Files"]').click();
     await waitFor(() => document.querySelector('.tree button.tree-row[title="README.md"]'), 10000);
     document.querySelector('.tree button.tree-row[title="README.md"]').click();
     await waitFor(() => document.querySelector('textarea[aria-label="Edit README.md"]'), 10000);
@@ -198,7 +212,10 @@ export async function runSelfTest(params, sessionId) {
     const buttonless = document.querySelectorAll(".file-pane button").length === 0;
     results.editor_navigation_and_reload = found && jumped && guarded && reloaded && buttonless;
     results.editor_debug = JSON.stringify({ found, jumped, guarded, reloaded, buttonless });
-    document.querySelector('.tab.active button[aria-label="Close tab"]').click();
+    document.querySelector(".doc-tabs .tab.active .tab-close").click();
+    await waitFor(() => !document.querySelector(".doc-tabs .tab.active"), 5000);
+    backToSession();
+    await waitFor(() => document.querySelector(".session-head"), 5000);
   } catch (error) { results.editor_debug = `${error.message}\n${error.stack || ""}`; }
 
   results.theme_switches = false;

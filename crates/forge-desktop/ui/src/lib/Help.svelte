@@ -4,14 +4,15 @@
   let { onClose, onProviders, onGithub, themes = [], theme = $bindable("forge-dark") } = $props();
   const shortcuts = [
     ["⌘ / Ctrl K", "Command palette: files, sessions and actions"],
-    ["Enter", "Send prompt (Shift+Enter for a new line)"],
+    ["Enter / ⌘ ↵", "Send prompt (Shift+Enter for a new line)"],
     ["↑ / ↓", "Cycle this session's prompt history at the first/last line"],
-    ["Esc", "Restore your draft when browsing prompt history"],
+    ["Esc", "Close the open overlay; leave Files or Terminal when no editor, field or terminal has focus; restore your draft when browsing prompt history"],
+    ["⌘ / Ctrl E", "Open Files, or return to the session"],
     ["/ then Tab", "Complete a command or installed skill"],
     ["⌘ / Ctrl S", "Save current file"],
-    ["⌘ / Ctrl W", "Close current file or terminal tab"],
+    ["⌘ / Ctrl W", "Close the current document in Files"],
     ["⌘ M", "Choose model and reasoning effort"],
-    ["⌘ J / Ctrl `", "Show or hide terminal"],
+    ["⌘ J / Ctrl `", "Show or hide the terminal drawer; leave the Terminal screen"],
     ["⌘ / Ctrl F", "Find in current editor"],
     ["⌘ / Ctrl G", "Next match (Shift for previous)"],
     ["⌘ / Ctrl L", "Jump to line in current editor"],
@@ -26,9 +27,10 @@
     <h3>Keyboard shortcuts</h3>
     <dl>{#each shortcuts as [keys, action]}<dt><kbd>{keys}</kbd></dt><dd>{action}</dd>{/each}</dl>
     <h3>Workspace workflow</h3>
-    <p>Use the sidebar for sessions, file operations and content search. Use the inspector for approvals, thinking, plans, tasks, queue and staged changes.</p>
+    <p>The rail lists sessions; sessions waiting on you appear under Needs you at the top. The session header opens Files, Terminal and the Session menu, which holds the plan, agents and tasks, the queue, context and usage, the model, and session actions.</p>
+    <p>Files is where you browse, edit, stage and commit: scope the list to Changed, Staged or Last turn, stage a row or Stage all, then Commit. ‹ Session or Esc returns to the conversation with your place kept.</p>
     <p>The editor has no buttons. Save, find and jump using shortcuts or the command palette. Reload and restore are palette actions; discarding changes still requires confirmation.</p>
-    <p>Shells run your own commands without the agent sandbox. Switching sessions preserves running shells; closing a terminal tab ends its shell.</p>
+    <p>Shells run your own commands without the agent sandbox. Each session has one shell: the terminal button under the composer shows it as a drawer, Focus terminal fills the window, and hiding it or switching sessions keeps it running. Stop terminal or <code>exit</code> ends it; the next open starts a fresh shell.</p>
     <p>Image paste supports PNG, JPEG, GIF and WebP, up to four files of 5 MiB each. Images are saved under workspace <code>.forge/attachments</code>.</p>
     <div class="actions"><button class="btn" type="button" onclick={onProviders}>Providers…</button><button class="btn" type="button" onclick={onGithub}>GitHub…</button></div>
   </div>

@@ -24,7 +24,7 @@ appear in the root `Cargo.lock`.
     `MessageView`s, `pending_approval` as an `ApprovalView` with
     invisible/bidi characters escaped by `escape_invisible`, and the
     workspace, branch, model, context usage and queue length for the
-    inspector) / roster (live sessions as `SessionRow`s) / selected (the
+    Session menu) / roster (live sessions as `SessionRow`s) / selected (the
     session commands target) / attention / error / lagged.
   - Commands: `src/commands_list.rs` is the authoritative allowlist; the
     families are `subscribe`/events, prompt submission (text, pasted images
@@ -104,13 +104,26 @@ appear in the root `Cargo.lock`.
   `main` window and grants `core:event:allow-listen`/`unlisten` plus the
   allowlisted commands. There is no `core:default` and no plugins.
 - `ui/`: the Svelte 5 + Vite frontend.
-  - Panes: session/file sidebar, conversation with streaming markdown and tool
-    cards, an always-editable line-based text editor (files that cannot be
-    saved back byte-for-byte open as a read-only viewer with the reason), a
-    per-file diff with a restore action, inspector (model, branch, context,
-    changes), and a lazily loaded xterm.js terminal. A model picker and a
-    `⌘K` command palette are overlays; archive and unsaved-changes actions
-    confirm in a native-style dialog.
+  - Screens: a session rail (project, Needs you, session search, the roster
+    in order, New session and Help; an overlay at compact width) beside one
+    center column. The primary session screen is the conversation with
+    streaming markdown and tool cards, the current plan step, a queue strip
+    only while prompts are queued, the decision cards, and the composer with
+    its terminal toggle and context meter. Files and Terminal are focus
+    screens entered from the session header and left with `‹ Session` or
+    Esc. Files holds the tree, scopes (All, Changed, Staged, Last turn), row
+    staging, Stage all, commit, upstream controls and the document tabs over
+    an always-editable line-based text editor (files that cannot be saved
+    back byte-for-byte open as a read-only viewer with the reason) and
+    per-file diffs. The Session menu is a modal for plan, agents and tasks,
+    queue, context and usage, the model and session actions. A model picker
+    and a `⌘K` command palette are overlays; archive and unsaved-changes
+    actions confirm in a native-style dialog.
+  - View state: `src/view.js` keeps one record per session (screen, drawer,
+    open documents, active document, file scope and filter, draft,
+    transcript scroll). Selection only changes which record renders; there
+    is no park or restore step, and document loads that finish after a
+    switch land in the record of the session that started them.
   - Model text renders through `src/markdown.js`: markdown-it with
     `html: false` and links, images and autolinks disabled, then DOMPurify.
     It reaches the DOM only in `Markdown.svelte`, the single raw-HTML site
@@ -153,13 +166,16 @@ appear in the root `Cargo.lock`.
     grants trust through `forge-config`, prepares again and launches in-place.
   - Durable and actor queues retain their source and stable ID through IPC;
     cancelling a stale row refuses rather than removing its successor.
-  - The terminal emulator stays mounted per session across selection changes;
-    closing its tab/session ends that shell. The real-webview self-test verifies
-    both DOM identity and shell-variable persistence across a session switch.
+  - Each session has one terminal host, mounted from the first open until its
+    shell exits, it is stopped, or the session closes; a class shows it as the
+    drawer under the composer, the focused Terminal screen, or hidden. The
+    real-webview self-test verifies one host element across drawer, focus and
+    a session switch, plus shell-variable persistence.
   - Editor find/jump and lexical syntax coloring use text spans, never raw HTML;
     coloring is capped at 64 KiB. Reloading dirty text requires discard confirmation.
-    The file/diff pane has no buttons: save/find/jump use shortcuts or the
+    The editor body has no buttons: save/find/jump use shortcuts or the
     command palette, and reload/restore confirmations are app-level dialogs.
+    Staging, commit and upstream controls live in the Files screen around it.
   - Image paste validates up to four 5 MiB images by bytes in Rust, rejects
     unsupported models and confines new attachment files to `.forge/attachments`.
     The page never supplies an attachment filesystem path.
@@ -167,7 +183,7 @@ appear in the root `Cargo.lock`.
     (`request_user_attention`), so the dock/taskbar asks for the user without
     adding a notification plugin. The event still carries the session and
     message for the in-app badge and title.
-  - Help and the theme picker are available from the sidebar. `list_themes`
+  - Help and the theme picker are available from the rail. `list_themes`
     returns the built-ins plus `~/.config/forge/themes` and workspace
     `.forge/themes` as CSS-token palettes, so a drop-in theme works in both
     frontends; `system` follows the OS preference in the page. The preference

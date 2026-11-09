@@ -15,8 +15,17 @@
     onRemoveAttachment = () => {},
     onSend,
     onStop,
+    drawerOpen = false,
+    onToggleTerminal,
+    onFocusTerminal,
+    onStopTerminal,
+    contextUsage = 0,
+    onContext,
     prompt = $bindable(""),
   } = $props();
+
+  const contextPercent = $derived(Math.round(Math.min(Math.max(contextUsage, 0), 1) * 100));
+  const contextLevel = $derived(contextPercent >= 90 ? "high" : contextPercent >= 70 ? "warm" : "");
 
   let box = $state();
   let imageDrafts = $state({});
@@ -186,8 +195,22 @@
   {/if}
   {#if imageError}<p class="error" role="alert">{imageError}</p>{/if}
   <footer>
+    <button
+      class="icon-btn"
+      type="button"
+      aria-expanded={drawerOpen}
+      aria-label={drawerOpen ? "Hide terminal" : "Show terminal"}
+      title={drawerOpen ? "Hide terminal (⌃`)" : "Show terminal (⌃`)"}
+      onclick={onToggleTerminal}
+    >
+      <Icon name="terminal" size={14} />
+    </button>
     <span class="hint"><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> newline{imageInput ? " · Paste images" : ""}</span>
     <span class="spacer"></span>
+    <button class="context" type="button" title="Context & usage" onclick={onContext}>
+      <span class="meter" aria-hidden="true"><span class="fill {contextLevel}" style="width: {contextPercent}%"></span></span>
+      Context {contextPercent}%
+    </button>
     {#if running}
       <button class="btn" type="button" disabled={stopping} onclick={onStop}>
         <Icon name="stop" size={13} />
@@ -200,6 +223,22 @@
     </button>
   </footer>
 </form>
+{#if drawerOpen}
+  <div class="drawer-head">
+    <Icon name="terminal" size={13} />
+    <span>Terminal</span>
+    <span class="spacer"></span>
+    <button class="icon-btn" type="button" title="Focus terminal" aria-label="Focus terminal" onclick={onFocusTerminal}>
+      <Icon name="expand" size={13} />
+    </button>
+    <button class="icon-btn" type="button" title="Hide terminal (⌃`)" aria-label="Hide terminal" onclick={onToggleTerminal}>
+      <Icon name="close" size={13} />
+    </button>
+    <button class="icon-btn" type="button" title="Stop the shell" aria-label="Stop terminal" onclick={onStopTerminal}>
+      <Icon name="stop" size={13} />
+    </button>
+  </div>
+{/if}
 
 <style>
   .attachments { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -297,6 +336,50 @@
 
   .spacer {
     flex: 1;
+  }
+
+  .context {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 6px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .context:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  .meter {
+    width: 36px;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 2px;
+    background: var(--border);
+  }
+
+  .fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+
+  .fill.warm { background: var(--warning); }
+  .fill.high { background: var(--error); }
+
+  .drawer-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px 4px 14px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11.5px;
   }
 
   .hint {

@@ -5,7 +5,7 @@
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";
 
-  let { sessionId = "", themeMode = "dark" } = $props();
+  let { sessionId = "", themeMode = "dark", onExit } = $props();
 
   let host = $state();
   let terminal = null;
@@ -69,6 +69,8 @@
         terminal?.write(decode(event.data));
       } else if (event.type === "exit") {
         terminal?.write("\r\n[shell exited]\r\n");
+        // App drops the shell, so the next open mounts a fresh one.
+        onExit?.();
       }
     };
 

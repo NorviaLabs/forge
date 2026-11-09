@@ -8,7 +8,7 @@
   import Inspector from "./lib/Inspector.svelte";
   import ApprovalCard from "./lib/ApprovalCard.svelte";
   import QuestionCard from "./lib/QuestionCard.svelte";
-  import FilePane from "./lib/FilePane.svelte";
+  import Files from "./lib/Files.svelte";
   import ModelPicker from "./lib/ModelPicker.svelte";
   import Palette from "./lib/Palette.svelte";
   import BranchPicker from "./lib/BranchPicker.svelte";
@@ -20,11 +20,24 @@
   import { modal } from "./modal.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
+  import {
+    closeDocument,
+    defaultView,
+    dirtyAnywhere,
+    dirtyIn,
+    escapeReturn,
+    fileCounts,
+    openDocument,
+    terminalHostClass,
+    updateDocument,
+    viewFor,
+  } from "./view.js";
 
   let sessionId = $state("");
   let sessions = $state([]);
   let resumable = $state([]);
-  // Per-session tabs, open file and prompt, like the TUI's view state.
+  // One view record per session (see view.js): open documents, the active
+  // document, the draft and the transcript position.
   let views = $state({});
   const allSessions = $derived([
     ...sessions,
@@ -36,15 +49,17 @@
   let promptHistory = $state([]);
   let skillDescriptions = $state([]);
   let streaming = $state("");
-  let inspectorOpen = $state(false);
-  let inspectorToggle;
-  let inspectorClose;
-
-  async function toggleInspector() {
-    inspectorOpen = !inspectorOpen;
-    await tick();
-    (inspectorOpen ? inspectorClose : inspectorToggle)?.focus();
-  }
+  // The Session menu destination, or null when the menu is closed.
+  let sessionMenu = $state(null);
+  // At compact width the rail is an overlay opened from the header.
+  let railOpen = $state(false);
+  // A Needs you row asks for the decision card to take focus once the
+  // selected session's snapshot shows it.
+  let focusDecisionFor = $state(null);
+  let filesButton = $state();
+  let terminalButton = $state();
+  let railButton = $state();
+  let screenAnnouncement = $state("");
   let approval = $state(null);
   let question = $state(null);
   let questionDrafts = $state({});
@@ -79,9 +94,7 @@
   const fullMessageCount = {};
 
   let creating = $state(false);
-  let draft = $state("");
   let pendingClose = $state("");
-  let pendingSwitch = $state("");
   let pickerOpen = $state(false);
   let providersOpen = $state(false);
   let githubOpen = $state(false);
@@ -119,7 +132,7 @@
   let modelsError = $state("");
   let paletteOpen = $state(false);
   let sidebar = $state();
-  let filePane = $state();
+  let filesPane = $state();
   let fileAction = $state(null);
   let archiveTarget = $state(null);
   let archiveRemove = $state(false);
@@ -136,7 +149,6 @@
   let commitOpen = $state(false);
   let commitMessage = $state("");
   let commitError = $state("");
-  let commitAll = $state(false);
   let gitBusy = $state(false);
   let gitConfirm = $state(null);
   let branchesOpen = $state(false);
@@ -148,30 +160,46 @@
   let childView = $state(null);
   let TerminalComponent = $state(null);
 
-  let tabs = $state([{ id: "chat", kind: "chat", title: "Conversation" }]);
-  let activeTabId = $state("chat");
   // Sessions whose shell was opened. Each keeps its terminal mounted, so
   // switching away does not kill the PTY or forget its scrollback.
   let shells = $state({});
 
   let lastTurn = "";
 
-  const activeTab = $derived(tabs.find((tab) => tab.id === activeTabId) ?? tabs[0]);
-  const terminalTab = $derived(tabs.find((tab) => tab.kind === "terminal"));
   const activeSession = $derived(sessions.find((session) => session.session_id === sessionId));
-  const changeMap = $derived(new Map(status.files.map((file) => [file.path, file.status])));
   const branch = $derived(status.branch || info.branch);
+  // The record every block renders from. Before a session is selected this
+  // is a throwaway record so a binding never writes through undefined.
+  const currentView = $derived(views[sessionId] ?? defaultView());
+  const activeDoc = $derived(currentView.tabs.find((tab) => tab.id === currentView.activeDocId) ?? null);
+
+  // Relevance rules: each one gates exactly one control.
+  const fileTotals = $derived(fileCounts(status));
+  const currentStep = $derived(plan?.items?.find((item) => item.status === "in_progress") ?? null);
+  const hasQueue = $derived(queue.length > 0);
+  const hasDecision = $derived(!!(question || approval));
+  const needsYou = $derived(Object.keys(attention).length);
+
+  // Document writes go to the record of the session that started them, so a
+  // load or save that lands after a switch is kept, not dropped.
+  function editRecord(owner, change) {
+    if (!owner) return;
+    views[owner] = change(viewFor(views, owner));
+  }
+
+  function patchDoc(owner, id, patch) {
+    editRecord(owner, (record) => updateDocument(record, id, patch));
+  }
+
+  function docIn(owner, id) {
+    return views[owner]?.tabs.find((tab) => tab.id === id) ?? null;
+  }
 
   // Tell Rust whether a close would discard work; it asks before quitting.
   // Before the trust screen is answered there is no session to guard.
-  function dirtyAnywhere() {
-    return tabs.some((tab) => tab.dirty)
-      || Object.values(views).some((view) => view.tabs?.some((tab) => tab.dirty));
-  }
-
   $effect(() => {
     if (!booted) return;
-    const unsaved = dirtyAnywhere();
+    const unsaved = dirtyAnywhere(views);
     const busy = sessions.some((session) => ["running", "waiting"].includes(session.turn_state))
       || Object.keys(attention).length > 0;
     invoke("set_unsaved", { unsaved, busy }).catch(() => {});
@@ -181,17 +209,6 @@
   // state, so a slow cancellation is visible instead of silent.
   $effect(() => {
     if (turnState !== "running" && turnState !== "waiting") stopping = false;
-  });
-
-  // Keep the active tab reachable when the strip scrolls.
-  $effect(() => {
-    void activeTabId;
-    tick().then(() => {
-      document.querySelector(".tabs .tab.active")?.scrollIntoView({
-        inline: "nearest",
-        block: "nearest",
-      });
-    });
   });
 
   // A session waiting out of sight is still a session waiting: the window
@@ -212,8 +229,8 @@
     { name: "/theme", help: "Switch the desktop theme", run: () => (helpOpen = true) },
     { name: "/status", help: "Show session status and token usage", run: () => (detailsOpen = true) },
     { name: "/context", help: "Show the context breakdown", run: () => (detailsOpen = true) },
-    { name: "/plan", help: "Show the latest execution plan", run: () => (inspectorOpen = true) },
-    { name: "/tasks", help: "Show background tasks and queued prompts", run: () => (inspectorOpen = true) },
+    { name: "/plan", help: "Show the latest execution plan", run: () => (sessionMenu = "plan") },
+    { name: "/tasks", help: "Show background tasks and queued prompts", run: () => (sessionMenu = "agents") },
     { name: "/approve-all", help: "Toggle approve-all for this session", run: toggleApproveAll },
     { name: "/thinking", help: "Toggle model reasoning", run: toggleThinking },
     { name: "/compact", help: "Continue in a fresh context", run: compactContext },
@@ -228,7 +245,7 @@
       name: "/context-file",
       help: "Attach the open file to the next prompt",
       run: () => {
-        if (activeTab?.kind === "file") toggleFileAttachment(activeTab);
+        if (activeDoc?.kind === "file") toggleFileAttachment(activeDoc);
         else error = "Open a file before attaching it.";
       },
     },
@@ -258,31 +275,33 @@
         action: () => openFile(file.path),
       });
     }
-    if (activeTab?.kind === "file") {
+    // Editor items act on the mounted FilePane, which only the Files screen has.
+    const editing = currentView.screen === "files" ? activeDoc : null;
+    if (editing?.kind === "file") {
       items.push(
         { id: "editor:save", group: "Editor", label: "Save current file", detail: "⌘/Ctrl S", action: saveActive },
         { id: "editor:reload", group: "Editor", label: "Reload current file from disk", action: () => requestFileAction("reload") },
       );
-      if (activeTab.file && !activeTab.file.read_only) items.push(
-        { id: "editor:find", group: "Editor", label: "Find in current file", detail: "⌘/Ctrl F", action: () => filePane?.showNavigation("find") },
-        { id: "editor:replace", group: "Editor", label: "Find and replace in current file", action: () => filePane?.showNavigation("replace") },
-        { id: "editor:line", group: "Editor", label: "Jump to line in current file", detail: "⌘/Ctrl L", action: () => filePane?.showNavigation("line") },
+      if (editing.file && !editing.file.read_only) items.push(
+        { id: "editor:find", group: "Editor", label: "Find in current file", detail: "⌘/Ctrl F", action: () => filesPane?.showNavigation("find") },
+        { id: "editor:replace", group: "Editor", label: "Find and replace in current file", action: () => filesPane?.showNavigation("replace") },
+        { id: "editor:line", group: "Editor", label: "Jump to line in current file", detail: "⌘/Ctrl L", action: () => filesPane?.showNavigation("line") },
       );
-      const attached = fileAttachments[sessionId]?.path === activeTab.path;
+      const attached = fileAttachments[sessionId]?.path === editing.path;
       items.push({
         id: "editor:attach",
         group: "Editor",
         label: attached ? "Remove attached file context" : "Attach current file to the next prompt",
-        action: () => toggleFileAttachment(activeTab),
+        action: () => toggleFileAttachment(editing),
       });
-    } else if (activeTab?.kind === "diff") {
-      if (activeTab.side !== "last_turn") {
+    } else if (editing?.kind === "diff") {
+      if (editing.side !== "last_turn") {
         items.push({ id: "editor:restore", group: "Editor", label: "Restore current file to HEAD…", action: () => requestFileAction("restore") });
       }
       // Only the combined view's hunk order matches the working-tree reverse
       // apply; a staged review can omit hunks and shift the index.
-      if (activeTab.side === "combined" && !activeTab.diff?.truncated) {
-        hunkLabels(activeTab.diff?.text ?? "").forEach((label, index) => items.push({
+      if (editing.side === "combined" && !editing.diff?.truncated) {
+        hunkLabels(editing.diff?.text ?? "").forEach((label, index) => items.push({
           id: `hunk:${index}`,
           group: "Git",
           label: `Discard hunk ${index + 1} (${label})…`,
@@ -290,13 +309,14 @@
         }));
       }
     }
-    if (activeTab && (activeTab.kind === "file" || activeTab.kind === "diff")) {
+    if (activeDoc) {
+      const path = activeDoc.path;
       items.push(
-        { id: "diff:combined", group: "Git", label: "Review HEAD to working tree", action: () => openDiff(activeTab.path, "combined") },
-        { id: "diff:staged", group: "Git", label: "Review staged changes", action: () => openDiff(activeTab.path, "staged") },
-        { id: "diff:unstaged", group: "Git", label: "Review unstaged changes", action: () => openDiff(activeTab.path, "unstaged") },
-        { id: "git:stage", group: "Git", label: `Stage ${basename(activeTab.path)}`, action: () => stagePath(activeTab.path) },
-        { id: "git:unstage", group: "Git", label: `Unstage ${basename(activeTab.path)}`, action: () => unstagePath(activeTab.path) },
+        { id: "diff:combined", group: "Git", label: "Review HEAD to working tree", action: () => openDiff(path, "combined") },
+        { id: "diff:staged", group: "Git", label: "Review staged changes", action: () => openDiff(path, "staged") },
+        { id: "diff:unstaged", group: "Git", label: "Review unstaged changes", action: () => openDiff(path, "unstaged") },
+        { id: "git:stage", group: "Git", label: `Stage ${basename(path)}`, action: () => stagePath(path) },
+        { id: "git:unstage", group: "Git", label: `Unstage ${basename(path)}`, action: () => unstagePath(path) },
       );
     }
     for (const path of lastTurnFiles) {
@@ -316,6 +336,12 @@
         detail: "⌃`",
         action: toggleTerminal,
       },
+      { id: "action:files", group: "Actions", label: "Open Files", detail: "⌘/Ctrl E", action: openFiles },
+      { id: "action:focus-terminal", group: "Actions", label: "Focus terminal", action: async () => { await openTerminal(); await focusTerminal(); } },
+      { id: "menu:plan", group: "Session", label: "Plan", action: () => (sessionMenu = "plan") },
+      { id: "menu:agents", group: "Session", label: "Agents & tasks", action: () => (sessionMenu = "agents") },
+      { id: "menu:queue", group: "Session", label: "Queue", action: () => (sessionMenu = "queue") },
+      { id: "menu:context", group: "Session", label: "Context & usage", action: () => (sessionMenu = "context") },
       {
         id: "action:model",
         group: "Actions",
@@ -420,10 +446,6 @@
     );
   }
 
-  function updateTab(id, patch) {
-    tabs = tabs.map((tab) => (tab.id === id ? { ...tab, ...patch } : tab));
-  }
-
   function applySession(event) {
     sessionId = event.session_id;
     turnState = event.turn_state;
@@ -520,6 +542,7 @@
       files = entries;
       status = nextStatus;
       lastTurnFiles = written;
+      markStaleDiffs(owner, nextStatus);
     } catch (cause) {
       if (request === filesRequest && owner === sessionId) filesError = String(cause);
     } finally {
@@ -539,21 +562,25 @@
         attention = rest;
       }
       if (event.session_id !== sessionId) return;
+      viewFor(views, event.session_id);
       const wasBusy = lastTurn === "running" || lastTurn === "waiting";
       lastTurn = event.turn_state;
       applySession(event);
+      if (focusDecisionFor === event.session_id) {
+        focusDecisionFor = null;
+        if (event.pending_question || event.pending_approval) tick().then(() => focusDecision());
+      }
       if (wasBusy && !["running", "waiting"].includes(event.turn_state)) refreshFiles();
       return;
     }
     if (event.type === "roster") {
       sessions = event.sessions;
+      reconcileRoster(event.sessions);
       return;
     }
     if (event.type === "selected") {
       const next = event.session_id ?? "";
       if (next !== sessionId) {
-        const previous = sessionId;
-        if (previous) views[previous] = { tabs, activeTabId, draft };
         sessionId = next;
         messages = [];
         promptHistory = [];
@@ -575,27 +602,14 @@
           const { [next]: _, ...rest } = attention;
           attention = rest;
         }
-        // A session's tabs, open file and prompt come back with it. Its
-        // terminal stays mounted out of sight and returns as a tab.
-        const kept = next ? views[next] : null;
-        if (kept) {
-          tabs = kept.tabs;
-          activeTabId = kept.activeTabId;
-          draft = kept.draft;
-          // Only parked sessions live in `views`; the active one is `tabs`.
-          const { [next]: ignored, ...remaining } = views;
-          views = remaining;
-        } else {
-          tabs = [{ id: "chat", kind: "chat", title: "Conversation" }];
-          activeTabId = "chat";
-          draft = "";
-        }
-        if (shells[next] && !tabs.some((tab) => tab.kind === "terminal")) {
-          tabs = [...tabs, { id: "terminal", kind: "terminal", title: "Terminal" }];
-        }
-        if (!tabs.some((tab) => tab.id === activeTabId)) activeTabId = "chat";
+        // The session's record already holds its documents, draft, screen
+        // and drawer; selection only changes which record renders.
+        if (next) viewFor(views, next);
+        // The tree and branch must never show the previous session. Status
+        // and last-turn files are kept until the refresh replaces them, so
+        // the Files badge and Stage all do not blink off during the switch.
         files = [];
-        status = { branch: "", files: [] };
+        info = { ...info, branch: "" };
         if (next) refreshFiles();
       }
       return;
@@ -628,11 +642,8 @@
   async function command(name, args) {
     const mutatesGit = name.startsWith("git_");
     if (mutatesGit && gitBusy) { error = "Wait for the current Git operation to finish."; return false; }
-    // These commands can select another workspace and replace the tab set.
-    if (["create_session", "resume_session", "fork_session", "attach_worktree"].includes(name) && dirtyTabs()) {
-      error = "Save or close unsaved files before changing this session.";
-      return false;
-    }
+    // Buffers live in each session's record and survive switches, so only
+    // commands that end a session refuse unsaved documents.
     if (["close_session", "archive_session", "remove_worktree"].includes(name) && dirtySession(args?.sessionId)) {
       error = "Save or close unsaved files before changing this session.";
       return false;
@@ -667,12 +678,26 @@
   }
 
   async function selectSession(id) {
+    railOpen = false;
     if (id === sessionId) return;
-    if (dirtyTabs()) {
-      pendingSwitch = id;
+    await command("select_session", { sessionId: id });
+  }
+
+  // A Needs you row selects the session on its primary screen and asks the
+  // decision card to take focus once the snapshot shows one.
+  async function openRequest(id) {
+    viewFor(views, id).screen = "session";
+    if (id === sessionId) {
+      railOpen = false;
+      if (hasDecision) await tick().then(() => focusDecision());
       return;
     }
-    await command("select_session", { sessionId: id });
+    focusDecisionFor = id;
+    await selectSession(id);
+  }
+
+  function focusDecision() {
+    document.querySelector(".decision button:not(:disabled)")?.focus();
   }
 
   async function createSession(label) {
@@ -749,18 +774,36 @@
     if (!shells[id]) return;
     const { [id]: _, ...rest } = shells;
     shells = rest;
-    const removeTerminal = (list) => list.filter((tab) => tab.kind !== "terminal");
-    if (views[id]) {
-      views[id] = {
-        ...views[id],
-        tabs: removeTerminal(views[id].tabs),
-        activeTabId: views[id].activeTabId === "terminal" ? "chat" : views[id].activeTabId,
-      };
+    const view = views[id];
+    if (!view) return;
+    view.drawerOpen = false;
+    if (view.screen === "terminal") view.screen = "session";
+  }
+
+  // A session the supervisor dropped takes its shell and view record with it,
+  // but a resumable session keeps both while its shell ends. Deleting a record
+  // loses that session's draft and open documents, so confirm against a fresh
+  // resumable list before deleting anything the roster no longer names.
+  let reconcileRun = 0;
+  async function reconcileRoster(rows) {
+    const run = ++reconcileRun;
+    const ids = [...Object.keys(shells), ...Object.keys(views)];
+    const live = () => new Set([
+      ...rows.map((row) => row.session_id),
+      ...resumable.map((row) => row.session_id),
+    ]);
+    let present = live();
+    if (ids.some((id) => !present.has(id))) {
+      try {
+        resumable = await invoke("list_resumable_sessions");
+      } catch {
+        return;
+      }
+      if (run !== reconcileRun) return;
+      present = live();
     }
-    if (id === sessionId) {
-      tabs = removeTerminal(tabs);
-      if (activeTabId === "terminal") activeTabId = "chat";
-    }
+    for (const id of Object.keys(shells)) if (!present.has(id)) dropShell(id);
+    for (const id of Object.keys(views)) if (!present.has(id)) delete views[id];
   }
 
   function toggleFileAttachment(tab) {
@@ -772,7 +815,7 @@
     }
     fileAttachments = {
       ...fileAttachments,
-      [id]: { path: tab.path, line: Math.max(0, filePane?.cursorLine() ?? 0) },
+      [id]: { path: tab.path, line: Math.max(0, filesPane?.cursorLine() ?? 0) },
     };
   }
 
@@ -907,15 +950,16 @@
   }
 
   function insertTask(task) {
-    if (draft.trim()) {
+    if (currentView.draft.trim()) {
       error = "Finish or clear the composer before inserting a background result.";
       return;
     }
-    draft = (task.latest_message || task.detail || "").trim();
+    currentView.draft = (task.latest_message || task.detail || "").trim();
   }
 
   async function editQueued(item, position) {
-    if (draft.trim()) {
+    const owner = sessionId;
+    if (currentView.draft.trim()) {
       error = "Finish or clear the composer before editing queued text.";
       return;
     }
@@ -924,15 +968,15 @@
       queueId: item.id,
       position,
       source: item.source,
-    })) draft = item.text;
+    })) viewFor(views, owner).draft = item.text;
   }
 
   function restoreInterrupted(text) {
-    if (draft.trim()) {
+    if (currentView.draft.trim()) {
       error = "Finish or clear the composer before restoring a prompt.";
       return;
     }
-    draft = text;
+    currentView.draft = text;
   }
 
   async function stopSession(session) {
@@ -1025,10 +1069,11 @@
   }
 
   function closePathTabs(path) {
-    const doomed = tabs.filter((tab) => tab.path === path || tab.path?.startsWith(`${path}/`));
+    const owner = sessionId;
+    const doomed = currentView.tabs.filter((tab) => tab.path === path || tab.path?.startsWith(`${path}/`));
     for (const tab of doomed) {
       if (tab.dirty) continue;
-      removeTab(tab.id);
+      removeTab(tab.id, owner);
     }
   }
 
@@ -1040,11 +1085,48 @@
     if (await command("git_unstage", { path })) refreshFiles();
   }
 
+  // One click from a fully unstaged tree: stage each path in order and stop
+  // at the first failure, so the error names the file that refused.
+  async function stageAll() {
+    if (gitBusy) { error = "Wait for the current Git operation to finish."; return; }
+    const owner = sessionId;
+    const paths = status.files.filter((file) => file.unstaged).map((file) => file.path);
+    gitBusy = true;
+    try {
+      for (const path of paths) {
+        try {
+          await invoke("git_stage", { sessionId: owner, path });
+        } catch (cause) {
+          if (owner === sessionId) error = `Could not stage ${path}: ${cause}`;
+          break;
+        }
+      }
+    } finally {
+      gitBusy = false;
+    }
+    if (owner === sessionId) refreshFiles();
+  }
+
+  // A comparison whose side no longer exists keeps its tab but says so,
+  // instead of showing a diff that a commit or unstage just emptied.
+  function markStaleDiffs(owner, nextStatus) {
+    const record = views[owner];
+    if (!record) return;
+    const byPath = new Map(nextStatus.files.map((file) => [file.path, file]));
+    for (const tab of record.tabs) {
+      if (tab.kind !== "diff" || tab.side === "last_turn" || tab.loading) continue;
+      const change = byPath.get(tab.path);
+      const gone = tab.side === "staged" ? !change?.staged : !change;
+      if (gone && tab.error !== "No comparison is available") {
+        patchDoc(owner, tab.id, { error: "No comparison is available" });
+      }
+    }
+  }
+
   function openCommit() {
     commitOpen = true;
     commitMessage = "";
     commitError = "";
-    commitAll = !status.files.some((file) => file.staged);
   }
 
   async function submitCommit(event) {
@@ -1053,8 +1135,7 @@
     try {
       if (gitBusy) return;
       gitBusy = true;
-      if (commitAll) await invoke("git_operation", { sessionId, operation: { kind: "commit_all", message: commitMessage } });
-      else await invoke("git_commit", { sessionId, message: commitMessage });
+      await invoke("git_commit", { sessionId, message: commitMessage });
       commitOpen = false;
       refreshFiles();
     } catch (cause) {
@@ -1079,7 +1160,7 @@
     try {
       await invoke("git_operation", { sessionId: owner, operation });
       if (owner === sessionId && ["pull", "abort_merge"].includes(operation.kind)) {
-        for (const tab of tabs.filter((entry) => ["file", "diff"].includes(entry.kind) && !entry.dirty)) await reloadTab(tab.id);
+        for (const tab of viewFor(views, owner).tabs.filter((entry) => !entry.dirty)) await reloadTab(tab.id, owner);
       }
     } catch (cause) { branchesError = String(cause); error = String(cause); }
     finally {
@@ -1127,7 +1208,7 @@
     if (ok) {
       // Another branch's files replace this one's; tabs would point at
       // content that no longer exists.
-      for (const tab of tabs.filter((entry) => entry.kind !== "chat" && entry.kind !== "terminal")) {
+      for (const tab of [...currentView.tabs]) {
         removeTab(tab.id);
       }
       await reloadBranches();
@@ -1145,7 +1226,7 @@
     if (dirtyTabs()) { branchesError = "Save or close unsaved files before creating a branch."; return; }
     branchesError = "";
     if (await command("git_create_branch", { name })) {
-      for (const tab of tabs.filter((entry) => entry.kind !== "chat" && entry.kind !== "terminal")) {
+      for (const tab of [...currentView.tabs]) {
         removeTab(tab.id);
       }
       await reloadBranches();
@@ -1158,48 +1239,53 @@
     else branchesError = error;
   }
 
-  async function reloadTab(id) {
-    const tab = tabs.find((entry) => entry.id === id);
+  // Reads a document's content into the record of the session that asked,
+  // even when the result arrives after a switch.
+  async function readDoc(id, owner) {
+    const tab = docIn(owner, id);
     if (!tab) return;
-    const owner = sessionId;
-    updateTab(id, { loading: true, error: "" });
+    patchDoc(owner, id, { loading: true, error: "" });
     try {
       if (tab.kind === "file" && isImage(tab.path)) {
         const image = await invoke("read_image", { sessionId: owner, path: tab.path });
-        if (owner === sessionId) updateTab(id, { image, loading: false });
+        patchDoc(owner, id, { image, loading: false });
       } else if (tab.kind === "file") {
         const file = await invoke("read_file", { sessionId: owner, path: tab.path });
-        if (owner === sessionId) updateTab(id, { file, draft: file.text, dirty: false, loading: false });
+        patchDoc(owner, id, { file, draft: file.text, dirty: false, loading: false });
       } else {
         const diff = await invoke("git_diff", { sessionId: owner, path: tab.path, side: tab.side });
-        if (owner === sessionId) updateTab(id, { diff, loading: false });
+        patchDoc(owner, id, { diff, loading: false });
       }
     } catch (cause) {
-      if (owner === sessionId) updateTab(id, { error: String(cause), loading: false });
+      patchDoc(owner, id, { error: String(cause), loading: false });
     }
   }
 
+  function reloadTab(id, owner = sessionId) {
+    return readDoc(id, owner);
+  }
+
   function dirtyTabs() {
-    return tabs.filter((tab) => tab.dirty).length > 0;
+    return dirtyIn(currentView);
   }
 
   function dirtySession(id) {
-    if (!id || id === sessionId) return dirtyTabs();
-    return !!views[id]?.tabs?.some((tab) => tab.dirty);
+    if (!id) return dirtyTabs();
+    return views[id] ? dirtyIn(views[id]) : false;
   }
 
   function changeDraft(value) {
-    const tab = activeTab;
+    const tab = activeDoc;
     if (!tab || tab.kind !== "file" || tab.file?.read_only) return;
-    updateTab(tab.id, { draft: value, dirty: value !== (tab.file?.text ?? "") });
+    patchDoc(sessionId, tab.id, { draft: value, dirty: value !== (tab.file?.text ?? "") });
   }
 
   async function saveActive() {
-    const tab = activeTab;
+    const tab = activeDoc;
     if (!tab || tab.kind !== "file" || tab.file?.read_only || !tab.dirty || tab.saving) return;
     const owner = sessionId;
     const text = tab.draft;
-    updateTab(tab.id, { saving: true });
+    patchDoc(owner, tab.id, { saving: true });
     try {
       const file = await invoke("write_file", {
         sessionId: owner,
@@ -1208,18 +1294,17 @@
         fingerprint: tab.file.fingerprint,
         crlf: tab.file.crlf,
       });
-      if (owner !== sessionId) return;
-      const current = tabs.find((entry) => entry.id === tab.id);
+      const current = docIn(owner, tab.id);
       // Keep typing that happened while the write was in flight; only the
       // saved baseline moves.
       if (current && current.draft !== text) {
-        updateTab(tab.id, { file, dirty: current.draft !== file.text, error: "", saving: false });
+        patchDoc(owner, tab.id, { file, dirty: current.draft !== file.text, error: "", saving: false });
       } else {
-        updateTab(tab.id, { file, draft: file.text, dirty: false, error: "", saving: false });
+        patchDoc(owner, tab.id, { file, draft: file.text, dirty: false, error: "", saving: false });
       }
-      refreshFiles();
+      if (owner === sessionId) refreshFiles();
     } catch (cause) {
-      updateTab(tab.id, { error: String(cause), saving: false });
+      patchDoc(owner, tab.id, { error: String(cause), saving: false });
     }
   }
 
@@ -1230,52 +1315,49 @@
   }
 
   function requestFileAction(kind, index = null) {
-    const tab = activeTab;
-    if (!tab || !["file", "diff"].includes(tab.kind)) return;
+    const tab = activeDoc;
+    if (!tab) return;
     if (kind === "reload" && !tab.dirty) { reloadTab(tab.id); return; }
-    fileAction = { kind, id: tab.id, path: tab.path, index };
+    fileAction = { kind, id: tab.id, path: tab.path, index, owner: sessionId };
   }
 
   async function confirmFileAction() {
     const target = fileAction;
     fileAction = null;
-    if (!target || !tabs.some((tab) => tab.id === target.id)) return;
-    if (target.kind === "reload") await reloadTab(target.id);
+    if (!target || !docIn(target.owner, target.id)) return;
+    if (target.kind === "reload") await reloadTab(target.id, target.owner);
     else if (target.kind === "hunk") await discardHunk(target);
-    else await restoreTab(target.id);
+    else await restoreTab(target.id, target.owner);
   }
 
   async function discardHunk(target) {
-    const tab = tabs.find((entry) => entry.id === target.id);
-    if (!tab || gitBusy) return;
-    const owner = sessionId;
+    if (!docIn(target.owner, target.id) || gitBusy) return;
+    const owner = target.owner;
     gitBusy = true;
     error = "";
     try {
       await invoke("git_discard_hunk", { sessionId: owner, path: target.path, hunkIndex: target.index });
-      if (owner !== sessionId) return;
-      updateTab(target.id, { diff: null, loading: true, error: "" });
-      await loadTab(target.id);
-      refreshFiles();
+      patchDoc(owner, target.id, { diff: null });
+      await readDoc(target.id, owner);
+      if (owner === sessionId) refreshFiles();
     } catch (cause) {
-      if (owner === sessionId) updateTab(target.id, { error: String(cause) });
+      if (owner === sessionId) error = String(cause);
+      patchDoc(owner, target.id, { error: String(cause) });
     } finally {
-      if (owner === sessionId) gitBusy = false;
+      gitBusy = false;
     }
   }
 
-  async function restoreTab(id) {
-    const tab = tabs.find((entry) => entry.id === id);
+  async function restoreTab(id, owner = sessionId) {
+    const tab = docIn(owner, id);
     if (!tab || tab.kind !== "diff") return;
-    const owner = sessionId;
     try {
       await invoke("git_restore", { sessionId: owner, path: tab.path });
-      if (owner !== sessionId) return;
-      updateTab(tab.id, { diff: null, loading: true, error: "" });
-      await loadTab(tab.id);
-      refreshFiles();
+      patchDoc(owner, id, { diff: null });
+      await readDoc(id, owner);
+      if (owner === sessionId) refreshFiles();
     } catch (cause) {
-      if (owner === sessionId) updateTab(tab.id, { error: String(cause) });
+      patchDoc(owner, id, { error: String(cause) });
     }
   }
 
@@ -1303,22 +1385,14 @@
     }
   }
 
-  function removeTab(id) {
-    const index = tabs.findIndex((tab) => tab.id === id);
-    tabs = tabs.filter((tab) => tab.id !== id);
-    if (activeTabId === id) {
-      const next = tabs[Math.max(0, index - 1)] ?? tabs[0];
-      activeTabId = next.id;
-    }
-    // Closing the terminal tab ends this session's shell; other sessions'
-    // shells keep running.
-    if (id === "terminal") dropShell(sessionId);
+  function removeTab(id, owner = sessionId) {
+    editRecord(owner, (record) => closeDocument(record, id));
   }
 
   function closeTab(id) {
-    if (id === "chat") return;
-    const tab = tabs.find((entry) => entry.id === id);
-    if (tab?.dirty) {
+    const tab = docIn(sessionId, id);
+    if (!tab) return;
+    if (tab.dirty) {
       pendingClose = id;
       return;
     }
@@ -1331,47 +1405,17 @@
     removeTab(id);
   }
 
-  async function discardAndSwitch() {
-    const id = pendingSwitch;
-    pendingSwitch = "";
-    pendingClose = "";
-    // The dialog promises to discard; do not park the dirty tabs for later.
-    tabs = tabs.filter((tab) => !tab.dirty);
-    if (!tabs.some((tab) => tab.id === activeTabId)) activeTabId = "chat";
-    await command("select_session", { sessionId: id });
-  }
-
+  // Documents are keyed per record, so the id needs no session prefix.
   async function openTab(kind, path, side = "combined") {
-    const id = `${sessionId}:${kind}:${side}:${path}`;
-    if (!tabs.some((tab) => tab.id === id)) {
-      tabs = [
-        ...tabs,
-        { id, kind, path, side, title: basename(path), loading: true, error: "" },
-      ];
-    }
-    activeTabId = id;
-    await loadTab(id);
-  }
-
-  async function loadTab(id) {
-    const tab = tabs.find((entry) => entry.id === id);
-    if (!tab || tab.kind === "chat" || tab.file || tab.diff) return;
     const owner = sessionId;
-    updateTab(id, { loading: true, error: "" });
-    try {
-      if (tab.kind === "file" && isImage(tab.path)) {
-        const image = await invoke("read_image", { sessionId: owner, path: tab.path });
-        if (owner === sessionId) updateTab(id, { image, loading: false });
-      } else if (tab.kind === "file") {
-        const file = await invoke("read_file", { sessionId: owner, path: tab.path });
-        if (owner === sessionId) updateTab(id, { file, loading: false, draft: file.text, dirty: false });
-      } else {
-        const diff = await invoke("git_diff", { sessionId: owner, path: tab.path, side: tab.side });
-        if (owner === sessionId) updateTab(id, { diff, loading: false });
-      }
-    } catch (cause) {
-      if (owner === sessionId) updateTab(id, { error: String(cause), loading: false });
-    }
+    if (!owner) return;
+    const id = kind === "diff" ? `diff:${path}@${side}` : `file:${path}`;
+    const existing = docIn(owner, id);
+    editRecord(owner, (record) => existing
+      ? { ...record, activeDocId: id }
+      : openDocument(record, { id, kind, path, side: kind === "diff" ? side : null, title: basename(path), loading: true, error: "" }));
+    openFiles();
+    if (!existing?.file && !existing?.diff && !existing?.image) await readDoc(id, owner);
   }
 
   // Sniffing happens in Rust; this only decides which command to ask.
@@ -1386,73 +1430,146 @@
 
   async function openFileAt(path, line) {
     await openTab("file", path);
-    filePane?.jumpToLine(line);
+    await tick();
+    filesPane?.jumpToLine(line);
   }
 
   function openDiff(path, side = "combined") {
     openTab("diff", path, side);
   }
 
-  async function openTerminal() {
-    if (!terminalTab) {
-      tabs = [...tabs, { id: "terminal", kind: "terminal", title: "Terminal" }];
-    }
-    activeTabId = "terminal";
+  // One terminal host per session: the first open mounts the shell, and every
+  // later show, hide or focus reuses that host, so the PTY is never restarted.
+  async function ensureShell() {
     if (!shells[sessionId]) shells = { ...shells, [sessionId]: true };
     if (!TerminalComponent) {
       TerminalComponent = (await import("./lib/Terminal.svelte")).default;
     }
   }
 
+  async function openTerminal() {
+    if (!sessionId) return;
+    const view = viewFor(views, sessionId);
+    view.drawerOpen = true;
+    if (view.screen === "files") view.screen = "session";
+    await ensureShell();
+  }
+
+  async function focusTerminal() {
+    if (!sessionId) return;
+    await ensureShell();
+    viewFor(views, sessionId).screen = "terminal";
+    screenAnnouncement = "Terminal";
+    await tick();
+    document.querySelector(".terminal-host.focused textarea")?.focus();
+  }
+
   function toggleTerminal() {
-    if (activeTabId === "terminal") {
-      activeTabId = "chat";
-    } else {
-      openTerminal();
-    }
+    if (!sessionId) return;
+    const view = viewFor(views, sessionId);
+    if (view.screen === "terminal") leaveFocus();
+    else if (view.screen === "session" && view.drawerOpen) view.drawerOpen = false;
+    else openTerminal();
+  }
+
+  function openFiles() {
+    if (!sessionId) return;
+    const view = viewFor(views, sessionId);
+    if (view.screen === "files") return;
+    view.screen = "files";
+    screenAnnouncement = "Files";
+  }
+
+  function leaveFocus() {
+    if (!sessionId) return;
+    viewFor(views, sessionId).screen = "session";
+    screenAnnouncement = "Session";
+  }
+
+  // The header's ‹ Session control: the same return as Escape, including
+  // where focus lands.
+  async function backToSession() {
+    const from = currentView.screen;
+    leaveFocus();
+    await tick();
+    (from === "terminal" ? terminalButton : filesButton)?.focus();
+  }
+
+  async function returnToDecision() {
+    leaveFocus();
+    await tick();
+    focusDecision();
+  }
+
+  // Needs you is a rail section, not a panel: bring it into view, opening the
+  // rail overlay when the window is compact.
+  async function showNeedsYou() {
+    if (currentView.screen !== "session") leaveFocus();
+    if (window.matchMedia("(max-width: 760px)").matches) railOpen = true;
+    await tick();
+    const section = document.querySelector(".needs-section");
+    section?.scrollIntoView({ block: "nearest" });
+    section?.querySelector("button")?.focus();
+  }
+
+  function hostClass(id) {
+    return terminalHostClass(views, id, sessionId);
   }
 
   function onKeydown(event) {
     if (!booted) return;
-    if (event.key === "Escape" && inspectorOpen) {
+    const view = currentView;
+    const key = event.key.toLowerCase();
+    // Escape leaves a focus screen unless an editor, field or the terminal
+    // has focus; there it belongs to that control. Modals, the palette and
+    // the find bar handle their own Escape before it arrives here.
+    if (event.key === "Escape") {
+      const target = escapeReturn(view.screen, document.activeElement);
+      if (!target) return;
       event.preventDefault();
-      toggleInspector();
+      leaveFocus();
+      tick().then(() => (target === "terminal" ? terminalButton : filesButton)?.focus());
       return;
     }
-    // The terminal owns Ctrl chords (Ctrl+W deletes a word, Ctrl+K kills a
-    // line, Ctrl+S is XOFF). Only Ctrl+` still toggles the terminal.
-    if (event.ctrlKey && !event.metaKey && activeTabId === "terminal") {
+    // The terminal owns Ctrl chords (Ctrl+W deletes a word, Ctrl+E moves to
+    // the line end, Ctrl+S is XOFF). Only Ctrl+` still toggles the terminal.
+    if (event.ctrlKey && !event.metaKey && document.activeElement?.closest?.(".terminal-host")) {
       if (event.key === "`") {
         event.preventDefault();
         toggleTerminal();
       }
       return;
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
-      if (activeTabId !== "chat") {
-        event.preventDefault();
-        closeTab(activeTabId);
-      }
+    if ((event.metaKey || event.ctrlKey) && key === "e") {
+      event.preventDefault();
+      if (view.screen === "session") openFiles();
+      else leaveFocus();
+      return;
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
-      if (activeTab?.kind === "file") {
+    if ((event.metaKey || event.ctrlKey) && key === "w") {
+      if (view.screen === "files" && view.activeDocId) {
+        event.preventDefault();
+        closeTab(view.activeDocId);
+      }
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && key === "s") {
+      if (view.screen === "files" && activeDoc?.kind === "file") {
         event.preventDefault();
         saveActive();
       }
+      return;
     }
-    if (event.ctrlKey && event.key === "`") {
+    if ((event.ctrlKey && event.key === "`") || (event.metaKey && key === "j")) {
       event.preventDefault();
       toggleTerminal();
+      return;
     }
-    if (event.metaKey && event.key.toLowerCase() === "j") {
-      event.preventDefault();
-      toggleTerminal();
-    }
-    if (event.metaKey && event.key.toLowerCase() === "m") {
+    if (event.metaKey && key === "m") {
       event.preventDefault();
       openModelPicker();
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+    if ((event.metaKey || event.ctrlKey) && key === "k") {
       event.preventDefault();
       paletteOpen = true;
     }
@@ -1552,19 +1669,17 @@
   });
 </script>
 
-<main class="app" data-turn-state={turnState} inert={!booted}>
+<main class="app" class:focus={currentView.screen !== "session"} data-turn-state={turnState} inert={!booted}>
   <Sidebar
     bind:this={sidebar}
     sessions={allSessions}
     activeId={sessionId}
-    workspace={basename(info.workspace)}
-    {branch}
+    project={basename(trustWorkspace)}
     {creating}
-    {files}
-    {filesLoading}
-    {filesError}
-    changes={changeMap}
+    open={railOpen}
     attention={Object.keys(attention)}
+    onCloseRail={async () => { railOpen = false; await tick(); railButton?.focus(); }}
+    onRequest={openRequest}
     onSelect={selectSession}
     onCreate={createSession}
     onAttach={openAttach}
@@ -1573,53 +1688,58 @@
     onPin={pinSession}
     onStop={stopSession}
     onClose={closeSession}
-    onResume={(session) => command("resume_session", { sessionId: session.session_id })}
-    onOpenFile={(path, line) => line ? openFileAt(path, line) : openFile(path)}
-    onOpenDiff={openDiff}
-    onRefreshFiles={refreshFiles}
-    onCreateFile={(path) => createPath("file", path)}
-    onCreateDir={(path) => createPath("dir", path)}
-    onRenamePath={startRenamePath}
-    onDeletePath={requestDelete}
-    onSearch={(value) => invoke("search_files", { sessionId, query: value })}
+    onResume={(session) => { railOpen = false; command("resume_session", { sessionId: session.session_id }); }}
     onHelp={() => (helpOpen = true)}
   />
 
   <section class="center">
-    <nav class="tabs" aria-label="Open views">
-      <button bind:this={inspectorToggle} type="button" class="btn inspector-toggle" aria-expanded={inspectorOpen} aria-controls="session-panel" onclick={toggleInspector}>
-        {inspectorOpen ? "Hide details" : "Session details"}
-      </button>
-      {#each tabs as tab (tab.id)}
-        <div class="tab" class:active={tab.id === activeTabId}>
-          <button type="button" class="tab-main" onclick={() => (activeTabId = tab.id)}>
-            <Icon name={tab.kind === "chat" ? "chat" : tab.kind === "diff" ? "diff" : "file"} size={13} />
-            <span>{tab.title}</span>
-          </button>
-          {#if tab.kind !== "chat"}
-            <button type="button" class="tab-close" aria-label="Close tab" onclick={() => closeTab(tab.id)}>
-              <Icon name="close" size={11} />
-            </button>
-          {/if}
+    {#if currentView.screen === "session"}
+      <header class="session-head">
+        <button bind:this={railButton} type="button" class="icon-btn rail-toggle" aria-label="Sessions" aria-expanded={railOpen} onclick={() => (railOpen = true)}>
+          <Icon name="layers" size={14} />
+        </button>
+        <div class="head-title">
+          <strong>{activeSession?.label ?? "No session"}</strong>
+          {#if info.workspace}<span class="checkout mono" title={info.workspace}>{basename(info.workspace)}</span>{/if}
         </div>
-      {/each}
-      <span class="spacer"></span>
-      <button
-        type="button"
-        class="icon-btn"
-        title="Terminal (⌃`)"
-        aria-label="Terminal"
-        onclick={openTerminal}
-      >
-        <Icon name="terminal" size={14} />
-      </button>
-      {#if activeSession}
-        <span class="chip">
-          <span class="state-dot {activeSession.turn_state}"></span>
-          {activeSession.label}
-        </span>
-      {/if}
-    </nav>
+        <span class="spacer"></span>
+        <button bind:this={filesButton} type="button" class="btn head-btn" title="Files (⌘/Ctrl E)" disabled={!sessionId} onclick={openFiles}>
+          <Icon name="files" size={13} />
+          Files
+          {#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
+        </button>
+        {#if needsYou > 0}
+          <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
+        {/if}
+        <button bind:this={terminalButton} type="button" class="btn head-btn" title="Focus terminal" disabled={!sessionId} onclick={async () => { await openTerminal(); await focusTerminal(); }}>
+          <Icon name="terminal" size={13} />
+          Terminal
+        </button>
+        <button type="button" class="btn head-btn" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>Session…</button>
+      </header>
+    {:else}
+      <header class="focus-head">
+        <button type="button" class="icon-btn rail-toggle" aria-label="Sessions" aria-expanded={railOpen} onclick={() => (railOpen = true)}>
+          <Icon name="layers" size={14} />
+        </button>
+        <button type="button" class="btn head-btn" onclick={backToSession}>
+          <Icon name="arrow-left" size={13} />
+          Session
+        </button>
+        <strong>{currentView.screen === "files" ? "Files" : "Terminal"}</strong>
+        <span class="head-session">{activeSession?.label ?? ""}</span>
+        <span class="spacer"></span>
+        {#if needsYou > 0}
+          <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
+        {/if}
+        {#if hasDecision}
+          <button type="button" class="btn head-btn needs" onclick={returnToDecision}>
+            <Icon name="alert" size={13} />
+            {question ? "Answer needed" : "Approval needed"}
+          </button>
+        {/if}
+      </header>
+    {/if}
 
     {#if error}
       <div class="banner" role="alert">
@@ -1631,143 +1751,199 @@
       </div>
     {/if}
 
-    {#key sessionId}
-      <div class="chat-host" class:hidden={activeTab?.kind !== "chat"}>
-        <Conversation {messages} {streaming} {turnState} onSuggest={(text) => (draft = text)} onExpand={expandMessage} onOpenImage={openFile} />
+    {#if currentView.screen === "session"}
+      {#key sessionId}
+        <div class="chat-host">
+          <Conversation
+            {messages}
+            {streaming}
+            {turnState}
+            bind:scroll={currentView.scroll}
+            bind:pinned={currentView.pinned}
+            onSuggest={(text) => (currentView.draft = text)}
+            onExpand={expandMessage}
+            onOpenImage={openFile}
+          />
+        </div>
+      {/key}
+
+      {#if currentStep}
+        <p class="current-step">
+          <span>Current step: {currentStep.step}</span>
+          <button type="button" class="link" onclick={() => (sessionMenu = "plan")}>Open plan</button>
+        </p>
+      {/if}
+
+      {#if hasQueue}
+        <div class="queue-strip">
+          <span class="queue-text">{queue.length} queued · {queue[0].text}</span>
+          <button type="button" class="btn" onclick={() => (sessionMenu = "queue")}>View</button>
+        </div>
+      {/if}
+
+      <div class="decision">
+        {#if question}
+          <QuestionCard
+            {question}
+            onAnswer={answerQuestion}
+            savedDrafts={questionDrafts[`${sessionId}:${question.call_id}`] ?? null}
+            onDrafts={(drafts) => {
+              const key = `${sessionId}:${question.call_id}`;
+              if (drafts) questionDrafts = { ...questionDrafts, [key]: drafts };
+              else {
+                const { [key]: _, ...rest } = questionDrafts;
+                questionDrafts = rest;
+              }
+            }}
+          />
+        {/if}
+
+        {#if approval}
+          <ApprovalCard
+            {approval}
+            onDecide={decide}
+            savedDraft={approvalDrafts[`${sessionId}:${approval.call_id}`] ?? null}
+            onDraft={(draft) => {
+              const key = `${sessionId}:${approval.call_id}`;
+              if (draft) approvalDrafts = { ...approvalDrafts, [key]: draft };
+              else {
+                const { [key]: _, ...rest } = approvalDrafts;
+                approvalDrafts = rest;
+              }
+            }}
+          />
+        {/if}
       </div>
-    {/key}
-    {#if activeTab?.kind !== "chat" && activeTab?.kind !== "terminal"}
-      <FilePane
-        bind:this={filePane}
-        tab={activeTab}
-        file={activeTab.file}
-        diff={activeTab.diff}
-        loading={activeTab.loading}
-        error={activeTab.error ?? ""}
-        draft={activeTab.draft ?? ""}
-        dirty={activeTab.dirty ?? false}
-        onDraftChange={changeDraft}
+
+      <Composer
+        bind:prompt={currentView.draft}
+        {turnState}
+        {stopping}
+        {sessionId}
+        commands={composerCommands}
+        history={promptHistory}
+        {imageInput}
+        attachment={fileAttachments[sessionId] ?? null}
+        onRemoveAttachment={() => {
+          const { [sessionId]: _, ...rest } = fileAttachments;
+          fileAttachments = rest;
+        }}
+        onSend={send}
+        onStop={stop}
+        drawerOpen={currentView.drawerOpen && !!shells[sessionId]}
+        onToggleTerminal={toggleTerminal}
+        onFocusTerminal={focusTerminal}
+        onStopTerminal={() => dropShell(sessionId)}
+        contextUsage={info.contextUsage}
+        onContext={() => (sessionMenu = "context")}
       />
+    {:else if currentView.screen === "files"}
+      {#key sessionId}
+        <Files
+          bind:this={filesPane}
+          {files}
+          {filesLoading}
+          {filesError}
+          {status}
+          {lastTurnFiles}
+          bind:scope={currentView.fileScope}
+          bind:query={currentView.fileQuery}
+          tabs={currentView.tabs}
+          activeDocId={currentView.activeDocId}
+          {branch}
+          upstream={status.upstream}
+          ahead={status.ahead ?? 0}
+          behind={status.behind ?? 0}
+          {gitBusy}
+          mergeInProgress={status.merge_in_progress ?? false}
+          conflicts={status.conflicts ?? []}
+          onOpenFile={(path, line) => line ? openFileAt(path, line) : openFile(path)}
+          onOpenDiff={openDiff}
+          onRefreshFiles={refreshFiles}
+          onCreateFile={(path) => createPath("file", path)}
+          onCreateDir={(path) => createPath("dir", path)}
+          onRenamePath={startRenamePath}
+          onDeletePath={requestDelete}
+          onSearch={(value) => invoke("search_files", { sessionId, query: value })}
+          onDraftChange={changeDraft}
+          onActivate={(id) => (currentView.activeDocId = id)}
+          onClose={closeTab}
+          onStage={stagePath}
+          onUnstage={unstagePath}
+          onStageAll={stageAll}
+          onCommit={openCommit}
+          onBranches={openBranches}
+          onGitOperation={(operation) => operation.kind === "fetch" ? performGitOperation(operation) : requestGitOperation(operation)}
+        />
+      {/key}
     {/if}
 
     {#if TerminalComponent}
       {#each Object.keys(shells) as id (id)}
-        <div
-          class="terminal-host"
-          class:hidden={!(activeTab?.kind === "terminal" && id === sessionId)}
-        >
-          <TerminalComponent sessionId={id} themeMode={activeTheme?.id ?? "dark"} />
+        <div class="terminal-host {hostClass(id)}">
+          <TerminalComponent
+            sessionId={id}
+            themeMode={activeTheme?.id ?? "dark"}
+            onExit={() => {
+              dropShell(id);
+              if (id === sessionId) screenAnnouncement = "The shell exited.";
+            }}
+          />
         </div>
       {/each}
     {/if}
-
-    {#if question}
-      <QuestionCard
-        {question}
-        onAnswer={answerQuestion}
-        savedDrafts={questionDrafts[`${sessionId}:${question.call_id}`] ?? null}
-        onDrafts={(drafts) => {
-          const key = `${sessionId}:${question.call_id}`;
-          if (drafts) questionDrafts = { ...questionDrafts, [key]: drafts };
-          else {
-            const { [key]: _, ...rest } = questionDrafts;
-            questionDrafts = rest;
-          }
-        }}
-      />
-    {/if}
-
-    {#if approval}
-      <ApprovalCard
-        {approval}
-        onDecide={decide}
-        savedDraft={approvalDrafts[`${sessionId}:${approval.call_id}`] ?? null}
-        onDraft={(draft) => {
-          const key = `${sessionId}:${approval.call_id}`;
-          if (draft) approvalDrafts = { ...approvalDrafts, [key]: draft };
-          else {
-            const { [key]: _, ...rest } = approvalDrafts;
-            approvalDrafts = rest;
-          }
-        }}
-      />
-    {/if}
-
-    <Composer
-      bind:prompt={draft}
-      {turnState}
-      {stopping}
-      {sessionId}
-      commands={composerCommands}
-      history={promptHistory}
-      {imageInput}
-      attachment={fileAttachments[sessionId] ?? null}
-      onRemoveAttachment={() => {
-        const { [sessionId]: _, ...rest } = fileAttachments;
-        fileAttachments = rest;
-      }}
-      onSend={send}
-      onStop={stop}
-    />
   </section>
 
-  <div class="inspector-panel" class:open={inspectorOpen} id="session-panel">
-  <button bind:this={inspectorClose} class="btn inspector-close" type="button" onclick={toggleInspector}>Close session details</button>
-  <Inspector
-    sessionId={sessionId}
-    workspace={info.workspace}
-    {branch}
-    model={info.model}
-    contextUsage={info.contextUsage}
-    queued={info.queued}
-    {turnState}
-    {approveAll}
-    {thinking}
-    {plan}
-    {tokens}
-    {background}
-    {queue}
-    {interrupted}
-    {counts}
-    changes={status.files}
-    onOpenDiff={openDiff}
-    onPickModel={openModelPicker}
-    onDetails={() => (detailsOpen = true)}
-    onStage={stagePath}
-    onUnstage={unstagePath}
-    onCommit={openCommit}
-    onBranches={openBranches}
-    {gitBusy}
-    upstream={status.upstream}
-    ahead={status.ahead ?? 0}
-    behind={status.behind ?? 0}
-    mergeInProgress={status.merge_in_progress ?? false}
-    conflicts={status.conflicts ?? []}
-    onGitOperation={(operation) => operation.kind === "fetch" ? performGitOperation(operation) : requestGitOperation(operation)}
-    onToggleApproveAll={toggleApproveAll}
-    onToggleThinking={toggleThinking}
-    onClearApprovals={() => command("clear_approvals")}
-    onContinue={continueTurn}
-    onCompact={compactContext}
-    onStopSession={() => activeSession && stopSession(activeSession)}
-    onCancelQueued={(sessionIdOf, queueId, position, source) =>
-      command("cancel_queued", { sessionId: sessionIdOf, queueId, position, source })}
-    onEditQueued={editQueued}
-    onRestoreInterrupted={restoreInterrupted}
-    onCancelBackground={(task) => command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id })}
-    onOpenChild={openChild}
-    onInsertTask={insertTask}
-    onResolveChild={(taskId, approve, callId, requestId, confirmed) =>
-      command("resolve_child_approval", { sessionId, taskId, approve, callId, requestId, confirmed })}
-    onFork={forkSession}
-    onCloseSession={() => activeSession && closeSession(activeSession)}
-    onRename={() => activeSession && startRename(activeSession)}
-    onPin={() => activeSession && pinSession(activeSession)}
-  />
-  </div>
+  {#if sessionMenu !== null}
+    <div class="modal">
+      <Inspector
+        destination={sessionMenu}
+        onClose={() => (sessionMenu = null)}
+        sessionId={sessionId}
+        workspace={info.workspace}
+        {branch}
+        model={info.model}
+        contextUsage={info.contextUsage}
+        queued={info.queued}
+        {turnState}
+        {approveAll}
+        {thinking}
+        {plan}
+        {tokens}
+        {background}
+        {queue}
+        {interrupted}
+        {counts}
+        onPickModel={() => { sessionMenu = null; openModelPicker(); }}
+        onDetails={() => { sessionMenu = null; detailsOpen = true; }}
+        onToggleApproveAll={toggleApproveAll}
+        onToggleThinking={toggleThinking}
+        onClearApprovals={() => command("clear_approvals")}
+        onContinue={continueTurn}
+        onCompact={compactContext}
+        onStopSession={() => activeSession && stopSession(activeSession)}
+        onCancelQueued={(sessionIdOf, queueId, position, source) =>
+          command("cancel_queued", { sessionId: sessionIdOf, queueId, position, source })}
+        onEditQueued={(item, position) => { sessionMenu = null; editQueued(item, position); }}
+        onRestoreInterrupted={(text) => { sessionMenu = null; restoreInterrupted(text); }}
+        onCancelBackground={(task) => command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id })}
+        onOpenChild={(task) => { sessionMenu = null; openChild(task); }}
+        onInsertTask={(task) => { sessionMenu = null; insertTask(task); }}
+        onResolveChild={(taskId, approve, callId, requestId, confirmed) =>
+          command("resolve_child_approval", { sessionId, taskId, approve, callId, requestId, confirmed })}
+        onFork={() => { sessionMenu = null; forkSession(); }}
+        onCloseSession={() => { sessionMenu = null; if (activeSession) closeSession(activeSession); }}
+        onArchive={() => { sessionMenu = null; if (activeSession) archiveSession(activeSession); }}
+        onRename={() => { sessionMenu = null; if (activeSession) startRename(activeSession); }}
+        onPin={() => activeSession && pinSession(activeSession)}
+      />
+    </div>
+  {/if}
+
+  <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{screenAnnouncement}</div>
 
   <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
-    {question ? "Forge needs your answer." : approval ? "Forge needs your approval." : background.some((task) => task.awaiting_approval) ? "A background task needs your approval. Open Session details to review it." : `Forge: ${turnState}.`}
+    {question ? "Forge needs your answer." : approval ? "Forge needs your approval." : background.some((task) => task.awaiting_approval) ? "A background task needs your approval. Open the Session menu to review it." : `Forge: ${turnState}.`}
   </div>
 
   {#if pickerOpen}
@@ -1830,7 +2006,7 @@
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="quit-title" tabindex="-1" use:modal={{ onClose: () => (quitRequested = false), initialFocus: "#quit-cancel" }}>
         <h2 id="quit-title">Quit Forge?</h2>
         <p>
-          {#if dirtyAnywhere()}The editor has unsaved changes. {/if}
+          {#if dirtyAnywhere(views)}The editor has unsaved changes. {/if}
           {#if sessions.some((session) => ["running", "waiting"].includes(session.turn_state)) || Object.keys(attention).length > 0}
             Work is still running, queued or waiting for an answer in another session.
           {/if}
@@ -1913,9 +2089,8 @@
     <div class="modal">
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="commit-title" tabindex="-1" use:modal={{ onClose: () => (commitOpen = false), busy: gitBusy }}>
         <form onsubmit={submitCommit}>
-          <h2 id="commit-title">{commitAll ? "Stage all and commit" : "Commit staged changes"}</h2>
-          <p>{commitAll ? "Every tracked and untracked change in this session's workspace will be staged and committed." : "Only what is staged is committed. Unstaged files stay in the working tree."}</p>
-          <label><input type="checkbox" bind:checked={commitAll} disabled={gitBusy} /> Stage all files before committing</label>
+          <h2 id="commit-title">Commit staged changes</h2>
+          <p>Only what is staged is committed. Unstaged files stay in the working tree.</p>
           <textarea
             class="field commit-message"
             bind:value={commitMessage}
@@ -1924,7 +2099,7 @@
           ></textarea>
           {#if commitError}<p class="dialog-error" role="alert">{commitError}</p>{/if}
           <div class="dialog-actions">
-            <button class="btn primary" type="submit" disabled={!commitMessage.trim() || gitBusy}>{gitBusy ? "Committing…" : commitAll ? "Stage all and commit" : "Commit"}</button>
+            <button class="btn primary" type="submit" disabled={!commitMessage.trim() || gitBusy}>{gitBusy ? "Committing…" : "Commit"}</button>
             <button class="btn" type="button" onclick={() => (commitOpen = false)}>Cancel</button>
           </div>
         </form>
@@ -1997,33 +2172,14 @@
     </div>
   {/if}
 
-  {#if pendingClose || pendingSwitch}
+  {#if pendingClose}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="discard-title" tabindex="-1" use:modal={{ onClose: () => { pendingClose = ""; pendingSwitch = ""; } }}>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="discard-title" tabindex="-1" use:modal={{ onClose: () => (pendingClose = "") }}>
         <h2 id="discard-title">Discard unsaved changes?</h2>
-        <p>
-          {pendingSwitch
-            ? "The open file has changes that are not saved. Switching sessions closes its tabs."
-            : "This file has changes that are not saved."}
-        </p>
+        <p>This file has changes that are not saved.</p>
         <div class="dialog-actions">
-          <button
-            class="btn danger"
-            type="button"
-            onclick={pendingSwitch ? discardAndSwitch : discardAndClose}
-          >
-            Discard
-          </button>
-          <button
-            class="btn"
-            type="button"
-            onclick={() => {
-              pendingClose = "";
-              pendingSwitch = "";
-            }}
-          >
-            Cancel
-          </button>
+          <button class="btn danger" type="button" onclick={discardAndClose}>Discard</button>
+          <button class="btn" type="button" onclick={() => (pendingClose = "")}>Cancel</button>
         </div>
       </div>
     </div>
@@ -2127,14 +2283,56 @@
   .child-message pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
   .app {
     display: grid;
-    grid-template-columns: 258px minmax(0, 1fr) 254px;
+    grid-template-columns: 258px minmax(0, 1fr);
     height: 100vh;
     min-height: 0;
     background: var(--bg);
   }
 
-  .inspector-panel { display: contents; }
-  .inspector-toggle, .inspector-close { display: none; }
+  /* A focus screen hides the rail and spans the window. */
+  .app.focus { grid-template-columns: minmax(0, 1fr); }
+  .app.focus > :global(.sidebar:not(.open)) { display: none; }
+
+  .session-head,
+  .focus-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 42px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+
+  .head-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .head-title strong,
+  .focus-head strong { font-size: 13px; white-space: nowrap; }
+  .head-title strong { overflow: hidden; text-overflow: ellipsis; }
+  .checkout,
+  .head-session { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
+  .head-btn { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+  .head-btn .count {
+    min-width: 16px; padding: 0 4px; border-radius: 8px;
+    background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 700; text-align: center;
+  }
+  .head-btn.needs { color: var(--warning); }
+  .rail-toggle { display: none; }
+
+  .current-step {
+    display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 18px;
+    color: var(--muted); font-size: 12px;
+  }
+  .current-step span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .link { padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; white-space: nowrap; }
+  .link:hover { text-decoration: underline; }
+
+  .queue-strip {
+    display: flex; align-items: center; gap: 10px; margin: 0 14px 6px; padding: 5px 6px 5px 10px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px;
+  }
+  .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .decision { display: contents; }
 
   .center {
     display: flex;
@@ -2149,10 +2347,6 @@
     min-height: 0;
   }
 
-  .chat-host.hidden {
-    display: none;
-  }
-
   .terminal-host {
     display: flex;
     flex: 1;
@@ -2163,65 +2357,13 @@
     display: none;
   }
 
-  .tabs {
-    display: flex;
-    align-items: center;
-    gap: 2px;
-    height: 38px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg);
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: thin;
+  .terminal-host.drawer {
+    flex: 0 0 auto;
+    height: 18rem;
   }
 
-  .tab {
-    display: flex;
-    align-items: center;
-    height: 26px;
-    border-radius: var(--radius-sm);
-    color: var(--muted);
-  }
-
-  .tab:hover {
-    background: var(--hover);
-  }
-
-  .tab.active {
-    background: var(--surface);
-    color: var(--text);
-  }
-
-  .tab-main {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    height: 26px;
-    padding: 0 8px;
-    border: 0;
-    background: none;
-    color: inherit;
-    font-size: 12px;
-    white-space: nowrap;
-  }
-
-  .tab-close {
-    display: inline-grid;
-    place-items: center;
-    width: 20px;
-    height: 20px;
-    margin-right: 3px;
-    padding: 0;
-    border: 0;
-    border-radius: 4px;
-    background: none;
-    color: var(--muted);
-  }
-
-  .tab-close:hover {
-    background: var(--border-strong);
-    color: var(--text);
+  .terminal-host.focused {
+    flex: 1;
   }
 
   .spacer {
@@ -2314,37 +2456,14 @@
     color: var(--error);
   }
 
-  @media (max-width: 1120px) {
-    .app {
-      grid-template-columns: 240px minmax(0, 1fr);
-    }
-
-    .inspector-toggle { display: inline-flex; flex: none; }
-    .inspector-close { display: inline-flex; flex: none; margin: 8px; }
-
-    .inspector-panel {
-      display: none;
-    }
-
-    .inspector-panel.open {
-      display: flex;
-      flex-direction: column;
-      position: fixed;
-      top: 38px;
-      right: 0;
-      bottom: 0;
-      width: min(320px, 100vw);
-      z-index: 10;
-      box-shadow: var(--shadow);
-      background: var(--bg-deep);
-    }
-
-    .inspector-panel :global(.inspector) { flex: 1; min-width: 0; }
-  }
-
+  /* Compact: the rail becomes an overlay opened from the header. */
   @media (max-width: 760px) {
     .app {
-      grid-template-columns: 200px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
     }
+
+    .rail-toggle { display: inline-grid; }
+
+    .app > :global(.sidebar.open) { z-index: 15; }
   }
 </style>

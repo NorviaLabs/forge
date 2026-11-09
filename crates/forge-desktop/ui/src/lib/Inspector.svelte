@@ -1,5 +1,7 @@
 <script>
+  import { onMount, tick } from "svelte";
   import Icon from "./Icon.svelte";
+  import { modal } from "../modal.js";
 
   let {
     sessionId = "",
@@ -17,21 +19,10 @@
     queue = [],
     interrupted = [],
     counts = { tools: 0, skills: 0, allows: 0 },
-    changes = [],
-    upstream = "",
-    ahead = 0,
-    behind = 0,
-    gitBusy = false,
-    mergeInProgress = false,
-    conflicts = [],
-    onOpenDiff,
-    onGitOperation,
+    destination = null,
+    onClose,
     onPickModel,
     onDetails,
-    onStage,
-    onUnstage,
-    onCommit,
-    onBranches,
     onToggleApproveAll,
     onToggleThinking,
     onClearApprovals,
@@ -47,6 +38,7 @@
     onResolveChild,
     onFork,
     onCloseSession,
+    onArchive,
     onRename,
     onPin,
   } = $props();
@@ -54,11 +46,25 @@
   const percent = $derived(Math.round(Math.min(Math.max(contextUsage, 0), 1) * 100));
   const level = $derived(percent >= 90 ? "high" : percent >= 70 ? "warm" : "");
   let confirmChild = $state("");
+  let panel = $state();
+
+  // Opening at a destination puts that section at the top of the panel.
+  onMount(async () => {
+    await tick();
+    if (!destination || destination === "actions") return;
+    const section = panel?.querySelector(`#menu-${destination}`);
+    if (section) panel.scrollTop = section.offsetTop - panel.offsetTop;
+  });
 </script>
 
-<aside class="inspector" aria-label="Session details">
-  <section>
-    <h2>Session</h2>
+<div class="inspector" role="dialog" aria-modal="true" aria-labelledby="menu-title" tabindex="-1" bind:this={panel} use:modal={{ onClose }}>
+  <header class="menu-head">
+    <h2 id="menu-title" class="menu-title">Session</h2>
+    <button type="button" class="icon-btn" aria-label="Close the Session menu" onclick={onClose}>
+      <Icon name="close" size={13} />
+    </button>
+  </header>
+  <section id="menu-actions">
     <dl>
       <dt>State</dt>
       <dd class="state">
@@ -116,41 +122,14 @@
       <button type="button" class="btn" onclick={onRename}>Rename</button>
       <button type="button" class="btn" onclick={onPin}>Pin</button>
       <button type="button" class="btn" onclick={onCloseSession}>Close</button>
+      <button type="button" class="btn" onclick={onArchive}>Archive…</button>
       {#if counts.allows > 0}<button type="button" class="btn" onclick={onClearApprovals}>Clear approvals</button>{/if}
     </div>
   </section>
 
-  <section>
-    <h2>Context</h2>
-    <button class="btn" type="button" onclick={onDetails}>Status details…</button>
-    <div class="meter" aria-label="Context window used">
-      <div class="fill {level}" style="width: {percent}%"></div>
-    </div>
-    <p class="meter-label">{percent}% of the context window</p>
-    {#if tokens}
-      <dl class="tight">
-        <dt>Tokens</dt>
-        <dd>{tokens.prompt.toLocaleString()} in · {tokens.completion.toLocaleString()} out</dd>
-        {#if tokens.cache_hits > 0 || tokens.cache_writes > 0}
-          <dt>Cache</dt>
-          <dd>{tokens.cache_hits.toLocaleString()} read · {tokens.cache_writes.toLocaleString()} written</dd>
-        {/if}
-        {#if tokens.context_capacity > 0}
-          <dt>Window</dt>
-          <dd>{tokens.context_tokens.toLocaleString()} / {tokens.context_capacity.toLocaleString()}</dd>
-        {/if}
-        <dt>Tools</dt>
-        <dd>{counts.tools} · {counts.skills} skill{counts.skills === 1 ? "" : "s"}</dd>
-        {#if counts.allows > 0}
-          <dt>Allowed</dt>
-          <dd>{counts.allows} pattern{counts.allows === 1 ? "" : "s"} this session</dd>
-        {/if}
-      </dl>
-    {/if}
-  </section>
 
   {#if plan && plan.items.length > 0}
-    <section>
+    <section id="menu-plan">
       <h2>Plan</h2>
       {#if plan.explanation}<p class="small dim">{plan.explanation}</p>{/if}
       <ul class="plan">
@@ -167,8 +146,8 @@
   {/if}
 
   {#if background.length > 0}
-    <section>
-      <h2>Background <span class="count">{background.length}</span></h2>
+    <section id="menu-agents">
+      <h2>Agents &amp; tasks <span class="count">{background.length}</span></h2>
       <ul class="tasks">
         {#each background as task (task.id)}
           <li class={task.status}>
@@ -212,9 +191,10 @@
     </section>
   {/if}
 
-  {#if queue.length > 0}
-    <section>
-      <h2>Queued <span class="count">{queue.length}</span></h2>
+  {#if queue.length > 0 || interrupted.length > 0}
+    <section id="menu-queue">
+      <h2>Queue <span class="count">{queue.length + interrupted.length}</span></h2>
+      {#if queue.length > 0}
       <ul class="queue">
         {#each queue as item, index (`${item.source}:${item.id}`)}
           <li>
@@ -240,12 +220,9 @@
           </li>
         {/each}
       </ul>
-    </section>
-  {/if}
-
-  {#if interrupted.length > 0}
-    <section>
-      <h2>Interrupted <span class="count">{interrupted.length}</span></h2>
+      {/if}
+      {#if interrupted.length > 0}
+      <h3>Interrupted</h3>
       <ul class="queue">
         {#each interrupted as item (item.id)}
           <li>
@@ -262,95 +239,79 @@
           </li>
         {/each}
       </ul>
+      {/if}
     </section>
   {/if}
 
-  <section class="changes">
-    <h2>Changes <span class="count">{changes.length}</span></h2>
-    {#if mergeInProgress}
-      <p class="dim small">A merge is in progress with {conflicts.length} unresolved {conflicts.length === 1 ? "file" : "files"}.</p>
-      <div class="row">
-        <button type="button" class="btn" disabled={gitBusy} onclick={() => onGitOperation({ kind: "abort_merge" })}>
-          Abort merge…
-        </button>
-      </div>
-    {/if}
-    {#if changes.length === 0}
-      <p class="dim small">Clean working tree.</p>
-    {:else}
-      <ul>
-        {#each changes as change (change.path)}
-          <li>
-            <button type="button" class="change" title={change.path} onclick={() => onOpenDiff(change.path)}>
-              <span class="badge {change.status.toLowerCase()}">{change.status}</span>
-              <span class="mono path">{change.path}</span>
-            </button>
-            {#if change.unstaged}
-              <button
-                type="button"
-                class="icon-btn"
-                title="Stage this file"
-                aria-label={`Stage ${change.path}`}
-                onclick={() => onStage(change.path)}
-              >
-                <Icon name="plus" size={11} />
-              </button>
-            {/if}
-            {#if change.staged}
-              <button
-                type="button"
-                class="icon-btn"
-                title="Unstage this file"
-                aria-label={`Unstage ${change.path}`}
-                onclick={() => onUnstage(change.path)}
-              >
-                <Icon name="arrow-left" size={11} />
-              </button>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
-    <div class="row">
-      <button type="button" class="btn" onclick={onCommit}>Commit…</button>
-      <button type="button" class="btn" onclick={onBranches}>Branches…</button>
+  <section id="menu-context">
+    <h2>Context &amp; usage</h2>
+    <button class="btn" type="button" onclick={onDetails}>Status details…</button>
+    <div class="meter" aria-label="Context window used">
+      <div class="fill {level}" style="width: {percent}%"></div>
     </div>
+    <p class="meter-label">{percent}% of the context window</p>
+    {#if tokens}
+      <dl class="tight">
+        <dt>Tokens</dt>
+        <dd>{tokens.prompt.toLocaleString()} in · {tokens.completion.toLocaleString()} out</dd>
+        {#if tokens.cache_hits > 0 || tokens.cache_writes > 0}
+          <dt>Cache</dt>
+          <dd>{tokens.cache_hits.toLocaleString()} read · {tokens.cache_writes.toLocaleString()} written</dd>
+        {/if}
+        {#if tokens.context_capacity > 0}
+          <dt>Window</dt>
+          <dd>{tokens.context_tokens.toLocaleString()} / {tokens.context_capacity.toLocaleString()}</dd>
+        {/if}
+        <dt>Tools</dt>
+        <dd>{counts.tools} · {counts.skills} skill{counts.skills === 1 ? "" : "s"}</dd>
+        {#if counts.allows > 0}
+          <dt>Allowed</dt>
+          <dd>{counts.allows} pattern{counts.allows === 1 ? "" : "s"} this session</dd>
+        {/if}
+      </dl>
+    {/if}
   </section>
-
-  <section class="changes">
-    <h2>Upstream</h2>
-    <p class="dim small mono">
-      {upstream || "No upstream configured"}
-      {#if ahead} · ↑{ahead}{/if}
-      {#if behind} · ↓{behind}{/if}
-    </p>
-    <div class="row">
-      <button type="button" class="btn" disabled={gitBusy} onclick={() => onGitOperation({ kind: "fetch" })}>Fetch</button>
-      <button type="button" class="btn" disabled={gitBusy} onclick={() => onGitOperation({ kind: "pull" })}>Pull…</button>
-      <button type="button" class="btn" disabled={gitBusy || !upstream} onclick={() => onGitOperation({ kind: "push" })}>Push…</button>
-    </div>
-  </section>
-
-  <section class="keys">
-    <h2>Keys</h2>
-    <p><kbd>⌘</kbd><kbd>K</kbd> commands</p>
-    <p><kbd>⌘</kbd><kbd>M</kbd> model</p>
-    <p><kbd>⌘</kbd><kbd>↵</kbd> send</p>
-    <p><kbd>⌘</kbd><kbd>W</kbd> close tab</p>
-    <p><kbd>⌃</kbd><kbd>`</kbd> terminal</p>
-  </section>
-</aside>
+</div>
 
 <style>
   .inspector {
+    position: relative;
     display: flex;
     flex-direction: column;
     gap: 18px;
-    min-height: 0;
-    padding: 14px 14px 18px;
+    width: min(26rem, calc(100vw - 32px));
+    max-height: calc(100dvh - 64px);
+    padding: 0 16px 18px;
     overflow: auto;
-    border-left: 1px solid var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     background: var(--bg-deep);
+    box-shadow: var(--shadow);
+  }
+
+  .menu-head {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0 8px;
+    background: var(--bg-deep);
+  }
+
+  h2.menu-title {
+    color: var(--text);
+    font-size: 13px;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  h3 {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
   }
 
   section {
@@ -483,71 +444,6 @@
   .count {
     color: var(--secondary);
     font-weight: 500;
-  }
-
-  .changes ul {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .change {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    width: 100%;
-    min-width: 0;
-    height: 24px;
-    padding: 0 6px;
-    border: 0;
-    border-radius: 4px;
-    background: none;
-    text-align: left;
-  }
-
-  .change:hover {
-    background: var(--hover);
-  }
-
-  .changes li {
-    display: flex;
-    align-items: center;
-    gap: 1px;
-  }
-
-  .changes .change {
-    flex: 1;
-  }
-
-  .badge {
-    display: inline-grid;
-    place-items: center;
-    flex: none;
-    width: 15px;
-    height: 15px;
-    border-radius: 4px;
-    background: var(--surface);
-    color: var(--warning);
-    font-size: 9.5px;
-    font-weight: 700;
-  }
-
-  .badge.d {
-    color: var(--error);
-  }
-
-  .badge.\? {
-    color: var(--success);
-  }
-
-  .path {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 11.5px;
   }
 
   .small {
@@ -685,26 +581,4 @@
     font-size: 11.5px;
   }
 
-  .keys p {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    margin: 0;
-    color: var(--muted);
-    font-size: 11.5px;
-  }
-
-  kbd {
-    display: inline-grid;
-    place-items: center;
-    min-width: 17px;
-    height: 17px;
-    padding: 0 4px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--surface);
-    color: var(--secondary);
-    font-family: var(--font-ui);
-    font-size: 10px;
-  }
 </style>

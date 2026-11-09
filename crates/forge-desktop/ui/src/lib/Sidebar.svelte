@@ -1,18 +1,16 @@
 <script>
   import Icon from "./Icon.svelte";
+  import { modal } from "../modal.js";
 
   let {
     sessions = [],
     activeId = "",
-    workspace = "",
-    branch = "",
+    project = "",
     creating = false,
-    files = [],
-    filesLoading = false,
-    filesError = "",
-    changes = new Map(),
+    open = false,
     attention = [],
     onSelect,
+    onRequest,
     onCreate,
     onAttach,
     onArchive,
@@ -21,61 +19,29 @@
     onStop,
     onClose,
     onResume,
-    onOpenFile,
-    onOpenDiff,
-    onRefreshFiles,
-    onCreateFile,
-    onCreateDir,
-    onRenamePath,
-    onDeletePath,
-    onSearch,
     onHelp,
+    onCloseRail,
   } = $props();
 
   let newLabel = $state("");
   let composing = $state(false);
-  let filter = $state("");
-  let fileDraft = $state(null);
-  let query = $state("");
-  let hits = $state([]);
-  let searching = $state(false);
-  let searchError = $state("");
-  let collapsed = $state([]);
+  let search = $state("");
 
+  const needle = $derived(search.trim().toLowerCase());
+  const matches = (session) => !needle || session.label.toLowerCase().includes(needle);
   const live = $derived(sessions.filter((session) => session.lifecycle === "active"));
   const closed = $derived(sessions.filter((session) => session.lifecycle !== "active"));
+  const shownLive = $derived(live.filter(matches));
+  const shownClosed = $derived(closed.filter(matches));
+  // Roster order, never re-sorted: acting on a decision must not move rows.
+  const waiting = $derived(sessions.filter((session) => attention.includes(session.session_id)));
 
-  const broken = $derived(
-    files.filter((entry) => {
-      if (!filter.trim()) return true;
-      return entry.path.toLowerCase().includes(filter.trim().toLowerCase());
-    }),
-  );
-
-  // While filtering, show every matching entry so a hit inside a collapsed
-  // folder still appears.
-  const visible = $derived(
-    filter.trim()
-      ? broken
-      : broken.filter((entry) => !collapsed.some((dir) => entry.path.startsWith(`${dir}/`))),
-  );
-
-  function toggleDir(path) {
-    collapsed = collapsed.includes(path)
-      ? collapsed.filter((entry) => entry !== path)
-      : [...collapsed, path];
+  // At compact width the open rail is a modal overlay: it traps focus, closes
+  // on Escape, and returns focus to the header control that opened it.
+  function overlay(node) {
+    const action = modal(node, { onClose: () => onCloseRail?.() });
+    return () => action.destroy();
   }
-
-  // Tree filters and collapse state belong to one workspace.
-  $effect(() => {
-    void activeId;
-    collapsed = [];
-    filter = "";
-    query = "";
-    hits = [];
-    searching = false;
-    searchError = "";
-  });
 
   // Exposed to the command palette.
   export function startNewSession() {
@@ -91,68 +57,44 @@
     newLabel = "";
     composing = false;
   }
-
-  function startDraft(kind) {
-    fileDraft = { kind, value: "" };
-  }
-
-  function submitDraft(event) {
-    event.preventDefault();
-    const draft = fileDraft;
-    if (!draft || !draft.value.trim()) return;
-    fileDraft = null;
-    if (draft.kind === "file") onCreateFile(draft.value.trim());
-    else onCreateDir(draft.value.trim());
-  }
-
-  // Content search is debounced; the tree filter above stays instant.
-  let searchTimer;
-  $effect(() => {
-    const value = query;
-    const owner = activeId;
-    clearTimeout(searchTimer);
-    if (!value.trim() || !onSearch) {
-      hits = [];
-      searching = false;
-      searchError = "";
-      return;
-    }
-    searching = true;
-    searchError = "";
-    searchTimer = setTimeout(async () => {
-      try {
-        const found = await onSearch(value);
-        if (query === value && activeId === owner) hits = found;
-      } catch (cause) {
-        if (query === value && activeId === owner) {
-          hits = [];
-          searchError = String(cause);
-        }
-      } finally {
-        if (query === value && activeId === owner) searching = false;
-      }
-    }, 300);
-    return () => clearTimeout(searchTimer);
-  });
 </script>
 
-<aside class="sidebar" aria-label="Sessions and files">
+{#if open}
+  <button type="button" class="rail-backdrop" aria-label="Close sessions" tabindex="-1" onclick={() => onCloseRail?.()}></button>
+{/if}
+<aside class="sidebar" class:open aria-label="Sessions" {@attach open ? overlay : null}>
   <header class="workspace">
     <span class="mark">F</span>
     <div class="names">
-      <div class="title">
-        <strong>Forge</strong>
-        <button class="help" type="button" onclick={onHelp}>Help</button>
-      </div>
-      <span class="where" title={workspace}>{workspace || "No session"}</span>
+      <strong>Forge</strong>
+      {#if project}<span class="where" title={project}>{project}</span>{/if}
     </div>
-    {#if branch}
-      <span class="chip branch" title="Current branch">
-        <Icon name="branch" size={12} />
-        {branch}
-      </span>
+    {#if open}
+      <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
+        <Icon name="close" size={13} />
+      </button>
     {/if}
   </header>
+
+  {#if waiting.length > 0}
+    <section class="panel needs-section" aria-label="Needs you">
+      <div class="section-head">
+        <span class="label">Needs you</span>
+        <span class="count">{waiting.length}</span>
+      </div>
+      <ul class="session-list">
+        {#each waiting as session (session.session_id)}
+          <li class="needs-you">
+            <button type="button" class="session" onclick={() => onRequest(session.session_id)}>
+              <span class="state-dot {session.turn_state}"></span>
+              <span class="session-name">{session.label}</span>
+              <span class="session-state">{session.turn_state}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
 
   <section class="panel sessions">
     <div class="section-head">
@@ -167,16 +109,12 @@
         >
           <Icon name="layers" size={14} />
         </button>
-        <button
-          class="icon-btn"
-          type="button"
-          title="New session"
-          aria-label="New session"
-          onclick={() => (composing = !composing)}
-        >
-          <Icon name="plus" size={14} />
-        </button>
       </span>
+    </div>
+
+    <div class="filter">
+      <Icon name="search" size={12} />
+      <input bind:value={search} placeholder="Search sessions" aria-label="Search sessions" spellcheck="false" />
     </div>
 
     {#if composing}
@@ -200,7 +138,7 @@
           <span>Creating session…</span>
         </li>
       {/if}
-      {#each live as session (session.session_id)}
+      {#each shownLive as session (session.session_id)}
         <li
           class:active={session.session_id === activeId}
           class:needs-you={attention.includes(session.session_id)}
@@ -271,14 +209,16 @@
       {/each}
       {#if live.length === 0 && !creating}
         <li class="empty">No sessions yet.</li>
+      {:else if needle && shownLive.length === 0 && shownClosed.length === 0}
+        <li class="empty">No sessions match “{search.trim()}”.</li>
       {/if}
     </ul>
 
-    {#if closed.length > 0}
-      <details class="closed">
-        <summary>{closed.length} closed session{closed.length === 1 ? "" : "s"}</summary>
+    {#if shownClosed.length > 0}
+      <details class="closed" open={!!needle}>
+        <summary>{shownClosed.length} closed session{shownClosed.length === 1 ? "" : "s"}</summary>
         <ul class="session-list">
-          {#each closed as session (session.session_id)}
+          {#each shownClosed as session (session.session_id)}
             <li>
               <button
                 type="button"
@@ -308,165 +248,14 @@
     {/if}
   </section>
 
-  <section class="panel files">
-    <div class="section-head">
-      <span class="label">Files</span>
-      <span class="head-actions">
-        {#if filesLoading}<span class="mini spin"><Icon name="refresh" size={12} /></span>{/if}
-        <button
-          class="icon-btn"
-          type="button"
-          title="New file"
-          aria-label="New file"
-          onclick={() => startDraft("file")}
-        >
-          <Icon name="plus" size={13} />
-        </button>
-        <button
-          class="icon-btn"
-          type="button"
-          title="New folder"
-          aria-label="New folder"
-          onclick={() => startDraft("dir")}
-        >
-          <Icon name="files" size={13} />
-        </button>
-        <button
-          class="icon-btn"
-          type="button"
-          title="Refresh files"
-          aria-label="Refresh files"
-          onclick={onRefreshFiles}
-        >
-          <Icon name="refresh" size={13} />
-        </button>
-      </span>
-    </div>
-
-    {#if fileDraft}
-      <form class="new" onsubmit={submitDraft}>
-        <input
-          class="field"
-          bind:value={fileDraft.value}
-          placeholder={fileDraft.kind === "file" ? "path/new-file.ts" : "path/new-folder"}
-          aria-label={fileDraft.kind === "file" ? "New file path" : "New folder path"}
-          spellcheck="false"
-        />
-        <button class="btn primary" type="submit" disabled={!fileDraft.value.trim()}>Add</button>
-      </form>
-    {/if}
-
-    <div class="filter">
-      <Icon name="search" size={12} />
-      <input
-        bind:value={filter}
-        placeholder="Filter files"
-        aria-label="Filter files"
-        spellcheck="false"
-      />
-    </div>
-    <div class="filter">
-      <Icon name="search" size={12} />
-      <input
-        bind:value={query}
-        placeholder="Search contents"
-        aria-label="Search file contents"
-        spellcheck="false"
-      />
-      {#if searching}<span class="mini spin"><Icon name="refresh" size={11} /></span>{/if}
-    </div>
-
-    {#if query.trim()}
-      <ul class="hits">
-        {#each hits as hit (`${hit.path}:${hit.line}`)}
-          <li>
-            <button
-              type="button"
-              class="hit"
-              title={`${hit.path}:${hit.line}`}
-              onclick={() => onOpenFile(hit.path, hit.line)}
-            >
-              <span class="hit-path mono">{hit.path}:{hit.line}</span>
-              <span class="hit-text mono">{hit.text.trim()}</span>
-            </button>
-          </li>
-        {/each}
-        {#if hits.length === 0 && !searching}
-          <li class="empty">{searchError || "No matches."}</li>
-        {/if}
-      </ul>
-    {:else}
-    {#if filesError}
-      <p class="panel-error">{filesError}</p>
-    {:else}
-      <ul class="tree">
-        {#each visible as entry (entry.path)}
-          <li class:dir={entry.is_dir} style="--depth: {entry.depth}">
-            {#if entry.is_dir}
-              <button
-                type="button"
-                class="tree-row dir-row"
-                title={entry.path}
-                aria-expanded={!collapsed.includes(entry.path)}
-                onclick={() => toggleDir(entry.path)}
-              >
-                <span class="caret" class:open={!collapsed.includes(entry.path)}>
-                  <Icon name="chevron" size={10} />
-                </span>
-                <Icon name="files" size={12} />
-                <span class="tree-name">{entry.name}</span>
-              </button>
-            {:else}
-              <button
-                type="button"
-                class="tree-row"
-                title={entry.path}
-                onclick={() => onOpenFile(entry.path)}
-              >
-                <Icon name="file" size={12} />
-                <span class="tree-name">{entry.name}</span>
-              </button>
-              {#if changes.has(entry.path)}
-                <button
-                  type="button"
-                  class="change {changes.get(entry.path).toLowerCase()}"
-                  title={`Show diff for ${entry.path}`}
-                  aria-label={`Show diff for ${entry.path}`}
-                  onclick={() => onOpenDiff(entry.path)}
-                >
-                  {changes.get(entry.path)}
-                </button>
-              {/if}
-              <span class="row-actions">
-                <button
-                  type="button"
-                  class="icon-btn"
-                  title="Rename"
-                  aria-label={`Rename ${entry.path}`}
-                  onclick={() => onRenamePath(entry.path)}
-                >
-                  <Icon name="pencil" size={11} />
-                </button>
-                <button
-                  type="button"
-                  class="icon-btn"
-                  title="Delete"
-                  aria-label={`Delete ${entry.path}`}
-                  onclick={() => onDeletePath(entry)}
-                >
-                  <Icon name="trash" size={11} />
-                </button>
-              </span>
-            {/if}
-          </li>
-        {/each}
-        {#if files.length === 0 && !filesLoading}
-          <li class="empty">No files.</li>
-        {/if}
-      </ul>
-    {/if}
-    {/if}
-  </section>
+  <footer class="rail-foot">
+    <button class="btn" type="button" onclick={() => (composing = !composing)}>
+      <Icon name="plus" size={13} />
+      New session
+    </button>
+    <span class="spacer"></span>
+    <button class="btn" type="button" onclick={onHelp}>Help</button>
+  </footer>
 </aside>
 
 <style>
@@ -504,31 +293,6 @@
     line-height: 1.25;
   }
 
-  .title {
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    min-width: 0;
-  }
-
-  .names strong {
-    font-size: 13px;
-    letter-spacing: 0.01em;
-  }
-
-  .help {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-    font-size: 11px;
-  }
-
-  .help:hover {
-    color: var(--text);
-    text-decoration: underline;
-  }
-
   .where {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -537,28 +301,11 @@
     font-size: 11px;
   }
 
-  .branch {
-    margin-left: auto;
-    max-width: 45%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .panel {
     display: flex;
     flex-direction: column;
     min-height: 0;
     padding: 10px 8px 6px;
-  }
-
-  .sessions {
-    max-height: 42%;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .files {
-    flex: 1;
   }
 
   .section-head {
@@ -598,8 +345,7 @@
     min-width: 0;
   }
 
-  .session-list,
-  .tree {
+  .session-list {
     list-style: none;
     margin: 0;
     padding: 0;
@@ -659,8 +405,6 @@
     pointer-events: none;
   }
 
-  .tree li:hover .row-actions,
-  .tree li:focus-within .row-actions,
   .session-list li.active:hover .row-actions,
   .session-list li.active:focus-within .row-actions {
     visibility: visible;
@@ -760,130 +504,80 @@
     font-size: 12px;
   }
 
-  .tree {
-    padding: 0 2px 6px;
-  }
-
-  .tree li {
-    display: flex;
-    align-items: center;
-    list-style: none;
-  }
-
-  .tree-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    flex: 1;
-    min-width: 0;
-    height: 23px;
-    padding: 0 6px 0 calc(6px + var(--depth) * 12px);
-    border: 0;
-    border-radius: 4px;
-    background: none;
-    color: var(--secondary);
-    text-align: left;
-    font-family: var(--font-mono);
-    font-size: 11.5px;
-  }
-
-  button.tree-row:hover {
-    background: var(--hover);
-    color: var(--text);
-  }
-
-  .dir-row {
-    color: var(--muted);
-  }
-
-  .caret {
-    display: inline-flex;
-    color: var(--muted);
-    transition: transform 120ms ease;
-  }
-
-  .caret.open {
-    transform: rotate(90deg);
-  }
-
-  .tree-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .change {
-    display: inline-grid;
-    place-items: center;
-    min-width: 16px;
-    height: 16px;
-    margin-right: 4px;
-    padding: 0 3px;
-    border: 0;
-    border-radius: 4px;
-    background: var(--surface);
-    color: var(--warning);
-    font-size: 10px;
-    font-weight: 700;
-    font-family: var(--font-ui);
-  }
-
-  .hits {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    margin: 0;
-    padding: 0 2px;
-    overflow: auto;
-    list-style: none;
-  }
-
-  .hit {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    width: 100%;
-    padding: 3px 6px;
-    border: 0;
-    border-radius: 4px;
-    background: none;
-    text-align: left;
-  }
-
-  .hit:hover {
-    background: var(--hover);
-  }
-
-  .hit-path {
-    color: var(--accent);
-    font-size: 10.5px;
-  }
-
-  .hit-text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--secondary);
-    font-size: 11px;
-  }
-
-  .change.d {
-    color: var(--error);
-  }
-
-  .change.\? {
-    color: var(--success);
-  }
-
-  .empty,
-  .panel-error {
+  .empty {
     padding: 6px 8px;
     color: var(--muted);
     font-size: 12px;
   }
 
-  .panel-error {
-    color: var(--error);
+  .names strong {
+    font-size: 13px;
+    letter-spacing: 0.01em;
+  }
+
+  .needs-section {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .needs-section .session-state,
+  .count {
+    color: var(--warning);
+  }
+
+  .count {
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .sessions {
+    flex: 1;
+  }
+
+  .rail-foot {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: auto;
+    padding: 8px 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .rail-foot .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
+  .rail-backdrop {
+    display: none;
+  }
+
+  /* Compact: the rail leaves the grid and opens as an overlay. */
+  @media (max-width: 760px) {
+    .sidebar {
+      display: none;
+    }
+
+    .sidebar.open {
+      display: flex;
+      position: fixed;
+      inset: 0 auto 0 0;
+      width: min(310px, 90vw);
+      z-index: 16;
+      box-shadow: var(--shadow);
+    }
+
+    .rail-backdrop {
+      display: block;
+      position: fixed;
+      inset: 0;
+      z-index: 15;
+      border: 0;
+      background: rgba(5, 7, 9, 0.5);
+    }
   }
 </style>
