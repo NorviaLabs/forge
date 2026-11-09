@@ -96,11 +96,40 @@ pub fn discover_logins(home: &Path) -> Vec<DiscoveredLogin> {
 /// which would have made the tests below pass only by luck.
 /// [`discover_logins`] for the current user, including OpenCode's data
 /// directory. Every frontend wants the same one, so none re-derives it.
+///
+/// OpenCode 2.x keeps credentials in its own store, not the `auth.json` its
+/// 1.x CLI left behind. Prefer the live store and keep the legacy file only
+/// for providers it does not know about: an old file otherwise shadows the
+/// key the user is actually signed in with.
 pub fn discover_user_logins() -> Vec<DiscoveredLogin> {
-    match dirs::home_dir() {
-        Some(home) => discover_logins_in(&home, xdg_data_home().as_deref()),
-        None => Vec::new(),
+    let home = dirs::home_dir();
+    let data_home = xdg_data_home();
+    let current = from_opencode_v2(home.as_deref(), data_home.as_deref());
+    let Some(home) = home else {
+        return current;
+    };
+    let legacy = discover_logins_in(&home, data_home.as_deref());
+    prefer_current(current, legacy)
+}
+
+fn opencode_dir(home: &Path, data_home: Option<&Path>) -> PathBuf {
+    match data_home {
+        Some(data) => data.join("opencode"),
+        None => home.join(".local").join("share").join("opencode"),
     }
+}
+
+fn prefer_current(
+    current: Vec<DiscoveredLogin>,
+    legacy: Vec<DiscoveredLogin>,
+) -> Vec<DiscoveredLogin> {
+    let mut out = current;
+    let fresh: Vec<_> = legacy
+        .into_iter()
+        .filter(|old| !out.iter().any(|new| new.profile_id == old.profile_id))
+        .collect();
+    out.extend(fresh);
+    out
 }
 
 pub fn discover_logins_in(home: &Path, data_home: Option<&Path>) -> Vec<DiscoveredLogin> {
@@ -179,14 +208,7 @@ fn from_codex(home: &Path) -> Vec<DiscoveredLogin> {
 /// `~/.local/share/opencode/auth.json` (or `$XDG_DATA_HOME`) — a map of
 /// provider id to either an API key or an OAuth session.
 fn from_opencode(home: &Path, data_home: Option<&Path>) -> Vec<DiscoveredLogin> {
-    let path = match data_home {
-        Some(data) => data.join("opencode").join("auth.json"),
-        None => home
-            .join(".local")
-            .join("share")
-            .join("opencode")
-            .join("auth.json"),
-    };
+    let path = opencode_dir(home, data_home).join("auth.json");
     let Some(root) = read_json(&path) else {
         return Vec::new();
     };
@@ -209,15 +231,28 @@ fn from_opencode(home: &Path, data_home: Option<&Path>) -> Vec<DiscoveredLogin> 
         else {
             continue;
         };
-        let profile_id = profile.id.as_str();
-        let account = non_empty(entry.get("accountId"));
-        let secret = match entry.get("type").and_then(serde_json::Value::as_str) {
-            Some("api") => match non_empty(entry.get("key")) {
-                Some(key) => DiscoveredSecret::ApiKey(key),
-                None => continue,
-            },
-            Some("oauth") => match non_empty(entry.get("access")) {
-                Some(access) => DiscoveredSecret::Oauth(Box::new(OauthTokens {
+        let Some(secret) = opencode_secret(entry) else {
+            continue;
+        };
+        out.push(DiscoveredLogin {
+            profile_id: profile.id.clone(),
+            source: "OpenCode".into(),
+            account: non_empty(entry.get("accountId")),
+            path: path.clone(),
+            secret,
+        });
+    }
+    out.sort_by(|a, b| a.profile_id.cmp(&b.profile_id));
+    out
+}
+
+/// One credential from an OpenCode `auth.json` entry or export value.
+fn opencode_secret(entry: &serde_json::Value) -> Option<DiscoveredSecret> {
+    match entry.get("type").and_then(serde_json::Value::as_str) {
+        Some("api" | "key") => non_empty(entry.get("key")).map(DiscoveredSecret::ApiKey),
+        Some("oauth") => {
+            non_empty(entry.get("access")).map(|access| {
+                DiscoveredSecret::Oauth(Box::new(OauthTokens {
                     access_token: access,
                     refresh_token: non_empty(entry.get("refresh")),
                     // OpenCode stores milliseconds; Forge's parser reads bare
@@ -228,16 +263,67 @@ fn from_opencode(home: &Path, data_home: Option<&Path>) -> Vec<DiscoveredLogin> 
                         .get("expires")
                         .and_then(serde_json::Value::as_u64)
                         .map(|ms| (ms / 1000).to_string()),
-                })),
-                None => continue,
-            },
-            _ => continue,
+                }))
+            })
+        }
+        _ => None,
+    }
+}
+
+/// OpenCode 2.x's credential store, through its supported export command.
+/// Read-only and infallible like the file sources: a missing CLI or a failed
+/// export simply yields no discovery.
+fn from_opencode_v2(home: Option<&Path>, data_home: Option<&Path>) -> Vec<DiscoveredLogin> {
+    let output = match std::process::Command::new("opencode")
+        .args(["auth", "export"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output,
+        _ => return Vec::new(),
+    };
+    let path = home
+        .map(|home| opencode_dir(home, data_home).join("opencode.db"))
+        .unwrap_or_default();
+    parse_opencode_v2_export(&output.stdout, &path)
+}
+
+/// Parse `opencode auth export` output. Separate from the command so the
+/// wire shape can be tested without spawning anything.
+fn parse_opencode_v2_export(bytes: &[u8], path: &Path) -> Vec<DiscoveredLogin> {
+    let Ok(entries) = serde_json::from_slice::<Vec<serde_json::Value>>(bytes) else {
+        return Vec::new();
+    };
+    let builtins = crate::builtin_registry();
+    let mut out = Vec::new();
+    for entry in entries {
+        if entry.get("active").and_then(serde_json::Value::as_bool) == Some(false) {
+            continue;
+        }
+        let Some(integration) = non_empty(entry.get("integrationID")) else {
+            continue;
+        };
+        let Some(profile) = builtins
+            .profiles()
+            .iter()
+            .find(|profile| profile.import_aliases.contains(&integration))
+        else {
+            continue;
+        };
+        let value = match entry.get("value") {
+            Some(serde_json::Value::String(text)) => {
+                serde_json::from_str(text).unwrap_or(serde_json::Value::Null)
+            }
+            Some(value) => value.clone(),
+            None => continue,
+        };
+        let Some(secret) = opencode_secret(&value) else {
+            continue;
         };
         out.push(DiscoveredLogin {
-            profile_id: profile_id.into(),
+            profile_id: profile.id.clone(),
             source: "OpenCode".into(),
-            account,
-            path: path.clone(),
+            account: non_empty(value.get("accountId")).or_else(|| non_empty(value.get("email"))),
+            path: path.to_path_buf(),
             secret,
         });
     }
@@ -344,6 +430,52 @@ mod tests {
             found.len(),
             1,
             "openrouter has no Forge profile to satisfy: {found:?}"
+        );
+    }
+
+    #[test]
+    fn opencode_v2_export_values_are_read_like_auth_file_entries() {
+        let found = parse_opencode_v2_export(
+            br#"[{"id":"cred_1","integrationID":"opencode-go","label":"OpenCode Go","active":true,"value":{"type":"key","key":"oc_sk_live"}}]"#,
+            Path::new("/tmp/opencode.db"),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].profile_id,
+            crate::builtin::profile_ids::OPENCODE_GO
+        );
+        assert_eq!(found[0].source, "OpenCode");
+        match &found[0].secret {
+            DiscoveredSecret::ApiKey(key) => assert_eq!(key, "oc_sk_live"),
+            other => panic!("expected api key, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_live_store_wins_over_a_legacy_auth_file_for_the_same_provider() {
+        // OpenCode 2.x stopped updating auth.json. A stale key there must not
+        // shadow the one the user is actually signed in with.
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        write(
+            &data.path().join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"sk-old"},"xai":{"type":"api","key":"sk-x"}}"#,
+        );
+        let legacy = discover_logins_in(home.path(), Some(data.path()));
+        let current = parse_opencode_v2_export(
+            br#"[{"integrationID":"opencode-go","active":true,"value":{"type":"key","key":"oc_sk_live"}}]"#,
+            Path::new("/tmp/opencode.db"),
+        );
+
+        let merged = prefer_current(current, legacy);
+        let login = login_for_profile(&merged, crate::builtin::profile_ids::OPENCODE_GO).unwrap();
+        match login.secret {
+            DiscoveredSecret::ApiKey(key) => assert_eq!(key, "oc_sk_live"),
+            other => panic!("expected the live key, got {other:?}"),
+        }
+        assert!(
+            login_for_profile(&merged, crate::builtin::profile_ids::XAI).is_some(),
+            "providers only the legacy file knows about remain available"
         );
     }
 

@@ -321,6 +321,9 @@ prefix (`<profile_id>/<model>`).
 - Discovery is read-only: `import` reports candidate logins (mapped to
   built-ins by `import_aliases`) and never adopts one without an explicit
   caller import.
+- OpenCode 2.x credentials come from `opencode auth export`; a profile found
+  there shadows the same provider in OpenCode 1.x's legacy `auth.json`, which
+  2.x stops updating.
 
 ## Side Effects
 

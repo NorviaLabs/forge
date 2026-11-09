@@ -10,6 +10,8 @@ pub struct ProviderView {
     pub title: String,
     pub auth: String,
     pub connected: bool,
+    /// A stored credential was rejected; connecting prompts for a new one.
+    pub needs_auth: bool,
     /// A provider defined by the user, not a built-in.
     pub custom: bool,
     pub base_url: String,
@@ -48,6 +50,7 @@ pub fn list() -> Result<Vec<ProviderView>, String> {
                 title: profile.title.clone(),
                 auth: profile.effective_auth().label().into(),
                 connected: status.connected_profile_ids.contains(&profile.id),
+                needs_auth: credentials.is_flagged(profile).unwrap_or(false),
                 custom: profile.is_user(),
                 base_url: profile.base_url.clone(),
                 reuse: login.as_ref().map(|login| login.source.clone()),
@@ -145,16 +148,30 @@ pub fn import_login(id: &str) -> Result<String, String> {
         credentials.store(),
         &forge_connect::ModelCatalogCache::user_default(),
     );
-    Ok(if catalog.is_err() {
-        format!(
-            "Reused the {} sign-in, but the model catalog could not be refreshed.",
-            login.source
-        )
-    } else {
-        format!(
+    Ok(match catalog {
+        Ok(_) => format!(
             "Reused the {} sign-in. Choose a model to use this provider.",
             login.source
-        )
+        ),
+        Err(error) if error.rejected_credential() => {
+            ConnectService {
+                registry: &registry,
+                credentials: &credentials,
+                preferences: &PreferenceStore::user_default(),
+                active_profile_id: None,
+                active_model: None,
+            }
+            .report_auth_failure(id)
+            .map_err(|error| error.to_string())?;
+            format!(
+                "The {} sign-in was rejected (expired or revoked). Connect to enter a new key.",
+                login.source
+            )
+        }
+        Err(error) => format!(
+            "Reused the {} sign-in, but the model catalog could not be refreshed: {error}",
+            login.source
+        ),
     })
 }
 

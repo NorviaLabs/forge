@@ -88,12 +88,13 @@
     <label>Provider
       <select class="field" bind:value={profileId} disabled={busy} onchange={() => { disconnecting = false; removing = false; customOpen = false; customEditing = false; message = ""; error = ""; }}>
         {#each providers as provider (provider.id)}
-          <option value={provider.id}>{provider.title}{provider.connected ? " — connected" : provider.reuse ? " — sign-in available" : ""}</option>
+          <option value={provider.id}>{provider.title}{provider.connected ? " — connected" : provider.needs_auth ? " — sign-in rejected" : provider.reuse ? " — sign-in available" : ""}</option>
         {/each}
       </select>
     </label>
     {#if selected}
       <p>{selected.auth}. API keys are read from your environment or stored credentials. If missing, macOS opens a native hidden-input prompt; keys never enter this page.</p>
+      {#if selected.needs_auth}<p class="error" role="alert">The saved sign-in was rejected or has expired. Connect to enter a new key or reuse another sign-in.</p>{/if}
       {#if login}
         <section class="login" aria-live="polite">
           <h3>Finish signing in in your browser</h3>

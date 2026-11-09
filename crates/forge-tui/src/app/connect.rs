@@ -1485,7 +1485,7 @@ impl TuiApp {
     ///
     /// Read fresh each time the picker opens rather than cached at startup:
     /// signing in to `codex` in another terminal while Forge is running should
-    /// show up here, and the read is three small files.
+    /// show up here, and the reads are small files plus OpenCode's export.
     pub(super) fn reusable_logins(&self) -> Vec<forge_connect::DiscoveredLogin> {
         forge_connect::discover_user_logins()
     }
