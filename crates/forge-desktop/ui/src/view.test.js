@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import {
   closeDocument,
   attentionLabel,
+  flattenTree,
+  foldersToLoad,
+  windowRange,
   projectStatus,
   prunable,
   defaultView,
@@ -33,9 +36,11 @@ test("a default view is a fresh record with nothing open", () => {
     draft: "",
     scroll: 0,
     pinned: true,
+    expanded: [],
   });
   assert.notEqual(first, second);
   assert.notEqual(first.tabs, second.tabs, "records must not share the tab list");
+  assert.notEqual(first.expanded, second.expanded, "records must not share open folders");
   first.tabs.push(doc("file:a"));
   assert.deepEqual(second.tabs, []);
 });
@@ -181,4 +186,37 @@ test("a project row says whether it is closed, waiting on you, working or idle",
   assert.equal(projectStatus(project({})), "idle");
   assert.equal(attentionLabel("child_approval"), "Agent approval");
   assert.equal(attentionLabel("unknown"), "Request");
+});
+
+test("the tree shows open folders' children, hides ignored entries, and marks gaps", () => {
+  const entry = (path, is_dir, ignored = false) => ({ path, name: path.split("/").pop(), is_dir, ignored });
+  const listings = {
+    "": { entries: [entry("src", true), entry("zig-out", true, true), entry("build.zig", false)], truncated: false },
+    src: { entries: [entry("src/big", true), entry("src/main.zig", false)], truncated: true },
+  };
+  const rows = (expanded, showIgnored) =>
+    flattenTree(listings, expanded, showIgnored).map((row) => [row.path, row.kind, row.depth]);
+  assert.deepEqual(rows([], false), [["src", "dir", 0], ["build.zig", "file", 0]]);
+  assert.deepEqual(rows(["src", "src/big"], false), [
+    ["src", "dir", 0],
+    ["src/big", "dir", 1],
+    ["src/big/…", "loading", 2],
+    ["src/main.zig", "file", 1],
+    ["src/+", "more", 1],
+    ["build.zig", "file", 0],
+  ]);
+  assert.deepEqual(rows([], true).map(([path]) => path), ["src", "zig-out", "build.zig"]);
+});
+
+test("a refresh reloads only folders that are open and visible", () => {
+  assert.deepEqual(foldersToLoad([]), [""]);
+  // `a/b` is open but `a` is not: it is hidden, so it is not reloaded.
+  assert.deepEqual(foldersToLoad(["x", "x/y", "a/b"]), ["", "x", "x/y"]);
+});
+
+test("only the rows on screen, plus overscan, are rendered", () => {
+  assert.deepEqual(windowRange(10_000, 0, 240, 24, 5), { start: 0, end: 15 });
+  assert.deepEqual(windowRange(10_000, 24_000, 240, 24, 5), { start: 995, end: 1015 });
+  assert.deepEqual(windowRange(12, 0, 2400, 24, 5), { start: 0, end: 12 });
+  assert.deepEqual(windowRange(0, 0, 240, 24), { start: 0, end: 0 });
 });

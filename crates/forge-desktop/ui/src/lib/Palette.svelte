@@ -3,23 +3,42 @@
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
 
-  let { items = [], placeholder = "Search sessions, files and actions", onClose } = $props();
+  // `onQuery(query)` returns more items for a query, such as files found by
+  // the workspace index; they follow the matching static items.
+  let { items = [], placeholder = "Search sessions, files and actions", onQuery, onClose } = $props();
 
   let query = $state("");
   let cursor = $state(0);
   let input = $state();
+  let found = $state({ query: "", items: [] });
+
+  let queryTimer;
+  $effect(() => {
+    const value = query;
+    clearTimeout(queryTimer);
+    if (!onQuery || !value.trim()) {
+      found = { query: value, items: [] };
+      return;
+    }
+    queryTimer = setTimeout(async () => {
+      const items = await onQuery(value);
+      if (query === value) found = { query: value, items };
+    }, 80);
+    return () => clearTimeout(queryTimer);
+  });
 
   const filtered = $derived.by(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return items.slice(0, 200);
-    return items
-      .filter(
-        (item) =>
-          item.label.toLowerCase().includes(needle) ||
-          (item.detail ?? "").toLowerCase().includes(needle) ||
-          (item.group ?? "").toLowerCase().includes(needle),
-      )
-      .slice(0, 200);
+    const matching = items.filter(
+      (item) =>
+        item.label.toLowerCase().includes(needle) ||
+        (item.detail ?? "").toLowerCase().includes(needle) ||
+        (item.group ?? "").toLowerCase().includes(needle),
+    );
+    const ids = new Set(matching.map((item) => item.id));
+    const extra = found.query === query ? found.items.filter((item) => !ids.has(item.id)) : [];
+    return [...matching, ...extra].slice(0, 200);
   });
 
   $effect(() => {

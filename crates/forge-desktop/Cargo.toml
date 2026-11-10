@@ -32,6 +32,8 @@ forge-config = { path = "../forge-config" }
 forge-core = { path = "../forge-core" }
 forge-connect = { path = "../forge-connect" }
 forge-session = { path = "../forge-session" }
+# File name and content search through the same watched index the agent uses.
+forge-search = { path = "../forge-search" }
 # The `__egress-connect` helper git's SSH routing invokes on this executable.
 forge-tools = { path = "../forge-tools" }
 forge-types = { path = "../forge-types" }
@@ -41,6 +43,8 @@ dirs = "7"
 portable-pty = "0.9"
 base64 = "0.22"
 sha2 = "0.10"
+# Which entries `.gitignore` excludes, so the file tree can mark them.
+ignore = "0.4"
 # Native folder picker for a launch with no meaningful working directory.
 # Called directly rather than through the Tauri dialog plugin: plugins add IPC
 # surface the webview could reach (see tests/config.rs).

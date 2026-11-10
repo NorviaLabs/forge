@@ -99,11 +99,31 @@ themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
     project_name, message }` (`fresh_project_errors`, once per `seq`; none
     replayed at startup or on a switch). `ProjectFailure` carries
     `project_id` and its message starts with the project name.
+- Files tree: lazy, one folder per request. `list_dir(session_id, path)`
+  (`""` = root) returns that folder's children (directories first) as
+  `DirListing { entries: [{ path, name, is_dir, ignored }], truncated }`; only
+  a single folder above 20,000 entries is cut (`truncated`). `ignored` comes
+  from `.gitignore` (the folder's and every parent's, `.git/info/exclude`, the
+  global excludes file; honoured outside Git too) plus conventional build and
+  dependency folders (`node_modules`, `target`, `dist`, `.zig-cache`,
+  `zig-out`, `.venv`, …). Ignored entries are listed and hidden by the page
+  until "Show ignored files". `.git` and `.forge` are never listed and cannot
+  be browsed. The page keeps loaded folders in `listings`, open folders in the
+  session's view record (`expanded`), flattens them with `view.js`
+  `flattenTree`, and renders only the rows on screen (`windowRange`, 24 px
+  rows). A refresh reloads the root and the visible open folders
+  (`foldersToLoad`); a folder that is gone is closed.
+- Search: `find_files` (Quick Open by fuzzy name, 50 results) and
+  `search_files` (content, 200 hits; plain text folded to lower case, `/…/`
+  is a regex) go through one watched `forge_search::WorkspaceIndex` per
+  workspace root (`workspace::Indexes`), opened on the first search there. No
+  file-count limit; the index is gitignore-aware and does not follow links
+  out of the workspace. The command palette and the Files filter query it as
+  you type, so files in folders never opened are found.
 - `src/workspace.rs`: workspace browsing, search, file operations, image paste,
   the editor's save path and operator-driven Git writes.
-  Confines every path to the active session's workspace, skips runtime and
-  dependency directories, caps the tree and file/diff sizes, refuses binary
-  files, and shells out to Git for status/diff/restore, stage/unstage, staged-only
+  Confines every path to the active session's workspace, caps file/diff
+  sizes, refuses binary files, and shells out to Git for status/diff/restore, stage/unstage, staged-only
   commits and branch operations. `read` returns a SHA-256 fingerprint, LF-normalized
   text and whether the file used CRLF; files above the size cap or not valid
   UTF-8 are marked read-only. `read_image` returns a magic-byte-checked

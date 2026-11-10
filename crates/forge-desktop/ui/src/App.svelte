@@ -19,7 +19,7 @@
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
   import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
-  import { attentionLabel, projectStatus, prunable } from "./view.js";
+  import { attentionLabel, flattenTree, foldersToLoad, projectStatus, prunable } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
   import {
@@ -101,7 +101,12 @@
   let githubIssue = $state(null);
   let githubPr = $state("");
 
-  let files = $state([]);
+  // The Files tree, one folder at a time: folder path ("" is the root) ->
+  // `{ entries, truncated }`. Open folders live in the session's view record.
+  let listings = $state({});
+  // Show entries .gitignore excludes (dependencies, build output).
+  let showIgnored = $state(false);
+  const fileTree = $derived(flattenTree(listings, currentView.expanded ?? [], showIgnored));
   let filesLoading = $state(false);
   let filesError = $state("");
   let status = $state({ branch: "", files: [] });
@@ -287,16 +292,6 @@
           closed ? command("resume_session", { sessionId: session.session_id }) : selectSession(session.session_id),
       };
     });
-    for (const file of files) {
-      if (file.is_dir) continue;
-      items.push({
-        id: `file:${file.path}`,
-        group: "Files",
-        label: basename(file.path),
-        detail: file.path,
-        action: () => openFile(file.path),
-      });
-    }
     // Editor items act on the mounted FilePane, which only the Files screen has.
     const editing = currentView.screen === "files" ? activeDoc : null;
     if (editing?.kind === "file") {
@@ -575,15 +570,22 @@
     filesLoading = true;
     filesError = "";
     try {
+      // Reload the root and every open folder, never the whole tree. A
+      // folder that has gone away (deleted, renamed) is simply closed.
+      const record = viewFor(views, owner);
+      const folders = foldersToLoad(record.expanded);
       // A folder that isn't a Git repository has files but no Git status;
       // asking for it would fail and hide the file list too.
-      const [entries, nextStatus, written] = await Promise.all([
-        invoke("list_files", { sessionId: owner }),
+      const [loaded, nextStatus, written] = await Promise.all([
+        Promise.all(folders.map((path) => invoke("list_dir", { sessionId: owner, path }).catch((cause) => (path ? null : Promise.reject(cause))))),
         supportsGit ? invoke("git_status", { sessionId: owner }) : { branch: "", files: [] },
         supportsGit ? invoke("git_last_turn_files", { sessionId: owner }) : [],
       ]);
       if (request !== filesRequest || owner !== sessionId) return;
-      files = entries;
+      const next = {};
+      folders.forEach((path, index) => { if (loaded[index]) next[path] = loaded[index]; });
+      record.expanded = record.expanded.filter((path) => !folders.includes(path) || next[path]);
+      listings = next;
       status = nextStatus;
       lastTurnFiles = written;
       markStaleDiffs(owner, nextStatus);
@@ -592,6 +594,39 @@
     } finally {
       if (request === filesRequest && owner === sessionId) filesLoading = false;
     }
+  }
+
+  // Open or close a folder in the Files tree, loading it on first open.
+  async function toggleDir(path) {
+    const owner = sessionId;
+    const record = viewFor(views, owner);
+    if (record.expanded.includes(path)) {
+      record.expanded = record.expanded.filter((entry) => entry !== path);
+      return;
+    }
+    record.expanded = [...record.expanded, path];
+    if (listings[path]) return;
+    try {
+      const listing = await invoke("list_dir", { sessionId: owner, path });
+      if (owner === sessionId) listings = { ...listings, [path]: listing };
+    } catch (cause) {
+      if (owner !== sessionId) return;
+      record.expanded = record.expanded.filter((entry) => entry !== path);
+      filesError = String(cause);
+    }
+  }
+
+  // Quick Open items for the palette, from the workspace index.
+  async function findFileItems(query) {
+    if (!sessionId || !query.trim()) return [];
+    const found = await invoke("find_files", { sessionId, query }).catch(() => []);
+    return found.map((file) => ({
+      id: `file:${file.path}`,
+      group: "Files",
+      label: basename(file.path),
+      detail: file.path,
+      action: () => openFile(file.path),
+    }));
   }
 
   function onEvent(event) {
@@ -671,7 +706,7 @@
         // The tree and branch must never show the previous session. Status
         // and last-turn files are kept until the refresh replaces them, so
         // the Files badge and Stage all do not blink off during the switch.
-        files = [];
+        listings = {};
         info = { ...info, branch: "" };
         if (next) refreshFiles();
       }
@@ -695,7 +730,7 @@
   }
 
   const WORKSPACE_COMMANDS = new Set([
-    "list_files", "read_file", "read_image", "git_status", "git_diff", "git_last_turn_files",
+    "list_dir", "find_files", "read_file", "read_image", "git_status", "git_diff", "git_last_turn_files",
     "write_file", "create_file", "create_dir", "rename_path", "delete_path", "search_files",
     "git_stage", "git_unstage", "git_commit", "git_branches", "git_switch_branch",
     "git_create_branch", "git_merge_branch", "git_rename_branch", "git_restore", "git_discard_hunk",
@@ -751,7 +786,7 @@
     projectId = id;
     supportsGit = git !== false;
     attention = {};
-    files = [];
+    listings = {};
     status = { branch: "", files: [] };
     lastTurnFiles = [];
     resumable = [];
@@ -2069,7 +2104,8 @@
       {#key sessionId}
         <Files
           bind:this={filesPane}
-          {files}
+          tree={fileTree}
+          bind:showIgnored
           {filesLoading}
           {filesError}
           {status}
@@ -2094,6 +2130,8 @@
           onRenamePath={startRenamePath}
           onDeletePath={requestDelete}
           onSearch={(value) => invoke("search_files", { sessionId, query: value })}
+          onFindFiles={(value) => invoke("find_files", { sessionId, query: value })}
+          onToggleDir={toggleDir}
           onDraftChange={changeDraft}
           onActivate={(id) => (currentView.activeDocId = id)}
           onClose={closeTab}
@@ -2188,7 +2226,7 @@
   {/if}
 
   {#if paletteOpen}
-    <Palette items={paletteItems} onClose={() => (paletteOpen = false)} />
+    <Palette items={paletteItems} onQuery={findFileItems} onClose={() => (paletteOpen = false)} />
   {/if}
 
   {#if childView}

@@ -12,6 +12,8 @@ export function defaultView() {
     draft: "",
     scroll: 0,
     pinned: true,
+    // Folders open in the Files tree; restored with the session (D9).
+    expanded: [],
   };
 }
 
@@ -129,4 +131,50 @@ const ATTENTION_KIND = { approval: "Approval", question: "Question", child_appro
 
 export function attentionLabel(kind) {
   return ATTENTION_KIND[kind] ?? "Request";
+}
+
+// The Files tree loads one folder at a time. `listings` maps a folder path
+// ("" is the workspace root) to its `{ entries, truncated }` from `list_dir`.
+// Returns the visible rows in tree order: an open folder's children follow it,
+// a folder still loading shows a `loading` row, and a folder cut at the
+// per-folder cap ends with a `more` row. Ignored entries are left out unless
+// `showIgnored`.
+export function flattenTree(listings, expanded, showIgnored) {
+  const open = new Set(expanded);
+  const rows = [];
+  const walk = (folder, depth) => {
+    const listing = listings[folder];
+    if (!listing) {
+      rows.push({ path: `${folder}/…`, kind: "loading", depth });
+      return;
+    }
+    for (const entry of listing.entries) {
+      if (entry.ignored && !showIgnored) continue;
+      const isOpen = entry.is_dir && open.has(entry.path);
+      rows.push({ ...entry, kind: entry.is_dir ? "dir" : "file", depth, open: isOpen });
+      if (isOpen) walk(entry.path, depth + 1);
+    }
+    if (listing.truncated) rows.push({ path: `${folder}/+`, kind: "more", depth });
+  };
+  walk("", 0);
+  return rows;
+}
+
+// Folders a refresh reloads: the root and every open folder whose parents are
+// all open too (a closed parent hides them, so they need no request).
+export function foldersToLoad(expanded) {
+  const open = new Set(expanded);
+  const visible = expanded.filter((path) => {
+    const parts = path.split("/");
+    return parts.slice(1).every((_, index) => open.has(parts.slice(0, index + 1).join("/")));
+  });
+  return ["", ...visible];
+}
+
+// Rows to render for a fixed-height list scrolled to `scrollTop` in a
+// `viewport`-tall box, with `overscan` extra rows on each side.
+export function windowRange(count, scrollTop, viewport, rowHeight, overscan = 8) {
+  const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+  const end = Math.min(count, Math.ceil((scrollTop + viewport) / rowHeight) + overscan);
+  return { start, end: Math.max(start, end) };
 }

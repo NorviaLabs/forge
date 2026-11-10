@@ -932,6 +932,9 @@ pub struct DesktopState {
     active: tokio::sync::watch::Sender<forge_session::OpenProjectRef>,
     /// The session's interactive shells (one per session, opened on demand).
     pub shells: crate::shell::Shells,
+    /// One watched search index per workspace root, opened on the first
+    /// search there. Sessions in managed worktrees each have their own root.
+    indexes: crate::workspace::Indexes,
     /// The page has unsaved editor buffers or live turns; a close asks first.
     pub unsaved: std::sync::atomic::AtomicBool,
     /// A turn is running or waiting somewhere, so quitting discards work.
@@ -951,6 +954,7 @@ impl DesktopState {
             projects,
             active: tokio::sync::watch::channel(active).0,
             shells: crate::shell::Shells::default(),
+            indexes: crate::workspace::Indexes::default(),
             unsaved: std::sync::atomic::AtomicBool::new(false),
             busy: std::sync::atomic::AtomicBool::new(false),
             quitting: std::sync::atomic::AtomicBool::new(false),
@@ -2748,16 +2752,35 @@ async fn active_workspace(state: &DesktopState) -> Result<std::path::PathBuf, St
     workspace_of(state, session_id).await
 }
 
-/// A session's workspace tree, minus runtime and dependency dirs.
+/// One folder of a session's workspace (`""` is the root). The tree loads a
+/// folder when it is expanded, so no listing walks the whole workspace.
 #[tauri::command]
-pub async fn list_files(
+pub async fn list_dir(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<Vec<crate::workspace::FileEntry>, String> {
+    path: String,
+) -> Result<crate::workspace::DirListing, String> {
     let root = workspace_of(&state, session_id).await?;
-    tokio::task::spawn_blocking(move || crate::workspace::list(&root))
+    tokio::task::spawn_blocking(move || crate::workspace::list_dir(&root, &path))
         .await
         .map_err(|error| error.to_string())?
+}
+
+/// Files in a session's workspace whose path fuzzily matches `query`, best
+/// first (Quick Open and the Files filter).
+#[tauri::command]
+pub async fn find_files(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    query: String,
+) -> Result<Vec<crate::workspace::FoundFile>, String> {
+    let root = workspace_of(&state, session_id).await?;
+    let indexes = state.indexes.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::workspace::find(&*indexes.for_root(&root)?, &query, 50)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 /// One UTF-8 file from a session's workspace.
@@ -2943,7 +2966,7 @@ pub async fn delete_path(
         .map_err(|error| error.to_string())?
 }
 
-/// Case-insensitive content search across a session's workspace.
+/// Content search across a session's workspace, through its index.
 #[tauri::command]
 pub async fn search_files(
     state: State<'_, DesktopState>,
@@ -2951,9 +2974,12 @@ pub async fn search_files(
     query: String,
 ) -> Result<Vec<crate::workspace::SearchHit>, String> {
     let root = workspace_of(&state, session_id).await?;
-    tokio::task::spawn_blocking(move || crate::workspace::search(&root, &query))
-        .await
-        .map_err(|error| error.to_string())?
+    let indexes = state.indexes.clone();
+    tokio::task::spawn_blocking(move || {
+        crate::workspace::search(&*indexes.for_root(&root)?, &query)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

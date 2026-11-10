@@ -1,12 +1,14 @@
 <script>
   import Icon from "./Icon.svelte";
   import FilePane from "./FilePane.svelte";
-  import { diffSide, effectiveScope, fileCounts, scopeEntries } from "../view.js";
+  import { diffSide, effectiveScope, fileCounts, scopeEntries, windowRange } from "../view.js";
 
   // The Files screen's markup. App owns every command; this component only
   // calls the callbacks it is given.
   let {
-    files = [],
+    // Visible rows of the lazily loaded tree (`flattenTree` in view.js).
+    tree = [],
+    showIgnored = $bindable(false),
     filesLoading = false,
     filesError = "",
     status = { branch: "", files: [] },
@@ -33,6 +35,9 @@
     onRenamePath,
     onDeletePath,
     onSearch,
+    // `onFindFiles(query)`: files by fuzzy name, from the workspace index.
+    onFindFiles,
+    onToggleDir,
     onDraftChange,
     onActivate,
     onClose,
@@ -50,7 +55,15 @@
   let hits = $state([]);
   let searching = $state(false);
   let searchError = $state("");
-  let collapsed = $state([]);
+  // Files whose name matches the filter, from the index rather than the
+  // loaded folders, so a file inside a folder never opened is still found.
+  let named = $state([]);
+  let naming = $state(false);
+  // The tree renders only the rows on screen: a folder can hold thousands.
+  const ROW = 24;
+  let scrollTop = $state(0);
+  let viewport = $state(600);
+  const visible = $derived(windowRange(tree.length, scrollTop, viewport, ROW));
 
   const counts = $derived(fileCounts(status));
   const shown = $derived(supportsGit ? effectiveScope(scope, lastTurnFiles) : "all");
@@ -58,13 +71,6 @@
   const changeByPath = $derived(new Map(status.files.map((file) => [file.path, file])));
   const activeDoc = $derived(tabs.find((tab) => tab.id === activeDocId) ?? null);
   const needle = $derived(query.trim().toLowerCase());
-
-  const tree = $derived.by(() => {
-    const matching = needle ? files.filter((entry) => entry.path.toLowerCase().includes(needle)) : files;
-    // While filtering, show every match so a hit inside a collapsed folder still appears.
-    if (needle) return matching;
-    return matching.filter((entry) => !collapsed.some((dir) => entry.path.startsWith(`${dir}/`)));
-  });
 
   const scoped = $derived(
     scopeEntries(shown, { status, lastTurnFiles }).filter((entry) => !needle || entry.path.toLowerCase().includes(needle)),
@@ -93,9 +99,28 @@
     return pane?.cursorLine() ?? 0;
   }
 
-  function toggleDir(path) {
-    collapsed = collapsed.includes(path) ? collapsed.filter((entry) => entry !== path) : [...collapsed, path];
-  }
+  let nameTimer;
+  $effect(() => {
+    const value = query.trim();
+    clearTimeout(nameTimer);
+    if (!value || shown !== "all" || !onFindFiles) {
+      named = [];
+      naming = false;
+      return;
+    }
+    naming = true;
+    nameTimer = setTimeout(async () => {
+      try {
+        const found = await onFindFiles(value);
+        if (query.trim() === value) named = found;
+      } catch {
+        if (query.trim() === value) named = [];
+      } finally {
+        if (query.trim() === value) naming = false;
+      }
+    }, 120);
+    return () => clearTimeout(nameTimer);
+  });
 
   function submitDraft(event) {
     event.preventDefault();
@@ -212,6 +237,16 @@
           <button class="icon-btn" type="button" title="New folder" aria-label="New folder" onclick={() => (fileDraft = { kind: "dir", value: "" })}>
             <Icon name="files" size={13} />
           </button>
+          <button
+            class="icon-btn"
+            type="button"
+            title={showIgnored ? "Hide ignored files" : "Show ignored files (dependencies, build output)"}
+            aria-label="Show ignored files"
+            aria-pressed={showIgnored}
+            onclick={() => (showIgnored = !showIgnored)}
+          >
+            <Icon name="layers" size={13} />
+          </button>
           <button class="icon-btn" type="button" title="Refresh files" aria-label="Refresh files" onclick={onRefreshFiles}>
             <Icon name="refresh" size={13} />
           </button>
@@ -261,15 +296,43 @@
         {#if filesError}
           <p class="panel-error">{filesError}</p>
         {:else}
-          <ul class="tree" aria-label="Files">
-            {#each tree as entry (entry.path)}
-              <li class="file-row" style="--depth: {entry.depth}">
-                {#if entry.is_dir}
-                  <button type="button" class="tree-row dir-row" title={entry.path} aria-expanded={!collapsed.includes(entry.path)} onclick={() => toggleDir(entry.path)}>
-                    <span class="caret" class:open={!collapsed.includes(entry.path)}><Icon name="chevron" size={10} /></span>
+          {#if needle}
+            <ul class="hits" aria-label="Files matching the filter">
+              {#each named as file (file.path)}
+                <li class="file-row flat">
+                  <button type="button" class="tree-row" class:selected={activeDoc?.path === file.path} title={file.path} onclick={() => onOpenFile(file.path)}>
+                    <Icon name="file" size={12} />
+                    <span class="tree-name">{file.path}</span>
+                    {#if changeByPath.has(file.path)}
+                      <span class="badge {changeByPath.get(file.path).status.toLowerCase()}">{changeByPath.get(file.path).status}</span>
+                    {/if}
+                  </button>
+                </li>
+              {/each}
+              {#if named.length === 0 && !naming}
+                <li class="empty">No files match.</li>
+              {/if}
+            </ul>
+          {:else}
+          <ul
+            class="tree"
+            aria-label="Files"
+            bind:clientHeight={viewport}
+            onscroll={(event) => (scrollTop = event.currentTarget.scrollTop)}
+          >
+            <li class="spacer" aria-hidden="true" style="height: {visible.start * ROW}px"></li>
+            {#each tree.slice(visible.start, visible.end) as entry (entry.path)}
+              <li class="file-row" class:ignored={entry.ignored} style="--depth: {entry.depth}">
+                {#if entry.kind === "dir"}
+                  <button type="button" class="tree-row dir-row" title={entry.path} aria-expanded={entry.open} onclick={() => onToggleDir(entry.path)}>
+                    <span class="caret" class:open={entry.open}><Icon name="chevron" size={10} /></span>
                     <Icon name="files" size={12} />
                     <span class="tree-name">{entry.name}</span>
                   </button>
+                {:else if entry.kind === "loading"}
+                  <span class="tree-row note"><span class="mini spin"><Icon name="refresh" size={10} /></span>Loading…</span>
+                {:else if entry.kind === "more"}
+                  <span class="tree-row note">More entries than can be listed; use the filter to find one.</span>
                 {:else}
                   <button type="button" class="tree-row" class:selected={activeDoc?.path === entry.path} title={entry.path} onclick={() => onOpenFile(entry.path)}>
                     <Icon name="file" size={12} />
@@ -290,12 +353,12 @@
                 {/if}
               </li>
             {/each}
-            {#if files.length === 0 && !filesLoading}
+            <li class="spacer" aria-hidden="true" style="height: {(tree.length - visible.end) * ROW}px"></li>
+            {#if tree.length === 0 && !filesLoading}
               <li class="empty">No files.</li>
-            {:else if tree.length === 0}
-              <li class="empty">No files match.</li>
             {/if}
           </ul>
+          {/if}
         {/if}
       {:else}
         <ul class="tree" aria-label="Files">
@@ -396,7 +459,10 @@
   }
   .filter input { flex: 1; min-width: 0; border: 0; background: none; font-size: 12px; }
   .tree, .hits { list-style: none; margin: 0; padding: 0 0 6px; overflow: auto; min-height: 0; flex: 1; }
-  .file-row { display: flex; align-items: center; }
+  .file-row { display: flex; align-items: center; height: 24px; flex: none; }
+  .tree .spacer { flex: none; }
+  .file-row.ignored .tree-row { opacity: 0.55; }
+  .tree-row.note { color: var(--muted); font-family: var(--font-ui); font-size: 11px; font-style: italic; }
   .tree-row {
     display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; height: 24px;
     padding: 0 6px 0 calc(6px + var(--depth, 0) * 12px); border: 0; border-radius: 4px;

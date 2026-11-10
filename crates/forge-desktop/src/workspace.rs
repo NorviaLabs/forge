@@ -12,19 +12,22 @@ use std::process::Command;
 
 use serde::Serialize;
 
-/// A workspace larger than this (or one that nests deeper) is truncated
-/// rather than allowed to stall the webview.
-const MAX_ENTRIES: usize = 4000;
-const MAX_DEPTH: usize = 12;
+/// One folder holding more entries than this is listed up to the cap, with
+/// `truncated` set. The tree loads one folder at a time, so this bounds a
+/// single IPC message, not the workspace.
+const MAX_DIR_ENTRIES: usize = 20_000;
 /// The editor cuts a file here; larger files open read-only.
 const MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_DIFF_BYTES: usize = 512 * 1024;
 
-/// Directories that would flood the tree or expose runtime data.
-const SKIP_DIRS: &[&str] = &[
-    ".git",
-    ".forge",
-    ".impeccable",
+/// Never listed or browsable: Git's own data and Forge's runtime data
+/// (session journals, the control database, worktrees).
+const HIDDEN_DIRS: &[&str] = &[".git", ".forge"];
+
+/// Dependency and build output that is ignored even without a `.gitignore`
+/// saying so. Ignored entries are still listed, marked `ignored`, so the tree
+/// can show them on request.
+const CONVENTIONALLY_IGNORED: &[&str] = &[
     "node_modules",
     "target",
     "dist",
@@ -32,6 +35,11 @@ const SKIP_DIRS: &[&str] = &[
     "__pycache__",
     ".venv",
     "venv",
+    // Zig build cache and output (`zig-cache` before Zig 0.13).
+    ".zig-cache",
+    "zig-cache",
+    "zig-out",
+    ".impeccable",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -40,8 +48,17 @@ pub struct FileEntry {
     pub path: String,
     pub name: String,
     pub is_dir: bool,
-    /// Nesting level from the workspace root, for the flat tree rendering.
-    pub depth: usize,
+    /// Excluded by `.gitignore` (or the conventional build and dependency
+    /// folders). Shown only when the operator asks for ignored files.
+    pub ignored: bool,
+}
+
+/// One folder's children, directories first, then by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DirListing {
+    pub entries: Vec<FileEntry>,
+    /// The folder held more than `MAX_DIR_ENTRIES` entries.
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -229,53 +246,71 @@ fn resolve_new(root: &Path, relative: &str) -> Result<PathBuf, String> {
 }
 
 /// Depth-first, directories before files, skipping heavy and runtime dirs.
-pub fn list(root: &Path) -> Result<Vec<FileEntry>, String> {
+/// The children of one folder (`""` is the workspace root). Nothing below it
+/// is read, so listing costs the same in any workspace, however large.
+pub fn list_dir(root: &Path, relative: &str) -> Result<DirListing, String> {
+    if Path::new(relative)
+        .components()
+        .any(|part| HIDDEN_DIRS.iter().any(|hidden| part.as_os_str() == *hidden))
+    {
+        return Err("that folder is not browsable".into());
+    }
     let root = root
         .canonicalize()
         .map_err(|_| "the workspace is gone".to_string())?;
-    let mut entries = Vec::new();
-    walk(&root, &root, 0, &mut entries);
-    Ok(entries)
-}
-
-fn walk(root: &Path, dir: &Path, depth: usize, entries: &mut Vec<FileEntry>) {
-    if depth >= MAX_DEPTH || entries.len() >= MAX_ENTRIES {
-        return;
+    let dir = resolve(&root, relative)?;
+    if !dir.is_dir() {
+        return Err("not a folder".into());
     }
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut children: Vec<(bool, String, PathBuf)> = read
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let path = entry.path();
-            let is_dir = entry.file_type().ok()?.is_dir();
-            if is_dir && SKIP_DIRS.contains(&name.as_str()) {
-                return None;
-            }
-            Some((is_dir, name, path))
-        })
-        .collect();
-    // Directories first, then names, so the flat tree reads like a tree.
-    children.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-    for (is_dir, name, path) in children {
-        if entries.len() >= MAX_ENTRIES {
-            return;
+    let kept = not_ignored(&dir);
+    let read = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
+    let mut entries: Vec<FileEntry> = Vec::new();
+    let mut truncated = false;
+    for entry in read.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        let is_dir = kind.is_dir();
+        if is_dir && HIDDEN_DIRS.contains(&name.as_str()) {
+            continue;
         }
-        let Ok(relative) = path.strip_prefix(root) else {
+        if entries.len() == MAX_DIR_ENTRIES {
+            truncated = true;
+            break;
+        }
+        let path = entry.path();
+        let Ok(relative) = path.strip_prefix(&root) else {
             continue;
         };
         entries.push(FileEntry {
             path: path_to_slash(relative),
+            ignored: !kept.contains(&path)
+                || (is_dir && CONVENTIONALLY_IGNORED.contains(&name.as_str())),
             name,
             is_dir,
-            depth,
         });
-        if is_dir {
-            walk(root, &path, depth + 1, entries);
-        }
     }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+    Ok(DirListing { entries, truncated })
+}
+
+/// The direct children of `dir` that `.gitignore` (in `dir` and every
+/// parent, plus `.git/info/exclude` and the global excludes file) keeps.
+/// Honoured outside a Git repository too, so a plain folder's own
+/// `.gitignore` still applies.
+fn not_ignored(dir: &Path) -> std::collections::HashSet<PathBuf> {
+    ignore::WalkBuilder::new(dir)
+        .max_depth(Some(1))
+        .hidden(false)
+        .parents(true)
+        .require_git(false)
+        .ignore(false)
+        .build()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.depth() == 1)
+        .map(|entry| entry.into_path())
+        .collect()
 }
 
 fn path_to_slash(path: &Path) -> String {
@@ -698,59 +733,108 @@ pub struct SearchHit {
     pub text: String,
 }
 
-/// Files larger than this are not searched.
-const MAX_SEARCH_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_SEARCH_HITS: usize = 200;
-/// A search reads at most this many files; a huge tree truncates silently.
-const MAX_SEARCH_FILES: usize = 2000;
 
-/// Case-insensitive substring search across the workspace's text files.
-pub fn search(root: &Path, query: &str) -> Result<Vec<SearchHit>, String> {
-    let query = query.trim().to_lowercase();
+/// Watched search indexes by canonical workspace root, shared by every
+/// command. Opening starts a background scan; the first query waits for it.
+#[derive(Clone, Default)]
+pub struct Indexes(
+    std::sync::Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<PathBuf, std::sync::Arc<forge_search::WorkspaceIndex>>,
+        >,
+    >,
+);
+
+impl Indexes {
+    pub fn for_root(
+        &self,
+        root: &Path,
+    ) -> Result<std::sync::Arc<forge_search::WorkspaceIndex>, String> {
+        let root = root
+            .canonicalize()
+            .map_err(|_| "the workspace is gone".to_string())?;
+        let mut indexes = self.0.lock().map_err(|error| error.to_string())?;
+        if let Some(index) = indexes.get(&root) {
+            return Ok(index.clone());
+        }
+        let index = forge_search::WorkspaceIndex::open_with_options(
+            &root,
+            forge_search::WorkspaceIndexOptions {
+                watch: true,
+                wait_for_scan: false,
+                ..Default::default()
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        indexes.insert(root, index.clone());
+        Ok(index)
+    }
+}
+
+/// Content search through the workspace index (gitignore-aware, watched, no
+/// file-count limit). Plain text is case-insensitive; a query wrapped in
+/// `/…/` is a regular expression, left as typed.
+pub fn search(index: &forge_search::WorkspaceIndex, query: &str) -> Result<Vec<SearchHit>, String> {
+    let query = query.trim();
     if query.is_empty() {
         return Ok(Vec::new());
     }
-    let mut hits = Vec::new();
-    let mut read = 0;
-    for entry in list(root)?.into_iter().filter(|entry| !entry.is_dir) {
-        if hits.len() >= MAX_SEARCH_HITS || read >= MAX_SEARCH_FILES {
-            break;
-        }
-        let Ok(path) = resolve(root, &entry.path) else {
-            continue;
-        };
-        let Ok(metadata) = std::fs::metadata(&path) else {
-            continue;
-        };
-        if metadata.len() > MAX_SEARCH_FILE_BYTES {
-            continue;
-        }
-        let Ok(bytes) = std::fs::read(&path) else {
-            continue;
-        };
-        if bytes.iter().take(8192).any(|byte| *byte == 0) {
-            continue;
-        }
-        let Ok(text) = std::str::from_utf8(&bytes) else {
-            continue;
-        };
-        read += 1;
-        for (index, line) in text.lines().enumerate() {
-            if hits.len() >= MAX_SEARCH_HITS {
-                break;
-            }
-            if !line.to_lowercase().contains(&query) {
-                continue;
-            }
-            let shown: String = line.chars().take(200).collect();
-            hits.push(SearchHit {
-                path: entry.path.clone(),
-                line: index + 1,
-                text: shown,
-            });
-        }
+    // The index is smart-case: any capital makes it case-sensitive. The Files
+    // search box has always ignored case, so plain text is folded first.
+    let regex = query.len() > 2 && query.starts_with('/') && query.ends_with('/');
+    let query = if regex {
+        query.to_string()
+    } else {
+        query.to_lowercase()
+    };
+    let found = index
+        .grep(
+            &query,
+            None,
+            forge_search::GrepQueryMode::Plain,
+            MAX_SEARCH_HITS,
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(found
+        .hits
+        .into_iter()
+        .map(|hit| SearchHit {
+            path: hit.path,
+            line: hit.line as usize,
+            text: hit.text.chars().take(200).collect(),
+        })
+        .collect())
+}
+
+/// A file found by name, best match first.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FoundFile {
+    pub path: String,
+    /// Byte ranges of `path` that matched, for highlighting.
+    pub match_ranges: Vec<(u32, u32)>,
+}
+
+/// Quick Open: files by fuzzy name, ranked like the agent's file search.
+pub fn find(
+    index: &forge_search::WorkspaceIndex,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<FoundFile>, String> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
     }
-    Ok(hits)
+    let found = index
+        .find_files_quick_open(query.trim(), limit, None)
+        .map_err(|error| error.to_string())?;
+    Ok(found
+        .hits
+        .into_iter()
+        .map(|hit| FoundFile {
+            path: hit.path,
+            match_ranges: hit.match_ranges,
+        })
+        .collect())
 }
 
 /// Stage one path.
@@ -906,24 +990,105 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    fn listed(dir: &Path, relative: &str) -> Vec<(String, bool, bool)> {
+        list_dir(dir, relative)
+            .unwrap()
+            .entries
+            .into_iter()
+            .map(|entry| (entry.path, entry.is_dir, entry.ignored))
+            .collect()
+    }
+
     #[test]
-    fn the_tree_is_depth_first_and_skips_runtime_dirs() {
+    fn a_folder_lists_only_its_children_directories_first() {
+        let dir = tempdir();
+        fs::create_dir_all(dir.join("src").join("deep")).unwrap();
+        fs::write(dir.join("src").join("deep").join("x.zig"), "").unwrap();
+        fs::write(dir.join("README.md"), "hello").unwrap();
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        fs::create_dir_all(dir.join(".forge").join("local")).unwrap();
+
+        assert_eq!(
+            listed(&dir, ""),
+            vec![
+                ("src".into(), true, false),
+                ("README.md".into(), false, false),
+            ],
+            "nothing below the folder is read, and .git/.forge never appear"
+        );
+        assert_eq!(listed(&dir, "src"), vec![("src/deep".into(), true, false)]);
+        assert!(!list_dir(&dir, "").unwrap().truncated);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn ignored_entries_are_listed_and_marked() {
+        let dir = tempdir();
+        fs::write(dir.join(".gitignore"), "*.log\nbuild/\nsrc/gen/\n").unwrap();
+        fs::create_dir_all(dir.join("build")).unwrap();
+        fs::create_dir_all(dir.join("src").join("gen")).unwrap();
+        fs::create_dir_all(dir.join(".zig-cache")).unwrap();
+        fs::write(dir.join("debug.log"), "").unwrap();
+        fs::write(dir.join("build.zig"), "").unwrap();
+        fs::write(dir.join(".env.example"), "").unwrap();
+
+        let root = listed(&dir, "");
+        let ignored = |path: &str| root.iter().find(|entry| entry.0 == path).unwrap().2;
+        // A plain folder's own .gitignore applies, without a Git repository.
+        assert!(ignored("build") && ignored("debug.log"));
+        assert!(ignored(".zig-cache"), "conventional build output");
+        assert!(!ignored("build.zig") && !ignored(".env.example") && !ignored(".gitignore"));
+        // A parent folder's .gitignore applies to a nested listing.
+        assert_eq!(listed(&dir, "src"), vec![("src/gen".into(), true, true)]);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn git_and_forge_data_and_outside_paths_are_refused() {
+        let dir = tempdir();
+        fs::create_dir_all(dir.join(".git").join("objects")).unwrap();
+        fs::create_dir_all(dir.join(".forge").join("local")).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        for refused in [
+            ".git",
+            ".git/objects",
+            ".forge/local",
+            "..",
+            "/etc",
+            "missing",
+        ] {
+            assert!(list_dir(&dir, refused).is_err(), "{refused}");
+        }
+        fs::write(dir.join("file.txt"), "").unwrap();
+        assert!(
+            list_dir(&dir, "file.txt").is_err(),
+            "a file is not a folder"
+        );
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn find_and_search_go_through_the_index() {
         let dir = tempdir();
         fs::create_dir_all(dir.join("src")).unwrap();
-        fs::create_dir_all(dir.join("target")).unwrap();
-        fs::write(dir.join("src").join("main.rs"), "fn main() {}").unwrap();
-        fs::write(dir.join("README.md"), "hello").unwrap();
-        fs::write(dir.join("target").join("junk"), "no").unwrap();
+        fs::write(dir.join("src").join("main.zig"), "const answer = 42;\n").unwrap();
+        fs::write(dir.join("build.zig"), "pub fn build() void {}\n").unwrap();
+        let indexes = Indexes::default();
+        let index = indexes.for_root(&dir).unwrap();
+        assert!(
+            std::sync::Arc::ptr_eq(&index, &indexes.for_root(&dir).unwrap()),
+            "one per root"
+        );
 
-        let entries = list(&dir).unwrap();
-        let seen = paths(&entries);
-        assert!(seen.contains("src"));
-        assert!(seen.contains("src/main.rs"));
-        assert!(seen.contains("README.md"));
-        assert!(!seen.contains("target"));
-        assert!(!seen.contains("target/junk"));
-        let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(names.first(), Some(&"src"), "directories come first");
+        let found = find(&index, "main", 10).unwrap();
+        assert_eq!(
+            found.first().map(|file| file.path.as_str()),
+            Some("src/main.zig")
+        );
+        let hits = search(&index, "answer").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].path.as_str(), hits[0].line), ("src/main.zig", 1));
+        assert!(search(&index, "  ").unwrap().is_empty());
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1105,14 +1270,15 @@ mod tests {
         fs::write(dir.join("notes.md"), "todo: write docs\n").unwrap();
         fs::write(dir.join("blob.bin"), b"todo\0\0\0").unwrap();
 
-        let hits = search(&dir, "ToDo").unwrap();
-        let paths: Vec<(&str, usize)> = hits
+        let index = Indexes::default().for_root(&dir).unwrap();
+        let hits = search(&index, "ToDo").unwrap();
+        let paths: BTreeSet<(&str, usize)> = hits
             .iter()
             .map(|hit| (hit.path.as_str(), hit.line))
             .collect();
-        assert_eq!(paths, vec![("src/lib.rs", 2), ("notes.md", 1)]);
-        assert!(search(&dir, "   ").unwrap().is_empty());
-        assert!(search(&dir, "absent").unwrap().is_empty());
+        assert_eq!(paths, BTreeSet::from([("src/lib.rs", 2), ("notes.md", 1)]));
+        assert!(search(&index, "   ").unwrap().is_empty());
+        assert!(search(&index, "absent").unwrap().is_empty());
         fs::remove_dir_all(dir).ok();
     }
 
@@ -1124,8 +1290,9 @@ mod tests {
         fs::write(outside.join("secret.txt"), "needle\n").unwrap();
         std::os::unix::fs::symlink(outside.join("secret.txt"), dir.join("leak.txt")).unwrap();
         fs::write(dir.join("ok.txt"), "needle\n").unwrap();
-        let hits = search(&dir, "needle").unwrap();
-        assert_eq!(hits.len(), 1);
+        let index = Indexes::default().for_root(&dir).unwrap();
+        let hits = search(&index, "needle").unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].path, "ok.txt");
         fs::remove_dir_all(dir).ok();
         fs::remove_dir_all(outside).ok();
