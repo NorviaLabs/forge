@@ -1,15 +1,20 @@
 <script>
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
+  import { attentionLabel, projectStatus } from "../view.js";
 
   let {
     sessions = [],
     activeId = "",
-    project = "",
-    projectCount = 0,
-    // Requests waiting in other projects, oldest first.
-    elsewhere = [],
-    onProjects,
+    // Every registered project (the bridge's `ProjectView`), in registry
+    // order, and the one on screen.
+    projects = [],
+    projectId = "",
+    projectBusy = false,
+    onSwitchProject,
+    onAddProject,
+    onCloseProject,
+    onRemoveProject,
     onElsewhere,
     creating = false,
     open = false,
@@ -67,23 +72,83 @@
 {#if open}
   <button type="button" class="rail-backdrop" aria-label="Close sessions" tabindex="-1" onclick={() => onCloseRail?.()}></button>
 {/if}
-<aside class="sidebar" class:open aria-label="Sessions" {@attach open ? overlay : null}>
+<aside class="sidebar" class:open aria-label="Projects and sessions" {@attach open ? overlay : null}>
   <header class="workspace">
     <span class="mark">F</span>
-    <button type="button" class="names" title="Switch project" aria-label="Project {project}: switch project" onclick={() => onProjects?.()}>
-      <strong>Forge</strong>
-      <span class="where" title={project}>
-        {project || "Choose a project"}
-        <Icon name="chevron" size={11} />
-      </span>
-      {#if projectCount > 1}<span class="sr-only">{projectCount} projects</span>{/if}
-    </button>
+    <strong class="brand">Forge</strong>
     {#if open}
       <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
         <Icon name="close" size={13} />
       </button>
     {/if}
   </header>
+
+  <section class="panel projects" aria-label="Projects">
+    <div class="section-head">
+      <span class="label">Projects</span>
+      <button class="icon-btn" type="button" title="Add a project" aria-label="Add a project" onclick={() => onAddProject?.()}>
+        <Icon name="plus" size={14} />
+      </button>
+    </div>
+    <ul class="project-list">
+      {#each projects as project (project.id)}
+        {@const status = projectStatus(project)}
+        {@const current = project.id === projectId}
+        <li class="project {status}" class:current>
+          <div class="project-line">
+            <button
+              type="button"
+              class="project-main"
+              title={project.root}
+              aria-current={current ? "true" : undefined}
+              disabled={projectBusy && !current}
+              onclick={() => onSwitchProject?.(project)}
+            >
+              <span class="project-dot" aria-hidden="true"></span>
+              <span class="project-name">{project.name}</span>
+              {#if status === "waiting"}
+                <span class="project-badge" aria-label="{project.attention.length} waiting on you">{project.attention.length}</span>
+              {:else if status === "running"}
+                <span class="project-meta" aria-label="{project.running} of {project.limit} agents running">{project.running}/{project.limit}</span>
+              {:else if status === "closed"}
+                <span class="project-meta">closed</span>
+              {/if}
+            </button>
+            {#if !current}
+              <span class="row-actions">
+                {#if project.open}
+                  <button type="button" class="icon-btn" title="Close project (stops its agents)" aria-label={`Close ${project.name}`} onclick={() => onCloseProject?.(project)}>
+                    <Icon name="close" size={12} />
+                  </button>
+                {:else}
+                  <button type="button" class="icon-btn" title="Remove from Forge (the folder and its sessions stay)" aria-label={`Remove ${project.name}`} onclick={() => onRemoveProject?.(project)}>
+                    <Icon name="trash" size={12} />
+                  </button>
+                {/if}
+              </span>
+            {/if}
+          </div>
+          {#if !current && project.attention.length}
+            <ul class="requests" aria-label="Waiting in {project.name}">
+              {#each project.attention as item (item.session_id + item.call_id)}
+                <li>
+                  <button
+                    type="button"
+                    class="request"
+                    title="{project.name}: {item.session_label || 'Session'}"
+                    onclick={() => onElsewhere?.({ ...item, project_id: project.id, project_name: project.name })}
+                  >
+                    <span class="request-kind">{attentionLabel(item.kind)}</span>
+                    <span class="request-session">{item.session_label || "Session"}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </li>
+      {/each}
+    </ul>
+  </section>
 
   {#if waiting.length > 0}
     <section class="panel needs-section" aria-label="Needs you">
@@ -98,26 +163,6 @@
               <span class="state-dot {session.turn_state}"></span>
               <span class="session-name">{session.label}</span>
               <span class="session-state">{session.turn_state}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if elsewhere.length > 0}
-    <section class="panel needs-section" aria-label="Waiting in other projects">
-      <div class="section-head">
-        <span class="label">Other projects</span>
-        <span class="count">{elsewhere.length}</span>
-      </div>
-      <ul class="session-list">
-        {#each elsewhere as item (item.project_id + item.session_id + item.call_id)}
-          <li class="needs-you">
-            <button type="button" class="session" onclick={() => onElsewhere?.(item)} title="{item.project_name}: {item.session_label}">
-              <span class="state-dot waiting"></span>
-              <span class="session-name">{item.session_label || "Session"}</span>
-              <span class="session-state">{item.project_name}</span>
             </button>
           </li>
         {/each}
@@ -313,43 +358,6 @@
     background: var(--accent);
     color: #0e1115;
     font-weight: 700;
-  }
-
-  .names {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    min-width: 0;
-    padding: 2px 4px;
-    margin: -2px -4px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    line-height: 1.25;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .names:hover {
-    background: var(--surface-raised, rgba(255, 255, 255, 0.06));
-  }
-
-  .names .where {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    max-width: 100%;
-  }
-
-  .where {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--muted);
-    font-size: 11px;
   }
 
   .panel {
@@ -561,9 +569,183 @@
     font-size: 12px;
   }
 
-  .names strong {
+
+  .brand {
     font-size: 13px;
     letter-spacing: 0.01em;
+  }
+
+  /* Projects: always visible, so a background project's requests and running
+     agents are seen without opening anything. Capped so sessions keep room. */
+  .projects {
+    flex: none;
+    max-height: 40%;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .projects .section-head {
+    padding-bottom: 4px;
+  }
+
+  .project-list,
+  .requests {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .project-list {
+    overflow: auto;
+    min-height: 0;
+  }
+
+  .project {
+    border-radius: var(--radius-sm);
+  }
+
+  .project.current {
+    background: var(--selection);
+  }
+
+  .project-line {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .project-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--secondary);
+    text-align: left;
+  }
+
+  .project-main:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  .project-main:disabled {
+    cursor: progress;
+  }
+
+  .project.current .project-main {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .project-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Filled while open, a ring once closed; color follows what it needs. */
+  .project-dot {
+    flex: none;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+
+  .project.running .project-dot {
+    background: var(--accent);
+  }
+
+  .project.waiting .project-dot {
+    background: var(--warning);
+  }
+
+  .project.closed .project-dot {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--muted);
+  }
+
+  .project.closed .project-main {
+    color: var(--muted);
+  }
+
+  .project-meta {
+    color: var(--muted);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .project-badge {
+    min-width: 17px;
+    height: 17px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--warning);
+    color: #0e1115;
+    font-size: 10.5px;
+    font-weight: 700;
+    line-height: 17px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .project-line .row-actions {
+    position: absolute;
+    top: 50%;
+    right: 3px;
+    translate: 0 -50%;
+    padding-left: 14px;
+    background: linear-gradient(90deg, transparent, var(--bg-deep) 14px);
+  }
+
+  .project-line:hover .row-actions,
+  .project-line:focus-within .row-actions {
+    visibility: visible;
+    opacity: 1;
+  }
+
+  /* A background project's waiting requests sit under its name: each one
+     opens that project at the session's decision. */
+  .requests {
+    padding: 0 0 4px 23px;
+  }
+
+  .request {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    width: 100%;
+    min-width: 0;
+    height: 24px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    font-size: 11.5px;
+    text-align: left;
+  }
+
+  .request:hover {
+    background: var(--hover);
+  }
+
+  .request-kind {
+    flex: none;
+    color: var(--warning);
+    font-weight: 600;
+  }
+
+  .request-session {
+    overflow: hidden;
+    color: var(--secondary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .needs-section {

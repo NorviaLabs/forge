@@ -116,12 +116,17 @@ export function prunable(ids, owners, project, present) {
   return ids.filter((id) => (owners[id] ?? project) === project && !present.has(id));
 }
 
-// Requests waiting in projects other than the one on screen, oldest first.
-export function otherAttention(projects, activeId) {
-  return projects
-    .filter((project) => project.id !== activeId)
-    .flatMap((project) =>
-      project.attention.map((item) => ({ ...item, project_id: project.id, project_name: project.name })),
-    )
-    .sort((a, b) => a.since.localeCompare(b.since));
+// One word for a project's row: closed, waiting on you, working, or idle.
+// Waiting wins over working: a request blocks an agent until you answer.
+export function projectStatus(project) {
+  if (!project.open) return "closed";
+  if (project.attention.length) return "waiting";
+  if (project.busy > 0) return "running";
+  return "idle";
+}
+
+const ATTENTION_KIND = { approval: "Approval", question: "Question", child_approval: "Agent approval" };
+
+export function attentionLabel(kind) {
+  return ATTENTION_KIND[kind] ?? "Request";
 }

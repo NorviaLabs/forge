@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   closeDocument,
-  otherAttention,
+  attentionLabel,
+  projectStatus,
   prunable,
   defaultView,
   diffSide,
@@ -171,23 +172,13 @@ test("a roster prunes only its own project's sessions", () => {
   assert.deepEqual(prunable(["a1", "a2", "b1"], owners, "B", new Set(["b1"])), []);
 });
 
-test("other projects' requests are listed oldest first with their project", () => {
-  const projects = [
-    { id: "A", name: "api", attention: [{ session_id: "s1", call_id: "c1", since: "2026-11-10T10:00:00Z" }] },
-    {
-      id: "B",
-      name: "notes",
-      attention: [
-        { session_id: "s2", call_id: "c2", since: "2026-11-10T09:00:00Z" },
-        { session_id: "s3", call_id: "c3", since: "2026-11-10T11:00:00Z" },
-      ],
-    },
-    { id: "C", name: "sdk", attention: [{ session_id: "s4", call_id: "c4", since: "2026-11-10T08:00:00Z" }] },
-  ];
-  const items = otherAttention(projects, "A");
-  assert.deepEqual(items.map((item) => [item.project_name, item.call_id]), [
-    ["sdk", "c4"],
-    ["notes", "c2"],
-    ["notes", "c3"],
-  ]);
+test("a project row says whether it is closed, waiting on you, working or idle", () => {
+  const project = (patch) => ({ open: true, attention: [], busy: 0, ...patch });
+  assert.equal(projectStatus(project({ open: false, attention: [{}] })), "closed");
+  // A request outranks running agents: the agent is blocked on you.
+  assert.equal(projectStatus(project({ attention: [{}], busy: 2 })), "waiting");
+  assert.equal(projectStatus(project({ busy: 1 })), "running");
+  assert.equal(projectStatus(project({})), "idle");
+  assert.equal(attentionLabel("child_approval"), "Agent approval");
+  assert.equal(attentionLabel("unknown"), "Request");
 });

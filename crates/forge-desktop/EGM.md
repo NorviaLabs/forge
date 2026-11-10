@@ -66,13 +66,16 @@ appear in the root `Cargo.lock`.
     registered project or Git repository opens; an unregistered plain folder
     waits on the trust screen as `Pending::Confirm` (accepting adds, trusts
     and opens it).
-  - Page (4c): the sidebar header's project name opens the Projects
-    dialog (switch, Add project…, Close for open background projects,
-    Remove for closed ones; each row shows pending requests and running
-    slots). "Other projects" in the sidebar lists requests waiting in every
-    other project; selecting one switches project, then opens the session at
-    its decision card. `needs_trust` and `root_missing` failures open a
-    dialog (Trust and open / Locate… / Remove); `busy` opens the close
+  - Page (4c): a Projects panel at the top of the sidebar lists every
+    registered project at once (capped at 40% height, scrolls): a dot per
+    project (`view.js` `projectStatus`: ring = closed, muted = idle, accent =
+    working, warning = waiting), a count badge for pending requests or
+    `running/limit`, and hover actions (Close for open background projects,
+    Remove for closed ones). The `+` adds a project. A background project's
+    waiting requests are listed under its row; selecting one switches
+    project, then opens the session at its decision card. The command
+    palette has a Projects group (switch to each, Add a project…).
+    `needs_trust` and `root_missing` failures open a dialog (Trust and open / Locate… / Remove); `busy` opens the close
     dialog (Go to session / Stop all and close). Session view records and
     shells are keyed by session id and kept across switches: a roster prunes
     only sessions owned by the project on screen (`view.js` `prunable`). The

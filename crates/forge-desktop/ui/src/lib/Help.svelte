@@ -28,7 +28,7 @@
     <h3>Keyboard shortcuts</h3>
     <dl>{#each shortcuts as [keys, action]}<dt><kbd>{keys}</kbd></dt><dd>{action}</dd>{/each}</dl>
     <h3>Workspace workflow</h3>
-    <p>The rail lists sessions; sessions waiting on you appear under Needs you at the top. The session header opens Files, Terminal and the Session menu, which holds the plan, agents and tasks, the queue, context and usage, the model, and session actions.</p>
+    <p>The rail lists your projects at the top: a dot shows whether each is closed (ring), idle, working or waiting on you, and requests waiting in other projects appear under their name. Below are the sessions of the project on screen; those waiting on you appear under Needs you. The session header opens Files, Terminal and the Session menu, which holds the plan, agents and tasks, the queue, context and usage, the model, and session actions.</p>
     <p>Files is where you browse, edit, stage and commit: scope the list to Changed, Staged or Last turn, stage a row or Stage all, then Commit. ‹ Session or Esc returns to the conversation with your place kept.</p>
     <p>The editor has no buttons. Save, find and jump using shortcuts or the command palette. Reload and restore are palette actions; discarding changes still requires confirmation.</p>
     <p>Shells run your own commands without the agent sandbox. Each session has one shell: the terminal button under the composer shows it as a drawer, Focus terminal fills the window, and hiding it or switching sessions keeps it running. Stop terminal or <code>exit</code> ends it; the next open starts a fresh shell.</p>

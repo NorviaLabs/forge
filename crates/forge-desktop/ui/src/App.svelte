@@ -19,7 +19,7 @@
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
   import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
-  import { otherAttention, prunable } from "./view.js";
+  import { attentionLabel, projectStatus, prunable } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
   import {
@@ -49,7 +49,6 @@
   let projectId = $state("");
   let projects = $state([]);
   const sessionOwner = {};
-  let projectsOpen = $state(false);
   let projectBusy = $state(false);
   // A project that can't open yet: { project, kind, message }.
   let projectProblem = $state(null);
@@ -57,9 +56,7 @@
   let closeTarget = $state(null);
   let attentionSound = $state(soundEnabled());
   $effect(() => setSoundEnabled(attentionSound));
-  const activeProject = $derived(projects.find((project) => project.id === projectId) ?? null);
-  // Requests waiting in every project but this one.
-  const elsewhere = $derived(otherAttention(projects, projectId));
+
   let resumable = $state([]);
   // One view record per session (see view.js): open documents, the active
   // document, the draft and the transcript position.
@@ -457,6 +454,21 @@
         action: () => activeSession && startRename(activeSession),
       },
     );
+    // Every project, so switching works from the keyboard too.
+    for (const project of projects) {
+      if (project.id === projectId) continue;
+      const status = projectStatus(project);
+      items.push({
+        id: `project:${project.id}`,
+        group: "Projects",
+        label: `Switch to ${project.name}`,
+        detail: status === "waiting"
+          ? `${project.attention.length} waiting on you`
+          : status === "closed" ? "closed" : status === "running" ? `${project.running}/${project.limit} running` : project.root,
+        action: () => switchProject(project),
+      });
+    }
+    items.push({ id: "project:add", group: "Projects", label: "Add a project…", action: addProject });
     if (supportsGit) return items;
     return items.map((item) =>
       item.group === "Git" || item.id === "action:github" || item.id === "action:attach"
@@ -749,7 +761,6 @@
 
   // Put `project` on screen, opening it if needed. True when it worked.
   async function switchProject(project) {
-    projectsOpen = false;
     if (project.id === projectId) return true;
     projectBusy = true;
     try {
@@ -772,7 +783,6 @@
   }
 
   async function addProject() {
-    projectsOpen = false;
     try {
       const id = await invoke("project_add");
       if (id) await switchProject({ id, name: "" });
@@ -1885,10 +1895,13 @@
     bind:this={sidebar}
     sessions={allSessions}
     activeId={sessionId}
-    project={activeProject?.name || basename(trustWorkspace)}
-    projectCount={projects.length}
-    {elsewhere}
-    onProjects={() => (projectsOpen = true)}
+    {projects}
+    {projectId}
+    {projectBusy}
+    onSwitchProject={(project) => { railOpen = false; switchProject(project); }}
+    onAddProject={addProject}
+    onCloseProject={(project) => closeProject(project)}
+    onRemoveProject={removeProject}
     onElsewhere={openElsewhere}
     {creating}
     open={railOpen}
@@ -2427,35 +2440,6 @@
     </div>
   {/if}
 
-  {#if projectsOpen}
-    <div class="modal">
-      <div class="dialog projects-dialog" role="dialog" aria-modal="true" aria-labelledby="projects-title" tabindex="-1" use:modal={{ onClose: () => (projectsOpen = false) }}>
-        <h2 id="projects-title">Projects</h2>
-        <ul class="project-list">
-          {#each projects as project (project.id)}
-            <li class:current={project.id === projectId}>
-              <button type="button" class="project-row" disabled={projectBusy} onclick={() => switchProject(project)} title={project.root}>
-                <span class="state-dot {project.open ? 'open' : 'closed'}"></span>
-                <span class="project-name">{project.name}</span>
-                {#if project.attention.length}<span class="project-count" aria-label="{project.attention.length} waiting on you">{project.attention.length}</span>{/if}
-                {#if project.open}<span class="project-meta">{project.running}/{project.limit} running</span>{/if}
-              </button>
-              {#if project.open && project.id !== projectId}
-                <button type="button" class="btn" onclick={() => closeProject(project)}>Close</button>
-              {:else if !project.open}
-                <button type="button" class="btn" onclick={() => removeProject(project)} title="Unregister; the folder and its sessions stay">Remove</button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-        <div class="dialog-actions">
-          <button class="btn primary" type="button" onclick={addProject}><Icon name="plus" size={13} /> Add project…</button>
-          <button class="btn" type="button" onclick={() => (projectsOpen = false)}>Done</button>
-        </div>
-      </div>
-    </div>
-  {/if}
-
   {#if projectProblem}
     <div class="modal">
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="project-problem-title" tabindex="-1" use:modal={{ onClose: () => (projectProblem = null) }}>
@@ -2758,10 +2742,6 @@
     padding: 2px 0;
   }
 
-  .project-list li.current .project-row {
-    background: var(--surface-raised, rgba(255, 255, 255, 0.06));
-  }
-
   .project-row {
     flex: 1;
     display: flex;
@@ -2794,29 +2774,9 @@
     white-space: nowrap;
   }
 
-  .project-count {
-    min-width: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
-    background: var(--warning);
-    color: #0e1115;
-    font-size: 11px;
-    font-weight: 600;
-    text-align: center;
-  }
-
   .project-meta {
     color: var(--muted);
     font-size: 11px;
-  }
-
-  /* A project's dot: open (running agents allowed) or closed. */
-  .project-row .state-dot.open {
-    background: var(--success);
-  }
-
-  .project-row .state-dot.closed {
-    opacity: 0.35;
   }
 
   .dialog-error {
