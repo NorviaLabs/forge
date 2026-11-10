@@ -1122,14 +1122,6 @@ pub async fn run_tui_with_resume_picker(
     .await
 }
 
-pub async fn run_tui_with_launch(
-    session: AgentSession,
-    runtime: TuiRuntimeConfig,
-    launch: TuiLaunch,
-) -> Result<ExitSummary, TuiError> {
-    run_tui_inner(session, runtime, launch).await
-}
-
 async fn run_tui_inner(
     session: AgentSession,
     runtime: TuiRuntimeConfig,

@@ -14,8 +14,8 @@ use forge_session::{
     SessionTarget,
 };
 use forge_tui::{
-    decide_launch, run_setup, run_tui_supervised, run_tui_with_launch, ExitCode, SetupRequest,
-    SetupResult, TuiLaunch, TuiRuntimeConfig,
+    decide_launch, run_setup, run_tui_supervised, ExitCode, SetupRequest, SetupResult, TuiLaunch,
+    TuiRuntimeConfig,
 };
 use forge_types::SessionId;
 use tracing_subscriber::EnvFilter;
@@ -308,6 +308,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         config_path: None,
         workspace: None,
         journal_path: None,
+        project_root: None,
     };
     let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
 
@@ -352,6 +353,7 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         config_path: None,
         workspace: None,
         journal_path: None,
+        project_root: None,
     })
     .map_err(|e| anyhow::anyhow!(e))?;
     let last = forge_connect::PreferenceStore::user_default()
@@ -389,41 +391,40 @@ async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
         onboarding_connect: decision.require_connect,
         ready_placeholder: decision.show_ready_placeholder,
     };
-    let summary = match bootstrap {
-        Some(bootstrap) => {
-            let (supervisor, handle) = bootstrap.open_with_primary(&cfg, opened.session).await?;
-            if let Some(source_session_id) = fork_from {
-                handle
-                    .command(forge_session::SupervisorCommand::ForkSession {
-                        session_id: source_session_id,
-                    })
-                    .await?;
-            }
-            let session_id = if fork_from.is_some() {
-                supervisor
-                    .selected_session_id()
-                    .await?
-                    .ok_or_else(|| anyhow::anyhow!("forked session was not selected"))?
-            } else {
-                opened_session_id
-            };
-            let initial = supervisor
-                .snapshot(session_id)
-                .await
-                .ok_or_else(|| anyhow::anyhow!("primary session missing from supervisor"))?;
-            let summary = run_tui_supervised(initial, runtime, handle, launch).await;
-            // Release the repository explicitly rather than relying on
-            // process exit, so the lease is provably free once we return.
-            // Bounded: a provider that never answers must not keep the
-            // terminal from quitting; process exit then frees the lease.
-            if let Some(problem) =
-                bounded_shutdown(supervisor.shutdown(), SUPERVISOR_SHUTDOWN_TIMEOUT).await
-            {
-                eprintln!("{problem}");
-            }
-            summary
+    // Every project, Git repository or plain folder, runs supervised under
+    // its owner lock.
+    let summary = {
+        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, opened.session).await?;
+        if let Some(source_session_id) = fork_from {
+            handle
+                .command(forge_session::SupervisorCommand::ForkSession {
+                    session_id: source_session_id,
+                })
+                .await?;
         }
-        None => run_tui_with_launch(opened.session, runtime, launch).await,
+        let session_id = if fork_from.is_some() {
+            supervisor
+                .selected_session_id()
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("forked session was not selected"))?
+        } else {
+            opened_session_id
+        };
+        let initial = supervisor
+            .snapshot(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("primary session missing from supervisor"))?;
+        let summary = run_tui_supervised(initial, runtime, handle, launch).await;
+        // Release the repository explicitly rather than relying on
+        // process exit, so the lease is provably free once we return.
+        // Bounded: a provider that never answers must not keep the
+        // terminal from quitting; process exit then frees the lease.
+        if let Some(problem) =
+            bounded_shutdown(supervisor.shutdown(), SUPERVISOR_SHUTDOWN_TIMEOUT).await
+        {
+            eprintln!("{problem}");
+        }
+        summary
     }
     .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(quit_failure) = &summary.quit_failure {

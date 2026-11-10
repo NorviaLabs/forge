@@ -189,7 +189,8 @@ appear in the root `Cargo.lock`.
     frontends; `system` follows the OS preference in the page. The preference
     is local to the desktop and the PTY emulator follows the resolved palette.
 - Remaining limits:
-  - It needs a git repository (non-git arrives with track D).
+  - A folder that isn't a Git repository opens under the lease; `Hello.supports_git` is false and Git-only actions stay visible but disabled with the reason: the palette's Git group, attach worktree and GitHub; the Files pane's branch chip (shown as "No Git"), Fetch/Pull/Push, and the Changed/Staged/Last-turn scopes. `refreshFiles` skips `git_status`/`git_last_turn_files` there, so the file list still loads. The trust screen adds "No Git: agent edits can't be rolled back." (`TrustView.no_git`, detected only while trust is pending). Config is loaded with `project_root` set to the workspace.
+  - A launch with no path from `/` or the home folder (Dock, Finder) opens nothing: `Startup::NeedsFolder` → `TrustState::needs_folder()` → `TrustView.needs_folder`, and the page shows "Choose a folder…". The `choose_folder` command opens a native picker (`rfd`, created on the main thread; deliberately not the Tauri dialog plugin, which would add webview-reachable IPC), then loads config, prepares the launch, and either moves to the trust screen or opens the session. Cancelling keeps the picker. `choose_folder` is in the command allowlist, `capabilities/main.json` and the isolation hook.
   - Native key collection is macOS-only, syntax colors are lexical, GitHub is
     read-only, notification-centre banners and proactive host editing remain absent.
 

@@ -20,6 +20,9 @@
     ahead = 0,
     behind = 0,
     gitBusy = false,
+    // False for a folder that isn't a Git repository: only "All files", and
+    // the Git actions stay visible but disabled with the reason.
+    supportsGit = true,
     mergeInProgress = false,
     conflicts = [],
     onOpenFile,
@@ -50,7 +53,8 @@
   let collapsed = $state([]);
 
   const counts = $derived(fileCounts(status));
-  const shown = $derived(effectiveScope(scope, lastTurnFiles));
+  const shown = $derived(supportsGit ? effectiveScope(scope, lastTurnFiles) : "all");
+  const NO_GIT = "Needs a Git repository";
   const changeByPath = $derived(new Map(status.files.map((file) => [file.path, file])));
   const activeDoc = $derived(tabs.find((tab) => tab.id === activeDocId) ?? null);
   const needle = $derived(query.trim().toLowerCase());
@@ -66,12 +70,12 @@
     scopeEntries(shown, { status, lastTurnFiles }).filter((entry) => !needle || entry.path.toLowerCase().includes(needle)),
   );
 
-  const scopes = $derived([
+  const scopes = $derived(supportsGit ? [
     { value: "all", label: "All files" },
     { value: "changed", label: counts.changed ? `Changed (${counts.changed})` : "Changed" },
     { value: "staged", label: counts.staged ? `Staged (${counts.staged})` : "Staged" },
     ...(lastTurnFiles.length ? [{ value: "lastTurn", label: "Last turn" }] : []),
-  ]);
+  ] : [{ value: "all", label: "All files" }]);
 
   const emptyScope = $derived(
     needle ? "No files match." : shown === "staged" ? "Nothing is staged." : shown === "changed" ? "Clean working tree." : "Nothing in this scope.",
@@ -163,21 +167,28 @@
 
 <div class="files">
   <div class="git-bar">
-    <button type="button" class="chip branch" title="Branches…" disabled={!branch} onclick={onBranches}>
+    {#if supportsGit}
+    <button type="button" class="chip branch" title={onBranches ? "Branches…" : "Branches need a Git repository"} disabled={!branch || !onBranches} onclick={onBranches}>
       <Icon name="branch" size={12} />
       <span>{branch || "No branch"}</span>
     </button>
     <span class="upstream mono" title={upstream || "No upstream configured"}>
       {upstream || "No upstream"}{#if ahead} · ↑{ahead}{/if}{#if behind} · ↓{behind}{/if}
     </span>
+    {:else}
+    <button type="button" class="chip branch" title="This folder isn't a Git repository: agent edits can't be rolled back" disabled>
+      <Icon name="branch" size={12} />
+      <span>No Git</span>
+    </button>
+    {/if}
     <span class="spacer"></span>
     {#if mergeInProgress}
       <span class="merge">Merge in progress · {conflicts.length} unresolved</span>
       <button type="button" class="btn" disabled={gitBusy} onclick={() => onGitOperation({ kind: "abort_merge" })}>Abort merge…</button>
     {/if}
-    <button type="button" class="btn" disabled={gitBusy} onclick={() => onGitOperation({ kind: "fetch" })}>Fetch</button>
-    <button type="button" class="btn" disabled={gitBusy} onclick={() => onGitOperation({ kind: "pull" })}>Pull…</button>
-    <button type="button" class="btn" disabled={gitBusy || !upstream} onclick={() => onGitOperation({ kind: "push" })}>Push…</button>
+    <button type="button" class="btn" title={supportsGit ? undefined : NO_GIT} disabled={gitBusy || !supportsGit} onclick={() => onGitOperation({ kind: "fetch" })}>Fetch</button>
+    <button type="button" class="btn" title={supportsGit ? undefined : NO_GIT} disabled={gitBusy || !supportsGit} onclick={() => onGitOperation({ kind: "pull" })}>Pull…</button>
+    <button type="button" class="btn" title={supportsGit ? undefined : NO_GIT} disabled={gitBusy || !upstream || !supportsGit} onclick={() => onGitOperation({ kind: "push" })}>Push…</button>
   </div>
 
   <div class="body">

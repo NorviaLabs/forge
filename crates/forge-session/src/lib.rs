@@ -16,6 +16,7 @@ pub mod headless;
 mod launch;
 mod snapshot;
 mod supervisor;
+mod topology;
 
 pub use forge_storage::RepositoryRuntimeStorage;
 
@@ -34,6 +35,7 @@ pub use supervisor::{
     QueuedPromptId, RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError,
     SessionRuntimeSnapshot, SupervisorCommand, SupervisorEvent, SupervisorHandle,
 };
+pub use topology::{ProjectKind, ProjectTopology, TopologyError};
 
 use std::sync::Arc;
 
@@ -42,7 +44,7 @@ use forge_core::{AgentSession, LoopConfig};
 use forge_governance::{parse_pattern_rules, Governance};
 use forge_mcp::McpManager;
 use forge_model::{client_from_config, ModelClient};
-use forge_storage::{RuntimeDataKind, RuntimeStorage};
+use forge_storage::RuntimeDataKind;
 use forge_tools::ToolRegistry;
 use forge_types::SessionId;
 
@@ -70,15 +72,16 @@ pub struct OpenedSession {
 /// resolution itself produced. An explicit `journal.path` override (via
 /// `forge.toml`/env/CLI) is respected as-is — advanced use, not managed by
 /// the storage resolver. Otherwise, route through the centralized
-/// runtime-storage resolver: `.forge/local/sessions` inside a Git
-/// repository (natively excluded from `git status`), or the platform
-/// application-data directory outside one — surfacing a notice if
-/// repository-local storage fell back, or if legacy runtime files were
-/// found already tracked by Git (never silently migrated or altered).
+/// runtime-storage resolver through the project topology:
+/// `.forge/local/sessions` in the main worktree of a Git repository
+/// (natively excluded from `git status`) or in the root of a directory
+/// project — surfacing a notice if repository-local storage fell back, or if
+/// legacy runtime files were found already tracked by Git (never silently
+/// migrated or altered).
 pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
+    let topology = ProjectTopology::detect(cfg.workspace_root()).ok();
     if cfg.journal.path == forge_config::default_journal_path() {
-        let storage = RepositoryRuntimeStorage::new(cfg.workspace_root());
-        if let Ok(storage) = storage {
+        if let Some(storage) = topology.as_ref().and_then(|t| t.storage().ok()) {
             let Ok(dir) = storage.path_for(RuntimeDataKind::Session) else {
                 return (cfg.journal_dir(), Vec::new());
             };
@@ -93,9 +96,9 @@ pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
     if configured.is_absolute() {
         return (configured, Vec::new());
     }
-    match forge_storage::main_worktree(cfg.workspace_root()) {
-        Ok(main) => (main.join(configured), Vec::new()),
-        Err(_) => (cfg.journal_dir(), Vec::new()),
+    match topology {
+        Some(topology) => (topology.root().join(configured), Vec::new()),
+        None => (cfg.journal_dir(), Vec::new()),
     }
 }
 

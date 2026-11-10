@@ -18,6 +18,10 @@ pub enum WorktreeOwnership {
     Primary,
     Managed,
     Attached,
+    /// A session in a directory project (a folder that isn't a Git
+    /// repository). Every such session shares the project root, so several
+    /// may be live on one workspace path at once.
+    Directory,
 }
 
 impl WorktreeOwnership {
@@ -26,6 +30,7 @@ impl WorktreeOwnership {
             Self::Primary => "primary",
             Self::Managed => "managed",
             Self::Attached => "attached",
+            Self::Directory => "directory",
         }
     }
 
@@ -34,6 +39,7 @@ impl WorktreeOwnership {
             "primary" => Ok(Self::Primary),
             "managed" => Ok(Self::Managed),
             "attached" => Ok(Self::Attached),
+            "directory" => Ok(Self::Directory),
             value => Err(RepositorySessionError::InvalidStoredValue {
                 field: "ownership",
                 value: value.into(),
@@ -558,7 +564,7 @@ impl RepositoryControl {
         sqlx::query(
             r#"
             CREATE UNIQUE INDEX IF NOT EXISTS sessions_live_workspace
-                ON sessions(workspace) WHERE lifecycle = 'active';
+                ON sessions(workspace) WHERE lifecycle = 'active' AND ownership != 'directory';
             CREATE UNIQUE INDEX IF NOT EXISTS sessions_live_slot
                 ON sessions(slot) WHERE lifecycle = 'active' AND slot IS NOT NULL;
             "#,
@@ -1354,17 +1360,22 @@ impl RepositoryControl {
         // The unique index below would also catch this, but as an opaque
         // constraint violation. Attaching a worktree twice is an ordinary
         // operator mistake and deserves a message that names the conflict.
-        if let Some(row) = sqlx::query(
-            "SELECT session_id FROM sessions WHERE workspace = ? AND lifecycle = 'active'",
-        )
-        .bind(session.workspace.display().to_string())
-        .fetch_optional(&mut *transaction)
-        .await?
-        {
-            return Err(RepositorySessionError::WorkspaceInUse {
-                workspace: session.workspace,
-                session_id: parse_session_id(row.get::<String, _>("session_id"))?,
-            });
+        // Directory-project sessions all share the project root by design,
+        // so neither this check nor the index applies to them.
+        if session.ownership != WorktreeOwnership::Directory {
+            if let Some(row) = sqlx::query(
+                "SELECT session_id FROM sessions WHERE workspace = ? AND lifecycle = 'active' \
+                 AND ownership != 'directory'",
+            )
+            .bind(session.workspace.display().to_string())
+            .fetch_optional(&mut *transaction)
+            .await?
+            {
+                return Err(RepositorySessionError::WorkspaceInUse {
+                    workspace: session.workspace,
+                    session_id: parse_session_id(row.get::<String, _>("session_id"))?,
+                });
+            }
         }
         sqlx::query(
             "INSERT INTO sessions \
@@ -2033,6 +2044,68 @@ mod tests {
             profile_id: String::new(),
             reasoning_effort: Some("high".into()),
         }
+    }
+
+    #[tokio::test]
+    async fn directory_sessions_share_one_workspace() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("notes");
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        for label in ["one", "two"] {
+            let mut session = new_session(&root, label, None);
+            session.branch = String::new();
+            session.ownership = WorktreeOwnership::Directory;
+            control.register_session(session, None).await.unwrap();
+        }
+        let live = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|task| {
+                task.lifecycle == SessionLifecycle::Active
+                    && task.ownership == WorktreeOwnership::Directory
+            })
+            .count();
+        assert_eq!(live, 2);
+    }
+
+    /// Managed sessions start with an empty branch, so the live-session rule
+    /// must key on ownership, not branch, to keep protecting Git worktrees.
+    #[tokio::test]
+    async fn branchless_git_sessions_still_get_one_live_session_per_worktree() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("linked");
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let mut first = new_session(&workspace, "first", None);
+        first.branch = String::new();
+        control.register_session(first, None).await.unwrap();
+        let mut second = new_session(&workspace, "second", None);
+        second.branch = String::new();
+        assert!(matches!(
+            control.register_session(second, None).await,
+            Err(RepositorySessionError::WorkspaceInUse { .. })
+        ));
+    }
+
+    /// The narrowed index is recreated on every open, so a database created
+    /// before it existed picks it up, and reopening is harmless.
+    #[tokio::test]
+    async fn reopening_keeps_directory_sessions_valid() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("notes");
+        {
+            let control = RepositoryControl::open(dir.path()).await.unwrap();
+            for label in ["one", "two"] {
+                let mut session = new_session(&root, label, None);
+                session.ownership = WorktreeOwnership::Directory;
+                control.register_session(session, None).await.unwrap();
+            }
+        }
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        drop(control);
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        assert_eq!(control.sessions().await.unwrap().len(), 2);
     }
 
     #[tokio::test]

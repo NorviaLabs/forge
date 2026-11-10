@@ -69,6 +69,10 @@ file use a scripted fixture server; they are not part of the contract surface.
   directories when resolvable, an explicit read-only workspace when
   configured, and fail the spawn (not silently narrow) on an ungrantable
   `sandbox_read_paths` entry.
+- A sandboxed launch with no workspace is refused with
+  `McpError::Protocol("sandboxed MCP server needs a workspace")`. It never
+  falls back to the process working directory, which may belong to another
+  project; sessions pass the workspace through `spawn_in_workspace`.
 
 ## Side Effects
 

@@ -19,6 +19,10 @@ pub const EXCLUDE_PATTERN: &str = "/.forge/local/";
 pub enum StorageMode {
     /// Inside the repository's own worktree, at `.forge/local/`.
     RepositoryLocal,
+    /// Inside a directory project, at `<root>/.forge/local/`. Like
+    /// `RepositoryLocal` the data travels with the folder, but there is no
+    /// Git index to exclude it from and no worktree to detect.
+    DirectoryLocal,
     /// The platform application-data directory — used when repository-local
     /// storage can't be set up safely, or there is no repository at all.
     ApplicationData,
@@ -49,7 +53,7 @@ pub enum RuntimeDataKind {
 }
 
 impl RuntimeDataKind {
-    fn subdir(self) -> &'static str {
+    pub(crate) fn subdir(self) -> &'static str {
         match self {
             Self::Control => "control",
             Self::Session => "sessions",
@@ -255,6 +259,30 @@ impl LocalRuntimeStorage {
         }
     }
 
+    /// Storage for a project folder that isn't a Git repository.
+    ///
+    /// Runtime data lives in `<root>/.forge/local/`, so it travels with the
+    /// folder and stays next to the sessions older Forge versions already
+    /// wrote there. This deliberately differs from the application-data
+    /// policy used for non-repositories (`desired_mode` below): a directory
+    /// project's state belongs to the project, and there is no Git index to
+    /// protect from it.
+    pub fn directory_local(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let repo_info = detect_repo_info(&root);
+        let identity = RuntimeIdentity::from_repo_info(&root, &repo_info);
+        let storage = Self {
+            workspace: root,
+            repo_info,
+            identity,
+            effective_mode: OnceCell::new(),
+            fallback_reason: RefCell::new(None),
+            migration_report: RefCell::new(Vec::new()),
+        };
+        let _ = storage.effective_mode.set(StorageMode::DirectoryLocal);
+        storage
+    }
+
     /// Outcome of the one-time legacy-file migration attempted during
     /// repository-local setup. Empty until `ensure_ready`/`root`/`path_for`
     /// has run at least once.
@@ -372,6 +400,13 @@ impl RuntimeStorage for LocalRuntimeStorage {
                 .ok_or(StorageError::NoRoot)?
                 .join(".forge")
                 .join("local")),
+            StorageMode::DirectoryLocal => {
+                // No exclude file: there is no Git index to keep this out of.
+                let root = self.workspace.join(".forge").join("local");
+                std::fs::create_dir_all(&root)?;
+                set_restrictive_permissions(&root);
+                Ok(root)
+            }
             StorageMode::ApplicationData => self.app_data_root(),
         }
     }
@@ -392,6 +427,7 @@ impl RuntimeStorage for LocalRuntimeStorage {
                 .as_deref()?
                 .join(".forge")
                 .join("local"),
+            StorageMode::DirectoryLocal => self.workspace.join(".forge").join("local"),
             StorageMode::ApplicationData => forge_data_dir()?.join(self.identity.as_str()),
         };
         Some(root.join(kind.subdir()))
@@ -728,5 +764,28 @@ mod tests {
         let root = storage.root().unwrap();
         let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn directory_local_keeps_data_in_the_folder_without_touching_git() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalRuntimeStorage::directory_local(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::DirectoryLocal);
+
+        let sessions = storage.path_for(RuntimeDataKind::Session).unwrap();
+        assert_eq!(sessions, dir.path().join(".forge/local/sessions"));
+        assert!(sessions.is_dir());
+        assert!(!dir.path().join(".git").exists());
+        assert_eq!(storage.storage_mode(), StorageMode::DirectoryLocal);
+        assert!(storage.fallback_reason().is_none());
+    }
+
+    #[test]
+    fn directory_local_read_path_creates_nothing() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalRuntimeStorage::directory_local(dir.path());
+        let path = storage.path_for_read(RuntimeDataKind::Control).unwrap();
+        assert_eq!(path, dir.path().join(".forge/local/control"));
+        assert!(!dir.path().join(".forge").exists());
     }
 }

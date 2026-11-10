@@ -1842,6 +1842,9 @@ pub(crate) const COMPOSER_WORKING: &str = "Reply, or describe the next task…";
 /// supervisor owns every AgentSession, including the primary. Deref keeps
 /// the legacy single-session implementation mechanically unchanged while
 /// supervised paths migrate onto snapshots and commands.
+///
+/// Unreachable from `forge-cli` since directory projects run supervised;
+/// removed with the TUI. Do not add new callers.
 pub(crate) struct DirectSessionSlot(Option<AgentSession>);
 
 impl DirectSessionSlot {

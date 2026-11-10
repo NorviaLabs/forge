@@ -92,8 +92,8 @@ Subdirectories:
   `SANDBOX_DENIED_REASON`, `PRIVATE_ADDRESS_DENIED_REASON`,
   `HOST_DENIED_EXPLANATION`. `EgressShared`/`CallGateway` expose
   `take_private_address_denial` alongside `take_denied_host`/`denied_hosts`.
-- Host identity (`credentials.rs`, crate-internal): `host_identity_env`,
-  `isolated_config_env`, `needs_git_writes`.
+- Host identity (`credentials.rs`, crate-internal): `host_identity_env`
+  (takes the workspace root), `isolated_config_env`, `needs_git_writes`.
 - Git network policy (`git_network.rs`): `set_egress_connect_exe`.
 
 ## Invariants
@@ -134,9 +134,12 @@ Subdirectories:
   (`HOST_CREDENTIAL_ENV`: `GH_TOKEN`, `GITHUB_TOKEN`, `CARGO_REGISTRY_TOKEN`,
   ...); login shells are not used. When the egress grant allows a host,
   `host_identity_env` projects that host's HTTPS identity back in: it runs
-  host-side `git credential fill` (cached per host for the process in
-  `CREDENTIAL_CACHE`) and exposes the result through a spawn-local credential
-  helper/gitconfig and a `{first-label}_TOKEN` variable.
+  host-side `git credential fill` inside the session workspace (so
+  repository-local `credential.helper` and `includeIf` rules apply), caches
+  the result per `(workspace, host)` in `CREDENTIAL_CACHE`, and exposes it
+  through a spawn-local credential helper/gitconfig and a
+  `{first-label}_TOKEN` variable. One workspace's identity never answers for
+  another's.
 - `background_run`, `ask_user_question`, `request_unconfined_retry`, and agent
   orchestration tools are intercepted by the agent loop before `call`; their
   `Tool::call` paths are defensive fallbacks.
@@ -176,7 +179,7 @@ Subdirectories:
   is one, otherwise at `<workspace>/.forge-host-identity/` inside the
   workspace.
 - Runs host-side `git credential fill` for granted hosts during confined
-  spawns.
+  spawns, with the workspace as its working directory.
 - Performs outbound network requests for `web_fetch` and network-capable
   `git` commands.
 - Loads files and images from disk for `read_file`, `ls`, `view_image`, and

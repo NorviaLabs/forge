@@ -2,11 +2,25 @@
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
 
-  let { workspace = "", error = "", busy = false, onTrust, onQuit } = $props();
+  let { workspace = "", error = "", busy = false, needsFolder = false, noGit = false, onTrust, onChoose, onQuit } = $props();
 </script>
 
 <div class="trust" role="dialog" aria-modal="true" aria-labelledby="trust-title" tabindex="-1" use:modal={{ busy }}>
   <div class="card">
+    {#if needsFolder}
+    <h1 id="trust-title">Open a folder</h1>
+    <p>
+      Choose the project folder to work in. It can be a Git repository or any other folder. Nothing
+      is opened or written until you choose one.
+    </p>
+    {#if error}<p class="error" role="alert">{error}</p>{/if}
+    <div class="actions">
+      <button type="button" class="btn primary" disabled={busy} onclick={onChoose}>
+        {busy ? "Opening…" : "Choose a folder…"}
+      </button>
+      <button type="button" class="btn" onclick={onQuit}>Quit</button>
+    </div>
+    {:else}
     <span class="badge"><Icon name="alert" size={14} /> Untrusted workspace</span>
     <h1 id="trust-title">Trust this folder?</h1>
     <p class="path mono">{workspace}</p>
@@ -19,6 +33,7 @@
       Trusting here is the same as trusting in the terminal: it is remembered for this folder and
       its subfolders.
     </p>
+    {#if noGit}<p class="warn">No Git: agent edits can't be rolled back.</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="actions">
       <button type="button" class="btn primary" disabled={busy} onclick={onTrust}>
@@ -26,6 +41,7 @@
       </button>
       <button type="button" class="btn" onclick={onQuit}>Quit</button>
     </div>
+    {/if}
   </div>
 </div>
 
@@ -89,6 +105,10 @@
 
   .error {
     color: var(--error);
+  }
+
+  .warn {
+    color: var(--warning);
   }
 
   .actions {

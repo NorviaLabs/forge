@@ -57,6 +57,9 @@ pub enum Startup {
         workspace: PathBuf,
         deferred: Box<Config>,
     },
+    /// Launched with no path from `/` or the home folder (the Dock, Finder):
+    /// neither is a project, so the page asks for a folder first.
+    NeedsFolder,
 }
 
 pub fn run() -> i32 {
@@ -107,6 +110,7 @@ pub fn run() -> i32 {
             workspace,
             deferred,
         } => (bridge::TrustState::pending(workspace, *deferred), None),
+        Startup::NeedsFolder => (bridge::TrustState::needs_folder(), None),
     };
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -231,6 +235,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
     tauri::generate_handler![
         bridge::trust_status,
         bridge::trust_workspace,
+        bridge::choose_folder,
         bridge::subscribe,
         bridge::current_session,
         bridge::submit_prompt,
@@ -336,20 +341,45 @@ fn context() -> tauri::Context {
     tauri::generate_context!()
 }
 
+/// A GUI launch (Dock, Finder) starts in `/` or the home folder. Neither is a
+/// project, and opening either would hand the agent the whole disk or home.
+fn is_not_a_project(cwd: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    cwd.parent().is_none() || home.is_some_and(|home| cwd == home)
+}
+
+/// Load config for `workspace`, reading that project's `forge.toml` rather than
+/// the one in whatever directory the app was launched from.
+pub(crate) fn load_config(workspace: &std::path::Path) -> anyhow::Result<Config> {
+    let workspace = if workspace.is_absolute() {
+        workspace.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("no current directory")?
+            .join(workspace)
+    };
+    Config::load(ConfigOverrides {
+        workspace: Some(workspace.clone()),
+        project_root: Some(workspace),
+        ..Default::default()
+    })
+    .map_err(|error| anyhow::anyhow!(error))
+}
+
 async fn start(args: &Args) -> anyhow::Result<Startup> {
     if args.self_test {
         return Ok(Startup::Ready(Box::new(start_self_test().await?)));
     }
     let workspace = match &args.workspace {
         Some(path) => path.clone(),
-        None => std::env::current_dir().context("no current directory")?,
+        None => {
+            let cwd = std::env::current_dir().context("no current directory")?;
+            if is_not_a_project(&cwd, dirs::home_dir().as_deref()) {
+                return Ok(Startup::NeedsFolder);
+            }
+            cwd
+        }
     };
-    let cfg = Config::load(ConfigOverrides {
-        config_path: None,
-        workspace: Some(workspace),
-        journal_path: None,
-    })
-    .map_err(|error| anyhow::anyhow!(error))?;
+    let cfg = load_config(&workspace)?;
     let plan = LaunchPlan::prepare(&cfg).await?;
     if plan.needs_trust() {
         // Trust is the operator's decision, asked in the window rather than
@@ -369,11 +399,7 @@ pub(crate) async fn open(
     scratch: Option<Box<dyn std::any::Any + Send>>,
 ) -> anyhow::Result<Started> {
     let launched = plan.launch(LaunchTarget::Continue).await?;
-    let Some(bootstrap) = launched.bootstrap else {
-        anyhow::bail!(
-            "the desktop app currently needs a git repository; use `forge` for other folders"
-        );
-    };
+    let bootstrap = launched.bootstrap;
     let session_id = launched.opened.session.session_id;
     let (supervisor, handle) = bootstrap
         .open_with_primary(&cfg, launched.opened.session)
@@ -451,6 +477,57 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Args, String> {
         parse_args(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn root_and_home_are_not_opened_without_a_path() {
+        let home = std::path::Path::new("/Users/someone");
+        assert!(is_not_a_project(std::path::Path::new("/"), Some(home)));
+        assert!(is_not_a_project(home, Some(home)));
+        assert!(!is_not_a_project(&home.join("notes"), Some(home)));
+        assert!(!is_not_a_project(std::path::Path::new("/work/repo"), None));
+    }
+
+    #[test]
+    fn config_comes_from_the_workspace_not_the_launch_directory() {
+        let project =
+            std::env::temp_dir().join(format!("forge-desktop-config-{}", uuid_like_suffix()));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("forge.toml"),
+            "[model]\nrequest_timeout_secs = 91\n",
+        )
+        .unwrap();
+
+        // Read no real user config: it is the developer's, not the fixture's.
+        let home = project.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let saved = [
+            ("HOME", std::env::var_os("HOME")),
+            ("XDG_CONFIG_HOME", std::env::var_os("XDG_CONFIG_HOME")),
+        ];
+        std::env::set_var("HOME", &home);
+        std::env::remove_var("XDG_CONFIG_HOME");
+        let cfg = load_config(&project);
+        for (key, value) in saved {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+        let cfg = cfg.unwrap();
+        let _ = std::fs::remove_dir_all(&project);
+
+        assert_eq!(cfg.model.request_timeout_secs, 91);
+        assert_eq!(cfg.workspace_root(), project.as_path());
+    }
+
+    fn uuid_like_suffix() -> String {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        format!("{}-{nanos}", std::process::id())
     }
 
     #[test]

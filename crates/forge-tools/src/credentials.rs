@@ -19,13 +19,18 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use crate::sandbox::EgressGrant;
 
-static CREDENTIAL_CACHE: Mutex<Option<HashMap<String, Option<HostCredential>>>> = Mutex::new(None);
+/// Keyed by workspace as well as host: `git credential fill` runs in the
+/// workspace so repository-local helpers and `includeIf` identities apply,
+/// and one project's identity must never be reused for another's.
+type CredentialKey = (PathBuf, String);
+static CREDENTIAL_CACHE: Mutex<Option<HashMap<CredentialKey, Option<HostCredential>>>> =
+    Mutex::new(None);
 
 /// Well-known credential variables used by external host clients. They are
 /// stripped separately from Forge provider credentials so the public provider
@@ -49,12 +54,17 @@ struct HostCredential {
 }
 
 /// Environment and spawn-local config for a confined command that may talk
-/// to hosts the grant already permits.
-pub fn host_identity_env(grant: Option<&EgressGrant>, config_dir: &Path) -> Vec<(String, String)> {
+/// to hosts the grant already permits. Credentials are resolved as git would
+/// resolve them inside `workspace_root`.
+pub fn host_identity_env(
+    grant: Option<&EgressGrant>,
+    config_dir: &Path,
+    workspace_root: &Path,
+) -> Vec<(String, String)> {
     let Some(grant) = grant else {
         return Vec::new();
     };
-    let credentials = credentials_for_grant(grant);
+    let credentials = credentials_for_grant(grant, workspace_root);
     if credentials.is_empty() {
         return Vec::new();
     }
@@ -135,7 +145,7 @@ fn command_segments(command: &str) -> impl Iterator<Item = &str> {
         .filter(|segment| !segment.is_empty())
 }
 
-fn credentials_for_grant(grant: &EgressGrant) -> Vec<HostCredential> {
+fn credentials_for_grant(grant: &EgressGrant, workspace_root: &Path) -> Vec<HostCredential> {
     let mut out = Vec::new();
     for pattern in grant.allow_patterns() {
         let Some(host) = apex_host(&pattern) else {
@@ -144,7 +154,7 @@ fn credentials_for_grant(grant: &EgressGrant) -> Vec<HostCredential> {
         if out.iter().any(|c: &HostCredential| c.host == host) {
             continue;
         }
-        if let Some(cred) = fill_https_credential(&host) {
+        if let Some(cred) = fill_https_credential(&host, workspace_root) {
             out.push(cred);
         }
     }
@@ -174,29 +184,36 @@ fn apex_host(pattern: &str) -> Option<String> {
     Some(host.to_string())
 }
 
-fn fill_https_credential(host: &str) -> Option<HostCredential> {
+fn fill_https_credential(host: &str, workspace_root: &Path) -> Option<HostCredential> {
+    // Canonicalize so two spellings of one workspace share an entry; fall back
+    // to the raw path so a lookup never borrows another workspace's entry.
+    let workspace = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let key = (workspace, host.to_string());
     {
         let mut cache = CREDENTIAL_CACHE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let map = cache.get_or_insert_with(HashMap::new);
-        if let Some(existing) = map.get(host) {
+        if let Some(existing) = map.get(&key) {
             return existing.clone();
         }
     }
-    let filled = fill_https_credential_uncached(host);
+    let filled = fill_https_credential_uncached(host, &key.0);
     let mut cache = CREDENTIAL_CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let map = cache.get_or_insert_with(HashMap::new);
-    map.insert(host.to_string(), filled.clone());
+    map.insert(key, filled.clone());
     filled
 }
 
-fn fill_https_credential_uncached(host: &str) -> Option<HostCredential> {
+fn fill_https_credential_uncached(host: &str, workspace_root: &Path) -> Option<HostCredential> {
     let mut command = Command::new("git");
     crate::builtins::strip_credentials(&mut command, &[]);
     let mut child = command
+        .current_dir(workspace_root)
         .args(["credential", "fill"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::piped())
@@ -485,7 +502,7 @@ mod tests {
 
     #[test]
     fn identity_is_not_projected_without_a_grant() {
-        assert!(host_identity_env(None, Path::new("/tmp")).is_empty());
+        assert!(host_identity_env(None, Path::new("/tmp"), Path::new("/tmp")).is_empty());
     }
 
     #[test]
@@ -523,5 +540,54 @@ mod tests {
         let cred = parse_credential_fill("example.com", "password=s3cret\n").unwrap();
         assert_eq!(cred.username, "git");
         assert_eq!(cred.password, "s3cret");
+    }
+
+    /// A repo-local `credential.helper` must apply to lookups made for that
+    /// project, and one project's identity must never satisfy another's.
+    /// The host is under the reserved `.invalid` TLD so no real credential
+    /// store can answer for it.
+    #[test]
+    fn credentials_are_resolved_and_cached_per_workspace() {
+        let host = "forge-credential-test.invalid";
+        let first = repo_with_helper("first-secret");
+        let second = repo_with_helper("second-secret");
+
+        let from_first = fill_https_credential(host, first.path()).expect("first workspace fill");
+        let from_second =
+            fill_https_credential(host, second.path()).expect("second workspace fill");
+
+        assert_eq!(from_first.password, "first-secret");
+        assert_eq!(from_second.password, "second-secret");
+
+        // Same workspace: the cached value is returned even though the helper
+        // no longer answers, which is what makes the per-workspace key load-bearing.
+        let helper = first.path().join(".git/config");
+        let body = std::fs::read_to_string(&helper).unwrap();
+        let stripped: String = body
+            .lines()
+            .filter(|line| !line.contains("helper"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&helper, stripped).unwrap();
+        let cached = fill_https_credential(host, first.path()).expect("cached fill");
+        assert_eq!(cached.password, "first-secret");
+    }
+
+    fn repo_with_helper(password: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let helper = format!("!f() {{ echo username=tester; echo password={password}; }}; f");
+        let status = Command::new("git")
+            .args(["config", "--local", "credential.helper", &helper])
+            .current_dir(dir.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        dir
     }
 }

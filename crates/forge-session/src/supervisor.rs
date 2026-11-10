@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 use forge_config::Config;
 use forge_core::{AgentSession, IsolatedTask, LoopError};
 use forge_model::{client_from_config, ModelClient};
-use forge_storage::{RepositoryRuntimeStorage, RuntimeDataKind, RuntimeStorage};
+use forge_storage::RuntimeDataKind;
 use forge_types::{
     AskUserQuestionResult, BackgroundTaskId, GrantDecision, HitlDecision, ModelStreamEvent,
     SessionId, TaskLifecycle, ToolCall,
@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     open_session_with_model, resolve_journal_dir, route_table, NewRepositorySession,
-    RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
+    ProjectTopology, RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
     SessionDetailsSnapshot, SessionLifecycle, SessionSnapshot, SessionTarget, SupervisorTurnState,
     TranscriptSnapshot, WorktreeOwnership,
 };
@@ -279,6 +279,12 @@ pub enum RepositorySupervisorError {
     Storage(#[from] forge_storage::StorageError),
     #[error("git worktree lookup failed: {0}")]
     Worktree(#[from] forge_storage::WorktreeError),
+    #[error("project setup failed: {0}")]
+    Topology(#[from] crate::TopologyError),
+    /// A Git-only operation (worktrees, branches, issues, pull requests)
+    /// asked of a directory project.
+    #[error("{0} needs a Git repository")]
+    Unsupported(&'static str),
     #[error("Session `{0}` has no live actor")]
     NoActor(SessionId),
     #[error("supervisor command channel closed")]
@@ -300,9 +306,16 @@ struct CommandEnvelope {
 pub struct SupervisorHandle {
     commands: mpsc::Sender<CommandEnvelope>,
     events: broadcast::Sender<SupervisorEvent>,
+    supports_git: bool,
 }
 
 impl SupervisorHandle {
+    /// Whether the project is a Git repository. Frontends disable worktree,
+    /// branch, issue and pull-request controls when it is not.
+    pub fn supports_git(&self) -> bool {
+        self.supports_git
+    }
+
     pub async fn command(
         &self,
         command: SupervisorCommand,
@@ -540,6 +553,9 @@ fn spawn_driver(state: Arc<SupervisorState>, task_actor: Arc<SessionActor>, sess
 
 struct SupervisorState {
     cfg: Config,
+    /// What kind of project this supervisor owns. Plain data: storage is
+    /// built from it per call because the storage types are `!Sync`.
+    topology: ProjectTopology,
     model: Arc<dyn ModelClient>,
     control: Arc<RepositoryControl>,
     /// Forge-managed worktree/ref administration is shared Git authority.
@@ -662,8 +678,11 @@ pub struct RepositorySupervisor {
 pub struct RepositoryBootstrap {
     lease: RepositoryLease,
     control: Arc<RepositoryControl>,
-    main_worktree: PathBuf,
+    topology: ProjectTopology,
     git_mutation: Arc<Mutex<()>>,
+    /// Notices from moving a directory project's legacy runtime files into
+    /// `.forge/local`. Empty for Git projects.
+    migration_notices: Vec<String>,
 }
 
 /// Name for the primary session, which represents the launched workspace
@@ -678,6 +697,32 @@ fn primary_session_label(workspace: &Path) -> String {
         .to_string()
 }
 
+/// Move a directory project's runtime files from the legacy `.forge/...`
+/// paths (written by lease-less Forge versions) into `.forge/local/...`.
+/// Idempotent: once moved there is nothing left to move. Returns one notice
+/// per file that was moved or had to be left in place.
+fn migrate_directory_runtime_files(root: &Path) -> Vec<String> {
+    use forge_storage::MigrationOutcome;
+    forge_storage::migrate_legacy_runtime_files(root)
+        .into_iter()
+        .filter_map(|record| {
+            let source = record.source.display();
+            let destination = record.destination.display();
+            let detail = record.detail.unwrap_or_default();
+            match record.outcome {
+                MigrationOutcome::NotPresent => None,
+                MigrationOutcome::Migrated => Some(format!("moved {source} to {destination}")),
+                MigrationOutcome::Tracked => Some(format!("left {source} in place: {detail}")),
+                MigrationOutcome::DestinationCollision => {
+                    Some(format!("left {source} in place: {detail}"))
+                }
+                MigrationOutcome::Failed => Some(format!("could not move {source}: {detail}")),
+                _ => Some(format!("left {source} in place")),
+            }
+        })
+        .collect()
+}
+
 impl RepositoryBootstrap {
     pub async fn session(
         &self,
@@ -689,20 +734,39 @@ impl RepositoryBootstrap {
     /// Acquire the repository-group lease and open the control database.
     /// Fails before any session exists if another Forge already owns it.
     pub async fn acquire(cfg: &Config) -> Result<Self, RepositorySupervisorError> {
-        let storage = RepositoryRuntimeStorage::new(cfg.workspace_root())?;
+        let topology = ProjectTopology::detect(cfg.workspace_root())?;
+        let storage = topology.storage()?;
         let control_dir = storage.path_for(RuntimeDataKind::Control)?;
         let lease = RepositoryLease::acquire(&control_dir, cfg.workspace_root())?;
+        // Only after the lease: nothing else may be writing the legacy files.
+        let migration_notices = if topology.supports_git() {
+            Vec::new()
+        } else {
+            migrate_directory_runtime_files(topology.root())
+        };
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
         Ok(Self {
             lease,
             control,
-            main_worktree: storage.main_worktree().to_path_buf(),
+            topology,
             git_mutation: Arc::new(Mutex::new(())),
+            migration_notices,
         })
     }
 
     pub fn lease_owner(&self) -> &crate::LeaseOwner {
         self.lease.owner()
+    }
+
+    /// Whether the project is a Git repository. A directory project has no
+    /// worktrees, branches, issues or pull requests.
+    pub fn supports_git(&self) -> bool {
+        self.topology.supports_git()
+    }
+
+    /// Notices from moving a directory project's legacy runtime files.
+    pub fn migration_notices(&self) -> &[String] {
+        &self.migration_notices
     }
 
     /// The workspace's selected session, as recorded in the control database.
@@ -722,9 +786,11 @@ impl RepositoryBootstrap {
                 .cancel_creation(stale.operation_id, "interrupted before trust was granted")
                 .await?;
             let removed = match stale.workspace.as_ref() {
-                Some(workspace) if workspace.is_dir() => {
+                // A directory project's sessions run in the project root,
+                // which is never a disposable worktree.
+                Some(workspace) if workspace.is_dir() && self.topology.supports_git() => {
                     let _git_mutation = self.git_mutation.lock().await;
-                    forge_storage::remove_clean_worktree(&self.main_worktree, workspace).is_ok()
+                    forge_storage::remove_clean_worktree(self.topology.root(), workspace).is_ok()
                 }
                 _ => true,
             };
@@ -770,14 +836,35 @@ impl RepositorySupervisor {
         let RepositoryBootstrap {
             lease,
             control,
-            main_worktree,
+            topology,
             git_mutation,
+            migration_notices: _,
         } = bootstrap;
-        let worktrees = forge_storage::list_worktree_records(&main_worktree)?;
+        let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
         control.set_selected(Some(primary_session_id)).await?;
 
-        if control.session(primary_session_id).await.is_err() {
+        if control.session(primary_session_id).await.is_err() && !topology.supports_git() {
+            // Every session in a directory project runs in the project root,
+            // so there is no stale primary to retire and no branch to read:
+            // the opened session simply joins the others.
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id: primary_session_id,
+                        label: primary_session_label(topology.root()),
+                        workspace: topology.root().to_path_buf(),
+                        branch: String::new(),
+                        ownership: WorktreeOwnership::Directory,
+                        slot: None,
+                        model_id: crate::starting_model(cfg).0,
+                        profile_id: crate::starting_model(cfg).1,
+                        reasoning_effort: None,
+                    },
+                    None,
+                )
+                .await?;
+        } else if control.session(primary_session_id).await.is_err() {
             let workspace = cfg.workspace_root().to_path_buf();
             for stale in control.sessions().await?.into_iter().filter(|task| {
                 task.ownership == WorktreeOwnership::Primary
@@ -891,11 +978,12 @@ impl RepositorySupervisor {
         cfg: &Config,
         mut primary: Option<AgentSession>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
-        let storage = RepositoryRuntimeStorage::new(cfg.workspace_root())?;
+        let topology = ProjectTopology::detect(cfg.workspace_root())?;
+        let storage = topology.storage()?;
         let control_dir = storage.path_for(RuntimeDataKind::Control)?;
         let lease = RepositoryLease::acquire(&control_dir, cfg.workspace_root())?;
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
-        let worktrees = forge_storage::list_worktree_records(storage.main_worktree())?;
+        let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
         let unavailable_tasks = control
             .sessions()
@@ -916,11 +1004,16 @@ impl RepositorySupervisor {
                 None => open_session_with_model(cfg, SessionTarget::New, model.clone()).await?,
             };
             let workspace = cfg.workspace_root().to_path_buf();
-            let branch = worktrees
-                .iter()
-                .find(|worktree| same_path(&worktree.path, &workspace))
-                .and_then(|worktree| worktree.branch.clone())
-                .ok_or(forge_storage::WorktreeError::DetachedHead)?;
+            let (branch, ownership, slot) = if topology.supports_git() {
+                let branch = worktrees
+                    .iter()
+                    .find(|worktree| same_path(&worktree.path, &workspace))
+                    .and_then(|worktree| worktree.branch.clone())
+                    .ok_or(forge_storage::WorktreeError::DetachedHead)?;
+                (branch, WorktreeOwnership::Primary, Some(1))
+            } else {
+                (String::new(), WorktreeOwnership::Directory, None)
+            };
             let label = primary_session_label(&workspace);
             control
                 .register_session(
@@ -929,8 +1022,8 @@ impl RepositorySupervisor {
                         label,
                         workspace,
                         branch,
-                        ownership: WorktreeOwnership::Primary,
-                        slot: Some(1),
+                        ownership,
+                        slot,
                         model_id: opened.session.active_model.clone(),
                         profile_id: opened.session.active_profile_id.clone(),
                         reasoning_effort: None,
@@ -1048,6 +1141,7 @@ impl RepositorySupervisor {
         git_mutation: Arc<Mutex<()>>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
         let (events, _) = broadcast::channel(512);
+        let topology = ProjectTopology::detect(cfg.workspace_root())?;
         let recovered = control.reconcile_running_prompt_claims().await?;
         let mut actors = HashMap::with_capacity(sessions.len());
         for (mut task, session) in sessions {
@@ -1065,6 +1159,7 @@ impl RepositorySupervisor {
         }
         let state = Arc::new(SupervisorState {
             cfg,
+            topology,
             model,
             control,
             git_mutation,
@@ -1083,6 +1178,7 @@ impl RepositorySupervisor {
         let handle = SupervisorHandle {
             commands: commands.clone(),
             events,
+            supports_git: state.topology.supports_git(),
         };
         let command_loop = tokio::spawn(run_commands(state.clone(), receiver));
         let supervisor = Self {
@@ -1345,6 +1441,19 @@ fn stops_every_session(command: &SupervisorCommand) -> bool {
     )
 }
 
+/// Commands that only make sense in a Git repository, named for the error a
+/// directory project returns.
+fn git_only_operation(command: &SupervisorCommand) -> Option<&'static str> {
+    match command {
+        SupervisorCommand::AttachWorktree { .. } => Some("attaching a worktree"),
+        SupervisorCommand::RemoveManagedWorktree { .. } => Some("removing a worktree"),
+        SupervisorCommand::CreateIssuePullRequest { .. }
+        | SupervisorCommand::RefreshIssuePullRequest { .. }
+        | SupervisorCommand::ApplyIssuePullRequestFeedback { .. } => Some("a pull request"),
+        _ => None,
+    }
+}
+
 fn command_session_id(command: &SupervisorCommand) -> Option<SessionId> {
     match command {
         SupervisorCommand::RemoveManagedWorktree { session_id, .. }
@@ -1602,6 +1711,11 @@ async fn execute_command(
     state: Arc<SupervisorState>,
     command: SupervisorCommand,
 ) -> Result<(), RepositorySupervisorError> {
+    if !state.topology.supports_git() {
+        if let Some(operation) = git_only_operation(&command) {
+            return Err(RepositorySupervisorError::Unsupported(operation));
+        }
+    }
     match command {
         SupervisorCommand::CreateIssuePullRequest {
             session_id,
@@ -1794,9 +1908,22 @@ async fn execute_command(
             // process-wide gate, including session assembly's journal setup,
             // so another managed attach/remove cannot observe half-complete
             // repository state.
+            if github_issue_number.is_some() && !state.topology.supports_git() {
+                return Err(RepositorySupervisorError::Unsupported("an issue session"));
+            }
             let _git_mutation = state.git_mutation.lock().await;
-            let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
-            let base_dir = storage.path_for(RuntimeDataKind::Worktree)?;
+            // A directory project has no worktrees: every session runs in the
+            // project root, alongside the others.
+            let base_dir = if state.topology.supports_git() {
+                Some(
+                    state
+                        .topology
+                        .storage()?
+                        .path_for(RuntimeDataKind::Worktree)?,
+                )
+            } else {
+                None
+            };
             let pending = if let Some(issue_number) = github_issue_number {
                 state
                     .control
@@ -1822,13 +1949,27 @@ async fn execute_command(
             // fork the work that worktree is actually on. The worktree starts
             // detached: no branch is created until the session first changes a
             // file, so a read-only/research session never adds a ref.
-            let worktree = forge_storage::create_detached_session_worktree(
-                &state.cfg.resolved_workspace,
-                &base_dir,
-            )?;
+            let (session_workspace, base_sha, ownership) = match base_dir {
+                Some(base_dir) => {
+                    let worktree = forge_storage::create_detached_session_worktree(
+                        &state.cfg.resolved_workspace,
+                        &base_dir,
+                    )?;
+                    (
+                        worktree.path,
+                        Some(worktree.base_sha),
+                        WorktreeOwnership::Managed,
+                    )
+                }
+                None => (
+                    state.topology.root().to_path_buf(),
+                    None,
+                    WorktreeOwnership::Directory,
+                ),
+            };
             state
                 .control
-                .mark_worktree_created(pending.operation_id, &worktree.path, "")
+                .mark_worktree_created(pending.operation_id, &session_workspace, "")
                 .await?;
             #[cfg(test)]
             {
@@ -1843,8 +1984,8 @@ async fn execute_command(
                 }
             }
             let mut task_cfg = state.cfg.clone();
-            task_cfg.resolved_workspace = worktree.path.clone();
-            task_cfg.workspace_root = Some(worktree.path.display().to_string());
+            task_cfg.resolved_workspace = session_workspace.clone();
+            task_cfg.workspace_root = Some(session_workspace.display().to_string());
             let (journal_dir, _) = resolve_journal_dir(&task_cfg);
             task_cfg.journal.path = journal_dir.display().to_string();
             let mut opened =
@@ -1862,10 +2003,10 @@ async fn execute_command(
             let task = RepositorySession {
                 session_id: opened.session.session_id,
                 label,
-                workspace: worktree.path,
+                workspace: session_workspace,
                 branch: String::new(),
-                base_sha: Some(worktree.base_sha.clone()),
-                ownership: WorktreeOwnership::Managed,
+                base_sha: base_sha.clone(),
+                ownership,
                 lifecycle: SessionLifecycle::Active,
                 turn_state: SupervisorTurnState::Idle,
                 slot: None,
@@ -1904,10 +2045,12 @@ async fn execute_command(
                     .set_github_issue(task.session_id, issue_number)
                     .await?;
             }
-            state
-                .control
-                .set_base_sha(task.session_id, &worktree.base_sha)
-                .await?;
+            if let Some(base_sha) = base_sha.as_deref() {
+                state
+                    .control
+                    .set_base_sha(task.session_id, base_sha)
+                    .await?;
+            }
             let actor = Arc::new(SessionActor::new(
                 task.clone(),
                 opened.session,
@@ -2161,17 +2304,10 @@ async fn execute_command(
                 None => Vec::new(),
             };
 
-            let storage = match RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace) {
-                Ok(storage) => storage,
-                Err(error) => {
-                    finish_actor_retirement(task_actor.as_ref());
-                    return Err(error.into());
-                }
-            };
+            let main_worktree = state.topology.root().to_path_buf();
             let blocked = {
                 let _git_mutation = state.git_mutation.lock().await;
-                let worktrees = match forge_storage::list_worktree_records(storage.main_worktree())
-                {
+                let worktrees = match state.topology.worktrees() {
                     Ok(worktrees) => worktrees,
                     Err(error) => {
                         finish_actor_retirement(task_actor.as_ref());
@@ -2241,19 +2377,17 @@ async fn execute_command(
                         continue;
                     }
                     let remove = |branch: Option<&str>| match (discard_dirty, branch) {
-                        (true, _) => forge_storage::remove_dirty_worktree(
-                            storage.main_worktree(),
-                            &child.path,
-                        ),
+                        (true, _) => {
+                            forge_storage::remove_dirty_worktree(&main_worktree, &child.path)
+                        }
                         (false, Some(branch)) => forge_storage::remove_clean_worktree_if_branch(
-                            storage.main_worktree(),
+                            &main_worktree,
                             &child.path,
                             branch,
                         ),
-                        (false, None) => forge_storage::remove_clean_worktree(
-                            storage.main_worktree(),
-                            &child.path,
-                        ),
+                        (false, None) => {
+                            forge_storage::remove_clean_worktree(&main_worktree, &child.path)
+                        }
                     };
                     let removed = match child.branch.as_deref() {
                         Some(branch) => remove(Some(branch)),
@@ -2273,21 +2407,18 @@ async fn execute_command(
                         return Ok(());
                     }
                     if discard_dirty {
-                        forge_storage::remove_dirty_worktree(
-                            storage.main_worktree(),
-                            &task.workspace,
-                        )
+                        forge_storage::remove_dirty_worktree(&main_worktree, &task.workspace)
                     } else if task.branch.is_empty() {
                         // Branchless managed session: verify it is still the
                         // detached worktree this session owns, not one rebound
                         // to a newer session.
                         forge_storage::remove_clean_worktree_if_detached(
-                            storage.main_worktree(),
+                            &main_worktree,
                             &task.workspace,
                         )
                     } else {
                         forge_storage::remove_clean_worktree_if_branch(
-                            storage.main_worktree(),
+                            &main_worktree,
                             &task.workspace,
                             &task.branch,
                         )
@@ -2875,8 +3006,7 @@ fn validate_attach_target(
     workspace: &std::path::Path,
     branch: &str,
 ) -> Result<PathBuf, RepositorySupervisorError> {
-    let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
-    let main = storage.main_worktree().to_path_buf();
+    let main = state.topology.root().to_path_buf();
     let canonical = workspace.canonicalize().map_err(|error| {
         RepositorySupervisorError::Command(format!("{}: {error}", workspace.display()))
     })?;
@@ -2885,7 +3015,7 @@ fn validate_attach_target(
             "the repository's main worktree is already the primary Session".into(),
         ));
     }
-    let records = forge_storage::list_worktree_records(&main)?;
+    let records = state.topology.worktrees()?;
     let Some(record) = records
         .iter()
         .find(|record| same_path(&record.path, &canonical))
@@ -2929,11 +3059,12 @@ async fn rollback_creation(
             let _ = state.events.send(SupervisorEvent::Selected(None));
         }
     }
-    if let Some(workspace) = workspace {
-        let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
+    // A directory project's sessions run in the project root, which must
+    // never be removed.
+    if let Some(workspace) = workspace.filter(|_| state.topology.supports_git()) {
         if workspace.is_dir() {
             let _git_mutation = state.git_mutation.lock().await;
-            let _ = forge_storage::remove_clean_worktree(storage.main_worktree(), &workspace);
+            let _ = forge_storage::remove_clean_worktree(state.topology.root(), &workspace);
         }
     }
     Ok(())
@@ -3334,8 +3465,7 @@ async fn materialize_managed_branch(
     if !workspace.is_dir() {
         return Ok(());
     }
-    let storage = RepositoryRuntimeStorage::new(&state.cfg.resolved_workspace)?;
-    let records = forge_storage::list_worktree_records(storage.main_worktree())?;
+    let records = state.topology.worktrees()?;
     let Some(record) = records
         .iter()
         .find(|record| same_path(&record.path, &workspace))
@@ -3618,6 +3748,7 @@ mod tests {
     use forge_config::Config;
     use forge_core::LoopConfig;
     use forge_model::{MockModelClient, ModelError, ModelRequest};
+    use forge_storage::{RepositoryRuntimeStorage, RuntimeStorage};
     use forge_tools::{Tool, ToolContext, ToolError, ToolRegistry};
     use forge_types::{AskUserQuestionAnswerItem, ModelResponse, ToolOutput};
     use serde_json::json;
@@ -7191,6 +7322,77 @@ mod tests {
         .await
         .unwrap();
         (cfg, control, handle)
+    }
+
+    /// A directory project: several sessions share the root, and Git-only
+    /// commands are refused rather than shelling out to `git`.
+    #[tokio::test]
+    async fn directory_project_runs_sessions_side_by_side_without_git() {
+        let folder = TempDir::new().unwrap();
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        forge_config::grant_trust_at(&trust_store, folder.path()).unwrap();
+        let topology = ProjectTopology::detect(folder.path()).unwrap();
+        let control_dir = topology
+            .storage()
+            .unwrap()
+            .path_for(RuntimeDataKind::Control)
+            .unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, folder.path()).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: folder.path().to_path_buf(),
+            workspace_root: Some(folder.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> =
+            Arc::new(MockModelClient::script(vec![text_response("done")]));
+        let (_supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg,
+            model,
+            Some(trust_store),
+        )
+        .await
+        .unwrap();
+        assert!(!handle.supports_git());
+
+        for label in ["first", "second"] {
+            handle
+                .command(SupervisorCommand::CreateSession {
+                    label: label.into(),
+                    first_prompt: None,
+                    github_issue_number: None,
+                })
+                .await
+                .unwrap();
+        }
+        let sessions = control.sessions().await.unwrap();
+        assert_eq!(sessions.len(), 2);
+        for task in &sessions {
+            assert_eq!(task.ownership, WorktreeOwnership::Directory);
+            assert_eq!(task.lifecycle, SessionLifecycle::Active);
+            assert_eq!(task.workspace, folder.path());
+        }
+        assert!(!folder.path().join(".git").exists());
+
+        let refused = handle
+            .command(SupervisorCommand::AttachWorktree {
+                workspace: folder.path().to_path_buf(),
+                label: "attach".into(),
+                branch: "main".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("needs a Git repository"),
+            "{refused}"
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]

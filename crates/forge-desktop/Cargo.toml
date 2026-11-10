@@ -45,6 +45,10 @@ dirs = "7"
 portable-pty = "0.9"
 base64 = "0.22"
 sha2 = "0.10"
+# Native folder picker for a launch with no meaningful working directory.
+# Called directly rather than through the Tauri dialog plugin: plugins add IPC
+# surface the webview could reach (see tests/config.rs).
+rfd = { version = "=0.17.2", default-features = false, features = ["gtk3", "common-controls-v6"] }
 
 [dev-dependencies]
 # Constructing a session snapshot in the bridge's roster tests.

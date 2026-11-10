@@ -79,6 +79,9 @@ fn run_setup_loop(
 ) -> io::Result<SetupResult> {
     let display = forge_config::trust_display_path(&request.cwd);
     let wide = is_wide_root(Path::new(&display));
+    // Detected once, not per frame: it runs `git`.
+    let no_git = forge_session::ProjectTopology::detect(&request.cwd)
+        .is_ok_and(|topology| !topology.supports_git());
     let mut screen = if request.run_theme {
         Screen::Theme(Box::new(Overlay::theme_open(DEFAULT_THEME_ID)))
     } else {
@@ -91,7 +94,14 @@ fn run_setup_loop(
 
     loop {
         terminal.draw(|f| {
-            draw_setup(f.area(), f.buffer_mut(), &mut screen, &display, wide);
+            draw_setup(
+                f.area(),
+                f.buffer_mut(),
+                &mut screen,
+                &display,
+                wide,
+                no_git,
+            );
             theme::strip_colors_if_disabled(f.buffer_mut());
         })?;
         if !event::poll(Duration::from_millis(200))? {
@@ -195,6 +205,7 @@ fn draw_setup(
     screen: &mut Screen,
     display: &str,
     wide: bool,
+    no_git: bool,
 ) {
     theme::fill(area, buf, theme::canvas());
     match screen {
@@ -208,6 +219,7 @@ fn draw_setup(
             buf,
             display,
             wide,
+            no_git,
             *selected,
             scroll,
             error.as_deref(),
@@ -259,11 +271,13 @@ fn draw_theme_setup(area: Rect, buf: &mut ratatui::buffer::Buffer, overlay: &Ove
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_trust_setup(
     area: Rect,
     buf: &mut ratatui::buffer::Buffer,
     display: &str,
     wide: bool,
+    no_git: bool,
     selected: usize,
     scroll: &mut usize,
     error: Option<&str>,
@@ -291,6 +305,13 @@ fn draw_trust_setup(
     if wide {
         lines.extend(crate::decision::literal_lines(
             "Confirming this path trusts every project you later create under it.",
+            text_width,
+            theme::warn(),
+        ));
+    }
+    if no_git {
+        lines.extend(crate::decision::literal_lines(
+            NO_GIT_NOTICE,
             text_width,
             theme::warn(),
         ));
@@ -345,6 +366,10 @@ fn draw_trust_setup(
     }
     Paragraph::new(choices).render(controls, buf);
 }
+
+/// Shown on the trust card for a folder that isn't a Git repository: agents
+/// edit it directly, with no worktree to isolate or revert their changes.
+const NO_GIT_NOTICE: &str = "No Git: agent edits can't be rolled back.";
 
 /// Widest the trust card is allowed to draw.
 const TRUST_CARD_WIDTH: u16 = 84;
@@ -433,6 +458,7 @@ mod tests {
             &mut buf,
             &format!("/workspace/東京/{}", "very-long-directory/".repeat(15)),
             true,
+            false,
             1,
             &mut scroll,
             Some("Could not save trust decision; check permissions and try again."),
@@ -450,6 +476,7 @@ mod tests {
             &mut buf,
             "/workspace/東京",
             false,
+            false,
             1,
             &mut scroll,
             Some(&long_error),
@@ -458,5 +485,20 @@ mod tests {
         assert!(text.contains("Complete error evidence"));
         assert!(text.contains("Yes, I trust this folder") && text.contains("No, exit"));
         assert!(text.contains("Trust was not saved"));
+    }
+
+    #[test]
+    fn trust_card_warns_when_the_folder_has_no_git() {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        let mut scroll = 0;
+        draw_trust_setup(area, &mut buf, "/notes", false, true, 0, &mut scroll, None);
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("No Git: agent edits can't be rolled back."));
+
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        draw_trust_setup(area, &mut buf, "/repo", false, false, 0, &mut scroll, None);
+        let text: String = buf.content.iter().map(|cell| cell.symbol()).collect();
+        assert!(!text.contains("No Git"));
     }
 }

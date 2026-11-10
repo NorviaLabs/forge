@@ -153,8 +153,9 @@ pub struct SessionRow {
     /// `active`, `archived` or `retained`. Archived and retained rows are
     /// listed so the operator can resume them; they are not selectable.
     pub lifecycle: &'static str,
-    /// `primary`, `managed` or `attached`. Only a managed worktree can be
-    /// removed with the session; an attached one belongs to the operator.
+    /// `primary`, `managed`, `attached` or `directory`. Only a managed
+    /// worktree can be removed with the session; an attached one belongs to
+    /// the operator, and a directory session runs in the project folder.
     pub ownership: &'static str,
 }
 
@@ -163,6 +164,7 @@ fn ownership_label(ownership: forge_session::WorktreeOwnership) -> &'static str 
         forge_session::WorktreeOwnership::Primary => "primary",
         forge_session::WorktreeOwnership::Managed => "managed",
         forge_session::WorktreeOwnership::Attached => "attached",
+        forge_session::WorktreeOwnership::Directory => "directory",
     }
 }
 
@@ -846,7 +848,9 @@ impl DesktopState {
 /// Whether the window should show the trust screen. Present in every build:
 /// the page asks before it subscribes.
 pub struct TrustState {
-    pub workspace: std::path::PathBuf,
+    /// `None` until the operator picks a folder: a launch with no path from
+    /// `/` or the home folder never opens either implicitly.
+    workspace: std::sync::Mutex<Option<std::path::PathBuf>>,
     /// `Some` until the operator trusts the workspace and a session starts.
     deferred: std::sync::Mutex<Option<forge_config::Config>>,
     /// Why starting after trust failed, so a retry can say what happened.
@@ -856,7 +860,7 @@ pub struct TrustState {
 impl TrustState {
     pub fn ready(workspace: std::path::PathBuf) -> Self {
         Self {
-            workspace,
+            workspace: std::sync::Mutex::new(Some(workspace)),
             deferred: std::sync::Mutex::new(None),
             error: std::sync::Mutex::new(String::new()),
         }
@@ -866,6 +870,25 @@ impl TrustState {
         Self {
             deferred: std::sync::Mutex::new(Some(deferred)),
             ..Self::ready(workspace)
+        }
+    }
+
+    /// Nothing open yet: the page shows a folder picker.
+    pub fn needs_folder() -> Self {
+        Self {
+            workspace: std::sync::Mutex::new(None),
+            deferred: std::sync::Mutex::new(None),
+            error: std::sync::Mutex::new(String::new()),
+        }
+    }
+
+    fn workspace(&self) -> Option<std::path::PathBuf> {
+        self.workspace.lock().ok().and_then(|slot| slot.clone())
+    }
+
+    fn set_workspace(&self, workspace: std::path::PathBuf) {
+        if let Ok(mut slot) = self.workspace.lock() {
+            *slot = Some(workspace);
         }
     }
 
@@ -886,7 +909,12 @@ impl TrustState {
 #[derive(Debug, Clone, Serialize)]
 pub struct TrustView {
     pub workspace: String,
+    /// No folder is open yet; the page shows the folder picker.
+    pub needs_folder: bool,
     pub needs_trust: bool,
+    /// The folder awaiting trust isn't a Git repository, so the trust screen
+    /// warns that agent edits can't be rolled back.
+    pub no_git: bool,
     pub error: String,
 }
 
@@ -898,13 +926,25 @@ pub fn trust_status(state: State<'_, TrustState>) -> TrustView {
 }
 
 pub fn trust_view(state: &TrustState) -> TrustView {
+    let workspace = state.workspace();
+    let needs_trust = state
+        .deferred
+        .lock()
+        .map(|slot| slot.is_some())
+        .unwrap_or(false);
+    // Only asked while the trust screen shows: detection runs `git`.
+    let no_git = needs_trust
+        && workspace.as_deref().is_some_and(|workspace| {
+            forge_session::ProjectTopology::detect(workspace)
+                .is_ok_and(|topology| !topology.supports_git())
+        });
     TrustView {
-        workspace: state.workspace.display().to_string(),
-        needs_trust: state
-            .deferred
-            .lock()
-            .map(|slot| slot.is_some())
-            .unwrap_or(false),
+        needs_folder: workspace.is_none(),
+        workspace: workspace
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        needs_trust,
+        no_git,
         error: state
             .error
             .lock()
@@ -924,11 +964,13 @@ pub async fn trust_workspace(
     app: tauri::AppHandle,
     state: State<'_, TrustState>,
 ) -> Result<(), String> {
-    use tauri::Manager;
+    let Some(workspace) = state.workspace() else {
+        return Err("choose a folder first".into());
+    };
     let Some(deferred) = state.deferred.lock().ok().and_then(|mut slot| slot.take()) else {
         return Err("this workspace is already trusted".into());
     };
-    if let Err(error) = forge_config::grant_trust(&state.workspace) {
+    if let Err(error) = forge_config::grant_trust(&workspace) {
         state.restore(deferred);
         return Err(state.fail(format!("cannot record trust: {error}")));
     }
@@ -939,6 +981,62 @@ pub async fn trust_workspace(
             return Err(state.fail(error.to_string()));
         }
     };
+    start_session(&app, &state, deferred, plan).await
+}
+
+/// Ask for the folder to open, for a launch that had none. A folder that
+/// still needs trust goes to the trust screen; a trusted one opens now.
+/// Cancelling the picker leaves the picker showing.
+#[tauri::command]
+pub async fn choose_folder(
+    app: tauri::AppHandle,
+    state: State<'_, TrustState>,
+) -> Result<TrustView, String> {
+    use tauri::Manager;
+    if state.workspace().is_some() || app.try_state::<DesktopState>().is_some() {
+        return Err("a folder is already open".into());
+    }
+    // macOS requires the panel to be created on the main thread; the
+    // returned future is then awaited here.
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _ = sender.send(
+            rfd::AsyncFileDialog::new()
+                .set_title("Open a folder in Forge")
+                .pick_folder(),
+        );
+    })
+    .map_err(|error| state.fail(error.to_string()))?;
+    let pick = receiver
+        .await
+        .map_err(|_| state.fail("the folder picker did not open".into()))?;
+    let Some(picked) = pick.await else {
+        return Ok(trust_view(&state));
+    };
+    let folder = picked.path().to_path_buf();
+    let cfg =
+        crate::startup::load_config(&folder).map_err(|error| state.fail(format!("{error:#}")))?;
+    let plan = forge_session::LaunchPlan::prepare(&cfg)
+        .await
+        .map_err(|error| state.fail(error.to_string()))?;
+    state.set_workspace(plan.workspace().to_path_buf());
+    if plan.needs_trust() {
+        state.restore(cfg);
+        return Ok(trust_view(&state));
+    }
+    start_session(&app, &state, cfg, plan).await?;
+    Ok(trust_view(&state))
+}
+
+/// Open the session for `deferred` and hand it to the window. On failure the
+/// config goes back into the trust state so the operator can retry.
+async fn start_session(
+    app: &tauri::AppHandle,
+    state: &TrustState,
+    deferred: forge_config::Config,
+    plan: forge_session::LaunchPlan,
+) -> Result<(), String> {
+    use tauri::Manager;
     let started = match crate::startup::open(deferred.clone(), plan, None).await {
         Ok(started) => started,
         Err(error) => {
@@ -966,6 +1064,9 @@ pub struct Hello {
     pub session_id: SessionId,
     pub initial: DesktopEvent,
     pub sessions: Vec<SessionRow>,
+    /// Whether the project is a Git repository. When it isn't, worktree,
+    /// branch, issue and pull-request controls are shown disabled.
+    pub supports_git: bool,
     /// Self-test builds only: the probe's parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_test: Option<serde_json::Value>,
@@ -1086,6 +1187,7 @@ pub fn subscribe(
         session_id: state.session_id,
         initial: state.initial.clone(),
         sessions: state.sessions.clone(),
+        supports_git: state.handle.supports_git(),
         self_test,
     }
 }
@@ -3239,6 +3341,22 @@ mod tests {
         assert!(!trust_view(&pending).needs_trust);
         assert_eq!(pending.fail("cannot start".into()), "cannot start");
         assert_eq!(trust_view(&pending).error, "cannot start");
+    }
+
+    /// A launch with no folder shows the picker until one is chosen; a chosen
+    /// folder that is untrusted then shows the trust screen.
+    #[test]
+    fn the_folder_picker_lasts_until_a_folder_is_chosen() {
+        let state = TrustState::needs_folder();
+        let view = trust_view(&state);
+        assert!(view.needs_folder && !view.needs_trust && view.workspace.is_empty());
+
+        state.set_workspace(std::path::PathBuf::from("/work/notes"));
+        state.restore(forge_config::Config::default());
+        let view = trust_view(&state);
+        assert!(!view.needs_folder && view.needs_trust);
+        assert_eq!(view.workspace, "/work/notes");
+        assert!(!trust_view(&TrustState::ready("/work/repo".into())).needs_folder);
     }
 
     #[test]

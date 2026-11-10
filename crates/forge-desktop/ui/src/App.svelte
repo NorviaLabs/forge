@@ -35,6 +35,10 @@
 
   let sessionId = $state("");
   let sessions = $state([]);
+  // False for a folder that isn't a Git repository: worktree, branch, issue
+  // and pull-request actions stay listed but disabled, with the reason.
+  let supportsGit = $state(true);
+  const NEEDS_GIT = "needs a Git repository";
   let resumable = $state([]);
   // One view record per session (see view.js): open documents, the active
   // document, the draft and the transcript position.
@@ -432,7 +436,12 @@
         action: () => activeSession && startRename(activeSession),
       },
     );
-    return items;
+    if (supportsGit) return items;
+    return items.map((item) =>
+      item.group === "Git" || item.id === "action:github" || item.id === "action:attach"
+        ? { ...item, detail: NEEDS_GIT, action: () => (error = `${item.label.replace(/…$/, "")}: ${NEEDS_GIT}`) }
+        : item,
+    );
   });
 
   function basename(path) {
@@ -533,10 +542,12 @@
     filesLoading = true;
     filesError = "";
     try {
+      // A folder that isn't a Git repository has files but no Git status;
+      // asking for it would fail and hide the file list too.
       const [entries, nextStatus, written] = await Promise.all([
         invoke("list_files", { sessionId: owner }),
-        invoke("git_status", { sessionId: owner }),
-        invoke("git_last_turn_files", { sessionId: owner }),
+        supportsGit ? invoke("git_status", { sessionId: owner }) : { branch: "", files: [] },
+        supportsGit ? invoke("git_last_turn_files", { sessionId: owner }) : [],
       ]);
       if (request !== filesRequest || owner !== sessionId) return;
       files = entries;
@@ -1581,6 +1592,8 @@
   let checked = $state(false);
   let booted = $state(false);
   let needsTrust = $state(false);
+  let needsFolder = $state(false);
+  let trustNoGit = $state(false);
   let trustWorkspace = $state("");
   let trustError = $state("");
   let trusting = $state(false);
@@ -1601,6 +1614,7 @@
     const hello = await invoke("subscribe", { channel });
     sessionId = hello.session_id;
     sessions = hello.sessions;
+    supportsGit = hello.supports_git !== false;
     loadResumable();
     applySession(hello.initial);
     channel.onmessage = onEvent;
@@ -1611,6 +1625,27 @@
     if (import.meta.env.MODE === "self-test" && hello.self_test) {
       const { runSelfTest } = await import("./selftest.js");
       runSelfTest(hello.self_test, hello.session_id);
+    }
+  }
+
+  // A launch with no folder (Dock, Finder): pick one, then either trust it or,
+  // if it is already trusted, open it straight away.
+  async function chooseFolder() {
+    trusting = true;
+    trustError = "";
+    try {
+      const status = await invoke("choose_folder");
+      trustWorkspace = status.workspace;
+      trustError = status.error;
+      trustNoGit = status.no_git;
+      needsFolder = status.needs_folder;
+      if (needsFolder || status.needs_trust) return;
+      await boot();
+      needsTrust = false;
+    } catch (cause) {
+      trustError = String(cause);
+    } finally {
+      trusting = false;
     }
   }
 
@@ -1647,7 +1682,9 @@
       try {
         const status = await invoke("trust_status");
         trustWorkspace = status.workspace;
-        needsTrust = status.needs_trust;
+        needsFolder = status.needs_folder;
+        trustNoGit = status.no_git;
+        needsTrust = status.needs_trust || status.needs_folder;
         trustError = status.error;
       } catch (cause) {
         error = String(cause);
@@ -1847,6 +1884,7 @@
           {status}
           {lastTurnFiles}
           bind:scope={currentView.fileScope}
+          {supportsGit}
           bind:query={currentView.fileQuery}
           tabs={currentView.tabs}
           activeDocId={currentView.activeDocId}
@@ -1872,7 +1910,7 @@
           onUnstage={unstagePath}
           onStageAll={stageAll}
           onCommit={openCommit}
-          onBranches={openBranches}
+          onBranches={supportsGit ? openBranches : null}
           onGitOperation={(operation) => operation.kind === "fetch" ? performGitOperation(operation) : requestGitOperation(operation)}
         />
       {/key}
@@ -2227,7 +2265,7 @@
     {#key sessionId}<Details onClose={() => (detailsOpen = false)} />{/key}
   {/if}
   {#if helpOpen}
-    <Help bind:theme={themeChoice} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={() => { helpOpen = false; githubOpen = true; }} />
+    <Help bind:theme={themeChoice} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { helpOpen = false; githubOpen = true; } : null} />
   {/if}
 
   {#if gitConfirm}
@@ -2258,6 +2296,9 @@
       workspace={trustWorkspace}
       error={trustError}
       busy={trusting}
+      {needsFolder}
+      noGit={trustNoGit}
+      onChoose={chooseFolder}
       onTrust={acceptTrust}
       onQuit={() => invoke("quit_app").catch(() => {})}
     />

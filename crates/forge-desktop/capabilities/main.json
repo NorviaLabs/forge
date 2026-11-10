@@ -10,6 +10,7 @@
     "core:event:allow-unlisten",
     "allow-trust-status",
     "allow-trust-workspace",
+    "allow-choose-folder",
     "allow-subscribe",
     "allow-current-session",
     "allow-submit-prompt",

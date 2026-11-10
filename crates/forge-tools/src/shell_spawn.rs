@@ -165,6 +165,7 @@ impl ShellSpawnSpec {
                 .chain(crate::credentials::host_identity_env(
                     command_egress,
                     &identity_dir,
+                    workspace_root,
                 ))
                 .chain(policy.toolchain_env());
             env_set.extend(confined_env.map(|(name, value)| (name, OsString::from(value))));

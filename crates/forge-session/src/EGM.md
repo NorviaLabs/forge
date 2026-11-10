@@ -40,7 +40,7 @@ command/event API, and immutable per-frame snapshots for frontends.
 
 - `LaunchPlan::{prepare(&Config).await, prepare_with_trust_store(&Config, Option<PathBuf>).await, workspace, needs_trust, launch(self, LaunchTarget) -> Result<Launched, LaunchError>}`.
 - `LaunchTarget::{New, Continue, Latest, Resume(SessionId), Fork(SessionId)}`.
-- `Launched { bootstrap: Option<RepositoryBootstrap>, opened: OpenedSession, fork_from: Option<SessionId>, notices }` (`opened.notices` is moved into `notices`).
+- `Launched { bootstrap: RepositoryBootstrap, opened: OpenedSession, fork_from: Option<SessionId>, notices }` (`opened.notices` is moved into `notices`).
 - `LaunchError::{Untrusted { workspace }, Repository(RepositorySupervisorError), OwnershipUnavailable { control_dir, source }, Session(anyhow::Error)}`.
 - `config_for_workspace(&Config, &Path) -> Config`.
 
@@ -65,7 +65,7 @@ command/event API, and immutable per-frame snapshots for frontends.
 
 ## Invariants
 
-- `LaunchPlan::prepare` writes nothing. It probes ownership read-only (`RepositoryLease::probe`: never creates or writes; ignores an `owner.lock` that is not a regular file, so a symlink or FIFO can neither redirect nor block it; reads at most 4 KiB of the owner record; takes only a shared lock, so concurrent probes never see each other) and refuses with `AlreadyOwned` when another process holds the lease, so a doomed launch is refused before any setup screen or trust/theme write. It also reads `needs_trust`. `launch` re-reads trust first (`Untrusted` otherwise, with nothing written: no `.forge`, no exclude edit, no control database opened, so crafted or symlinked repository content is never acted on before consent), then takes the lease: `AlreadyOwned` → `Repository`; any other bootstrap failure where repository storage exists → `OwnershipUnavailable { control_dir, .. }`, naming `<main worktree>/.forge/local`; no repository storage → lease-less. Then it runs `recover_interrupted_creations`, resolves the target and opens the session; the caller opens the supervisor. The probe is advisory: a process that takes the lease between `prepare` and `launch` is still refused by `launch`.
+- `LaunchPlan::prepare` writes nothing. It probes ownership read-only (`RepositoryLease::probe`: never creates or writes; ignores an `owner.lock` that is not a regular file, so a symlink or FIFO can neither redirect nor block it; reads at most 4 KiB of the owner record; takes only a shared lock, so concurrent probes never see each other) and refuses with `AlreadyOwned` when another process holds the lease, so a doomed launch is refused before any setup screen or trust/theme write. It also reads `needs_trust`. `launch` re-reads trust first (`Untrusted` otherwise, with nothing written: no `.forge`, no exclude edit, no control database opened, so crafted or symlinked repository content is never acted on before consent), then takes the lease: `AlreadyOwned` → `Repository`; any other bootstrap failure → `OwnershipUnavailable { control_dir, .. }`, naming `<project root>/.forge/local`. There is no lease-less path: Git repositories and directory projects alike run under the lease. For a directory project, a `Resume`/`Fork` target with no control-database row (a journal written by a lease-less Forge and migrated) opens with the launch config; the supervisor registers it as a `Directory` session on adoption. Then it runs `recover_interrupted_creations`, resolves the target and opens the session; the caller opens the supervisor. The probe is advisory: a process that takes the lease between `prepare` and `launch` is still refused by `launch`.
 - `LaunchTarget::Continue` opens the control DB's selected session when it is `Active` and its journal exists; otherwise the most recent journal with a "selected session is no longer available" notice; with no journal at all, a new session with a "No previous session found" notice. Without a repository it behaves like `Latest`.
 - `RepositorySupervisor::shutdown(self)` sends `Shutdown` (harmless if a handle already did), joins the command loop (which joins its detached operations), waits for every turn driver (`DriverTracker`), and only then drops the lease, which lives in `Option<RepositoryLease>` inside the shared state. When it returns `Ok`, the lease can be re-acquired immediately, in this process or another. The supervisor keeps its own command sender, so the command loop no longer ends merely because every `SupervisorHandle` was dropped while the supervisor is alive.
 - Exactly one Forge process owns a repository group: `RepositoryLease::acquire` uses a non-truncating `try_lock` on `owner.lock`, and a losing process reports the incumbent `LeaseOwner` parsed from that file.
@@ -83,6 +83,26 @@ command/event API, and immutable per-frame snapshots for frontends.
 - `QueuedPromptId::Durable` and `Session` namespaces are independent and must never be used to address each other.
 - Commands carrying `expected_call_id`/`expected_queue_id` must still match the pending/visible item or the command is refused.
 - `SupervisorHandle::try_command`/`submit` never block the terminal owner; execution failures are published as `SupervisorEvent::Error`.
+
+- `ProjectTopology` (`topology.rs`) is plain data `{kind, root}` (`Git` → main worktree, `Directory` → the folder). Every runtime-storage construction and worktree listing in this crate goes through it; storage is built per call because the storage types are `!Sync`. The kind is detected on every launch, never persisted.
+- Directory projects: storage is `LocalRuntimeStorage::directory_local(root)` (`<root>/.forge/local`). After the lease, `RepositoryBootstrap::acquire` runs `forge_storage::migrate_legacy_runtime_files(root)` (idempotent; notices via `migration_notices`, prepended to launch notices). Sessions use `WorktreeOwnership::Directory` (`'directory'`), `branch = ''`, `slot = None`, and all share the root: the unique index `sessions_live_workspace` is `WHERE lifecycle = 'active' AND ownership != 'directory'` (recreated on every open) and `register_session` skips `WorkspaceInUse` for them. Git sessions keep one live session per worktree path regardless of branch. `CreateSession` creates no worktree; `AttachWorktree`, `RemoveManagedWorktree` and the issue/pull-request commands return `RepositorySupervisorError::Unsupported`. `SupervisorHandle::supports_git()` and `RepositoryBootstrap::supports_git()` expose the kind.
+
+## Isolation audit
+
+Rule: after startup, no runtime path reads `current_dir` or a process-wide static, except user- or host-level state. Produced with `rg "current_dir\(\)|static [A-Z_]+: .*(Mutex|OnceLock|RwLock|LazyLock)" crates --type rust` on 2026-11-10; test-only hits omitted.
+
+| Site | Outcome |
+|---|---|
+| `forge-tools/src/credentials.rs` `CREDENTIAL_CACHE` | Fixed: `git credential fill` runs in the workspace; keyed `(workspace, host)` |
+| `forge-mcp/src/lib.rs` sandboxed spawn | Fixed: no workspace → `McpError::Protocol`, no `current_dir` fallback |
+| `forge-config/src/lib.rs` `Config::load` | Fixed: `ConfigOverrides.project_root` replaces `current_dir` for discovery and workspace |
+| `forge-config/src/lib.rs` `Config::default()` | Allowed: never used to build a project config |
+| `forge-desktop/src/startup.rs` | Allowed: launch-time only, to pick the workspace |
+| `forge-core/src/subagent.rs` `WRITER_GATES` | Allowed: keyed by root |
+| `forge-connect` `Credentials::shared`, `store.rs` `WRITE_LOCK`, `builtin.rs` `SPECS` | Allowed: user-level |
+| `forge-model` `FALLBACK_OPENCODE_SESSION` | Allowed: user-level |
+| `forge-tools` `sandbox.rs` `APPLICABLE`, `git_network.rs` `EGRESS_CONNECT_EXE` | Allowed: host-level |
+| `forge-syntax` caches, `forge-tui` `ENABLED`/`AVAILABLE`/`MEMO` | Allowed: not project data |
 
 ## Side Effects
 

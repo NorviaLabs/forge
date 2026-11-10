@@ -528,6 +528,11 @@ pub struct ConfigOverrides {
     pub config_path: Option<PathBuf>,
     pub workspace: Option<PathBuf>,
     pub journal_path: Option<String>,
+    /// The project folder to load for, instead of the process working
+    /// directory. When set, `forge.toml` is discovered here and relative
+    /// workspace paths resolve against it, so one process can load config for
+    /// a project other than the one it was started in.
+    pub project_root: Option<PathBuf>,
 }
 
 /// `fake-provider` builds only: the scenario file for the scripted fake
@@ -597,7 +602,10 @@ impl Config {
             }
         }
 
-        let discovery_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let discovery_dir = match overrides.project_root.as_deref() {
+            Some(root) => root.to_path_buf(),
+            None => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        };
         let (project, project_scope) =
             resolve_project_config(overrides.config_path.clone(), &discovery_dir);
         if project.is_file() {
@@ -609,7 +617,15 @@ impl Config {
         #[cfg(feature = "fake-provider")]
         apply_fake_provider(&mut cfg, env::var_os(FAKE_PROVIDER_SCRIPT_ENV));
 
-        let cwd = env::current_dir().map_err(ConfigError::Io)?;
+        let cwd = match overrides.project_root.as_deref() {
+            // An unreadable project root must fail rather than silently fall
+            // back to the process directory and load another project's view.
+            Some(root) => {
+                std::fs::metadata(root).map_err(ConfigError::Io)?;
+                root.to_path_buf()
+            }
+            None => env::current_dir().map_err(ConfigError::Io)?,
+        };
         cfg.resolved_workspace =
             resolve_workspace(&cfg.workspace_root, overrides.workspace.as_deref(), &cwd);
 
@@ -1128,6 +1144,56 @@ args = ["-c", "exfiltrate"]
         let (path, scope) = resolve_project_config(Some(named.clone()), dir.path());
         assert_eq!(path, named);
         assert_eq!(scope, ConfigScope::Trusted);
+    }
+
+    #[test]
+    fn project_root_selects_that_projects_forge_toml_not_the_process_dir() {
+        let _guard = EnvGuard::clear_forge_env();
+        let project = tempdir().unwrap();
+        fs::write(
+            project.path().join("forge.toml"),
+            "[model]\nrequest_timeout_secs = 77\n",
+        )
+        .unwrap();
+
+        let cfg = Config::load(ConfigOverrides {
+            project_root: Some(project.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(cfg.model.request_timeout_secs, 77);
+        assert_eq!(cfg.workspace_root(), project.path());
+    }
+
+    #[test]
+    fn project_root_layer_stays_untrusted() {
+        let _guard = EnvGuard::clear_forge_env();
+        let project = tempdir().unwrap();
+        fs::write(project.path().join("forge.toml"), HOSTILE_PROJECT_TOML).unwrap();
+
+        let cfg = Config::load(ConfigOverrides {
+            project_root: Some(project.path().to_path_buf()),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert!(cfg.mcp.servers.is_empty());
+        assert!(cfg
+            .refused_project_keys
+            .iter()
+            .any(|key| key == "mcp.servers"));
+    }
+
+    #[test]
+    fn unreadable_project_root_fails_instead_of_using_the_process_dir() {
+        let _guard = EnvGuard::clear_forge_env();
+        let missing = tempdir().unwrap().path().join("gone");
+        let result = Config::load(ConfigOverrides {
+            project_root: Some(missing),
+            ..Default::default()
+        });
+        assert!(matches!(result, Err(ConfigError::Io(_))));
     }
 
     #[test]

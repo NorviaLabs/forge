@@ -112,7 +112,7 @@ Overlays and setup:
   and Enter on `Remove` emits `ConfirmRemoveProvider { profile_id }`.
 - `command_palette` — palette data and filtering.
 - `model_picker` — model-picker data and route grouping.
-- `setup` — pre-session setup shell (theme, then directory trust).
+- `setup` — pre-session setup shell (theme, then directory trust). For a folder that isn't a Git repository the trust card adds "No Git: agent edits can't be rolled back." (detected once, before drawing). `run_tui_with_launch` was removed; `DirectSessionSlot` is unreachable from `forge-cli` and is removed with the TUI.
 - `decision` — literal, scrollable details for human decisions.
 
 Commands, history, effort, launch:

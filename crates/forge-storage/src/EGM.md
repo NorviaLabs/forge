@@ -14,7 +14,8 @@ the platform application-data directory. Project-owned `.forge/` content
 
 - `EXCLUDE_PATTERN: &str = "/.forge/local/"`.
 - `forge_data_dir() -> Option<PathBuf>` — `$FORGE_DATA_DIR` when set and non-empty, else `dirs::data_dir()/forge`; the root of every `ApplicationData` path (re-exported from `lib.rs`). The repo's `.cargo/config.toml` sets it to `target/forge-data` for `cargo test`/`cargo run`.
-- `StorageMode::{RepositoryLocal, ApplicationData}`.
+- `StorageMode::{RepositoryLocal, DirectoryLocal, ApplicationData}`.
+- `LocalRuntimeStorage::directory_local(root)` — storage for a directory project (a folder that isn't a Git repository): always `DirectoryLocal`, data under `<root>/.forge/local/`, no Git exclude edits and no fallback. This deliberately overrides the default policy of sending non-repositories to application data, so a directory project's state travels with the folder.
 - `RuntimeDataKind` (`#[non_exhaustive]`): `Control`, `Session`, `Lifecycle`, `Queue`, `UiState`, `Cache`, `Log`, `Index`, `Checkpoint`, `Attachment`, `Worktree`.
 - `RuntimeStorage` trait: `repository_root`, `storage_mode`, `identity`, `fallback_reason`, `ensure_ready`, `root`, `path_for(kind)`, `path_for_read(kind)`.
 - `LocalRuntimeStorage::new(workspace)` — one worktree; also `workspace()`, `migration_report()` (empty until setup has run), and `tracked_migration_conflicts()` (sources left in place because Git tracks them).
@@ -36,6 +37,7 @@ the platform application-data directory. Project-owned `.forge/` content
 - The managed exclude block is idempotent: unrelated lines are preserved verbatim (except that trailing blank lines are dropped before the block is re-appended at the end), a missing trailing newline is tolerated, duplicate Forge blocks are reconciled into one, and the write is atomic (temp file in the same directory, then rename). `.gitignore` is never modified.
 - Storage creation is lazy: `LocalRuntimeStorage::new` only detects, and nothing is created on disk until `ensure_ready`/`root`/`path_for` runs.
 - `path_for_read` computes the path from topology alone and creates nothing, for callers that must not trigger initialization.
+- `DirectoryLocal` is fixed at construction and never falls back; `path_for_read` creates nothing.
 - `storage_mode` reflects the *desired* mode before setup; a desired `RepositoryLocal` may still fall back to `ApplicationData` when `ensure_ready` fails, and `fallback_reason` is set only in that case.
 - `RuntimeIdentity` hashes the git common dir plus worktree root (falling back to the workspace path) and appends a label, so unrelated repos with the same basename and distinct linked worktrees never collide in a shared fallback directory.
 - Migration is conservative and idempotent: only the fixed `CANDIDATES` list, only untracked legacy paths, and never over existing destination content (`DestinationCollision`). `fs::rename` failure leaves the source untouched (`Failed`). Exception: an untracked legacy `sessions` directory whose destination exists is merged file by file — untracked files are moved unless the target exists, per-file collisions are left in place, an emptied legacy directory is removed, and the record is `Failed` if any rename failed (detail: count and first error), else `Migrated` (anything moved or emptied) or `DestinationCollision`. Migration runs best-effort during repository-local setup and never blocks it; tracked legacy files are surfaced, never altered in the Git index.

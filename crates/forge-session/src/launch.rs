@@ -73,9 +73,9 @@ pub struct LaunchPlan {
 
 /// Everything a frontend needs to start running a session.
 pub struct Launched {
-    /// Repository ownership, when the workspace is a git repository whose
-    /// lease was taken. `None` runs a lease-less session.
-    pub bootstrap: Option<RepositoryBootstrap>,
+    /// Project ownership. Every project, Git repository or plain directory,
+    /// runs under its lease.
+    pub bootstrap: RepositoryBootstrap,
     pub opened: OpenedSession,
     /// For a fork under a repository, the source session. The session in
     /// `opened` is the source itself; the caller forks it through the
@@ -142,31 +142,24 @@ impl LaunchPlan {
         // session state first and only then discover it does not own the
         // repository.
         let bootstrap = acquire_repository(&cfg, &self.workspace).await?;
-        let mut notices = Vec::new();
-        if let Some(bootstrap) = bootstrap.as_ref() {
-            match bootstrap.recover_interrupted_creations().await {
-                Ok(recovered) => notices.extend(recovered),
-                Err(error) => notices.push(format!("Session recovery incomplete: {error}")),
-            }
+        let mut notices = bootstrap.migration_notices().to_vec();
+        match bootstrap.recover_interrupted_creations().await {
+            Ok(recovered) => notices.extend(recovered),
+            Err(error) => notices.push(format!("Session recovery incomplete: {error}")),
         }
-        let (target, target_notices) = resolve_target(&cfg, bootstrap.as_ref(), target).await?;
+        let (target, target_notices) = resolve_target(&cfg, &bootstrap, target).await?;
 
         let mut open_target = target;
         let mut fork_from = None;
-        let session_cfg = match (bootstrap.as_ref(), target) {
-            (Some(bootstrap), SessionTarget::Resume(session_id)) => {
-                let record = bootstrap.session(session_id).await.map_err(|error| {
-                    LaunchError::Repository(RepositorySupervisorError::Control(error))
-                })?;
-                config_for_workspace(&cfg, &record.workspace)
+        let session_cfg = match target {
+            SessionTarget::Resume(session_id) => {
+                session_config(&cfg, &bootstrap, session_id).await?
             }
-            (Some(bootstrap), SessionTarget::Fork(session_id)) => {
-                let record = bootstrap.session(session_id).await.map_err(|error| {
-                    LaunchError::Repository(RepositorySupervisorError::Control(error))
-                })?;
+            SessionTarget::Fork(session_id) => {
+                let bound = session_config(&cfg, &bootstrap, session_id).await?;
                 fork_from = Some(session_id);
                 open_target = SessionTarget::Resume(session_id);
-                config_for_workspace(&cfg, &record.workspace)
+                bound
             }
             _ => cfg.clone(),
         };
@@ -193,6 +186,27 @@ pub fn config_for_workspace(cfg: &Config, workspace: &Path) -> Config {
     bound
 }
 
+/// The config for reopening `session_id`, bound to its recorded workspace.
+///
+/// A directory project's journals may predate the control database (they
+/// were written by lease-less Forge versions and moved into `.forge/local`),
+/// so they can have no row. Every session there runs in the project root, so
+/// the launch config is already right; the supervisor registers the row when
+/// it adopts the session.
+async fn session_config(
+    cfg: &Config,
+    bootstrap: &RepositoryBootstrap,
+    session_id: SessionId,
+) -> Result<Config, LaunchError> {
+    match bootstrap.session(session_id).await {
+        Ok(record) => Ok(config_for_workspace(cfg, &record.workspace)),
+        Err(RepositorySessionError::NotFound(_)) if !bootstrap.supports_git() => Ok(cfg.clone()),
+        Err(error) => Err(LaunchError::Repository(RepositorySupervisorError::Control(
+            error,
+        ))),
+    }
+}
+
 fn is_trusted(trust_store: Option<&Path>, workspace: &Path) -> bool {
     match trust_store {
         Some(store) => forge_config::is_trusted_at(store, workspace),
@@ -204,8 +218,8 @@ fn is_trusted(trust_store: Option<&Path>, workspace: &Path) -> bool {
 /// another process holds the repository lease. Creates and writes nothing,
 /// so it is safe in an untrusted workspace.
 fn probe_ownership(workspace: &Path) -> Result<(), LaunchError> {
-    use forge_storage::{RuntimeDataKind, RuntimeStorage};
-    let Ok(storage) = crate::RepositoryRuntimeStorage::new(workspace) else {
+    use forge_storage::RuntimeDataKind;
+    let Ok(storage) = crate::ProjectTopology::detect(workspace).and_then(|t| t.storage()) else {
         return Ok(());
     };
     let Some(control_dir) = storage.path_for_read(RuntimeDataKind::Control) else {
@@ -222,29 +236,30 @@ fn probe_ownership(workspace: &Path) -> Result<(), LaunchError> {
     }
 }
 
-/// Take repository ownership, or establish that there is none to take.
+/// Take project ownership.
 ///
-/// In a git repository any failure to take ownership is a refusal: another
-/// Forge owning it (`AlreadyOwned`), an unreadable lock file or a control
-/// database error. Falling back to a lease-less session there could journal
-/// beside a live owner, a second writer. Only a workspace with no repository
-/// runtime storage (not a git repository) runs lease-less.
+/// Any failure to take ownership is a refusal: another Forge owning it
+/// (`AlreadyOwned`), an unreadable lock file or a control database error.
+/// Falling back to a lease-less session could journal beside a live owner, a
+/// second writer. Git repositories and plain directories alike run under the
+/// lease.
 async fn acquire_repository(
     cfg: &Config,
     workspace: &Path,
-) -> Result<Option<RepositoryBootstrap>, LaunchError> {
-    let Ok(storage) = crate::RepositoryRuntimeStorage::new(workspace) else {
-        return Ok(None);
-    };
+) -> Result<RepositoryBootstrap, LaunchError> {
     match RepositoryBootstrap::acquire(cfg).await {
-        Ok(bootstrap) => Ok(Some(bootstrap)),
+        Ok(bootstrap) => Ok(bootstrap),
         Err(
             error @ RepositorySupervisorError::Control(RepositorySessionError::AlreadyOwned {
                 ..
             }),
         ) => Err(LaunchError::Repository(error)),
         Err(source) => Err(LaunchError::OwnershipUnavailable {
-            control_dir: storage.main_worktree().join(".forge").join("local"),
+            control_dir: crate::ProjectTopology::detect(workspace)
+                .map(|topology| topology.root().to_path_buf())
+                .unwrap_or_else(|_| workspace.to_path_buf())
+                .join(".forge")
+                .join("local"),
             source,
         }),
     }
@@ -254,7 +269,7 @@ async fn acquire_repository(
 /// resolution produced.
 async fn resolve_target(
     cfg: &Config,
-    bootstrap: Option<&RepositoryBootstrap>,
+    bootstrap: &RepositoryBootstrap,
     target: LaunchTarget,
 ) -> Result<(SessionTarget, Vec<String>), LaunchError> {
     match target {
@@ -263,9 +278,6 @@ async fn resolve_target(
         LaunchTarget::Fork(session_id) => Ok((SessionTarget::Fork(session_id), Vec::new())),
         LaunchTarget::Latest => latest_target(cfg),
         LaunchTarget::Continue => {
-            let Some(bootstrap) = bootstrap else {
-                return latest_target(cfg);
-            };
             let selected = bootstrap
                 .selected()
                 .await
@@ -347,6 +359,16 @@ mod tests {
     use forge_storage::{RuntimeDataKind, RuntimeStorage};
     use std::time::{Duration, SystemTime};
     use tempfile::TempDir;
+
+    /// The desktop app launches from a Tauri command, whose future must be
+    /// `Send`. It builds in its own workspace, so guard that here.
+    #[allow(dead_code)]
+    fn launch_futures_are_send(plan: LaunchPlan, cfg: &Config) {
+        fn assert_send<T: Send>(_: T) {}
+        assert_send(plan.launch(LaunchTarget::Continue));
+        assert_send(RepositoryBootstrap::acquire(cfg));
+        assert_send(crate::RepositorySupervisor::open(cfg));
+    }
 
     /// Dropped sessions close their journals asynchronously, and the close
     /// rewrites the `.db`. Wait (bounded) for the WAL and shared-memory
@@ -602,7 +624,7 @@ mod tests {
             .unwrap();
         assert_ne!(older, newer);
         assert_eq!(launched.opened.session.session_id, older);
-        assert!(launched.bootstrap.is_some());
+        assert!(launched.bootstrap.supports_git());
         assert!(!launched
             .notices
             .iter()
@@ -977,7 +999,9 @@ mod tests {
             .launch(LaunchTarget::Continue)
             .await
             .unwrap();
-        assert!(launched.bootstrap.is_none());
+        // A plain folder runs under the lease, and its journals resume even
+        // though they predate the control database.
+        assert!(!launched.bootstrap.supports_git());
         assert_eq!(launched.opened.session.session_id, first);
         assert!(!launched
             .notices
@@ -986,7 +1010,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_git_workspace_launches_without_a_lease() {
+    async fn non_git_workspace_launches_under_a_lease() {
         let dir = TempDir::new().unwrap();
         let mut cfg = Config {
             resolved_workspace: dir.path().to_path_buf(),
@@ -1005,6 +1029,17 @@ mod tests {
             .launch(LaunchTarget::New)
             .await
             .unwrap();
-        assert!(launched.bootstrap.is_none());
+        assert!(!launched.bootstrap.supports_git());
+        assert!(dir.path().join(".forge/local/control").is_dir());
+
+        // While this process owns the folder, a second launch is refused
+        // before it writes anything.
+        assert!(matches!(
+            LaunchPlan::prepare(&cfg).await,
+            Err(LaunchError::Repository(RepositorySupervisorError::Control(
+                RepositorySessionError::AlreadyOwned { .. }
+            )))
+        ));
+        drop(launched);
     }
 }

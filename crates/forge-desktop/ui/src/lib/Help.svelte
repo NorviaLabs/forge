@@ -32,7 +32,7 @@
     <p>The editor has no buttons. Save, find and jump using shortcuts or the command palette. Reload and restore are palette actions; discarding changes still requires confirmation.</p>
     <p>Shells run your own commands without the agent sandbox. Each session has one shell: the terminal button under the composer shows it as a drawer, Focus terminal fills the window, and hiding it or switching sessions keeps it running. Stop terminal or <code>exit</code> ends it; the next open starts a fresh shell.</p>
     <p>Image paste supports PNG, JPEG, GIF and WebP, up to four files of 5 MiB each. Images are saved under workspace <code>.forge/attachments</code>.</p>
-    <div class="actions"><button class="btn" type="button" onclick={onProviders}>Providers…</button><button class="btn" type="button" onclick={onGithub}>GitHub…</button></div>
+    <div class="actions"><button class="btn" type="button" onclick={onProviders}>Providers…</button><button class="btn" type="button" disabled={!onGithub} title={onGithub ? undefined : "GitHub needs a Git repository"} onclick={onGithub}>GitHub…</button></div>
   </div>
 </div>
 

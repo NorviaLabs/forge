@@ -353,9 +353,16 @@ impl McpStdioClient {
             )));
         }
         let (program, args, extra_env, egress, tmp) = if cfg.sandbox {
+            // A sandboxed server is confined to the session workspace, so
+            // there is nothing to fall back to: the process working directory
+            // may belong to a different project.
             let workspace = match workspace {
                 Some(workspace) => workspace.to_path_buf(),
-                None => std::env::current_dir()?,
+                None => {
+                    return Err(McpError::Protocol(
+                        "sandboxed MCP server needs a workspace".into(),
+                    ))
+                }
             };
             let SandboxedLaunch {
                 program,
@@ -1621,6 +1628,29 @@ done
                 assert!(message.contains("refusing to start"), "{message}");
             }
             Err(other) => panic!("unexpected spawn error: {other:?}"),
+        }
+    }
+
+    /// A sandboxed server is confined to a workspace, so spawning one without
+    /// a workspace is refused. The process working directory may belong to a
+    /// different project, and a server must never be confined to the wrong one.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn sandboxed_server_without_a_workspace_is_refused() {
+        let fixtures = fixture_server();
+        let cfg = McpServerConfig {
+            id: "fixture".into(),
+            command: fixtures.path().join("mcp-server.sh").display().to_string(),
+            sandbox: true,
+            ..McpServerConfig::default()
+        };
+
+        match McpStdioClient::spawn(&cfg).await {
+            Err(McpError::Protocol(message)) => {
+                assert!(message.contains("needs a workspace"), "{message}")
+            }
+            Err(other) => panic!("unexpected spawn error: {other:?}"),
+            Ok(_) => panic!("a sandboxed server must not start without a workspace"),
         }
     }
 
