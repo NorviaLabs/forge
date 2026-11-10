@@ -82,6 +82,16 @@ forge-search = { path = "crates/forge-search" }
 sha2 = "0.10"
 hex = "0.4"
 
+# Full debug info for ~500 dependencies, repeated in every test binary, made
+# `target/` grow to tens of GB. Forge's own crates keep file:line backtraces;
+# dependencies carry none. For a full-debug run of one build, set
+# CARGO_PROFILE_DEV_DEBUG=true.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 # Default release: strip symbols so `forge` is not 5MB of leftover names.
 # `dist` is the shipping profile (thin LTO). Not the default: every
 # `cargo test --release` / render-perf run would pay the LTO tax.
