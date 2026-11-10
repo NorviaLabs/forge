@@ -3,7 +3,6 @@ resolver = "2"
 members = [
     "crates/forge-types",
     "crates/forge-config",
-    "crates/forge-syntax",
     "crates/forge-tools",
     "crates/forge-model",
     "crates/forge-durable",
@@ -12,7 +11,6 @@ members = [
     "crates/forge-mcp",
     "crates/forge-transcript",
     "crates/forge-workspace",
-    "crates/forge-tui",
     "crates/forge-cli",
     "crates/forge-governance",
     "crates/forge-context",
@@ -20,10 +18,10 @@ members = [
     "crates/forge-test-support",
     "crates/forge-storage",
     "crates/forge-search",
+    # The Tauri desktop app, the product. On Linux it needs WebKitGTK and GTK
+    # development packages (see .github/workflows/ci.yml).
+    "crates/forge-desktop",
 ]
-# The Tauri desktop app is a separate workspace so the main build (forge-cli,
-# the TUI, workspace clippy in CI) never depends on Tauri or WebKitGTK.
-exclude = ["crates/forge-desktop"]
 
 [workspace.package]
 version = "0.1.0-beta.11"
@@ -50,7 +48,6 @@ libc = "0.2"
 toml = "1.1"
 serde_yaml = "0.9"
 dirs = "7"
-pathdiff = "0.2"
 sqlx = { version = "0.9", features = ["runtime-tokio", "sqlite", "chrono"] }
 tempfile = "3"
 clap = { version = "4", features = ["derive", "env"] }
@@ -59,28 +56,15 @@ ureq = { version = "3", features = ["json"] }
 futures = "0.3"
 bytes = "1"
 jsonschema = "0.57"
-crossterm = "0.29"
-# `layout-cache` is one of ratatui's default features, so turning defaults off
-# silently dropped it and every layout solve ran the constraint solver from
-# scratch — the single largest source of per-frame allocations.
-ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color", "unstable-rendered-line-info"] }
 regex = "1"
-pulldown-cmark = "0.13"
-notify = "8"
 portable-pty = "0.9"
-vt100 = "0.16"
 fff-search = "0.10.1"
 fff-grep = "0.10.1"
 fff-query-parser = "0.10.1"
 similar = "3"
-edtui = { version = "0.11.6", default-features = false }
-ratatui-toaster = "0.1"
-throbber-widgets-tui = "0.11"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 
 forge-types = { path = "crates/forge-types" }
 forge-config = { path = "crates/forge-config" }
-forge-syntax = { path = "crates/forge-syntax" }
 forge-tools = { path = "crates/forge-tools" }
 forge-model = { path = "crates/forge-model" }
 forge-durable = { path = "crates/forge-durable" }
@@ -89,7 +73,6 @@ forge-session = { path = "crates/forge-session" }
 forge-mcp = { path = "crates/forge-mcp" }
 forge-transcript = { path = "crates/forge-transcript" }
 forge-workspace = { path = "crates/forge-workspace" }
-forge-tui = { path = "crates/forge-tui" }
 forge-governance = { path = "crates/forge-governance" }
 forge-context = { path = "crates/forge-context" }
 forge-connect = { path = "crates/forge-connect" }

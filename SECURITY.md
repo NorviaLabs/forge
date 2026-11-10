@@ -99,7 +99,7 @@ In scope:
 - Bypassing the approval prompt, or executing an action the user did not approve
 - Escaping workspace path confinement
 - Disclosing credentials — API keys or OAuth tokens — through logs, errors, the
-  TUI, files on disk, or an attacker-chosen network destination
+  desktop app, files on disk, or an attacker-chosen network destination
 - Privilege escalation, or code execution triggered by repository content alone
 - Prompt injection that leads to an unapproved tool call
 - Vulnerabilities in our dependency set that are reachable from Forge

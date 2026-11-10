@@ -4,9 +4,9 @@
 
 ## Platform
 
-terminal
+desktop
 
-Full-screen keyboard-driven TUI (Rust, ratatui + crossterm) on macOS, Linux, and Windows via WSL2. Not web, iOS, or Android; there is no native Windows build.
+Tauri 2 desktop app (Rust core, Svelte webview UI) on macOS and Linux. Not web, iOS, or Android; there is no native Windows build. The terminal UI was removed on 2026-11-10.
 
 ## Users
 
@@ -70,6 +70,6 @@ Most terminal coding agents optimize the prompt-to-patch loop around an agent yo
 ## Accessibility & Inclusion
 
 - WCAG AA in both built-in themes: 4.5:1 for text, 3:1 for structural UI such as pane borders and focus marks. Enforce this in tests.
-- NO_COLOR must stay fully usable. No state is carried by color alone; use glyphs, modifiers, or pointers.
-- `tui.reduced_motion` must replace animation with static state indicators.
+- No state is carried by color alone; use glyphs, shapes, or text.
+- `prefers-reduced-motion` must replace animation with static state indicators.
 - Every function reachable from the keyboard.

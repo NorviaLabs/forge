@@ -5,11 +5,12 @@
 The Forge desktop app (Tauri 2 + Svelte). It runs the repository supervisor in-process and bridges it to
 a webview over Tauri IPC. It opens no network listener.
 
-This crate is its **own Cargo workspace**. The root workspace lists it
-under `exclude`, so `forge-cli`, the TUI and `cargo clippy --workspace`
-never depend on Tauri or WebKitGTK and still build on headless Linux. CI
-guards this: the main job fails if `tauri`, `wry`, `tao` or `webkit2gtk`
-appear in the root `Cargo.lock`.
+This crate is a member of the root workspace, so a plain `cargo build` builds
+it. `build.rs` builds the web UI (`ui/`, Vite) whenever its sources change,
+installing `ui/node_modules` with `pnpm install --frozen-lockfile` when absent;
+`FORGE_SKIP_UI_BUILD=1` uses a prebuilt `ui/dist` instead. On Linux the
+workspace build needs the WebKitGTK/GTK development packages. The built-in
+themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
 
 ## Layout
 
@@ -123,7 +124,7 @@ appear in the root `Cargo.lock`.
   tokens/device secrets stay in Rust; only the sign-in URL/user code and the
   imported source/account label cross IPC. All provider paths share
   `Credentials::shared()`, so a key typed in the native prompt also wins over
-  an environment variable for this process, as in the TUI.
+  an environment variable for this process.
   Missing keys on other platforms require environment variables or terminal setup.
 - `src/github.rs`: issue/PR/check views using `forge-workspace`'s bounded `gh`
   adapter, plus explicit PR creation, refresh and review-feedback application.

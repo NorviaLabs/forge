@@ -4,12 +4,13 @@ Guidance for coding agents working in this repository.
 
 ## Project Overview
 
-Forge is a Rust workspace for a terminal AI coding-agent harness. The main binary launches a full-screen TUI and lives in `crates/forge-cli`.
+Forge is a Rust workspace for an AI coding-agent harness with a desktop app. `cargo build` builds both binaries: `forge-desktop` (the Tauri app, `crates/forge-desktop`) and `forge` (`crates/forge-cli`, which opens the app and runs `forge bench`). The desktop crate's build script builds its web UI (`crates/forge-desktop/ui`, Svelte, pnpm); Linux also needs the WebKitGTK/GTK development packages.
 
 Key crates:
 
-- `crates/forge-cli`: CLI entrypoint and startup wiring.
-- `crates/forge-tui`: Ratatui terminal UI, overlays, commands, model picker, chat loop UI.
+- `crates/forge-desktop`: Tauri desktop app: IPC bridge (`src/bridge.rs`), startup, and the Svelte UI in `ui/`.
+- `crates/forge-cli`: `forge` command: opens the desktop app, `forge bench` headless runs, `__egress-connect` helper.
+- `crates/forge-session`: Session assembly, the repository supervisor, the project registry and `ProjectService`.
 - `crates/forge-core`: Agent loop, message/session lifecycle, tool execution orchestration.
 - `crates/forge-model`: Native provider transports and wire-format normalization.
 - `crates/forge-connect`: Provider profiles, credential store, model catalog, `/connect` support.
@@ -43,9 +44,15 @@ not spend time on it.
   new tests plus the directly affected ones.
 
 ```sh
-cargo test --package forge-tui --locked <filter>
+cargo test --package forge-desktop --locked <filter>
 cargo test --package forge-core --locked <filter>
 cargo test --package forge-session --locked <filter>
+```
+
+Desktop UI (Svelte) tests:
+
+```sh
+(cd crates/forge-desktop/ui && node --test src/*.test.js)
 ```
 
 Static checks:

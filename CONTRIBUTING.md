@@ -18,10 +18,13 @@ Install Git and Rust 1.97.1 or newer, then clone the repository:
 ```sh
 git clone https://github.com/NorviaLabs/forge.git
 cd forge
-cargo build --workspace --locked
+cargo build --locked
 ```
 
-Forge is a Rust workspace. The main binary is provided by `crates/forge-cli`, the terminal interface is in `crates/forge-tui`, and the agent loop is in `crates/forge-core`. Architecture is documented in `docs/architecture.md`, which describes the shipped implementation; planned and partially built work is in `docs/roadmap.md`.
+The desktop app's build script also needs Node.js and pnpm (through Corepack),
+and on Linux the WebKitGTK and GTK development packages.
+
+Forge is a Rust workspace. The desktop app is `crates/forge-desktop` (Tauri, with its Svelte UI in `ui/`), the `forge` command is `crates/forge-cli`, and the agent loop is in `crates/forge-core`. Architecture is documented in `docs/architecture.md`, which describes the shipped implementation; planned and partially built work is in `docs/roadmap.md`.
 
 ## Making changes
 
@@ -67,7 +70,7 @@ A good pull request:
 - describes user-visible and safety implications;
 - lists the validation performed;
 - links related issues or design documents;
-- includes screenshots for meaningful TUI changes;
+- includes screenshots for meaningful UI changes;
 - avoids secrets, sensitive logs, and proprietary repository content.
 
 Maintainers may request that broad changes be split into smaller pull requests. Reviews prioritize correctness, safe tool behavior, durable execution, clear user experience, and maintainability.

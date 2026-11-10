@@ -22,7 +22,7 @@ contract there).
 ## Invariants
 
 - Every model call goes through the `ModelClient` trait; callers never construct provider-specific requests.
-- `forge-model` may depend on `forge-config` and `forge-connect` but never on `forge-core`, `forge-session`, `forge-tools`, or `forge-tui`.
+- `forge-model` may depend on `forge-config` and `forge-connect` but never on `forge-core`, `forge-session`, `forge-tools`, or `forge-desktop`.
 
 ## Side Effects
 

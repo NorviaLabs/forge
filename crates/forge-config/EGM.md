@@ -12,7 +12,7 @@ Crate root for configuration. No source code at this level: all logic lives in
 ## Notes
 
 - This crate must not depend on session, tool, or UI crates; it only describes settings and persists user-global preference files.
-- Trust decisions made here are consumed by `forge-session` (workspace trust gate), `forge-cli` (launch/setup flow), and `forge-tui` (setup, approvals, and commands).
+- Trust decisions made here are consumed by `forge-session` (workspace trust gate), and `forge-desktop` (trust screen, project service).
 
 ## Interface
 

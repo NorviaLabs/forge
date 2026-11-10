@@ -1,6 +1,5 @@
 //! Configuration: TOML + env overrides.
 
-mod pane_layout;
 mod permissions;
 mod theme;
 mod trust;
@@ -19,20 +18,13 @@ use thiserror::Error;
 #[cfg(test)]
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-pub use pane_layout::{PaneLayoutPreferences, PaneLayoutStore};
 pub use permissions::{
     append_user_allow_rule, load_permissions, parse_permissions_toml, user_permissions_path,
     workspace_permissions_path, PermissionsFile,
 };
-pub use theme::{
-    is_system_theme, normalize_theme_id, parse_hex_color, parse_theme_preference, parse_theme_toml,
-    Rgb, SyntaxPalette, ThemeDefinition, ThemePalette, ACCENT_STATUS_MIN_HUE_DISTANCE,
-    DEFAULT_THEME_ID, THEME_FORGE_DARK, THEME_FORGE_LIGHT, THEME_SYSTEM,
-};
+pub use theme::{parse_theme_toml, Rgb, SyntaxPalette, ThemeDefinition, ThemePalette};
 pub use trust::{
-    grant_trust, grant_trust_at, is_trusted, is_trusted_at, persist_committed_theme,
-    persist_committed_theme_at, persist_smart_commit, persist_smart_commit_at, trust_display_path,
-    trust_file_path, TrustError, HOME_PROJECTS_DIR,
+    grant_trust, grant_trust_at, is_trusted, is_trusted_at, trust_file_path, TrustError,
 };
 
 #[derive(Debug, Error)]
@@ -258,135 +250,11 @@ impl Default for McpServerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FileIconMode {
-    #[default]
-    Unicode,
-    Off,
-}
-
-impl FileIconMode {
-    pub fn parse(s: &str) -> Result<Self, ConfigError> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "unicode" => Ok(Self::Unicode),
-            "off" => Ok(Self::Off),
-            other => Err(ConfigError::Message(format!(
-                "invalid file_icons `{other}` (expected unicode | off)"
-            ))),
-        }
-    }
-}
-
-fn default_theme_id() -> String {
-    DEFAULT_THEME_ID.to_string()
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum NotifyMode {
-    /// Desktop notification where the terminal is known to render one, and
-    /// silence everywhere else.
-    ///
-    /// `auto` cannot probe the terminal — no escape sequence reports whether
-    /// an OSC 9 notification was understood — so it matches the terminal's
-    /// identity against a known-good list instead. The default is deliberately
-    /// silent rather than falling back to the bell: an unexpected audible bell
-    /// is worse than no notification.
-    #[default]
-    Auto,
-    /// Ring the terminal bell. Works everywhere, says nothing.
-    Bell,
-    /// Desktop notification regardless of the terminal.
-    Osc9,
-    /// Both channels, for multiplexers and SSH where one may be swallowed.
-    Both,
-    /// Never notify.
-    Off,
-}
-
-impl NotifyMode {
-    pub fn parse(s: &str) -> Result<Self, ConfigError> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "bell" => Ok(Self::Bell),
-            "osc9" => Ok(Self::Osc9),
-            "both" => Ok(Self::Both),
-            "off" => Ok(Self::Off),
-            other => Err(ConfigError::Message(format!(
-                "invalid notify `{other}` (expected auto | bell | osc9 | both | off)"
-            ))),
-        }
-    }
-
-    /// Whether this mode rings the bell.
-    pub fn bell(self) -> bool {
-        matches!(self, Self::Bell | Self::Both)
-    }
-
-    /// Whether this mode asks for a desktop notification, before the terminal
-    /// is considered.
-    pub fn desktop(self) -> bool {
-        matches!(self, Self::Osc9 | Self::Both)
-    }
-
-    pub fn is_off(self) -> bool {
-        matches!(self, Self::Off)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TuiConfig {
-    #[serde(default)]
-    pub file_icons: FileIconMode,
-    /// Optional `[tui] theme` preference (theme id, e.g. `forge-dark`).
-    #[serde(default = "default_theme_id")]
-    pub theme: String,
-    /// Explicit first-install commit. A missing key or defaulted `forge-dark`
-    /// is not a committed theme.
-    #[serde(default)]
-    pub theme_committed: bool,
-    /// Out-of-band notification for background work that blocks or finishes
-    /// while the terminal is unfocused.
-    #[serde(default)]
-    pub notify: NotifyMode,
-    /// VS Code's `git.enableSmartCommit`: when set, committing with nothing
-    /// staged stages every change and commits, instead of offering the choice.
-    #[serde(default)]
-    pub smart_commit: bool,
-    /// Use static working indicators without animated emphasis.
-    #[serde(default)]
-    pub reduced_motion: bool,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            file_icons: FileIconMode::Unicode,
-            theme: default_theme_id(),
-            theme_committed: false,
-            notify: NotifyMode::default(),
-            smart_commit: false,
-            reduced_motion: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct CommandConfig {
     pub executable: String,
     #[serde(default)]
     pub args: Vec<String>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct TuiConfigFile {
-    file_icons: Option<String>,
-    theme: Option<String>,
-    theme_committed: Option<bool>,
-    notify: Option<String>,
-    smart_commit: Option<bool>,
-    reduced_motion: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -452,8 +320,6 @@ pub struct Config {
     #[serde(default)]
     pub mcp: McpSection,
     #[serde(default)]
-    pub tui: TuiConfig,
-    #[serde(default)]
     pub validation: ValidationConfig,
     /// Phase 9 tool settings.
     #[serde(default)]
@@ -491,7 +357,6 @@ impl Default for Config {
             model: ModelConfig::default(),
             journal: JournalConfig::default(),
             mcp: McpSection::default(),
-            tui: TuiConfig::default(),
             validation: ValidationConfig::default(),
             tools: ToolsConfig::default(),
             resolved_workspace: cwd,
@@ -681,7 +546,6 @@ struct ConfigFile {
     model: Option<ModelConfigFile>,
     journal: Option<JournalConfig>,
     mcp: Option<McpSection>,
-    tui: Option<TuiConfigFile>,
     validation: Option<ValidationConfig>,
     tools: Option<ToolsConfigFile>,
 }
@@ -752,34 +616,6 @@ impl ConfigFile {
                 cfg.mcp = mcp;
             } else if !mcp.servers.is_empty() {
                 refused.push("mcp.servers".into());
-            }
-        }
-        if let Some(tui) = self.tui {
-            if let Some(file_icons) = tui.file_icons {
-                if let Ok(mode) = FileIconMode::parse(&file_icons) {
-                    cfg.tui.file_icons = mode;
-                }
-            }
-            // Like `file_icons`, an unparseable value is ignored rather than
-            // fatal: a typo in the theme should not stop the TUI from starting.
-            if let Some(notify) = tui.notify {
-                if let Ok(mode) = NotifyMode::parse(&notify) {
-                    cfg.tui.notify = mode;
-                }
-            }
-            if let Some(theme) = tui.theme {
-                if let Some(id) = parse_theme_preference(&theme) {
-                    cfg.tui.theme = id;
-                }
-            }
-            if let Some(committed) = tui.theme_committed {
-                cfg.tui.theme_committed = committed;
-            }
-            if let Some(smart_commit) = tui.smart_commit {
-                cfg.tui.smart_commit = smart_commit;
-            }
-            if let Some(reduced_motion) = tui.reduced_motion {
-                cfg.tui.reduced_motion = reduced_motion;
             }
         }
         if let Some(validation) = self.validation {
@@ -1027,7 +863,6 @@ mod tests {
         assert!(cfg.workspace_root().is_absolute() || cfg.workspace_root() == Path::new("."));
         assert_eq!(cfg.model.request_timeout_secs, 300);
         assert_eq!(cfg.journal.backend, "sqlite");
-        assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
     }
 
     #[test]
@@ -1050,8 +885,6 @@ path = "my-sessions"
 id = "demo"
 command = "echo"
 args = ["hi"]
-[tui]
-theme = "light"
 "#,
             ws = dir.path().display()
         )
@@ -1070,7 +903,6 @@ theme = "light"
         assert_eq!(cfg.mcp.servers.len(), 1);
         assert_eq!(cfg.mcp.servers[0].id, "demo");
         assert_eq!(cfg.resolved_workspace, dir.path());
-        assert_eq!(cfg.tui.theme, THEME_FORGE_LIGHT);
     }
 
     /// The hostile-repo payload: a checked-in `forge.toml` that redirects the
@@ -1271,22 +1103,6 @@ model = "claude-sonnet"
         })
         .unwrap();
         assert_eq!(cfg.journal_dir(), journal);
-    }
-
-    #[test]
-    fn theme_id_normalization_maps_legacy_aliases() {
-        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_DARK);
-        assert_eq!(normalize_theme_id("light"), THEME_FORGE_LIGHT);
-        assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
-    }
-
-    #[test]
-    fn parse_theme_preference_rejects_unknown() {
-        assert!(parse_theme_preference("bogus").is_none());
-        assert_eq!(
-            parse_theme_preference("light").as_deref(),
-            Some(THEME_FORGE_LIGHT)
-        );
     }
 
     #[test]
@@ -1504,93 +1320,6 @@ sandbox_workspace = "read_write"
         assert_eq!(cfg.refused_project_keys, ["mcp.servers"]);
     }
 
-    #[test]
-    fn file_icon_mode_parse_covers_every_value_and_rejects_unknown() {
-        assert_eq!(
-            FileIconMode::parse("unicode").unwrap(),
-            FileIconMode::Unicode
-        );
-        assert_eq!(
-            FileIconMode::parse("UNICODE").unwrap(),
-            FileIconMode::Unicode
-        );
-        assert_eq!(FileIconMode::parse("off").unwrap(), FileIconMode::Off);
-        assert_eq!(FileIconMode::parse(" Off ").unwrap(), FileIconMode::Off);
-        let err = FileIconMode::parse("emoji").unwrap_err();
-        assert!(matches!(err, ConfigError::Message(_)));
-    }
-
-    #[test]
-    fn project_toml_theme_preference_applies() {
-        let _g = EnvGuard::clear_forge_env();
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("forge.toml");
-        fs::write(&path, "[tui]\ntheme = \"light\"\n").unwrap();
-        let cfg = Config::load(ConfigOverrides {
-            config_path: Some(path),
-            workspace: None,
-            ..Default::default()
-        })
-        .unwrap();
-        assert_eq!(cfg.tui.theme, THEME_FORGE_LIGHT);
-    }
-
-    #[test]
-    fn tui_config_file_settings_apply_successfully() {
-        let mut cfg = Config::default();
-        let file = ConfigFile {
-            tui: Some(TuiConfigFile {
-                file_icons: Some("off".into()),
-                theme: Some("system".into()),
-                theme_committed: Some(true),
-                notify: Some("both".into()),
-                smart_commit: Some(true),
-                reduced_motion: Some(true),
-            }),
-            ..Default::default()
-        };
-        file.apply(&mut cfg, ConfigScope::Trusted);
-        assert_eq!(cfg.tui.file_icons, FileIconMode::Off);
-        assert_eq!(cfg.tui.theme, THEME_SYSTEM);
-        assert!(cfg.tui.theme_committed);
-        assert_eq!(cfg.tui.notify, NotifyMode::Both);
-        assert!(cfg.tui.smart_commit);
-        assert!(cfg.tui.reduced_motion);
-    }
-
-    #[test]
-    fn older_tui_preferences_load_without_a_motion_key() {
-        let tui: TuiConfig = toml::from_str("theme = 'forge-dark'").unwrap();
-        assert!(!tui.reduced_motion);
-        assert!(!TuiConfig::default().reduced_motion);
-    }
-
-    /// An invalid `file_icons` / `theme` string in the file is silently
-    /// ignored (the `if let Ok(...)` guard), leaving the prior default.
-    #[test]
-    fn tui_config_file_invalid_strings_are_ignored_not_errored() {
-        let mut cfg = Config::default();
-        let file = ConfigFile {
-            tui: Some(TuiConfigFile {
-                file_icons: Some("bogus".into()),
-                theme: Some("bogus".into()),
-                theme_committed: None,
-                notify: Some("bogus".into()),
-                smart_commit: None,
-                reduced_motion: None,
-            }),
-            ..Default::default()
-        };
-        file.apply(&mut cfg, ConfigScope::Trusted);
-        assert_eq!(cfg.tui.file_icons, FileIconMode::Unicode);
-        assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
-        assert_eq!(
-            cfg.tui.notify,
-            NotifyMode::Auto,
-            "a bad notify value must not stop the TUI from starting"
-        );
-    }
-
     /// A `[validation]` section in the file replaces the whole
     /// `ValidationConfig`, including its nested `command` override.
     #[test]
@@ -1706,21 +1435,21 @@ model = "from-user-config"
             fs::create_dir_all(&forge_dir).unwrap();
             fs::write(
                 forge_dir.join("config.toml"),
-                format!("[tui]\ntheme = \"{THEME_FORGE_LIGHT}\"\n"),
+                "[model]\nrequest_timeout_secs = 77\n",
             )
             .unwrap();
             let cfg = Config::load(ConfigOverrides::default()).unwrap();
             assert_eq!(
-                cfg.tui.theme, THEME_FORGE_LIGHT,
+                cfg.model.request_timeout_secs, 77,
                 "a seeded user config must be merged, or this test proves nothing \
-                 — deliberately not the default theme, so a no-op merge would fail this"
+                 — deliberately not the default timeout, so a no-op merge would fail this"
             );
         }
 
         // A fresh guard gets a fresh temp dir, so the file above is gone.
         let _g = EnvGuard::clear_forge_env();
         let cfg = Config::load(ConfigOverrides::default()).unwrap();
-        assert_eq!(cfg.tui.theme, DEFAULT_THEME_ID);
+        assert_eq!(cfg.model.request_timeout_secs, 300);
     }
 
     #[test]

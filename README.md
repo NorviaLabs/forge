@@ -6,15 +6,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust 1.97.1+](https://img.shields.io/badge/rust-1.97.1%2B-orange.svg)](https://www.rust-lang.org/)
 
-_Run, supervise, and resume AI coding work in a desktop app or the terminal._
+_Run, supervise, and resume AI coding work across your projects in one desktop app._
 
-![Forge demo: a crash is caught in the terminal, fixed by hand in the editor, re-run to confirm—which surfaces the same bug next door—and that one is handed to the agent, all in one pane](.github/assets/demo.gif)
-
-Forge is an open-source desktop and terminal coding environment for engineering
-with AI agents. It combines agent conversations, a file explorer, editing, an
+Forge is an open-source desktop coding environment for engineering with AI
+agents. It combines agent conversations, a file explorer, editing, an
 interactive shell, diffs, approvals, model selection, and multiple durable
-sessions in one workspace. The desktop app is the default; `forge --tui` opens
-the keyboard-driven terminal UI.
+sessions across several projects in one window.
 
 Managed sessions keep their own durable state and isolated Git worktree, so one
 session can keep working while you inspect, edit, or direct another. Agent shell
@@ -38,18 +35,19 @@ sessions, and resume durable state after an interruption.
 
 ## What Forge does
 
-- Runs multiple independent coding sessions in one TUI; managed sessions use
+- Runs multiple independent coding sessions across several projects in one
+  window; managed sessions use
   isolated linked Git worktrees and session-local state.
 - Chats with configured models, reads and edits files, searches code, works
   with Git, and runs tools until the task completes or you interrupt it.
-- Gives you a built-in file explorer, Vim-style editor, interactive shell,
+- Gives you a built-in file explorer, editor, interactive shell,
   diffs, diagnostics, activity, and task state.
 - Runs agent shell commands inside an OS sandbox confined to the workspace,
   with network egress denied by default and opened through explicit host rules.
 - Preserves transcripts, task state, queued follow-ups, and unfinished work in
   a local SQLite journal so sessions can survive process restarts.
 - Supports provider sign-in, per-session model selection, reasoning effort, and
-  model switching from the TUI.
+  model switching in the app.
 - Connects configured MCP servers and exposes their tools to the agent.
 - Supports child agents with durable state and isolated worktrees for delegated
   work.
@@ -91,27 +89,21 @@ at the Linux installer inside it. The sandbox suite runs against WSL2 in CI.
 
 You need Git and Rust 1.97.1 or newer.
 
+You also need Node.js and pnpm (through Corepack) for the desktop UI, and on
+Linux the WebKitGTK and GTK development packages
+(`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev` on Debian and Ubuntu).
+
 ```sh
 git clone https://github.com/NorviaLabs/forge.git
 cd forge
-cargo build --release --locked --package forge-cli
-./target/release/forge --version
+cargo build --release --locked
+./target/release/forge-desktop
 ```
 
-To run the development build with the terminal UI:
-
-```sh
-cargo run --locked --package forge-cli -- --tui
-```
-
-Bare `forge` launches the desktop app, which is a separate binary built from
-its own workspace. Point the CLI at it:
-
-```sh
-(cd crates/forge-desktop && cargo build --release --locked)
-FORGE_DESKTOP_BIN=crates/forge-desktop/target/release/forge-desktop \
-  cargo run --locked --package forge-cli
-```
+`cargo build` builds both binaries: `forge-desktop`, the app, and `forge`, the
+command line that opens it. The desktop crate's build script builds the web UI
+(`crates/forge-desktop/ui`) when its sources change. Set `FORGE_SKIP_UI_BUILD=1`
+to use a UI you built yourself.
 
 ## Start Forge
 
@@ -124,43 +116,30 @@ forge
 The default workspace is the current directory. Forge also respects the
 `FORGE_WORKSPACE` environment variable.
 
-Bare `forge` opens the desktop app. Run `forge --tui` for the terminal UI; the
-resume flags (`--continue`, `--resume`, `--fork`) belong to that frontend.
+`forge` opens the desktop app; `forge PATH` opens it on another folder. A launch
+from the Dock or Finder reopens the last project, or asks for a folder.
 
 In desktop windows at or below 1120px wide, **Session details** opens the
 inspector with background-task approvals, queued prompts, and Git controls.
 Use **Close session details** or `Esc` to close it. In the desktop file editor,
 `Tab` and `Shift+Tab` move focus without changing the file.
 
-On first launch, Forge walks through directory trust and provider connect; the
-terminal UI also offers theme setup. Trust is stored per directory (children
-inherit). Esc during those steps quits without claiming setup is done. Later
-folders only ask for trust.
+On first launch, Forge walks through directory trust and provider connect.
+Trust is stored per directory (children inherit). Later folders only ask for
+trust.
 
 ### GitHub issue workflow
 
-Use `i` from Git review or `/issues` to browse open issues without hiding the
-conversation. `←`/`→` selects an issue even when the navigator is collapsed;
-`↑`/`↓` scrolls details, `/` filters, `r` refreshes selected details, and `R`
-reloads the repository list. `Esc` restores the previous file or patch.
-
-`n` previews a new isolated issue session; `Enter` confirms it. Starting or
-completing an issue never automatically pushes, creates a PR, or merges.
-Attach the linked session and explicitly press `p` to push and create its PR.
-PR refresh is read-only. Checks show the captured PR head and refresh time;
-local passing tests do not imply passing remote checks. `l` loads bounded logs
-for the first failed GitHub Actions check; other check providers show their link.
-`a` previews concrete check/review feedback; confirmation copies it into an empty
-composer for explicit submission, preserving existing drafts.
-
-GitHub reads require `gh` and `gh auth login`, run in background workers, and
-have command deadlines and output limits. The list is limited to 100 open issues.
+**GitHub…** (Help, or the command palette) browses open issues, starts an
+isolated issue session, and shows its pull request and checks. Starting or
+completing an issue never pushes, creates a PR, or merges on its own; each of
+those is an explicit action. GitHub reads require `gh` and `gh auth login`.
 
 ### Automation and benchmark runs
 
 Forge also has a frontend-independent entry point for automation. Pipe one
 prompt to `forge bench` to use the same session assembly, provider routes,
-credentials, journal, sandbox, governance, and tool loop as the TUI:
+credentials, journal, sandbox, governance, and tool loop as the desktop app:
 
 ```sh
 printf '%s\n' 'Inspect the repository and summarize it.' | \
@@ -234,142 +213,45 @@ provider output limit or a stream that ends without a completion signal is
 reported as an incomplete-turn error rather than a successful answer. Use
 Continue to resume the task; tools from the incomplete response are not executed.
 
-Useful in-app commands:
+Useful in-app commands (type `/` in the composer):
 
 ```text
-/connect       Connect or change a provider
-/model         Browse or change models
-/resume        Browse previous sessions in the current journal
-/continue     Resume the most recent previous session
-/new           Start a new session in its own worktree
-/fork         Start a new session from this conversation
-/clear         Clear the visible transcript
-/compact       Compact the active context
-/disconnect    Remove a saved provider connection
-/edit          Open the active file in your editor
-/context-file  Attach the active file to the next message
+/connect       Connect a provider or add a model
+/disconnect    Disconnect a provider
+/model         Switch model for future turns
+/effort        Set the model's reasoning effort
+/new           Start a new session
+/sessions      Switch to another session
+/resume        Switch to a previous session
+/fork          Fork this conversation into a new session
+/continue      Continue the last stopped or failed turn
+/compact       Continue in a fresh context
+/clear         Clear the transcript view
+/context-file  Attach the open file to the next prompt
 /terminal      Open the terminal panel
-/resize        Resize panes with arrow keys (`/resize reset` restores defaults)
-/theme         Change the presentation theme
-/status        Session status and diagnostics
-/git           Review, stage, commit, branch and merge in the center pane
-               (`s`/`u` stage, `d` cycles working tree/staged/last turn, `c` commit,
-               `<`/`>` pull/push, `f` fetch, `b` branches (`x` delete, `r` rename),
-               `M` merge, `a` abort merge). In the navigator's Git tab the same keys
-               work from the changed-file list, which adds `↑`/`↓` to move the list
-               cursor and `i` for issues
-/issues        Browse repository issues inline; requires authenticated GitHub CLI
-/effort        Set model effort
-/thinking      Toggle model thinking generation
-/help          Open help
-/quit          Close the current session; on the primary session, quit Forge
+/theme         Switch the desktop theme
+/status        Show session status and token usage
+/help          Show help and keyboard shortcuts
 ```
-
-`/resume <session-id>` resumes a specific session. The command-line form
-`forge --tui --resume <session-id>` does the same; bare
-`forge --tui --resume` resumes the most recently modified session when one
-exists.
 
 ## Keyboard controls
 
-Forge displays contextual hints for the current focus. The most useful global
-controls are:
-
 | Key | Action |
 | --- | --- |
-| `Tab` / `Shift+Tab` | Move between visible blocks |
-| Any printable key | Start (or continue) a draft in the composer — from any block except the terminal panel |
-| `Enter` / `i` | Interact with the focused block or control |
-| `Esc` | Leave the current interaction level |
-| `↑` / `↓` | Navigate a local list or input |
-| `F1` | Open help |
-| `F3` | Open the session switcher |
-| `F4` | Open model picker |
-| `Ctrl+1` / `Ctrl+2` / `Ctrl+3` | Show `Sessions` / `Files` / `Git` (repository mode) |
-| `F6` | Switch between conversation and the current file, diff, or issue |
-| `Ctrl+E` | Cycle navigator tabs (`Sessions` / `Files` / `Git` in a repository) |
-| `↑` at the first row, then `←` / `→` | Move onto the navigator tab row and step through `Sessions` / `+` / `Files`; `Enter` switches tab or, on `+`, starts a session (repository mode) |
-| `Ctrl+Backtick` | Toggle the terminal panel (or `/terminal`) |
-| `Ctrl+O` | Expand or collapse tool details |
-| `Alt+M` | Quick-switch model |
-| `Alt+,` / `Alt+.` | Step reasoning effort down or up |
-| `Alt+←` | Go back to the previous workspace view |
-| `Ctrl+↑` / `Ctrl+↓` | Move the selection in the queued-message list |
-| `Ctrl+Backspace` | Cancel the selected queued message |
-| `Ctrl+C` | Interrupt the running turn, or quit when idle |
-| `Ctrl+D` | Quit — confirms first when other sessions have work in flight |
-| `Ctrl+Shift+V` | Attach a screenshot from the local OS clipboard |
-
-Typing is always one step from anywhere: a printable key the focused block has
-no binding for starts (or continues) a draft in the composer, and focus moves
-with it, so a chat message never lands behind a pane that still looks active.
-The block's own keys win — `d` in the session list still marks a session done,
-`x` in the chat transcript still stops a background task. The terminal panel is
-the exception: its shell takes every byte.
-
-The footer carries a chip row: model and effort. It is an ordinary `Tab`
-stop — `Tab` to it, `←`/`→` to pick a chip, `Enter` to open the picker.
-`Enter` still sends from the composer; `⏎` is a hint only. `Ctrl+Shift+V` attaches a
-PNG/JPEG/GIF/WebP from the local clipboard (workspace-only; SSH has no image
-clipboard). A clipboard that only holds TIFF — several macOS apps publish it
-alone — is converted to PNG on the way in, and a clipboard helper that fails
-(denied Automation permission, no `wl-clipboard`/`xclip` installed) says why
-rather than reporting an empty clipboard. Model, effort, thinking, and provider
-connection controls remain available while a turn is running; changes apply to
-the next model step. The model can also call `view_image` on a workspace file
-when the active model accepts image input.
-
-Conversation is the primary surface, with a resource inspector on the right
-when there is room. The prompt spans the work surface. Below 116 columns,
-`F6` or the workspace tabs switch between conversation and the current resource,
-preserving the draft, reading position, and unsaved edits. File, session, and Git
-navigation temporarily fill the body when a persistent column cannot fit;
-`Ctrl+P` still opens file search at the 80×18 minimum.
-Below 24 rows, the terminal yields space while another surface has focus;
-`Tab` back to the panel, `Ctrl+Backtick`, or `/terminal` resume the same shell.
-
-![Conversation and file inspection at 120 columns, using an example session](.github/assets/conversation-workspace.png)
-
-When the terminal panel is focused, it is an interactive login shell, and its
-title shows `> Terminal` with a thicker rule so you can tell it holds the keyboard.
-Type or paste commands directly into it; standard control keys, arrows, Tab,
-and terminal resize are forwarded to the shell. `Ctrl+Backtick`, `Esc`, or a
-directly typed `exit` hides the panel without killing the shell, so reopening
-resumes the same session.
-Manual commands are passed through without adding status scripts to shell history.
-`Ctrl+E` and `Ctrl+N` keep their shell meanings while the panel is focused;
-`Shift+Tab` leaves panel focus. `Shift+PageUp` / `Shift+PageDown` and the mouse
-wheel browse the terminal's 1,024-line scrollback; typing returns to live output.
-In full-screen programs using the alternate screen (such as Vim), `Esc` goes to
-the program and `Ctrl+Backtick` hides the panel. If the login shell exits through
-EOF or `exit 0`, hiding and reopening the panel starts a fresh shell.
-
-Paste into the file editor or scratchpad in Insert mode; Normal and Visual mode
-reject pasted text rather than interpreting it as commands. Drag-selection copies
-visible text, including Unicode glyphs. Scrolling, editing or resizing clears a
-finished selection when its displayed content changes. Right-click offers Copy
-and Clear selection in a menu that stays on screen.
-
-`Ctrl+N` opens the session scratchpad outside the terminal panel. Notes autosave
-when you close the scratchpad, leave terminal focus, or quit Forge, and return
-when you resume the same session. `:w` saves explicitly; `:q!` discards unsaved
-edits. A new session starts with empty notes.
-
-When a text file is open, the workspace uses Vim-style editing. Markdown,
-structured text, HTML/XML/SVG, stylesheets, diffs, configuration files, Mermaid
-diagrams, and logs start in read-only preview; press `i` to edit. Other text
-files start in Normal mode; press `i` to insert. `Esc` leaves the current
-interaction, and `Alt+E` hands the file to `$VISUAL`/`$EDITOR`. In Normal mode,
-`/` searches forward and `?` searches backward; both accept uppercase letters
-typed with Shift. Press `Enter` to accept or `Esc` to cancel. After accepting,
-use `n` to repeat in the same direction or `N` to go the opposite way. `:` opens
-the editor command line. The beta command set includes `:w`, `:q`,
-`:q!`, `:wq`, `:x`, `:preview`, `:edit`, `:e [path]`,
-`:s/pattern/replacement/[g]`, and `:%s/pattern/replacement/[g]`. Saving is
-immediate. Forge asks whether to save, discard, or cancel before leaving or
-switching away from dirty buffers, and asks whether to reload or force-save
-when the file changed on disk. Binary and invalid-UTF-8 files stay explicitly
-read-only.
+| ⌘ / Ctrl K | Command palette: files, sessions and actions |
+| Enter / ⌘ ↵ | Send prompt (Shift+Enter for a new line) |
+| ↑ / ↓ | Cycle this session's prompt history at the first/last line |
+| Esc | Close the open overlay; leave Files or Terminal when no editor, field or terminal has focus; restore your draft when browsing prompt history |
+| ⌘ / Ctrl E | Open Files, or return to the session |
+| / then Tab | Complete a command or installed skill |
+| ⌘ / Ctrl S | Save current file |
+| ⌘ / Ctrl W | Close the current document in Files |
+| ⌘ M | Choose model and reasoning effort |
+| ⌘ J / Ctrl ` | Show or hide the terminal drawer; leave the Terminal screen |
+| ⌘ / Ctrl F | Find in current editor |
+| ⌘ / Ctrl G | Next match (Shift for previous) |
+| ⌘ / Ctrl L | Jump to line in current editor |
+| ⌘ / Ctrl V | Paste image into composer (image-capable models) |
 
 ## Configuration
 
@@ -380,12 +262,6 @@ file configuration.
 A minimal project `forge.toml` can look like this:
 
 ```toml
-[tui]
-theme = "forge-dark"
-file_icons = "unicode"
-notify = "auto"
-reduced_motion = false # Set true for static working indicators.
-
 [journal]
 path = ".forge/sessions"
 
@@ -405,14 +281,6 @@ Agent orchestration is enabled by default. The model can use `spawn_agent`,
 parent model, governance, and workspace policy. `spawn_agent` can narrow a
 child's tools with `tool_allowlist`.
 
-`notify` controls whether Forge reaches you when a background task blocks on
-approval or stops while the terminal is unfocused: `auto` (the default) sends a
-desktop notification where the terminal is known to support one and stays
-silent elsewhere, `bell` rings the terminal bell, `osc9` forces a desktop
-notification, `both` sends both, and `off` disables it. `auto` is silent rather
-than falling back to the bell, because an unexpected audible bell is worse than
-no notification; set `bell` if your terminal is not on the known-good list.
-
 `max_depth` bounds nested work. `send_message` queues a
 mailbox message without waking its target; with `wake: true` it starts an idle
 or completed descendant's next turn, and with `interrupt: true` (no message) it
@@ -425,19 +293,10 @@ available for a later follow-up without reopening their historical task.
 
 ### Themes
 
-Forge ships built-in themes you can pick with `/theme` or set in `forge.toml`.
-Bare `/theme` opens a bottom dock: ↑↓ live-previews against the real UI, Enter
-confirms, Esc restores the previous theme. `/theme <id>` applies immediately.
-
-| Theme id | Name |
-| --- | --- |
-| `forge-dark` | Forge Dark (default) |
-| `forge-light` | Forge Light |
-| `system` | Follow terminal light/dark preference |
-
-Drop custom `.toml` theme files into `.forge/themes/` in your workspace or
-`~/.config/forge/themes/` to add or override themes. See
-`crates/forge-tui/themes/` for the schema and examples.
+Pick a theme in Help (or `/theme`). Forge ships `forge-dark` (default) and
+`forge-light`, and `System` follows the OS. Drop custom `.toml` theme files into
+`.forge/themes/` in your workspace or `~/.config/forge/themes/` to add or
+override themes. See `crates/forge-desktop/themes/` for the schema and examples.
 
 Common environment variables are:
 
@@ -670,46 +529,20 @@ treat model output as trusted input.
 
 ## Sessions and resume
 
-Forge supports multiple durable managed sessions inside one TUI. Each session
-has its own identifier, transcript, queued follow-ups, model selection, runtime
-state, and isolated linked Git worktree. A session can continue streaming or
-running tools in the background while you switch to another session and work
-there independently.
+Forge supports multiple durable managed sessions per project, and several
+projects in one window. Each session has its own identifier, transcript, queued
+follow-ups, model selection, runtime state, and isolated linked Git worktree. A
+session keeps streaming or running tools in the background while you switch to
+another session or project.
 
-Use `F3` to open the session switcher. Session presentation and input routing
-stay session-local: switching sessions does not move drafts, queued prompts,
-approvals, questions, or model state into another session.
+The sidebar lists every project at the top, with what each is doing and any
+request waiting on you, then the sessions of the project on screen. Start a
+session with **New session** or `/new`; switch with the sidebar or `⌘K`.
 
-Start a new session with `n` in the navigator's `Sessions` list, the `+` cell on
-the navigator tab row (reachable with `↑` from the first list row), or `/new`
-from the composer. The session is created straight away and named from the first
-prompt submitted in it.
-
-If Forge stops unexpectedly, start it with:
-
-```sh
-forge --tui --continue
-```
-
-`--continue` resumes the most recently modified previous session in the
-current workspace. To browse or resume a specific session:
-
-```sh
-forge --tui --resume
-forge --tui --resume <session-id>
-```
-
-Use `--fork <session-id>` to create a new session seeded with the selected
-conversation while leaving the original session unchanged. The equivalent TUI
-commands are `/continue`, `/resume`, and `/fork`. Model transcripts are
-session-scoped; composer Up/Down recall is stored separately at the user level
-and partitioned by workspace, so starting a new session does not erase recent
-input recall. `/clear` hides the rendered transcript but does not erase model
-context; use `/compact` when you want a smaller model-visible context.
-
-Inside the TUI, `/resume` lists previous sessions and shows a title hint from
-the first user message when available. Session journals stay separate from your
-source files and should never contain API keys or OAuth tokens.
+Forge reopens the last selected session when it starts. Closed sessions stay in
+the sidebar and can be resumed; `/fork` starts a new session seeded with the
+current conversation. Session journals stay separate from your source files and
+should never contain API keys or OAuth tokens.
 
 ## Safety
 
@@ -736,8 +569,8 @@ reporting process.
 
 Forge is a Rust workspace. The main crates are:
 
-- `forge-cli` — command-line entry point;
-- `forge-tui` — terminal interface;
+- `forge-desktop` — the desktop app (Tauri);
+- `forge-cli` — the `forge` command and `forge bench`;
 - `forge-core` — agent loop and session lifecycle;
 - `forge-model` — provider transports and message normalization;
 - `forge-connect` — provider profiles, credentials, and model catalog;

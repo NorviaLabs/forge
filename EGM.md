@@ -2,13 +2,14 @@
 
 ## System Overview
 
-Forge is a Rust workspace for a terminal AI coding agent, editor, and shell.
-`forge-cli` starts the full-screen TUI (`forge-tui`). The TUI drives sessions
-that `forge-session` assembles around the `forge-core` agent loop. The agent
+Forge is a Rust workspace for an AI coding agent with a desktop app.
+`forge-desktop` (Tauri) is the product; `forge-cli` opens it or runs headless
+`forge bench`. The desktop drives sessions, across several projects per
+window, that `forge-session` assembles around the `forge-core` agent loop. The agent
 loop calls model providers through `forge-model` and runs validated tools from
 `forge-tools` and `forge-mcp`. Every tool call passes one governance policy
 point and is journaled durably by `forge-durable` before it takes effect.
-Workspace services (files, git, search, syntax, context) and provider/config
+Workspace services (files, git, search, context) and provider/config
 crates sit underneath. `forge-types` holds the shared wire types. See
 [ARCHITECTURE.md](./ARCHITECTURE.md) for the crate dependency diagram.
 
@@ -17,7 +18,7 @@ This file is the EGM contract index. The human-maintained
 
 ## Subdirectories & System Boundaries
 
-- crates: [./crates/EGM.md](./crates/EGM.md) - All 19 workspace crates,
+- crates: [./crates/EGM.md](./crates/EGM.md) - All workspace crates,
   grouped into application, agent runtime, workspace/policy services, and
   durability/shared types.
 - install: [./install/EGM.md](./install/EGM.md) - POSIX installer that
@@ -42,14 +43,15 @@ This file is the EGM contract index. The human-maintained
   completes only on runtime evidence.
 - Each repository has at most one interactive owner, enforced by an exclusive
   lease on the repository control DB. Headless `forge bench` takes no lease:
-  it writes only a session journal, never the control DB. If runtime storage
-  or lease acquisition fails, the TUI runs one lease-less session instead.
+  it writes only a session journal, never the control DB. Every project the
+  desktop opens, Git repository or plain folder, runs under its lease; there
+  is no lease-less interactive path.
   Runtime data lives under `.forge/local/` (git-excluded) or the platform
   app-data directory.
 - Secrets live only in the 0600 credential store and are never displayed or
   exported to the process env. Connecting a provider never selects a model.
 - Credential precedence for a key provider: a per-process session key typed in
-  the TUI, then `FORGE_<ID>_API_KEY`, then the `credential_from` target's
+  the app, then `FORGE_<ID>_API_KEY`, then the `credential_from` target's
   `FORGE_<TARGET>_API_KEY`, then the profile's own env names, then the stored
   key; an env key also wins over a stored OAuth login. Child processes get
   these names stripped from their environment (`strip_credentials`).

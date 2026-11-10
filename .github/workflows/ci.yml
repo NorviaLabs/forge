@@ -39,6 +39,15 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y bubblewrap socat
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      # forge-desktop is a workspace member, so every workspace build compiles
+      # Tauri: Linux needs the WebKitGTK/GTK development packages, and its
+      # build script builds the web UI with pnpm (Corepack, at the version
+      # package.json pins).
+      - name: Install desktop build dependencies
+        run: |
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev
+          corepack enable
+          cd crates/forge-desktop/ui && pnpm install --frozen-lockfile
       # The installer is what puts bubblewrap and socat on a user's machine, so
       # a regression there costs every new Linux user the sandbox silently.
       - name: Test the installer
@@ -56,20 +65,12 @@ jobs:
       # rather than one per push.
       - name: Run tests
         run: cargo test --workspace --all-targets --locked --no-fail-fast
-      # The desktop app is a separate Cargo workspace so this job never needs
-      # Tauri or WebKitGTK. Fail loudly if either ever leaks into the main
-      # dependency graph (forge-cli, the TUI).
-      - name: Main build stays free of Tauri and WebKit
-        run: |
-          if grep -Eq '^name = "(tauri|wry|tao|webkit2gtk)' Cargo.lock; then
-            echo "Tauri/WebKit crates found in the main Cargo.lock" >&2
-            exit 1
-          fi
 
-  # The Tauri desktop app (crates/forge-desktop, its own workspace). Linux
-  # needs the WebKitGTK/GTK development packages; this is the only job that
-  # installs them. The self-test launches the real app in its webview (under
-  # Xvfb on Linux), runs one turn on the offline mock, and exits 0/1.
+  # The Tauri desktop app (crates/forge-desktop). The `test` job already
+  # lints and tests it on Linux; this job adds macOS, the self-test feature,
+  # and release-build checks. The self-test launches the real app in its
+  # webview (under Xvfb on Linux), runs one turn on the offline mock, and
+  # exits 0/1.
   desktop:
     name: Desktop app (${{ matrix.os }})
     strategy:
@@ -77,49 +78,41 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15]
     runs-on: ${{ matrix.os }}
-    defaults:
-      run:
-        working-directory: crates/forge-desktop
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@46511b1c83438f0dd37c02d843619ece5a4abb5b # 1.97.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: crates/forge-desktop -> target
       - name: Install WebKitGTK and Xvfb
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev xvfb lsof
-      # pnpm comes from Corepack at the exact version package.json pins.
-      - name: Build the UI
+      # pnpm comes from Corepack at the exact version package.json pins. The
+      # crate's build script builds the UI itself.
+      - name: Install UI dependencies
         working-directory: crates/forge-desktop/ui
         run: |
           corepack enable
           pnpm install --frozen-lockfile
-          pnpm build
-          pnpm build:self-test
-      - name: Check formatting
-        run: cargo fmt --check
       - name: Lint
         run: |
-          cargo clippy --all-targets --locked -- -D warnings
-          cargo clippy --all-targets --locked --features self-test -- -D warnings
+          cargo clippy -p forge-desktop --all-targets --locked -- -D warnings
+          cargo clippy -p forge-desktop --all-targets --locked --features self-test -- -D warnings
       - name: Test
         run: |
-          cargo test --locked
-          cargo test --locked --features self-test
+          cargo test -p forge-desktop --locked
+          cargo test -p forge-desktop --locked --features self-test
       - name: Self-test (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo build --locked --features self-test
+          cargo build -p forge-desktop --locked --features self-test
           xvfb-run -a ./target/debug/forge-desktop --self-test
       - name: Self-test (macOS)
         if: runner.os == 'macOS'
         run: |
-          cargo build --locked --features self-test
+          cargo build -p forge-desktop --locked --features self-test
           ./target/debug/forge-desktop --self-test
       # A release build must not accept --self-test at all. Check the exact
       # refusal (exit 2 from argument parsing, with its message): any other
@@ -127,7 +120,7 @@ jobs:
       # non-zero and prove nothing.
       - name: Release build rejects --self-test
         run: |
-          cargo build --locked --release
+          cargo build -p forge-desktop --locked --release
           set +e
           ./target/release/forge-desktop --self-test 2> refusal.txt
           code=$?

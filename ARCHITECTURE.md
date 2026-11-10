@@ -1,13 +1,13 @@
 # Forge Architecture
 
-Forge is a Rust workspace for a terminal AI coding agent, editor, and shell. The diagram below reflects the workspace crate boundaries and the primary request/turn lifecycle.
+Forge is a Rust workspace for an AI coding agent with a desktop app. The diagram below reflects the workspace crate boundaries and the primary request/turn lifecycle.
 
 ```mermaid
 flowchart TB
     user([Developer])
     subgraph app[Application boundary]
-        cli[forge-cli\nCLI entrypoint]
-        tui[forge-tui\nFull-screen terminal UI]
+        desktop[forge-desktop\nTauri desktop app]
+        cli[forge-cli\nforge command, bench]
         session[forge-session\nSession assembly, resume, headless]
     end
 
@@ -23,7 +23,6 @@ flowchart TB
         context[forge-context\nContext offload and handoff]
         workspace[forge-workspace\nFiles, Git status, attachments]
         search[forge-search\nWorkspace indexing and search]
-        syntax[forge-syntax\nTree-sitter highlighting/refactoring]
         governance[forge-governance\nACL, vault injection, sandbox, audit]
         connect[forge-connect\nProvider profiles and credentials]
         config[forge-config\nTOML and environment configuration]
@@ -42,14 +41,13 @@ flowchart TB
         local[(.forge/local session data)]
     end
 
+    user --> desktop
     user --> cli
-    cli --> tui
+    cli -. opens .-> desktop
     cli --> session
-    tui --> session
-    tui --> transcript
-    tui --> workspace
-    tui --> syntax
-    tui --> context
+    desktop --> session
+    desktop --> transcript
+    desktop --> workspace
     session --> core
     session --> config
     session --> connect
@@ -102,17 +100,17 @@ flowchart TB
     classDef data fill:#2d6a4f,stroke:#95d5b2,color:#fff
     classDef external fill:#5c4033,stroke:#f4a261,color:#fff
 
-    class cli,tui,session entry
+    class desktop,cli,session entry
     class core,transcript,tools,mcp,model runtime
-    class context,workspace,search,syntax,governance,connect,config service
+    class context,workspace,search,governance,connect,config service
     class durable,storage,types data
     class providers,mcpservers,repo,local external
 ```
 
 ## Runtime flow
 
-1. `forge-cli` parses command-line options and starts the Tokio runtime.
-2. `forge-tui` provides the interactive terminal experience, while `forge-session` assembles either an interactive or headless session.
+1. `forge-desktop` is the app: startup resolves the launch folder through the project registry, and its bridge (`src/bridge.rs`) routes every UI command to the right project's supervisor through `forge-session`'s `ProjectService`. `forge-cli` opens the app, or runs one headless prompt with `forge bench`.
+2. `forge-session` assembles sessions: one `RepositorySupervisor` per open project (config, trust, owner lock, storage) for the app, or a single headless session for `forge bench`.
 3. `forge-core` coordinates turns: it streams model output, validates and executes tools, applies governance checks, and journals durable events.
 4. `forge-model` connects to model providers; `forge-mcp` connects external MCP servers; workspace tools operate on the repository through `forge-workspace` and `forge-search`.
 5. `forge-durable` and `forge-storage` preserve resumable session state under repository-local `.forge/local/` storage (or the configured application-data fallback).

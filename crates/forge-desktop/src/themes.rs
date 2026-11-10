@@ -12,14 +12,8 @@ use forge_config::{parse_theme_toml, Rgb, ThemeDefinition, ThemePalette};
 use serde::Serialize;
 
 const BUILTIN: &[(&str, &str)] = &[
-    (
-        "forge-dark",
-        include_str!("../../forge-tui/themes/forge-dark.toml"),
-    ),
-    (
-        "forge-light",
-        include_str!("../../forge-tui/themes/forge-light.toml"),
-    ),
+    ("forge-dark", include_str!("../themes/forge-dark.toml")),
+    ("forge-light", include_str!("../themes/forge-light.toml")),
 ];
 
 /// One theme the picker can install. `system` is resolved in the page from
@@ -257,7 +251,7 @@ mod tests {
         std::fs::create_dir_all(&themes).unwrap();
         std::fs::write(
             themes.join("forge-dark.toml"),
-            include_str!("../../forge-tui/themes/forge-dark.toml")
+            include_str!("../themes/forge-dark.toml")
                 .replace("name = \"Forge Dark\"", "name = \"Forge Dark (Custom)\""),
         )
         .unwrap();

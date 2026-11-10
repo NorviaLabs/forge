@@ -1,5 +1,10 @@
 # Desktop ↔ TUI feature parity
 
+> **The TUI was removed on 2026-11-10.** This matrix is kept as the record of
+> what the desktop still lacks against it. To compare against the TUI, check
+> out `433e8927` (the last commit that has `crates/forge-tui`) and run
+> `cargo run --locked --package forge-cli -- --tui` there.
+
 Both frontends drive the same `forge-session` supervisor. The desktop is
 deliberately narrower: it owns pointers, multi-file editing and long transcripts;
 the TUI owns the keystroke-power surface. Everything below is measured against

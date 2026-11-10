@@ -1,5 +1,6 @@
-//! Forge CLI — launches the desktop app by default; `--tui` opens the
-//! full-screen terminal UI.
+//! Forge CLI. A bare `forge` opens the desktop app; `forge bench` runs one
+//! prompt headless for evaluations. `__egress-connect` is an internal helper
+//! git's SSH routing invokes on this executable.
 
 mod launch;
 
@@ -8,46 +9,36 @@ use std::{io::Read, path::PathBuf, time::Duration};
 use clap::{Args, Parser, Subcommand};
 
 use forge_config::{Config, ConfigOverrides};
-use forge_session::{
-    open_session, run_headless, ApprovalPolicy, ApprovalRequired, LaunchPlan, LaunchTarget,
-    SessionTarget,
-};
-use forge_tui::{
-    decide_launch, run_setup, run_tui_supervised, ExitCode, SetupRequest, SetupResult, TuiLaunch,
-    TuiRuntimeConfig,
-};
-use forge_types::SessionId;
+use forge_session::{open_session, run_headless, ApprovalPolicy, ApprovalRequired, SessionTarget};
 use tracing_subscriber::EnvFilter;
+
+/// Process exit codes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+enum ExitCode {
+    Success = 0,
+    Failed = 1,
+}
+
+impl ExitCode {
+    fn code(self) -> i32 {
+        self as i32
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
     name = "forge",
     version,
-    about = "Forge — an AI coding agent with a desktop app and a terminal workspace.",
-    long_about = "Forge — an AI coding agent with a desktop app and a terminal workspace.\n\n\
-                  Running `forge` with no arguments opens the desktop app in the current \
-                  directory. Pass --tui for the full-screen terminal UI. Sessions are \
-                  journalled to .forge/local/sessions in the workspace, so an interrupted one \
-                  can be reopened with --continue or --resume.",
-    after_help = "`forge` opens the desktop app; `forge --tui` opens the terminal UI. \
-                  Press ? inside the terminal UI for keyboard shortcuts."
+    about = "Forge — an AI coding agent for the desktop.",
+    long_about = "Forge — an AI coding agent for the desktop.\n\n\
+                  Running `forge` opens the desktop app in the current directory, or in PATH \
+                  when given. `forge bench` runs one prompt without a window."
 )]
 struct Cli {
-    /// Open the terminal UI instead of the desktop app.
-    #[arg(long)]
-    tui: bool,
-
-    /// Reopen a previous session. Omit the id to pick from a list. Requires --tui.
-    #[arg(long = "resume", value_name = "SESSION_ID", num_args = 0..=1)]
-    resume: Option<Option<SessionId>>,
-
-    /// Continue the most recent previous session in this workspace. Requires --tui.
-    #[arg(long, conflicts_with_all = ["resume", "fork"])]
-    r#continue: bool,
-
-    /// Fork a previous session into a new conversation. Requires --tui.
-    #[arg(long, value_name = "SESSION_ID", conflicts_with_all = ["resume", "continue"])]
-    fork: Option<SessionId>,
+    /// Folder to open in the desktop app. Defaults to the current directory.
+    #[arg(value_name = "PATH")]
+    path: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -81,13 +72,12 @@ struct BenchArgs {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Run one prompt through Forge without starting the terminal UI.
+    /// Run one prompt through Forge without opening a window.
     Bench(BenchArgs),
 }
 
 fn main() {
-    // Internal helpers run before clap so they stay out of `--help` and
-    // skip the logging and runtime setup the TUI needs.
+    // Internal helpers run before clap so they stay out of `--help`.
     let mut args = std::env::args_os().skip(1);
     if args
         .next()
@@ -98,25 +88,13 @@ fn main() {
     }
 
     let cli = Cli::parse();
-
-    // The desktop app is the default frontend. Resume flags are keyed to the
-    // TUI, so name the missing flag instead of silently ignoring it.
-    if cli.command.is_none() && !cli.tui {
-        if needs_tui(&cli) {
-            eprintln!(
-                "error: --resume, --continue and --fork belong to the terminal frontend; add --tui"
-            );
-            std::process::exit(2);
-        }
+    let Some(Command::Bench(args)) = cli.command else {
         if !launch::display_available() {
-            eprintln!(
-                "No display available; the Forge GUI needs a desktop session. \
-                 Run `forge --tui` for the terminal frontend."
-            );
+            eprintln!("No display available; the Forge desktop app needs a desktop session.");
             std::process::exit(1);
         }
-        std::process::exit(launch::run(None));
-    }
+        std::process::exit(launch::run(cli.path.as_deref()));
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -132,7 +110,7 @@ fn main() {
         .build()
         .expect("failed to build Tokio runtime");
     let code = runtime.block_on(async move {
-        match run(cli).await {
+        match run_bench(args).await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("error: {e:#}");
@@ -142,57 +120,6 @@ fn main() {
     });
     runtime.shutdown_timeout(Duration::ZERO);
     std::process::exit(code.code());
-}
-
-/// A flag only the terminal frontend understands.
-fn needs_tui(cli: &Cli) -> bool {
-    cli.resume.is_some() || cli.r#continue || cli.fork.is_some()
-}
-
-/// The session the flags ask for. First-run launches (setup still pending
-/// at start) always open a new session.
-fn launch_target(cli: &Cli, allow_resume_picker: bool) -> LaunchTarget {
-    if !allow_resume_picker {
-        return LaunchTarget::New;
-    }
-    if let Some(session_id) = cli.fork {
-        return LaunchTarget::Fork(session_id);
-    }
-    if cli.r#continue {
-        return LaunchTarget::Continue;
-    }
-    match cli.resume {
-        Some(Some(session_id)) => LaunchTarget::Resume(session_id),
-        Some(None) => LaunchTarget::Latest,
-        None => LaunchTarget::New,
-    }
-}
-
-/// How long quitting waits for the supervisor to stop its sessions and
-/// release the repository lease before exiting regardless.
-const SUPERVISOR_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Run a supervisor shutdown, giving up after `timeout`. Returns what to
-/// report on stderr, if anything; it never changes the exit code.
-async fn bounded_shutdown<E: std::fmt::Display>(
-    shutdown: impl std::future::Future<Output = Result<(), E>>,
-    timeout: Duration,
-) -> Option<String> {
-    match tokio::time::timeout(timeout, shutdown).await {
-        Ok(Ok(())) => None,
-        Ok(Err(error)) => Some(format!("shutdown: {error}")),
-        Err(_) => Some(format!(
-            "shutdown: sessions did not stop within {}s; exiting anyway",
-            timeout.as_secs()
-        )),
-    }
-}
-
-async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
-    match cli.command {
-        Some(Command::Bench(args)) => run_bench(args).await,
-        None => run_tui(cli).await,
-    }
 }
 
 async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
@@ -302,188 +229,9 @@ fn resolve_profile_id(model: &str) -> anyhow::Result<String> {
     }
 }
 
-async fn run_tui(cli: Cli) -> anyhow::Result<ExitCode> {
-    let overrides = ConfigOverrides {
-        config_path: None,
-        workspace: None,
-        journal_path: None,
-        project_root: None,
-    };
-    let cfg = Config::load(overrides).map_err(|e| anyhow::anyhow!(e))?;
-
-    let cwd = cfg.workspace_root().to_path_buf();
-    // Ownership first: a launch another Forge would make a second writer is
-    // refused here, before any setup screen and any trust or theme write.
-    let plan = LaunchPlan::prepare(&cfg).await?;
-    let trusted_at_start = !plan.needs_trust();
-    // One provider registry for the launch decisions below.
-    let registry = forge_connect::loaded_registry();
-    let provider_connected = forge_connect::has_connected_profile(&registry);
-    let decision = decide_launch(
-        cfg.tui.theme_committed,
-        trusted_at_start,
-        provider_connected,
-    );
-
-    if decision.run_theme_setup || decision.run_trust_setup {
-        match run_setup(SetupRequest {
-            run_theme: decision.run_theme_setup,
-            run_trust: decision.run_trust_setup,
-            cwd: cwd.clone(),
-        })
-        .map_err(|e| anyhow::anyhow!(e))?
-        {
-            SetupResult::Canceled => return Ok(ExitCode::Canceled),
-            SetupResult::Completed => {}
-        }
-    }
-
-    let launched = plan
-        .launch(launch_target(&cli, decision.allow_resume_picker))
-        .await?;
-    let opened_session_id = launched.opened.session.session_id;
-    let runtime_cwd = launched.opened.session.workspace_root().to_path_buf();
-    let startup_notices = launched.notices;
-    let bootstrap = launched.bootstrap;
-    let fork_from = launched.fork_from;
-    let opened = launched.opened;
-
-    let cfg = Config::load(ConfigOverrides {
-        config_path: None,
-        workspace: None,
-        journal_path: None,
-        project_root: None,
-    })
-    .map_err(|e| anyhow::anyhow!(e))?;
-    let last = forge_connect::PreferenceStore::user_default()
-        .last_selection_struct(&registry)
-        .ok()
-        .flatten()
-        .filter(|selection| {
-            selection
-                .profile_id
-                .as_deref()
-                .and_then(|id| registry.get(id))
-                .is_some()
-                && provider_connected
-        });
-    forge_tui::notify::install(cfg.tui.notify);
-    forge_tui::git_prefs::install(cfg.tui.smart_commit);
-    let runtime = TuiRuntimeConfig {
-        model_label: last
-            .as_ref()
-            .map(|selection| selection.model.clone())
-            .unwrap_or_default(),
-        provider: last
-            .as_ref()
-            .map(|_| "native".to_string())
-            .unwrap_or_default(),
-        cwd: runtime_cwd,
-        version: env!("CARGO_PKG_VERSION").into(),
-        startup_notices,
-        file_icons: cfg.tui.file_icons,
-        theme_id: cfg.tui.theme.clone(),
-        reduced_motion: cfg.tui.reduced_motion,
-    };
-    let launch = TuiLaunch {
-        startup_items: None,
-        onboarding_connect: decision.require_connect,
-        ready_placeholder: decision.show_ready_placeholder,
-    };
-    // Every project, Git repository or plain folder, runs supervised under
-    // its owner lock.
-    let summary = {
-        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, opened.session).await?;
-        if let Some(source_session_id) = fork_from {
-            handle
-                .command(forge_session::SupervisorCommand::ForkSession {
-                    session_id: source_session_id,
-                })
-                .await?;
-        }
-        let session_id = if fork_from.is_some() {
-            supervisor
-                .selected_session_id()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("forked session was not selected"))?
-        } else {
-            opened_session_id
-        };
-        let initial = supervisor
-            .snapshot(session_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("primary session missing from supervisor"))?;
-        let summary = run_tui_supervised(initial, runtime, handle, launch).await;
-        // Release the repository explicitly rather than relying on
-        // process exit, so the lease is provably free once we return.
-        // Bounded: a provider that never answers must not keep the
-        // terminal from quitting; process exit then frees the lease.
-        if let Some(problem) =
-            bounded_shutdown(supervisor.shutdown(), SUPERVISOR_SHUTDOWN_TIMEOUT).await
-        {
-            eprintln!("{problem}");
-        }
-        summary
-    }
-    .map_err(|e| anyhow::anyhow!(e))?;
-    if let Some(quit_failure) = &summary.quit_failure {
-        eprintln!("quit all sessions: {quit_failure}");
-    }
-    if let Some(token_usage) = summary.token_usage {
-        println!("{token_usage}");
-        println!(
-            "To continue this session, run forge --resume {}",
-            summary.session_id
-        );
-    }
-    Ok(summary.exit_code)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_desktop_app_is_the_default_and_tui_is_opt_in() {
-        let cli = Cli::try_parse_from(["forge"]).unwrap();
-        assert!(!cli.tui);
-        assert!(!needs_tui(&cli));
-        assert!(Cli::try_parse_from(["forge", "--tui"]).unwrap().tui);
-    }
-
-    #[test]
-    fn resume_flags_are_terminal_only() {
-        for args in [
-            vec!["forge", "--continue"],
-            vec!["forge", "--resume"],
-            vec!["forge", "--fork", "00000000-0000-0000-0000-000000000000"],
-        ] {
-            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
-            assert!(needs_tui(&cli), "{args:?} should require --tui");
-        }
-    }
-
-    #[test]
-    fn cli_continue_and_fork_parse() {
-        let cli = Cli::try_parse_from(["forge", "--continue"]).unwrap();
-        assert!(cli.r#continue);
-        let session_id = SessionId::new_v4();
-        let cli = Cli::try_parse_from(["forge", "--fork", &session_id.to_string()]).unwrap();
-        assert_eq!(cli.fork, Some(session_id));
-    }
-
-    #[test]
-    fn cli_resume_parses_session_id() {
-        let session_id = SessionId::new_v4();
-        let cli = Cli::try_parse_from(["forge", "--resume", &session_id.to_string()]).unwrap();
-        assert_eq!(cli.resume, Some(Some(session_id)));
-    }
-
-    #[test]
-    fn cli_resume_without_session_id_is_accepted() {
-        let cli = Cli::try_parse_from(["forge", "--resume"]).unwrap();
-        assert_eq!(cli.resume, Some(None));
-    }
 
     #[test]
     fn cli_bench_parses_the_native_headless_options() {
@@ -636,7 +384,7 @@ mod tests {
         let control = repo.path().join(".forge");
         let before = snapshot(&control);
 
-        let error = LaunchPlan::prepare(&cfg)
+        let error = forge_session::LaunchPlan::prepare(&cfg)
             .await
             .err()
             .expect("an owned repository must refuse, not fall back to a lease-less session");
@@ -695,7 +443,10 @@ mod tests {
         forge_config::grant_trust_at(&store, repo.path()).unwrap();
         let result =
             match forge_session::LaunchPlan::prepare_with_trust_store(&cfg, Some(store)).await {
-                Ok(plan) => plan.launch(LaunchTarget::New).await.map(|_| ()),
+                Ok(plan) => plan
+                    .launch(forge_session::LaunchTarget::New)
+                    .await
+                    .map(|_| ()),
                 Err(error) => Err(error),
             };
         std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -712,138 +463,5 @@ mod tests {
             "no lease-less session was opened"
         );
         drop(owner);
-    }
-
-    #[tokio::test]
-    async fn bounded_shutdown_gives_up_after_the_timeout() {
-        let problem = bounded_shutdown(
-            std::future::pending::<Result<(), String>>(),
-            Duration::from_millis(10),
-        )
-        .await
-        .expect("a shutdown that never finishes must be reported");
-        assert!(problem.contains("did not stop"), "{problem}");
-        assert_eq!(
-            bounded_shutdown(async { Ok::<(), String>(()) }, Duration::from_secs(10)).await,
-            None
-        );
-        assert_eq!(
-            bounded_shutdown(async { Err::<(), _>("boom") }, Duration::from_secs(10)).await,
-            Some("shutdown: boom".to_string())
-        );
-    }
-
-    fn target_for(args: &[&str], allow_resume_picker: bool) -> LaunchTarget {
-        let cli = Cli::try_parse_from(args).unwrap();
-        launch_target(&cli, allow_resume_picker)
-    }
-
-    #[test]
-    fn flags_map_to_launch_targets() {
-        let session_id = SessionId::new_v4();
-        let id = session_id.to_string();
-        assert_eq!(target_for(&["forge"], true), LaunchTarget::New);
-        assert_eq!(
-            target_for(&["forge", "--continue"], true),
-            LaunchTarget::Continue
-        );
-        assert_eq!(
-            target_for(&["forge", "--resume"], true),
-            LaunchTarget::Latest
-        );
-        assert_eq!(
-            target_for(&["forge", "--resume", &id], true),
-            LaunchTarget::Resume(session_id)
-        );
-        assert_eq!(
-            target_for(&["forge", "--fork", &id], true),
-            LaunchTarget::Fork(session_id)
-        );
-    }
-
-    #[test]
-    fn first_run_launches_ignore_resume_flags() {
-        let id = SessionId::new_v4().to_string();
-        for args in [
-            &["forge", "--continue"][..],
-            &["forge", "--resume"][..],
-            &["forge", "--resume", &id][..],
-            &["forge", "--fork", &id][..],
-        ] {
-            assert_eq!(target_for(args, false), LaunchTarget::New, "{args:?}");
-        }
-    }
-
-    /// Bare `--resume` must pick exactly what the in-app resume picker lists
-    /// first. Both order by the journal's `.db` modification time, so a
-    /// write that only touched the WAL moves neither.
-    #[tokio::test]
-    async fn latest_matches_the_resume_picker_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut cfg = Config {
-            resolved_workspace: dir.path().to_path_buf(),
-            workspace_root: Some(dir.path().display().to_string()),
-            ..Default::default()
-        };
-        let journals = dir.path().join("journals");
-        cfg.journal.path = journals.display().to_string();
-        cfg.model.mock = true;
-        let mut ids = Vec::new();
-        for _ in 0..3 {
-            ids.push(
-                open_session(&cfg, SessionTarget::New)
-                    .await
-                    .unwrap()
-                    .session
-                    .session_id,
-            );
-        }
-        // Dropped sessions close their journals asynchronously, and the close
-        // rewrites the `.db`. Wait (bounded) until every journal is closed
-        // (its WAL and shared-memory files are gone) before setting times.
-        let closed = |id: &SessionId| {
-            !journals.join(format!("{id}.db-wal")).exists()
-                && !journals.join(format!("{id}.db-shm")).exists()
-        };
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !ids.iter().all(closed) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "journals never closed"
-            );
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        // Journal times disagree with creation order: the middle one is newest.
-        for (id, age) in [(ids[0], 7200), (ids[1], 0), (ids[2], 3600)] {
-            std::fs::File::options()
-                .write(true)
-                .open(journals.join(format!("{id}.db")))
-                .unwrap()
-                .set_modified(std::time::SystemTime::now() - Duration::from_secs(age))
-                .unwrap();
-        }
-        // A WAL-only write on the oldest session: an (empty, valid) WAL file
-        // newer than every journal.
-        std::fs::write(journals.join(format!("{}.db-wal", ids[0])), b"").unwrap();
-        let trust = tempfile::tempdir().unwrap();
-        let store = trust.path().join("trust.toml");
-        forge_config::grant_trust_at(&store, dir.path()).unwrap();
-
-        // Launch first: the picker reads each journal for a title, which can
-        // itself move journal times, so it must not run before the choice.
-        let launched = forge_session::LaunchPlan::prepare_with_trust_store(&cfg, Some(store))
-            .await
-            .unwrap()
-            .launch(LaunchTarget::Latest)
-            .await
-            .unwrap();
-        let picker_first = forge_tui::resume_session_items(&journals, 10)
-            .await
-            .unwrap()
-            .first()
-            .map(|item| item.id.clone())
-            .expect("picker lists sessions");
-        assert_eq!(launched.opened.session.session_id.to_string(), picker_first);
-        assert_eq!(launched.opened.session.session_id, ids[1]);
     }
 }

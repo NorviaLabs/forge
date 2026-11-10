@@ -1,8 +1,8 @@
 flowchart TB
     user([Developer])
     subgraph app[Application boundary]
-        cli[forge-cli\nCLI entrypoint]
-        tui[forge-tui\nFull-screen terminal UI]
+        desktop[forge-desktop\nTauri desktop app]
+        cli[forge-cli\nforge command, bench]
         session[forge-session\nSession assembly, resume, headless]
     end
 
@@ -18,7 +18,6 @@ flowchart TB
         context[forge-context\nContext offload and handoff]
         workspace[forge-workspace\nFiles, Git status, attachments]
         search[forge-search\nWorkspace indexing and search]
-        syntax[forge-syntax\nTree-sitter highlighting/refactoring]
         governance[forge-governance\nACL, vault injection, sandbox, audit]
         connect[forge-connect\nProvider profiles and credentials]
         config[forge-config\nTOML and environment configuration]
@@ -37,14 +36,13 @@ flowchart TB
         local[(.forge/local session data)]
     end
 
+    user --> desktop
     user --> cli
-    cli --> tui
+    cli -. opens .-> desktop
     cli --> session
-    tui --> session
-    tui --> transcript
-    tui --> workspace
-    tui --> syntax
-    tui --> context
+    desktop --> session
+    desktop --> transcript
+    desktop --> workspace
     session --> core
     session --> config
     session --> connect
@@ -97,8 +95,8 @@ flowchart TB
     classDef data fill:#2d6a4f,stroke:#95d5b2,color:#fff
     classDef external fill:#5c4033,stroke:#f4a261,color:#fff
 
-    class cli,tui,session entry
+    class desktop,cli,session entry
     class core,transcript,tools,mcp,model runtime
-    class context,workspace,search,syntax,governance,connect,config service
+    class context,workspace,search,governance,connect,config service
     class durable,storage,types data
     class providers,mcpservers,repo,local external

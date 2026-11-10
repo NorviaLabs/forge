@@ -2,10 +2,11 @@
 
 ## Overview
 
-Every Rust crate in the Forge workspace (the 19 members listed in the root
+Every Rust crate in the Forge workspace (the members listed in the root
 `Cargo.toml`). Each crate directory holds `Cargo.toml` and `src/`, plus a few
-non-Rust extras: `forge-tui` has a `build.rs` and `themes/` (the built-in
-`forge-dark.toml` and `forge-light.toml`), and `forge-connect` has
+non-Rust extras: `forge-desktop` has a `build.rs` (builds the web UI), `ui/`
+(the Svelte app), and `themes/` (the built-in `forge-dark.toml` and
+`forge-light.toml`), and `forge-connect` has
 `providers/` (the five built-in provider definitions embedded with
 `include_str!`). Each crate links to the contract
 for its `src/` directory. `tests/` directories hold integration tests only and
@@ -15,15 +16,12 @@ have no contracts.
 
 Application boundary:
 
-- forge-cli: [./forge-cli/EGM.md](./forge-cli/EGM.md) - The `forge` binary.
-  Handles clap argv, resume/continue/fork, headless `bench`, and the hidden
-  `__egress-connect` helper. The TUI acquires the repository lease before
-  opening the primary session, falling back to a lease-less session when
-  runtime storage or lease setup fails; `bench` writes only a journal and
-  takes none.
-- forge-tui: [./forge-tui/EGM.md](./forge-tui/EGM.md) - The full-screen
-  ratatui UI: `TuiApp`, the event loop, overlays, connect/model picker, editor,
-  explorer, and widgets. `ExitCode` 0..4 is a process contract.
+- forge-desktop: [./forge-desktop/EGM.md](./forge-desktop/EGM.md) - The
+  Tauri desktop app, the product: startup, the IPC bridge to `ProjectService`
+  (several projects per window), and the Svelte UI.
+- forge-cli: [./forge-cli/EGM.md](./forge-cli/EGM.md) - The `forge` binary:
+  opens the desktop app, runs headless `forge bench` (writes only a journal,
+  takes no lease), and the hidden `__egress-connect` helper.
 - forge-session: [./forge-session/EGM.md](./forge-session/EGM.md) - Session
   assembly (`open_session`), the exclusive repository lease and SQLite control
   DB, `RepositorySupervisor`, headless runs, and transcript snapshots.
@@ -57,8 +55,6 @@ Workspace and policy services:
   read adapter, and the `gh` mutations and merge gate.
 - forge-search: [./forge-search/EGM.md](./forge-search/EGM.md) -
   `WorkspaceIndex` file/content search and Quick Open scoring. Read-only.
-- forge-syntax: [./forge-syntax/EGM.md](./forge-syntax/EGM.md) - Tree-sitter
-  language detection and highlighting, with a bounded global LRU cache.
 - forge-governance: [./forge-governance/EGM.md](./forge-governance/EGM.md) -
   ACL, pattern rules, HITL gating, session grants, argument redaction, and the
   in-memory audit log.

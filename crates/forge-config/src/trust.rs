@@ -1,14 +1,9 @@
-//! Directory trust and committed-theme persistence (user-global).
+//! Directory trust (user-global).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-
-use crate::{normalize_theme_id, user_config_path, ConfigError};
-
-/// Directory name under `$HOME` called out on the trust screen.
-pub const HOME_PROJECTS_DIR: &str = "Projects";
 
 #[derive(Debug, thiserror::Error)]
 pub enum TrustError {
@@ -49,14 +44,6 @@ fn save_at(path: &Path, file: &TrustFile) -> Result<(), TrustError> {
     }
     fs::write(path, toml::to_string_pretty(file)?)?;
     Ok(())
-}
-
-/// Path shown on the trust screen: canonical when possible, otherwise raw.
-pub fn trust_display_path(cwd: &Path) -> String {
-    cwd.canonicalize()
-        .unwrap_or_else(|_| cwd.to_path_buf())
-        .display()
-        .to_string()
 }
 
 /// True when `cwd` or an ancestor is listed in the user-global trust file.
@@ -103,75 +90,6 @@ pub fn grant_trust_at(store: &Path, cwd: &Path) -> Result<PathBuf, TrustError> {
     Ok(canonical)
 }
 
-/// Write `[tui] theme` and `theme_committed = true` into the user config file.
-pub fn persist_committed_theme(theme_id: &str) -> Result<(), ConfigError> {
-    let path = user_config_path()
-        .ok_or_else(|| ConfigError::Message("no user config directory is available".into()))?;
-    persist_committed_theme_at(&path, theme_id)
-}
-
-pub fn persist_committed_theme_at(path: &Path, theme_id: &str) -> Result<(), ConfigError> {
-    let id = normalize_theme_id(theme_id);
-    edit_tui_table(path, |tui| {
-        tui.insert("theme".into(), toml::Value::String(id));
-        tui.insert("theme_committed".into(), toml::Value::Boolean(true));
-    })
-}
-
-/// Write `[tui] smart_commit` into the user config file. Mirrors VS Code's
-/// "Always" choice: every later commit with nothing staged stages all changes.
-pub fn persist_smart_commit(enabled: bool) -> Result<(), ConfigError> {
-    let path = user_config_path()
-        .ok_or_else(|| ConfigError::Message("no user config directory is available".into()))?;
-    persist_smart_commit_at(&path, enabled)
-}
-
-pub fn persist_smart_commit_at(path: &Path, enabled: bool) -> Result<(), ConfigError> {
-    edit_tui_table(path, |tui| {
-        tui.insert("smart_commit".into(), toml::Value::Boolean(enabled));
-    })
-}
-
-/// Load the user config as a TOML table, hand `[tui]` to `edit`, and write it
-/// back. Shared so the theme and smart-commit preferences cannot drift in how
-/// they handle an absent file, a malformed one, or sibling keys.
-fn edit_tui_table(
-    path: &Path,
-    edit: impl FnOnce(&mut toml::map::Map<String, toml::Value>),
-) -> Result<(), ConfigError> {
-    let mut value: toml::Value = if path.is_file() {
-        let text = fs::read_to_string(path)?;
-        // Refuse rather than replace: rewriting an unparseable file would
-        // drop every other setting in it for the sake of one preference.
-        toml::from_str(&text).map_err(|_| {
-            ConfigError::Message(format!(
-                "{} is not valid TOML; fix it before saving preferences",
-                path.display()
-            ))
-        })?
-    } else {
-        toml::Value::Table(toml::map::Map::new())
-    };
-    let table = value
-        .as_table_mut()
-        .ok_or_else(|| ConfigError::Message("user config is not a TOML table".into()))?;
-    let tui = table
-        .entry("tui")
-        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
-    let tui = tui
-        .as_table_mut()
-        .ok_or_else(|| ConfigError::Message("[tui] is not a table".into()))?;
-    edit(tui);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(
-        path,
-        toml::to_string_pretty(&value).map_err(|e| ConfigError::Message(e.to_string()))?,
-    )?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,38 +125,6 @@ mod tests {
         grant_trust_at(&store, &a).unwrap();
         assert!(is_trusted_at(&store, &a));
         assert!(!is_trusted_at(&store, &b));
-    }
-
-    #[test]
-    fn persist_theme_writes_committed_flag() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        persist_committed_theme_at(&path, "forge-dark").unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("theme_committed"));
-        assert!(text.contains("forge-dark"));
-    }
-
-    #[test]
-    fn persist_theme_preserves_other_keys() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "[model]\nmodel = \"keep-me\"\n").unwrap();
-        persist_committed_theme_at(&path, "forge-light").unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("keep-me"));
-        assert!(text.contains("theme_committed"));
-    }
-
-    #[test]
-    fn persist_smart_commit_writes_and_keeps_siblings() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "[tui]\ntheme = \"forge-dark\"\n").unwrap();
-        persist_smart_commit_at(&path, true).unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.contains("smart_commit = true"), "{text}");
-        assert!(text.contains("forge-dark"), "{text}");
     }
 
     /// A directory that cannot be canonicalized (it does not exist) is never
@@ -340,68 +226,6 @@ mod tests {
         assert!(is_trusted_at(&store, &link));
     }
 
-    /// The trust screen shows the resolved path when it can, and falls back to
-    /// the raw path rather than failing when it cannot.
-    #[test]
-    fn display_path_falls_back_to_the_raw_path() {
-        let dir = TempDir::new().unwrap();
-        assert_eq!(
-            trust_display_path(dir.path()),
-            dir.path().canonicalize().unwrap().display().to_string()
-        );
-        let missing = dir.path().join("nope");
-        assert_eq!(trust_display_path(&missing), missing.display().to_string());
-    }
-
-    /// The persisted theme id goes through `normalize_theme_id`, so legacy
-    /// aliases are stored as their canonical id rather than round-tripping as
-    /// `dark`/`light`.
-    #[test]
-    fn persist_theme_normalizes_legacy_aliases() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        persist_committed_theme_at(&path, "  DARK  ").unwrap();
-        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
-        assert_eq!(value["tui"]["theme_committed"].as_bool(), Some(true));
-
-        // An empty id resolves to the default rather than being written blank.
-        persist_committed_theme_at(&path, "").unwrap();
-        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            value["tui"]["theme"].as_str(),
-            Some(crate::DEFAULT_THEME_ID)
-        );
-    }
-
-    /// Committing a second theme overwrites the first and leaves unrelated
-    /// `[tui]` keys alone.
-    #[test]
-    fn persist_theme_overwrites_and_keeps_sibling_tui_keys() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "[tui]\ntheme = \"forge-light\"\nmouse = true\n").unwrap();
-        persist_committed_theme_at(&path, "forge-dark").unwrap();
-        let value: toml::Value = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(value["tui"]["theme"].as_str(), Some("forge-dark"));
-        assert_eq!(value["tui"]["mouse"].as_bool(), Some(true));
-        assert_eq!(value["tui"]["theme_committed"].as_bool(), Some(true));
-    }
-
-    /// An unparseable user config is left untouched: replacing it would drop
-    /// every other setting for one preference.
-    #[test]
-    fn persist_preferences_refuse_an_unparseable_config() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        let original = "[[mcp.servers]]\nid = \"keep\"\nnot [[[ toml";
-        fs::write(&path, original).unwrap();
-        let error = persist_committed_theme_at(&path, "forge-dark").unwrap_err();
-        assert!(error.to_string().contains("not valid TOML"), "{error}");
-        assert!(persist_smart_commit_at(&path, true).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), original);
-    }
-
     /// A malformed trust file makes `grant_trust` fail instead of replacing
     /// the file with only the new path; readers treat it as untrusted.
     #[test]
@@ -417,26 +241,13 @@ mod tests {
         assert!(!is_trusted_at(&store, &workspace));
     }
 
-    /// `[tui]` present as a non-table is a config error, not a panic.
-    #[test]
-    fn persist_theme_rejects_a_non_table_tui_key() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "tui = \"oops\"\n").unwrap();
-        assert!(persist_committed_theme_at(&path, "forge-dark").is_err());
-    }
-
-    /// Both writers create their parent directory rather than failing when the
+    /// Granting creates the store's parent directory rather than failing when the
     /// config dir does not exist yet (first run).
     #[test]
-    fn writers_create_missing_parent_directories() {
+    fn granting_creates_missing_parent_directories() {
         let dir = TempDir::new().unwrap();
         let store = dir.path().join("nested").join("deeper").join("trust.toml");
         grant_trust_at(&store, dir.path()).unwrap();
         assert!(store.is_file());
-
-        let config = dir.path().join("other").join("config.toml");
-        persist_committed_theme_at(&config, "forge-dark").unwrap();
-        assert!(config.is_file());
     }
 }

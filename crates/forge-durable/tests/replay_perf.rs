@@ -15,8 +15,7 @@
 //!
 //! # Why allocation counts, not timings
 //!
-//! Same rationale as `forge-tui/tests/render_perf.rs`: wall-clock on this
-//! hardware varies by more than 2x run to run; allocation counts are
+//! Wall-clock on this hardware varies by more than 2x run to run; allocation counts are
 //! deterministic. Guards assert on counts only.
 
 use std::alloc::{GlobalAlloc, Layout, System};

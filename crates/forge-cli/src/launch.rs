@@ -5,8 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const INSTALL_HINT: &str = "Forge desktop isn't installed. Re-run the Forge installer to add it:\n\
-     curl -fsSL https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.sh | sh\n\
-     Or run `forge --tui` for the terminal frontend.";
+     curl -fsSL https://raw.githubusercontent.com/NorviaLabs/forge/main/install/forge-installer.sh | sh";
 
 /// Run the desktop app and return its exit code. `None` opens the current
 /// directory, which is what a bare `forge` should do.
@@ -120,8 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn the_install_hint_names_both_ways_to_run_forge() {
+    fn the_install_hint_names_the_installer() {
         assert!(INSTALL_HINT.contains("forge-installer.sh"));
-        assert!(INSTALL_HINT.contains("forge --tui"));
     }
 }

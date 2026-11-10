@@ -47,7 +47,7 @@ prefix (`<profile_id>/<model>`).
   Methods: `default_model`, `has_multiple_routes(registry)`,
   `needs_tui_api_key_prompt`, `rejects_api_key_cli`, `is_user`,
   `effective_wire` (default `chat-completions`), `effective_auth` (default
-  TUI-prompted API key), `effective_catalog_kind` (default from wire),
+  app-prompted API key), `effective_catalog_kind` (default from wire),
   `wire_for_model(bare)`.
 - Auth (`auth.rs`): `OauthTokens` with `needs_refresh(skew)`, `OauthPending`
   (`start`, `start_stub`, `open_url`, `operator_instructions`; carries
@@ -208,7 +208,7 @@ prefix (`<profile_id>/<model>`).
 - Credential slots: `Credentials::slot_for` is the `credential_from` target
   else the profile id, so `opencode_zen` reads and writes `opencode_go`'s
   slot; `clear` removes both the target slot and the profile's own old
-  slot. Session keys (typed in the TUI) are per-process, never written.
+  slot. Session keys (typed in the app) are per-process, never written.
 - Resolver precedence (first non-blank, trimmed): API key = session key →
   `FORGE_<ID>_API_KEY` → `credential_from` target's generated name →
   `api_key_env` → stored key (target slot, then own slot); OAuth =

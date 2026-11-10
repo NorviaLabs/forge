@@ -3,7 +3,7 @@ name = "forge-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Forge CLI — launches the desktop app by default; --tui opens the terminal UI"
+description = "Forge CLI — launches the desktop app; `forge bench` runs one prompt headless"
 default-run = "forge"
 
 [[bin]]
@@ -14,7 +14,6 @@ path = "src/main.rs"
 forge-config = { workspace = true }
 forge-connect = { workspace = true }
 forge-session = { workspace = true }
-forge-tui = { workspace = true }
 forge-tools = { workspace = true }
 forge-types = { workspace = true }
 clap = { workspace = true }

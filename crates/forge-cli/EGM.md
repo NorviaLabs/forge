@@ -9,39 +9,36 @@ entrypoint lives in `src/`, integration tests in `tests/` (no contract there).
 
 - Binary target `forge` (`[[bin]] path = "src/main.rs"`, `default-run`); no
   library target, so nothing here is importable by other crates.
-- Command line: `forge [--tui [--resume [SESSION_ID] | --continue | --fork SESSION_ID]]`
-  opens the desktop app by default, or the TUI with `--tui`; `forge bench`
-  runs one headless turn and prints JSON; the hidden
+- Command line: `forge [PATH]` opens the desktop app (on `PATH` when given);
+  `forge bench` runs one headless turn and prints JSON; the hidden
   `forge __egress-connect` helper tunnels stdio through the egress proxy.
   Details in [./src/EGM.md](./src/EGM.md).
-- Process exit codes are `forge_tui::ExitCode` values (`0` success, `1`
-  failed, `2` awaiting HITL, `3` canceled, `4` config error); `__egress-connect`
-  uses its own `0/1/2`. Clap exits on its own first: `2` on an argument error
-  (colliding with awaiting HITL) and `0` for `--help`/`--version`. A Tokio
-  runtime build failure panics.
+- Process exit codes: `0` success, `1` failed; the desktop launch returns the
+  app's own exit code; `__egress-connect` uses its own `0/1/2`. Clap exits on
+  its own first: `2` on an argument error and `0` for `--help`/`--version`. A
+  Tokio runtime build failure panics.
 - Workspace dependencies: `forge-config`, `forge-connect`, `forge-session`,
-  `forge-tui`, `forge-tools`, `forge-types`.
+  `forge-tools`, `forge-types`.
 
 ## Subdirectories & Boundaries
 
-- `src/`: [./src/EGM.md](./src/EGM.md) — clap CLI, desktop-app discovery, TUI launch/startup sequencing, `bench` headless mode, `__egress-connect` proxy helper.
+- `src/`: [./src/EGM.md](./src/EGM.md) — clap CLI, desktop-app discovery, `bench` headless mode, `__egress-connect` dispatch.
 
 ## Notes
 
 - `tests/` holds integration tests only and is intentionally undocumented.
-- This crate owns process-level concerns only (argv, exit codes, tracing, runtime, stdio). Session assembly belongs to `forge-session`, rendering to `forge-tui`.
+- This crate owns process-level concerns only (argv, exit codes, tracing, runtime, stdio). Session assembly belongs to `forge-session`, the interactive frontend to `forge-desktop`.
 
 ## Invariants
 
 - The binary is a thin composition layer: it must not reimplement session assembly, governance, or rendering.
-- In the TUI path, ownership is probed read-only first (`forge_session::LaunchPlan::prepare`), before any setup screen, trust or theme write; the lease itself is taken after trust and before the primary session is created. If another Forge already owns the repository group (`AlreadyOwned`), `forge` exits non-zero with the owner's message and opens no session, so there is never a second writer. Any other ownership failure in a git repository (unreadable lock file, control database error) is refused the same way. Only when the workspace has no repository runtime storage (not a git repository) does the TUI run a lease-less session; `bench` never takes the lease.
+- `bench` never takes the repository lease; it writes only its session journal.
 
 ## Side Effects
 
-- Process-wide effects only at startup: tracing installation (TUI/bench only),
-  Tokio runtime construction (TUI/bench only), desktop-app launch, TUI
-  preference installs, and `std::process::exit`.
-- Delegated state changes (journals, control DB, worktrees) happen through `forge-session`.
+- Process-wide effects only at startup: tracing installation and Tokio runtime
+  construction (`bench` only), desktop-app launch, and `std::process::exit`.
+- Delegated state changes (journals) happen through `forge-session`.
 
 ## Verification
 

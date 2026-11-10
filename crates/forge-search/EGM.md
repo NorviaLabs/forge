@@ -33,7 +33,7 @@ all logic lives in `src/`.
 
 ## Notes
 
-- Result types are `serde`-serializable because the agent tools and the TUI consume the same shapes.
+- Result types are `serde`-serializable because the agent tools and the desktop app consume the same shapes.
 - This crate has no dependency on session or model state; it only needs a workspace root.
 
 ## Verification

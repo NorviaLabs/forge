@@ -1,16 +1,7 @@
-//! TUI colour palettes loaded from `.toml` theme files.
+//! Colour palettes loaded from `.toml` theme files.
 
 use serde::Deserialize;
 use std::fmt;
-
-/// Legacy theme id retained for configuration compatibility.
-pub const THEME_SYSTEM: &str = "system";
-/// Built-in Forge Dark theme id.
-pub const THEME_FORGE_DARK: &str = "forge-dark";
-/// Built-in Forge Light theme id.
-pub const THEME_FORGE_LIGHT: &str = "forge-light";
-/// Default when no preference is stored.
-pub const DEFAULT_THEME_ID: &str = THEME_FORGE_DARK;
 
 /// RGB triplet used in theme files (no terminal dependency).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,34 +82,6 @@ fn blend(a: Rgb, b: Rgb) -> Rgb {
         ((x as u16 + y as u16) / 2) as u8
     }
     Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
-}
-
-/// Normalize user/config theme ids and accept legacy `dark` / `light` aliases.
-pub fn normalize_theme_id(raw: &str) -> String {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "" => DEFAULT_THEME_ID.to_string(),
-        "dark" => THEME_FORGE_DARK.to_string(),
-        "light" => THEME_FORGE_LIGHT.to_string(),
-        "system" => THEME_SYSTEM.to_string(),
-        other => other.to_string(),
-    }
-}
-
-pub fn is_system_theme(id: &str) -> bool {
-    id.eq_ignore_ascii_case(THEME_SYSTEM)
-}
-
-/// Parse an optional `[tui] theme` preference from `forge.toml`.
-///
-/// Accepts legacy `dark` / `light` / `system` aliases and built-in theme ids.
-/// Unknown values are ignored so a typo does not change the default theme.
-pub fn parse_theme_preference(raw: &str) -> Option<String> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "dark" | "forge-dark" => Some(THEME_FORGE_DARK.to_string()),
-        "light" | "forge-light" => Some(THEME_FORGE_LIGHT.to_string()),
-        "system" => Some(THEME_SYSTEM.to_string()),
-        _ => None,
-    }
 }
 
 /// Tree-sitter syntax colours for one theme.
@@ -380,7 +343,7 @@ impl From<ThemeFile> for ThemeDefinition {
     }
 }
 
-/// Parse a theme definition from TOML (see `crates/forge-tui/themes/` for examples).
+/// Parse a theme definition from TOML (see `crates/forge-desktop/themes/` for examples).
 pub fn parse_theme_toml(content: &str) -> Result<ThemeDefinition, String> {
     let file: ThemeFile = toml::from_str(content).map_err(|e| e.to_string())?;
     if file.id.trim().is_empty() {
@@ -479,27 +442,6 @@ default = "#E6EDF3"
     fn parse_hex_rejects_invalid() {
         assert!(parse_hex_color("blue").is_err());
         assert!(parse_hex_color("#ABC").is_err());
-    }
-
-    #[test]
-    fn normalize_theme_id_maps_legacy_aliases() {
-        assert_eq!(normalize_theme_id("dark"), THEME_FORGE_DARK);
-        assert_eq!(normalize_theme_id("light"), THEME_FORGE_LIGHT);
-        assert_eq!(normalize_theme_id("system"), THEME_SYSTEM);
-        assert_eq!(normalize_theme_id("custom"), "custom");
-    }
-
-    #[test]
-    fn forge_dark_is_the_default_and_configurable() {
-        assert_eq!(DEFAULT_THEME_ID, THEME_FORGE_DARK);
-        assert_eq!(
-            parse_theme_preference("forge-dark"),
-            Some(THEME_FORGE_DARK.to_string())
-        );
-        assert_eq!(
-            parse_theme_preference("forge-light"),
-            Some(THEME_FORGE_LIGHT.to_string())
-        );
     }
 
     #[test]

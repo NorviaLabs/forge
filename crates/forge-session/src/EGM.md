@@ -107,7 +107,6 @@ Rule: after startup, no runtime path reads `current_dir` or a process-wide stati
 | `forge-connect` `Credentials::shared`, `store.rs` `WRITE_LOCK`, `builtin.rs` `SPECS` | Allowed: user-level |
 | `forge-model` `FALLBACK_OPENCODE_SESSION` | Allowed: user-level |
 | `forge-tools` `sandbox.rs` `APPLICABLE`, `git_network.rs` `EGRESS_CONNECT_EXE` | Allowed: host-level |
-| `forge-syntax` caches, `forge-tui` `ENABLED`/`AVAILABLE`/`MEMO` | Allowed: not project data |
 
 ## Side Effects
 

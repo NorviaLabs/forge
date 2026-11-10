@@ -863,8 +863,7 @@ impl AgentSession {
         Ok(id)
     }
 
-    /// Non-blocking; call once per render tick (mirrors `forge-tui`'s
-    /// `GitStatusCache::poll`). Drains every finished-or-waiting background
+    /// Non-blocking; call once per poll tick. Drains every finished-or-waiting background
     /// task channel: a `WaitingForApproval` update is applied in place (the
     /// task stays registered, still polled next tick), while any other
     /// outcome finalizes the task and removes its receiver.

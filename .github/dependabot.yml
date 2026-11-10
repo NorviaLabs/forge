@@ -23,9 +23,10 @@ updates:
           - patch
           - minor
     ignore:
-      # Pinned exactly in Cargo.toml; a bump is a deliberate TUI change and
-      # should not arrive as an automated PR.
-      - dependency-name: ratatui
+      # Pinned exactly in crates/forge-desktop/Cargo.toml; a Tauri bump is a
+      # deliberate change (capabilities, isolation hook) and should not arrive
+      # as an automated PR.
+      - dependency-name: "tauri*"
         update-types:
           - version-update:semver-major
           - version-update:semver-minor

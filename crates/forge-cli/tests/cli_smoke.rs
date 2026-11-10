@@ -42,12 +42,14 @@ fn help_lists_core_options_and_native_bench_command() {
         .success();
     let out = String::from_utf8_lossy(&assert.get_output().stdout);
 
-    // The default command launches the desktop app; `--tui` selects the
-    // terminal, while `bench` stays frontend-independent for automation.
-    assert!(
-        out.contains("--tui"),
-        "help must advertise the terminal frontend:\n{out}"
-    );
+    // The default command launches the desktop app; `bench` stays
+    // frontend-independent for automation. The terminal UI was removed.
+    for flag in ["--tui", "--resume", "--continue", "--fork"] {
+        assert!(
+            !out.contains(flag),
+            "`{flag}` should not be offered:\n{out}"
+        );
+    }
     assert!(
         out.contains("Commands:") && out.contains("bench"),
         "help must advertise the native bench command:\n{out}"
@@ -65,17 +67,6 @@ fn help_lists_core_options_and_native_bench_command() {
         "--print",
         "--approvals",
     ] {
-        assert!(
-            !out.contains(flag),
-            "`{flag}` should not be offered:\n{out}"
-        );
-    }
-
-    assert!(
-        out.contains("--resume"),
-        "`--resume` should be offered:\n{out}"
-    );
-    for flag in ["--print", "--approvals"] {
         assert!(
             !out.contains(flag),
             "`{flag}` should not be offered:\n{out}"
@@ -108,11 +99,13 @@ fn version_prints_package_version() {
 }
 
 #[test]
-fn invalid_resume_id_fails_parsing() {
-    Command::cargo_bin("forge")
-        .unwrap()
-        .args(["--resume", "not-a-uuid"])
-        .assert()
-        .failure()
-        .stderr(predicates::str::contains("invalid value"));
+fn removed_terminal_flags_are_rejected() {
+    for flag in ["--tui", "--continue"] {
+        Command::cargo_bin("forge")
+            .unwrap()
+            .arg(flag)
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("unexpected argument"));
+    }
 }
