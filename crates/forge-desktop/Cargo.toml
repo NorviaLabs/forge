@@ -38,6 +38,8 @@ forge-config = { path = "../forge-config" }
 forge-core = { path = "../forge-core" }
 forge-connect = { path = "../forge-connect" }
 forge-session = { path = "../forge-session" }
+# The `__egress-connect` helper git's SSH routing invokes on this executable.
+forge-tools = { path = "../forge-tools" }
 forge-types = { path = "../forge-types" }
 forge-transcript = { path = "../forge-transcript" }
 forge-workspace = { path = "../forge-workspace" }

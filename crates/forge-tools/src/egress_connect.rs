@@ -1,4 +1,9 @@
-//! `forge __egress-connect <proxy-host:port> <target-host> <target-port>`.
+//! `<forge executable> __egress-connect <proxy-host:port> <target-host> <target-port>`.
+//!
+//! Every Forge executable that can run agents (the `forge` CLI and the
+//! desktop app) must handle this before its own argument parsing, because
+//! git's routing in [`crate::git_network`] invokes whichever executable is
+//! running.
 //!
 //! A hidden helper that carries one TCP stream through the egress gateway, so
 //! SSH can leave through it without `nc` or `socat` on the machine. Git uses

@@ -409,8 +409,9 @@ fn compose_ssh_command(
     // `%` starts an ssh token in ProxyCommand; the command itself is run by
     // ssh through the shell, and the whole option again by git's shell.
     let proxy_command = format!(
-        "{} __egress-connect {} %h %p",
+        "{} {} {} %h %p",
         shell_quote(&endpoint.exe.replace('%', "%%")),
+        crate::egress_connect::SUBCOMMAND,
         endpoint.connect_addr
     );
     Ok(format!(
@@ -581,8 +582,9 @@ fn git_proxy_command(
     std::fs::write(
         &path,
         format!(
-            "#!/bin/sh\nexec {} __egress-connect {connect_addr} \"$1\" \"$2\"\n",
-            shell_quote(exe)
+            "#!/bin/sh\nexec {} {} {connect_addr} \"$1\" \"$2\"\n",
+            shell_quote(exe),
+            crate::egress_connect::SUBCOMMAND
         ),
     )?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;

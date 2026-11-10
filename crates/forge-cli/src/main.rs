@@ -1,7 +1,6 @@
 //! Forge CLI — launches the desktop app by default; `--tui` opens the
 //! full-screen terminal UI.
 
-mod egress_connect;
 mod launch;
 
 use std::{io::Read, path::PathBuf, time::Duration};
@@ -92,10 +91,10 @@ fn main() {
     let mut args = std::env::args_os().skip(1);
     if args
         .next()
-        .is_some_and(|arg| arg == egress_connect::SUBCOMMAND)
+        .is_some_and(|arg| arg == forge_tools::egress_connect::SUBCOMMAND)
     {
         let rest: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-        std::process::exit(egress_connect::run(&rest));
+        std::process::exit(forge_tools::egress_connect::run(&rest));
     }
 
     let cli = Cli::parse();

@@ -242,6 +242,11 @@ appear in the root `Cargo.lock`.
   - Native key collection is macOS-only, syntax colors are lexical, GitHub is
     read-only, notification-centre banners and proactive host editing remain absent.
 
+- `main` intercepts `forge_tools::egress_connect::SUBCOMMAND` before
+  `startup::run`: git's SSH routing runs this executable as the
+  ProxyCommand, so without it every SSH push or fetch from a desktop
+  session failed with "unexpected argument".
+
 ## Verification
 
 ```sh

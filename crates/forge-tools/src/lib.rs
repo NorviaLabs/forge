@@ -5,6 +5,7 @@ mod builtins;
 mod credentials;
 mod edit;
 pub mod egress;
+pub mod egress_connect;
 mod fast_file_tools;
 mod git_network;
 #[doc(hidden)]

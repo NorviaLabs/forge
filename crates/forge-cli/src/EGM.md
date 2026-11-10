@@ -15,7 +15,7 @@ helper. All session assembly is delegated to `forge-session`; all rendering to
 
 - `struct Cli` (clap `Parser`): `--tui`, `--resume [SESSION_ID]`, `--continue`, `--fork SESSION_ID` (mutually exclusive), optional `Command`.
 - `enum Command::Bench(BenchArgs)`; `BenchArgs { workspace, journal, model, effort ("max"), approve_all }`; `--model` must be `<provider>/<model>`.
-- `fn main()` — intercepts `egress_connect::SUBCOMMAND` before clap, then routes a bare launch to `launch::run`; otherwise installs `tracing_subscriber` (env filter, stderr, no ANSI), builds a multi-thread Tokio runtime, runs `run(cli)`, then `runtime.shutdown_timeout(0)` and `std::process::exit(code.code())`.
+- `fn main()` — intercepts `forge_tools::egress_connect::SUBCOMMAND` before clap, then routes a bare launch to `launch::run`; otherwise installs `tracing_subscriber` (env filter, stderr, no ANSI), builds a multi-thread Tokio runtime, runs `run(cli)`, then `runtime.shutdown_timeout(0)` and `std::process::exit(code.code())`.
 - `fn needs_tui(&Cli) -> bool`: `--resume`, `--continue` or `--fork` without `--tui` is refused with exit 2 rather than silently ignored.
 - `fn launch_target(&Cli, allow_resume_picker: bool) -> LaunchTarget`: `--fork` → `Fork`, `--continue` → `Continue`, `--resume <ID>` → `Resume`, bare `--resume` → `Latest`, none → `New`; always `New` when the resume picker is disallowed.
 - `async fn bounded_shutdown(shutdown, timeout) -> Option<String>`: what to print on stderr after a supervisor shutdown that failed or timed out.
@@ -29,10 +29,7 @@ helper. All session assembly is delegated to `forge-session`; all rendering to
 - Discovery order: `FORGE_DESKTOP_BIN`, the directory containing the running `forge`, `Forge.app` in `~/Applications` then `/Applications` (macOS), then `PATH`.
 - Missing app prints the installer command plus `forge --tui` as the terminal alternative.
 
-`egress_connect.rs`:
-
-- `pub const SUBCOMMAND: &str = "__egress-connect"`; `pub fn run(args: &[String]) -> i32` (exit codes: 0 tunnel closed cleanly, 1 refused/I-O failure, 2 usage or bad port).
-- Internal `Failure::{Refused, Io}` and `connect(proxy, host, port)`.
+The `__egress-connect` helper lives in `forge_tools::egress_connect` (shared with the desktop app, which git's routing also invokes); `main` only dispatches to it.
 
 ## Invariants
 

@@ -96,6 +96,8 @@ Subdirectories:
   (takes the workspace root), `isolated_config_env`, `needs_git_writes`.
 - Git network policy (`git_network.rs`): `set_egress_connect_exe`.
 
+- `egress_connect` (`pub mod`): `SUBCOMMAND = "__egress-connect"` and `run(args) -> i32` (0 tunnel closed cleanly, 1 refused or I/O failure, 2 usage or bad port). Carries one TCP stream through the egress gateway with `CONNECT`; rejects hosts with whitespace or control bytes; brackets IPv6. `git_network` writes `<current executable> __egress-connect …` into SSH's ProxyCommand and the `git://` proxy script, so **every executable that runs agents must intercept it before its own argument parsing**: `forge` (`forge-cli/src/main.rs`) and `forge-desktop` (`forge-desktop/src/main.rs`).
+
 ## Invariants
 
 - `ToolRegistry::call` validates against the compiled JSON schema first and

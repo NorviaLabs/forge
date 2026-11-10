@@ -20,5 +20,16 @@ mod themes;
 mod workspace;
 
 fn main() {
+    // Git's SSH routing runs `<this executable> __egress-connect ...` as its
+    // ProxyCommand. Handle it before startup parses arguments, as `forge`
+    // does; otherwise every SSH push or fetch from a desktop session fails.
+    let mut args = std::env::args_os().skip(1);
+    if args
+        .next()
+        .is_some_and(|arg| arg == forge_tools::egress_connect::SUBCOMMAND)
+    {
+        let rest: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
+        std::process::exit(forge_tools::egress_connect::run(&rest));
+    }
     std::process::exit(startup::run());
 }
