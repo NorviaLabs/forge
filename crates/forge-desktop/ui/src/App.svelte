@@ -956,7 +956,7 @@
     // Opening the confirmation is the whole action; `confirmArchive` runs it.
     // A row that is already closed was opened from its cleanup button, so its
     // dialog starts with removal ticked; an active row archives by default.
-    archiveRemove = session.lifecycle !== "active" && session.ownership === "managed";
+    archiveRemove = ["archived", "retained"].includes(session.lifecycle) && session.ownership === "managed";
     archiveDiscard = false;
     archiveTarget = session;
   }
@@ -2331,12 +2331,12 @@
     <div class="modal">
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="archive-title" tabindex="-1" use:modal={{ onClose: () => (archiveTarget = null) }}>
         <h2 id="archive-title">
-          {archiveTarget.lifecycle === "active"
+          {["active", "closed"].includes(archiveTarget.lifecycle)
             ? `Archive “${archiveTarget.label}”?`
             : `Clean up “${archiveTarget.label}”?`}
         </h2>
         <p>
-          {archiveTarget.lifecycle === "active"
+          {["active", "closed"].includes(archiveTarget.lifecycle)
             ? "It disappears from the switcher, but its journal is kept and it can be resumed later. A running turn is stopped first."
             : "This session is already closed. Only its git worktree can be cleaned up from here."}
         </p>

@@ -304,7 +304,17 @@
                 <span class="session-name">{session.label}</span>
                 <span class="session-state">{session.lifecycle}</span>
               </button>
-              {#if session.ownership === "managed" && ["archived", "retained"].includes(session.lifecycle)}
+              {#if session.lifecycle === "closed"}
+                <button
+                  type="button"
+                  class="icon-btn"
+                  title="Archive session"
+                  aria-label={`Archive ${session.label}`}
+                  onclick={() => onArchive(session)}
+                >
+                  <Icon name="trash" size={12} />
+                </button>
+              {:else if session.ownership === "managed" && ["archived", "retained"].includes(session.lifecycle)}
                 <button
                   type="button"
                   class="icon-btn"
