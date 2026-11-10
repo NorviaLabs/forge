@@ -6,6 +6,11 @@
     sessions = [],
     activeId = "",
     project = "",
+    projectCount = 0,
+    // Requests waiting in other projects, oldest first.
+    elsewhere = [],
+    onProjects,
+    onElsewhere,
     creating = false,
     open = false,
     attention = [],
@@ -65,10 +70,14 @@
 <aside class="sidebar" class:open aria-label="Sessions" {@attach open ? overlay : null}>
   <header class="workspace">
     <span class="mark">F</span>
-    <div class="names">
+    <button type="button" class="names" title="Switch project" aria-label="Project {project}: switch project" onclick={() => onProjects?.()}>
       <strong>Forge</strong>
-      {#if project}<span class="where" title={project}>{project}</span>{/if}
-    </div>
+      <span class="where" title={project}>
+        {project || "Choose a project"}
+        <Icon name="chevron" size={11} />
+      </span>
+      {#if projectCount > 1}<span class="sr-only">{projectCount} projects</span>{/if}
+    </button>
     {#if open}
       <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
         <Icon name="close" size={13} />
@@ -89,6 +98,26 @@
               <span class="state-dot {session.turn_state}"></span>
               <span class="session-name">{session.label}</span>
               <span class="session-state">{session.turn_state}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  {#if elsewhere.length > 0}
+    <section class="panel needs-section" aria-label="Waiting in other projects">
+      <div class="section-head">
+        <span class="label">Other projects</span>
+        <span class="count">{elsewhere.length}</span>
+      </div>
+      <ul class="session-list">
+        {#each elsewhere as item (item.project_id + item.session_id + item.call_id)}
+          <li class="needs-you">
+            <button type="button" class="session" onclick={() => onElsewhere?.(item)} title="{item.project_name}: {item.session_label}">
+              <span class="state-dot waiting"></span>
+              <span class="session-name">{item.session_label || "Session"}</span>
+              <span class="session-state">{item.project_name}</span>
             </button>
           </li>
         {/each}
@@ -287,10 +316,32 @@
   }
 
   .names {
+    flex: 1;
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     min-width: 0;
+    padding: 2px 4px;
+    margin: -2px -4px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
     line-height: 1.25;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .names:hover {
+    background: var(--surface-raised, rgba(255, 255, 255, 0.06));
+  }
+
+  .names .where {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    max-width: 100%;
   }
 
   .where {

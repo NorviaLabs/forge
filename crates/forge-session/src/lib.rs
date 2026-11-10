@@ -14,6 +14,9 @@
 mod control;
 pub mod headless;
 mod launch;
+mod project;
+mod project_state;
+mod projects;
 mod snapshot;
 mod supervisor;
 mod topology;
@@ -27,6 +30,12 @@ pub use control::{
 };
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
 pub use launch::{config_for_workspace, LaunchError, LaunchPlan, LaunchTarget, Launched};
+pub use project::{LaunchResolution, Project, ProjectId, ProjectRegistry, RegistryError};
+pub use project_state::{AttentionItem, AttentionKind, ProjectState, SessionSummary};
+pub use projects::{
+    new_attention, ConfigLoader, OpenProjectRef, ProjectError, ProjectService,
+    ProjectServiceHandle, ProjectServiceOptions, ProjectSummary, SharedSupervisor, WorkspaceState,
+};
 pub use snapshot::{
     replayed_transcript, BackgroundTaskSnapshot, SessionDetailsSnapshot, SessionSnapshot,
     ShellExecutionSnapshot, TranscriptSnapshot,

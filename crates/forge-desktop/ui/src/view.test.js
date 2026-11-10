@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   closeDocument,
+  otherAttention,
+  prunable,
   defaultView,
   diffSide,
   dirtyAnywhere,
@@ -159,4 +161,33 @@ test("Escape leaves a focus screen only when no field or terminal has focus", ()
   assert.equal(escapeReturn("files", inside("textarea")), null, "the editor keeps Escape");
   assert.equal(escapeReturn("files", inside("input")), null, "the filter keeps Escape");
   assert.equal(escapeReturn("terminal", inside(".terminal-host")), null, "Escape is terminal input");
+});
+
+test("a roster prunes only its own project's sessions", () => {
+  const owners = { a1: "A", a2: "A", b1: "B" };
+  const present = new Set(["a1"]);
+  // b1 belongs to project B: switching to A must keep its draft and shell.
+  assert.deepEqual(prunable(["a1", "a2", "b1", "new"], owners, "A", present), ["a2", "new"]);
+  assert.deepEqual(prunable(["a1", "a2", "b1"], owners, "B", new Set(["b1"])), []);
+});
+
+test("other projects' requests are listed oldest first with their project", () => {
+  const projects = [
+    { id: "A", name: "api", attention: [{ session_id: "s1", call_id: "c1", since: "2026-11-10T10:00:00Z" }] },
+    {
+      id: "B",
+      name: "notes",
+      attention: [
+        { session_id: "s2", call_id: "c2", since: "2026-11-10T09:00:00Z" },
+        { session_id: "s3", call_id: "c3", since: "2026-11-10T11:00:00Z" },
+      ],
+    },
+    { id: "C", name: "sdk", attention: [{ session_id: "s4", call_id: "c4", since: "2026-11-10T08:00:00Z" }] },
+  ];
+  const items = otherAttention(projects, "A");
+  assert.deepEqual(items.map((item) => [item.project_name, item.call_id]), [
+    ["sdk", "c4"],
+    ["notes", "c2"],
+    ["notes", "c3"],
+  ]);
 });

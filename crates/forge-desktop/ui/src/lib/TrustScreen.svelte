@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
 
-  let { workspace = "", error = "", busy = false, needsFolder = false, noGit = false, onTrust, onChoose, onQuit } = $props();
+  let { workspace = "", error = "", busy = false, needsFolder = false, needsConfirmation = false, noGit = false, onTrust, onChoose, onQuit } = $props();
 </script>
 
 <div class="trust" role="dialog" aria-modal="true" aria-labelledby="trust-title" tabindex="-1" use:modal={{ busy }}>
@@ -21,14 +21,22 @@
       <button type="button" class="btn" onclick={onQuit}>Quit</button>
     </div>
     {:else}
-    <span class="badge"><Icon name="alert" size={14} /> Untrusted workspace</span>
-    <h1 id="trust-title">Trust this folder?</h1>
+    <span class="badge"><Icon name="alert" size={14} /> {needsConfirmation ? "New project" : "Untrusted workspace"}</span>
+    <h1 id="trust-title">{needsConfirmation ? "Open this folder as a project?" : "Trust this folder?"}</h1>
     <p class="path mono">{workspace}</p>
+    {#if needsConfirmation}
+    <p>
+      This folder isn't a project yet. Adding it lets agents read and write everything inside it and
+      run commands through approvals, and lists it in your projects. Nothing is written into the
+      folder until you add it.
+    </p>
+    {:else}
     <p>
       Forge has never run here. Trusting it lets the agent read and write files in this folder and
       run commands through approvals. Nothing is written until you trust it. Commands requiring
       approval still ask; trusting a folder does not enable approve-all mode.
     </p>
+    {/if}
     <p class="dim small">
       Trusting here is the same as trusting in the terminal: it is remembered for this folder and
       its subfolders.
@@ -37,7 +45,7 @@
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="actions">
       <button type="button" class="btn primary" disabled={busy} onclick={onTrust}>
-        {busy ? "Trusting…" : "Trust this folder and open it"}
+        {busy ? "Opening…" : needsConfirmation ? "Add as a project and open it" : "Trust this folder and open it"}
       </button>
       <button type="button" class="btn" onclick={onQuit}>Quit</button>
     </div>

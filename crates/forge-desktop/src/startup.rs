@@ -1,13 +1,14 @@
-//! Process startup: arguments, ownership and trust, the supervisor, then
-//! the Tauri event loop. Untrusted workspaces defer launch behind a trust screen.
+//! Process startup: arguments, the launch project (through the project
+//! service: registry, trust, owner lock), then the Tauri event loop.
+//! Untrusted or unregistered folders wait behind the trust screen.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context;
-use forge_config::{Config, ConfigOverrides};
-use forge_session::{LaunchPlan, LaunchTarget, RepositorySupervisor, SupervisorHandle};
-use forge_types::SessionId;
+#[cfg(feature = "self-test")]
+use forge_config::Config;
+use forge_session::{LaunchResolution, ProjectError, ProjectService, ProjectServiceOptions};
 
 use crate::bridge::{self, DesktopState};
 
@@ -35,12 +36,9 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Args, String
 }
 
 pub(crate) struct Started {
-    pub(crate) supervisor: RepositorySupervisor,
-    pub(crate) handle: SupervisorHandle,
-    pub(crate) session_id: SessionId,
-    pub(crate) initial: forge_session::SessionRuntimeSnapshot,
-    /// The live sessions at startup, for the switcher's first paint.
-    pub(crate) sessions: Vec<crate::bridge::SessionRow>,
+    pub(crate) projects: forge_session::ProjectServiceHandle,
+    /// The project the window opens on.
+    pub(crate) active: forge_session::OpenProjectRef,
     /// Self-test only: the temporary workspace, kept alive for the run.
     pub(crate) _scratch: Option<Box<dyn std::any::Any + Send>>,
     /// Self-test only: the throwaway repository the journey acts on.
@@ -48,18 +46,22 @@ pub(crate) struct Started {
     pub(crate) self_test_repo: Option<PathBuf>,
 }
 
-/// What startup produced: either a running session, or a workspace the
-/// operator must trust first. Trusting it starts the session in this same
-/// process; nothing is written into the workspace before that.
+/// What startup produced: an open project, or something the operator must
+/// decide first in the window. Nothing is written into a project folder
+/// before they do.
 pub enum Startup {
     Ready(Box<Started>),
+    /// Trust a registered project, or confirm adding a plain folder.
     NeedsTrust {
+        projects: forge_session::ProjectServiceHandle,
         workspace: PathBuf,
-        deferred: Box<Config>,
+        pending: bridge::Pending,
     },
     /// Launched with no path from `/` or the home folder (the Dock, Finder):
     /// neither is a project, so the page asks for a folder first.
-    NeedsFolder,
+    NeedsFolder {
+        projects: forge_session::ProjectServiceHandle,
+    },
 }
 
 pub fn run() -> i32 {
@@ -103,14 +105,21 @@ pub fn run() -> i32 {
     // trust screen, and `trust_workspace` starts the session in place.
     let (trust, ready) = match startup {
         Startup::Ready(started) => (
-            bridge::TrustState::ready(started.initial.task.workspace.clone()),
+            bridge::TrustState::ready(
+                started.projects.clone(),
+                started.active.project.root.clone(),
+            ),
             Some(started),
         ),
         Startup::NeedsTrust {
+            projects,
             workspace,
-            deferred,
-        } => (bridge::TrustState::pending(workspace, *deferred), None),
-        Startup::NeedsFolder => (bridge::TrustState::needs_folder(), None),
+            pending,
+        } => (
+            bridge::TrustState::pending(projects, workspace, pending),
+            None,
+        ),
+        Startup::NeedsFolder { projects } => (bridge::TrustState::needs_folder(projects), None),
     };
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
@@ -123,15 +132,8 @@ pub fn run() -> i32 {
     if let Some(started) = ready {
         let started = *started;
         _scratch = started._scratch;
-        let supervisor = std::sync::Arc::new(tokio::sync::RwLock::new(Some(started.supervisor)));
         #[allow(unused_mut)] // self-test builds attach their probe
-        let mut state = DesktopState::new(
-            started.handle,
-            supervisor,
-            started.session_id,
-            &started.initial,
-            started.sessions,
-        );
+        let mut state = DesktopState::new(started.projects, started.active);
         #[cfg(feature = "self-test")]
         {
             probe = started
@@ -190,19 +192,20 @@ pub fn run() -> i32 {
                 return;
             };
             state.shells.close_all();
-            let supervisor = state.supervisor.clone();
-            let taken = runtime_handle.block_on(async { supervisor.write().await.take() });
-            if let Some(supervisor) = taken {
-                // Release the repository explicitly, bounded so a provider
-                // that never answers cannot keep the app from quitting.
-                let shutdown = runtime_handle.block_on(async move {
-                    tokio::time::timeout(SHUTDOWN_TIMEOUT, supervisor.shutdown()).await
-                });
-                match shutdown {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => eprintln!("forge-desktop: shutdown: {error}"),
-                    Err(_) => eprintln!("forge-desktop: shutdown timed out"),
+            // Release every project explicitly, bounded so a provider that
+            // never answers cannot keep the app from quitting.
+            let projects = state.projects.clone();
+            let shutdown = runtime_handle.block_on(async move {
+                tokio::time::timeout(SHUTDOWN_TIMEOUT, projects.shutdown()).await
+            });
+            match shutdown {
+                Ok(Ok(notices)) => {
+                    for notice in notices {
+                        eprintln!("forge-desktop: shutdown: {notice}");
+                    }
                 }
+                Ok(Err(error)) => eprintln!("forge-desktop: shutdown: {error}"),
+                Err(_) => eprintln!("forge-desktop: shutdown timed out"),
             }
         }
     });
@@ -236,6 +239,12 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::trust_status,
         bridge::trust_workspace,
         bridge::choose_folder,
+        bridge::project_switch,
+        bridge::project_add,
+        bridge::project_trust,
+        bridge::project_close,
+        bridge::project_remove,
+        bridge::project_relocate,
         bridge::subscribe,
         bridge::current_session,
         bridge::submit_prompt,
@@ -347,78 +356,57 @@ fn is_not_a_project(cwd: &std::path::Path, home: Option<&std::path::Path>) -> bo
     cwd.parent().is_none() || home.is_some_and(|home| cwd == home)
 }
 
-/// Load config for `workspace`, reading that project's `forge.toml` rather than
-/// the one in whatever directory the app was launched from.
-pub(crate) fn load_config(workspace: &std::path::Path) -> anyhow::Result<Config> {
-    let workspace = if workspace.is_absolute() {
-        workspace.to_path_buf()
-    } else {
-        std::env::current_dir()
-            .context("no current directory")?
-            .join(workspace)
-    };
-    Config::load(ConfigOverrides {
-        workspace: Some(workspace.clone()),
-        project_root: Some(workspace),
-        ..Default::default()
-    })
-    .map_err(|error| anyhow::anyhow!(error))
-}
-
 async fn start(args: &Args) -> anyhow::Result<Startup> {
     if args.self_test {
         return Ok(Startup::Ready(Box::new(start_self_test().await?)));
     }
-    let workspace = match &args.workspace {
-        Some(path) => path.clone(),
+    let projects = ProjectService::spawn(ProjectServiceOptions::user()?)?;
+    let folder = match &args.workspace {
+        Some(path) if path.is_absolute() => path.clone(),
+        Some(path) => std::env::current_dir()
+            .context("no current directory")?
+            .join(path),
         None => {
             let cwd = std::env::current_dir().context("no current directory")?;
             if is_not_a_project(&cwd, dirs::home_dir().as_deref()) {
-                return Ok(Startup::NeedsFolder);
+                return Ok(Startup::NeedsFolder { projects });
             }
             cwd
         }
     };
-    let cfg = load_config(&workspace)?;
-    let plan = LaunchPlan::prepare(&cfg).await?;
-    if plan.needs_trust() {
-        // Trust is the operator's decision, asked in the window rather than
-        // in the terminal. `launch` still re-reads it, so nothing is written
-        // into the workspace before the operator says yes.
-        return Ok(Startup::NeedsTrust {
-            workspace: plan.workspace().to_path_buf(),
-            deferred: Box::new(cfg),
-        });
+    match projects.resolve_launch(folder).await? {
+        LaunchResolution::Project(project) => open_or_trust(projects, project, None).await,
+        // Registering a plain folder lets agents edit everything in it, so
+        // the window asks first (D5), on the same screen as trust.
+        LaunchResolution::NeedsConfirmation { root } => Ok(Startup::NeedsTrust {
+            projects,
+            workspace: root.clone(),
+            pending: bridge::Pending::Confirm(root),
+        }),
     }
-    Ok(Startup::Ready(Box::new(open(cfg, plan, None).await?)))
 }
 
-pub(crate) async fn open(
-    cfg: Config,
-    plan: LaunchPlan,
+/// Open `project`, or hand it to the trust screen when it isn't trusted.
+async fn open_or_trust(
+    projects: forge_session::ProjectServiceHandle,
+    project: forge_session::Project,
     scratch: Option<Box<dyn std::any::Any + Send>>,
-) -> anyhow::Result<Started> {
-    let launched = plan.launch(LaunchTarget::Continue).await?;
-    let bootstrap = launched.bootstrap;
-    let session_id = launched.opened.session.session_id;
-    let (supervisor, handle) = bootstrap
-        .open_with_primary(&cfg, launched.opened.session)
-        .await?;
-    let initial = supervisor
-        .snapshot(session_id)
-        .await
-        .context("the session is missing from the supervisor")?;
-    let sessions = bridge::session_rows(&supervisor.snapshots().await);
-    Ok(Started {
-        supervisor,
-        handle,
-        session_id,
-        initial,
-        sessions,
-        _scratch: scratch,
-        #[cfg(feature = "self-test")]
-        self_test_repo: None,
-    })
+) -> anyhow::Result<Startup> {
+    match projects.open(project.id).await {
+        Ok(_) => Ok(Startup::Ready(Box::new(Started {
+            active: projects.project(project.id).await?,
+            projects,
+            _scratch: scratch,
+            #[cfg(feature = "self-test")]
+            self_test_repo: None,
+        }))),
+        Err(ProjectError::NeedsTrust(_)) => Ok(Startup::NeedsTrust {
+            projects,
+            workspace: project.root,
+            pending: bridge::Pending::Trust(project.id),
+        }),
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(not(feature = "self-test"))]
@@ -465,10 +453,19 @@ async fn start_self_test() -> anyhow::Result<Started> {
     };
     cfg.model.mock = true;
     cfg.model.mock_script = Some(scenario);
-    let plan = LaunchPlan::prepare_with_trust_store(&cfg, Some(store)).await?;
-    let mut started = open(cfg, plan, Some(Box::new(scratch))).await?;
+    let projects = ProjectService::spawn(ProjectServiceOptions {
+        registry: forge_session::ProjectRegistry::at(scratch.path().join("projects.toml")),
+        trust_store: Some(store),
+        load_config: std::sync::Arc::new(move |_root| Ok(cfg.clone())),
+    })?;
+    let project = projects.add(repo.clone()).await?;
+    let Startup::Ready(mut started) =
+        open_or_trust(projects, project, Some(Box::new(scratch))).await?
+    else {
+        anyhow::bail!("the self-test repository should be trusted");
+    };
     started.self_test_repo = Some(repo);
-    Ok(started)
+    Ok(*started)
 }
 
 #[cfg(test)]
@@ -508,7 +505,11 @@ mod tests {
         ];
         std::env::set_var("HOME", &home);
         std::env::remove_var("XDG_CONFIG_HOME");
-        let cfg = load_config(&project);
+        // The loader the window uses for every project it opens.
+        let load = ProjectServiceOptions::user().map(|options| options.load_config);
+        let cfg = load
+            .map_err(|error| error.to_string())
+            .and_then(|load| load(&project));
         for (key, value) in saved {
             match value {
                 Some(value) => std::env::set_var(key, value),

@@ -13,9 +13,10 @@ use forge_types::{
     AskUserQuestionResult, BackgroundTaskId, GrantDecision, HitlDecision, ModelStreamEvent,
     SessionId, TaskLifecycle, ToolCall,
 };
-use tokio::sync::{broadcast, mpsc, oneshot, Mutex, Notify, RwLock, Semaphore};
+use tokio::sync::{broadcast, mpsc, oneshot, watch, Mutex, Notify, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+use crate::project_state::{next_state, ProjectState, SessionView};
 use crate::{
     open_session_with_model, resolve_journal_dir, route_table, NewRepositorySession,
     ProjectTopology, RepositoryControl, RepositoryLease, RepositorySession, RepositorySessionError,
@@ -307,9 +308,17 @@ pub struct SupervisorHandle {
     commands: mpsc::Sender<CommandEnvelope>,
     events: broadcast::Sender<SupervisorEvent>,
     supports_git: bool,
+    project_state: watch::Receiver<ProjectState>,
 }
 
 impl SupervisorHandle {
+    /// The project's sessions, the requests waiting on you, and run slots.
+    /// Unlike [`subscribe`](Self::subscribe), a slow reader never misses an
+    /// update: it always sees the latest value.
+    pub fn project_state(&self) -> watch::Receiver<ProjectState> {
+        self.project_state.clone()
+    }
+
     /// Whether the project is a Git repository. Frontends disable worktree,
     /// branch, issue and pull-request controls when it is not.
     pub fn supports_git(&self) -> bool {
@@ -567,6 +576,8 @@ struct SupervisorState {
     actors: RwLock<HashMap<SessionId, Arc<SessionActor>>>,
     unavailable_tasks: RwLock<Vec<RepositorySession>>,
     permits: Arc<Semaphore>,
+    /// The number of `permits` the supervisor started with.
+    run_limit: usize,
     events: broadcast::Sender<SupervisorEvent>,
     /// The repository lease. `Some` for the supervisor's whole life; only
     /// [`RepositorySupervisor::shutdown`] takes it, once nothing that could
@@ -666,6 +677,17 @@ pub struct RepositorySupervisor {
     state: Arc<SupervisorState>,
     commands: mpsc::Sender<CommandEnvelope>,
     command_loop: Option<tokio::task::JoinHandle<()>>,
+    /// Keeps [`SupervisorHandle::project_state`] current; stopped with the
+    /// supervisor, since handles can outlive it and keep its events open.
+    _project_state: AbortOnDrop,
+}
+
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Repository ownership taken *before* any session is created.
@@ -1166,6 +1188,7 @@ impl RepositorySupervisor {
             actors: RwLock::new(actors),
             unavailable_tasks: RwLock::new(unavailable_tasks),
             permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
+            run_limit: max_concurrency.max(1),
             events: events.clone(),
             lease_owner: lease.owner().clone(),
             lease: StdMutex::new(Some(lease)),
@@ -1175,16 +1198,26 @@ impl RepositorySupervisor {
             trust_store,
         });
         let (commands, receiver) = mpsc::channel(128);
+        // Subscribe before anything can publish, so no change precedes it.
+        let triggers = events.subscribe();
+        let (project_state, project_state_rx) = watch::channel(ProjectState::default());
+        let project_state_task = tokio::spawn(run_project_state(
+            Arc::downgrade(&state),
+            triggers,
+            project_state,
+        ));
         let handle = SupervisorHandle {
             commands: commands.clone(),
             events,
             supports_git: state.topology.supports_git(),
+            project_state: project_state_rx,
         };
         let command_loop = tokio::spawn(run_commands(state.clone(), receiver));
         let supervisor = Self {
             state,
             commands,
             command_loop: Some(command_loop),
+            _project_state: AbortOnDrop(project_state_task),
         };
         supervisor.publish_roster().await;
         for (session_id, _, _) in recovered {
@@ -3683,6 +3716,68 @@ async fn publish_actor(
     Ok(())
 }
 
+/// Keep `sender` equal to the state derived from the actors' snapshots.
+///
+/// Events only say *when* to look again; the value always comes from the
+/// snapshots. So a lagged receiver (thousands of streamed tokens) recomputes
+/// rather than losing a request, and a burst of changes costs one
+/// recomputation. Streamed tokens never change this state and are skipped.
+async fn run_project_state(
+    state: std::sync::Weak<SupervisorState>,
+    mut events: broadcast::Receiver<SupervisorEvent>,
+    sender: watch::Sender<ProjectState>,
+) {
+    loop {
+        let Some(strong) = state.upgrade() else {
+            return;
+        };
+        let views = project_views(&strong).await;
+        let limit = strong.run_limit;
+        drop(strong);
+        sender.send_if_modified(|current| {
+            let next = next_state(current, views, limit, chrono::Utc::now());
+            let changed = next.version != current.version;
+            *current = next;
+            changed
+        });
+        loop {
+            match events.recv().await {
+                Ok(SupervisorEvent::Stream { .. }) => continue,
+                Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => break,
+                Err(broadcast::error::RecvError::Closed) => return,
+            }
+        }
+        while matches!(
+            events.try_recv(),
+            Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_))
+        ) {}
+    }
+}
+
+/// Every session's [`SessionView`], in roster order, without cloning any
+/// transcript.
+async fn project_views(state: &SupervisorState) -> Vec<SessionView> {
+    let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
+    let mut keyed = Vec::with_capacity(actors.len());
+    for task_actor in actors {
+        let snapshot = task_actor.snapshot.read().await;
+        keyed.push((roster_key(&snapshot.task), SessionView::of(&snapshot)));
+    }
+    for task in state.unavailable_tasks.read().await.iter() {
+        keyed.push((roster_key(task), SessionView::of_task(task)));
+    }
+    keyed.sort_by_key(|(key, _)| *key);
+    keyed.into_iter().map(|(_, view)| view).collect()
+}
+
+fn roster_key(task: &RepositorySession) -> (bool, u8, chrono::DateTime<chrono::Utc>) {
+    (
+        task.lifecycle != SessionLifecycle::Active,
+        task.slot.unwrap_or(u8::MAX),
+        task.created_at,
+    )
+}
+
 async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
     let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
     let unavailable_tasks = state.unavailable_tasks.read().await.clone();
@@ -3709,13 +3804,7 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
             task,
         });
     }
-    snapshots.sort_by_key(|snapshot| {
-        (
-            snapshot.task.lifecycle != SessionLifecycle::Active,
-            snapshot.task.slot.unwrap_or(u8::MAX),
-            snapshot.task.created_at,
-        )
-    });
+    snapshots.sort_by_key(|snapshot| roster_key(&snapshot.task));
     snapshots
 }
 
@@ -4537,6 +4626,98 @@ mod tests {
             SessionLifecycle::Removed
         );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// The announcing event is followed by 10,000 streamed tokens, more than
+    /// the broadcast holds, so it is usually lost to lag. The project state
+    /// must still show the request, because it is read from the snapshots.
+    #[tokio::test]
+    async fn project_state_keeps_an_approval_through_a_streaming_flood() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let session = scripted_session(&cfg, "unused").await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "flooded", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 3, cfg, model)
+                .await
+                .unwrap();
+        let mut watched = handle.project_state();
+        let initial = watched
+            .wait_for(|state| state.sessions.len() == 1)
+            .await
+            .unwrap()
+            .clone();
+        assert!(initial.attention.is_empty());
+        assert_eq!((initial.running, initial.limit), (0, 3));
+
+        // What `refresh_actor` does when a turn parks on an approval.
+        let actor = supervisor.state.actors.read().await[&session_id].clone();
+        let snapshot = {
+            let mut snapshot = actor.snapshot.write().await;
+            snapshot.session.pending_hitl = Some(forge_types::HitlPayload {
+                call_id: "flood-call".into(),
+                tool: "bash".into(),
+                args_redacted: json!({}),
+                reason: "test".into(),
+                failure: None,
+                sandbox_escalation: false,
+                denied_host: None,
+            });
+            snapshot.clone()
+        };
+        let events = supervisor.state.events.clone();
+        let _ = events.send(SupervisorEvent::SessionUpdated(Box::new(snapshot)));
+        for index in 0..10_000 {
+            let _ = events.send(SupervisorEvent::Stream {
+                session_id,
+                event: ModelStreamEvent::TextDelta {
+                    text: index.to_string(),
+                },
+            });
+        }
+
+        let state = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            watched.wait_for(|state| !state.attention.is_empty()),
+        )
+        .await
+        .expect("the approval reached the project state within 1 second")
+        .unwrap()
+        .clone();
+        assert_eq!(state.attention.len(), 1);
+        assert_eq!(state.attention[0].session_id, session_id);
+        assert_eq!(state.attention[0].call_id, "flood-call");
+        assert_eq!(state.attention[0].kind, crate::AttentionKind::Approval);
+        assert!(state.version > initial.version);
+        supervisor.shutdown().await.unwrap();
     }
 
     #[tokio::test]

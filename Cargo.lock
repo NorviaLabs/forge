@@ -1380,6 +1380,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "dirs 7.0.0",
  "forge-config",
  "forge-connect",
  "forge-core",
@@ -1399,6 +1400,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "toml",
+ "uuid",
 ]
 
 [[package]]

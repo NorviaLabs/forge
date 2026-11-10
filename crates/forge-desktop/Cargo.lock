@@ -1526,6 +1526,7 @@ version = "0.1.0-beta.11"
 dependencies = [
  "anyhow",
  "chrono",
+ "dirs 7.0.0",
  "forge-config",
  "forge-connect",
  "forge-core",
@@ -1543,6 +1544,8 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "toml 1.2.0+spec-1.1.0",
+ "uuid",
 ]
 
 [[package]]

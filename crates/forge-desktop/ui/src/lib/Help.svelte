@@ -1,7 +1,7 @@
 <script>
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
-  let { onClose, onProviders, onGithub, themes = [], theme = $bindable("forge-dark") } = $props();
+  let { onClose, onProviders, onGithub, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
   const shortcuts = [
     ["⌘ / Ctrl K", "Command palette: files, sessions and actions"],
     ["Enter / ⌘ ↵", "Send prompt (Shift+Enter for a new line)"],
@@ -24,6 +24,7 @@
   <div class="help" role="dialog" aria-modal="true" aria-labelledby="help-title" tabindex="-1" use:modal={{ onClose }}>
     <header><h2 id="help-title">Help & appearance</h2><button class="icon-btn" type="button" aria-label="Close help" onclick={onClose}><Icon name="close" size={13} /></button></header>
     <label>Theme <select class="field" bind:value={theme}><option value="system">System</option>{#each themes as entry}<option value={entry.id}>{entry.name}</option>{/each}</select></label>
+    <label class="toggle"><input type="checkbox" bind:checked={sound} /> Play a sound when a request waits on you</label>
     <h3>Keyboard shortcuts</h3>
     <dl>{#each shortcuts as [keys, action]}<dt><kbd>{keys}</kbd></dt><dd>{action}</dd>{/each}</dl>
     <h3>Workspace workflow</h3>
@@ -37,6 +38,7 @@
 </div>
 
 <style>
+  .toggle { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
   .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5, 7, 9, 0.6); z-index: 30; }
   .help { width: min(42rem, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow: auto; padding: 18px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
   header { display: flex; justify-content: space-between; align-items: center; }

@@ -18,6 +18,8 @@
   import Details from "./lib/Details.svelte";
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
+  import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
+  import { otherAttention, prunable } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
   import {
@@ -39,6 +41,25 @@
   // and pull-request actions stay listed but disabled, with the reason.
   let supportsGit = $state(true);
   const NEEDS_GIT = "needs a Git repository";
+
+  // Projects (doc 2). `projectId` is the project on screen. Each session
+  // belongs to one project, recorded in `sessionOwner`, so a roster prunes
+  // only its own project's views and shells: switching keeps the others'
+  // drafts, scroll positions and running terminals (D9).
+  let projectId = $state("");
+  let projects = $state([]);
+  const sessionOwner = {};
+  let projectsOpen = $state(false);
+  let projectBusy = $state(false);
+  // A project that can't open yet: { project, kind, message }.
+  let projectProblem = $state(null);
+  // A busy close: { project, sessions }.
+  let closeTarget = $state(null);
+  let attentionSound = $state(soundEnabled());
+  $effect(() => setSoundEnabled(attentionSound));
+  const activeProject = $derived(projects.find((project) => project.id === projectId) ?? null);
+  // Requests waiting in every project but this one.
+  const elsewhere = $derived(otherAttention(projects, projectId));
   let resumable = $state([]);
   // One view record per session (see view.js): open documents, the active
   // document, the draft and the transcript position.
@@ -562,6 +583,18 @@
   }
 
   function onEvent(event) {
+    if (event.type === "workspace") {
+      projects = event.projects;
+      return;
+    }
+    if (event.type === "attention_new") {
+      if (event.sound && attentionSound) chime();
+      return;
+    }
+    if (event.type === "project_switched") {
+      switchedTo(event.project_id, event.supports_git);
+      return;
+    }
     if (event.type === "stream" && event.event.type === "text_delta") {
       if (event.session_id === sessionId) streaming += event.event.text;
       return;
@@ -585,6 +618,7 @@
       return;
     }
     if (event.type === "roster") {
+      for (const row of event.sessions) sessionOwner[row.session_id] = projectId;
       sessions = event.sessions;
       reconcileRoster(event.sessions);
       return;
@@ -686,6 +720,109 @@
     } catch {
       resumable = [];
     }
+  }
+
+  function rememberProject(id) {
+    if (!id) return;
+    try { localStorage.setItem("forge.desktop.lastProject", id); } catch {}
+  }
+
+  // The bridge says another project is on screen; its roster, selection and
+  // session follow as ordinary events.
+  function switchedTo(id, git) {
+    projectId = id;
+    supportsGit = git !== false;
+    attention = {};
+    files = [];
+    status = { branch: "", files: [] };
+    lastTurnFiles = [];
+    resumable = [];
+    rememberProject(id);
+    loadResumable();
+  }
+
+  // Put `project` on screen, opening it if needed. True when it worked.
+  async function switchProject(project) {
+    projectsOpen = false;
+    if (project.id === projectId) return true;
+    projectBusy = true;
+    try {
+      await invoke("project_switch", { projectId: project.id });
+      return true;
+    } catch (failure) {
+      projectFailed(project, failure);
+      return false;
+    } finally {
+      projectBusy = false;
+    }
+  }
+
+  function projectFailed(project, failure) {
+    const kind = failure?.kind ?? "error";
+    const message = failure?.message ?? String(failure);
+    if (kind === "needs_trust" || kind === "root_missing") projectProblem = { project, kind, message };
+    else if (kind === "busy") closeTarget = { project, sessions: failure.sessions ?? [] };
+    else error = message;
+  }
+
+  async function addProject() {
+    projectsOpen = false;
+    try {
+      const id = await invoke("project_add");
+      if (id) await switchProject({ id, name: "" });
+    } catch (failure) {
+      error = failure?.message ?? String(failure);
+    }
+  }
+
+  async function trustProject() {
+    const { project } = projectProblem;
+    projectProblem = null;
+    try {
+      await invoke("project_trust", { projectId: project.id });
+    } catch (failure) {
+      error = failure?.message ?? String(failure);
+      return;
+    }
+    await switchProject(project);
+  }
+
+  async function locateProject() {
+    const { project } = projectProblem;
+    try {
+      if (!(await invoke("project_relocate", { projectId: project.id }))) return;
+    } catch (failure) {
+      error = failure?.message ?? String(failure);
+      return;
+    }
+    projectProblem = null;
+    await switchProject(project);
+  }
+
+  async function removeProject(project) {
+    projectProblem = null;
+    try {
+      await invoke("project_remove", { projectId: project.id });
+    } catch (failure) {
+      error = failure?.message ?? String(failure);
+    }
+  }
+
+  async function closeProject(project, stopRunning = false) {
+    try {
+      await invoke("project_close", { projectId: project.id, stopRunning });
+      closeTarget = null;
+    } catch (failure) {
+      projectFailed(project, failure);
+    }
+  }
+
+  // A request in another project: put that project on screen, then open the
+  // session at its decision card.
+  async function openElsewhere(item) {
+    const project = projects.find((entry) => entry.id === item.project_id) ?? { id: item.project_id, name: item.project_name };
+    if (!(await switchProject(project))) return;
+    await openRequest(item.session_id);
   }
 
   async function selectSession(id) {
@@ -804,7 +941,7 @@
       ...resumable.map((row) => row.session_id),
     ]);
     let present = live();
-    if (ids.some((id) => !present.has(id))) {
+    if (prunable(ids, sessionOwner, projectId, present).length) {
       try {
         resumable = await invoke("list_resumable_sessions");
       } catch {
@@ -813,8 +950,8 @@
       if (run !== reconcileRun) return;
       present = live();
     }
-    for (const id of Object.keys(shells)) if (!present.has(id)) dropShell(id);
-    for (const id of Object.keys(views)) if (!present.has(id)) delete views[id];
+    for (const id of prunable(Object.keys(shells), sessionOwner, projectId, present)) dropShell(id);
+    for (const id of prunable(Object.keys(views), sessionOwner, projectId, present)) delete views[id];
   }
 
   function toggleFileAttachment(tab) {
@@ -1594,6 +1731,8 @@
   let needsTrust = $state(false);
   let needsFolder = $state(false);
   let trustNoGit = $state(false);
+  // The folder isn't a project yet; accepting adds it (D5).
+  let trustConfirm = $state(false);
   let trustWorkspace = $state("");
   let trustError = $state("");
   let trusting = $state(false);
@@ -1615,6 +1754,10 @@
     sessionId = hello.session_id;
     sessions = hello.sessions;
     supportsGit = hello.supports_git !== false;
+    projectId = hello.project_id ?? "";
+    projects = hello.projects ?? [];
+    for (const row of hello.sessions) sessionOwner[row.session_id] = projectId;
+    rememberProject(projectId);
     loadResumable();
     applySession(hello.initial);
     channel.onmessage = onEvent;
@@ -1671,6 +1814,7 @@
     window.matchMedia(DARK_QUERY).addEventListener("change", (event) => (systemDark = event.matches));
     loadThemes();
     window.addEventListener("keydown", onKeydown);
+    unlockOnFirstGesture();
     window.addEventListener("focus", syncSession);
     let unlisten = null;
     listen("close_requested", () => {
@@ -1684,6 +1828,7 @@
         trustWorkspace = status.workspace;
         needsFolder = status.needs_folder;
         trustNoGit = status.no_git;
+        trustConfirm = status.needs_confirmation;
         needsTrust = status.needs_trust || status.needs_folder;
         trustError = status.error;
       } catch (cause) {
@@ -1711,7 +1856,11 @@
     bind:this={sidebar}
     sessions={allSessions}
     activeId={sessionId}
-    project={basename(trustWorkspace)}
+    project={activeProject?.name || basename(trustWorkspace)}
+    projectCount={projects.length}
+    {elsewhere}
+    onProjects={() => (projectsOpen = true)}
+    onElsewhere={openElsewhere}
     {creating}
     open={railOpen}
     attention={Object.keys(attention)}
@@ -2246,6 +2395,80 @@
     </div>
   {/if}
 
+  {#if projectsOpen}
+    <div class="modal">
+      <div class="dialog projects-dialog" role="dialog" aria-modal="true" aria-labelledby="projects-title" tabindex="-1" use:modal={{ onClose: () => (projectsOpen = false) }}>
+        <h2 id="projects-title">Projects</h2>
+        <ul class="project-list">
+          {#each projects as project (project.id)}
+            <li class:current={project.id === projectId}>
+              <button type="button" class="project-row" disabled={projectBusy} onclick={() => switchProject(project)} title={project.root}>
+                <span class="state-dot {project.open ? 'open' : 'closed'}"></span>
+                <span class="project-name">{project.name}</span>
+                {#if project.attention.length}<span class="project-count" aria-label="{project.attention.length} waiting on you">{project.attention.length}</span>{/if}
+                {#if project.open}<span class="project-meta">{project.running}/{project.limit} running</span>{/if}
+              </button>
+              {#if project.open && project.id !== projectId}
+                <button type="button" class="btn" onclick={() => closeProject(project)}>Close</button>
+              {:else if !project.open}
+                <button type="button" class="btn" onclick={() => removeProject(project)} title="Unregister; the folder and its sessions stay">Remove</button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <div class="dialog-actions">
+          <button class="btn primary" type="button" onclick={addProject}><Icon name="plus" size={13} /> Add project…</button>
+          <button class="btn" type="button" onclick={() => (projectsOpen = false)}>Done</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if projectProblem}
+    <div class="modal">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="project-problem-title" tabindex="-1" use:modal={{ onClose: () => (projectProblem = null) }}>
+        {#if projectProblem.kind === "needs_trust"}
+          <h2 id="project-problem-title">Trust {projectProblem.project.name}?</h2>
+          <p class="mono">{projectProblem.project.root}</p>
+          <p>Forge has never run here. Trusting it lets agents read and write files in this folder and run commands through approvals. Nothing is written until you trust it.</p>
+          <div class="dialog-actions">
+            <button class="btn primary" type="button" onclick={trustProject}>Trust and open</button>
+            <button class="btn" type="button" onclick={() => (projectProblem = null)}>Cancel</button>
+          </div>
+        {:else}
+          <h2 id="project-problem-title">{projectProblem.project.name} has moved</h2>
+          <p>{projectProblem.message}</p>
+          <div class="dialog-actions">
+            <button class="btn primary" type="button" onclick={locateProject}>Locate…</button>
+            <button class="btn danger" type="button" onclick={() => removeProject(projectProblem.project)}>Remove</button>
+            <button class="btn" type="button" onclick={() => (projectProblem = null)}>Cancel</button>
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
+
+  {#if closeTarget}
+    <div class="modal">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="close-project-title" tabindex="-1" use:modal={{ onClose: () => (closeTarget = null) }}>
+        <h2 id="close-project-title">{closeTarget.project.name} is still working</h2>
+        <p>These sessions would stop. Prompts still queued are kept for when you reopen the project.</p>
+        <ul class="project-list">
+          {#each closeTarget.sessions as busy (busy.session_id)}
+            <li>
+              <span class="project-row static"><span class="state-dot {busy.turn_state}"></span><span class="project-name">{busy.label || "Session"}</span><span class="project-meta">{busy.turn_state}</span></span>
+              <button type="button" class="btn" onclick={() => { const target = closeTarget; closeTarget = null; openElsewhere({ project_id: target.project.id, project_name: target.project.name, session_id: busy.session_id }); }}>Go to session</button>
+            </li>
+          {/each}
+        </ul>
+        <div class="dialog-actions">
+          <button class="btn danger" type="button" onclick={() => closeProject(closeTarget.project, true)}>Stop all and close</button>
+          <button class="btn" type="button" onclick={() => (closeTarget = null)}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if providersOpen}
     <Providers onClose={() => (providersOpen = false)} onChanged={async () => { models = await invoke("list_models"); }} />
   {/if}
@@ -2265,7 +2488,7 @@
     {#key sessionId}<Details onClose={() => (detailsOpen = false)} />{/key}
   {/if}
   {#if helpOpen}
-    <Help bind:theme={themeChoice} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { helpOpen = false; githubOpen = true; } : null} />
+    <Help bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { helpOpen = false; githubOpen = true; } : null} />
   {/if}
 
   {#if gitConfirm}
@@ -2298,6 +2521,7 @@
       busy={trusting}
       {needsFolder}
       noGit={trustNoGit}
+      needsConfirmation={trustConfirm}
       onChoose={chooseFolder}
       onTrust={acceptTrust}
       onQuit={() => invoke("quit_app").catch(() => {})}
@@ -2485,6 +2709,80 @@
     padding: 8px;
     resize: vertical;
     font-family: var(--font-ui);
+  }
+
+  .project-list {
+    margin: 0 0 14px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .project-list li {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 0;
+  }
+
+  .project-list li.current .project-row {
+    background: var(--surface-raised, rgba(255, 255, 255, 0.06));
+  }
+
+  .project-row {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .project-row.static {
+    cursor: default;
+  }
+
+  .project-row:hover:not(.static):not(:disabled) {
+    background: var(--surface-raised, rgba(255, 255, 255, 0.06));
+  }
+
+  .project-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-count {
+    min-width: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--warning);
+    color: #0e1115;
+    font-size: 11px;
+    font-weight: 600;
+    text-align: center;
+  }
+
+  .project-meta {
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  /* A project's dot: open (running agents allowed) or closed. */
+  .project-row .state-dot.open {
+    background: var(--success);
+  }
+
+  .project-row .state-dot.closed {
+    opacity: 0.35;
   }
 
   .dialog-error {

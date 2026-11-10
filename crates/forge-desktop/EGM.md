@@ -46,7 +46,41 @@ appear in the root `Cargo.lock`.
     their session from the supervisor's current selection, not from a copy
     in the page. Selecting publishes the id, then Rust sends that session's
     `Session` snapshot behind it.
-  - It is replaced by the versioned `forge-app` protocol in phase P.
+  - It is permanent (no versioned protocol replaces it). Projects: one
+    `ProjectService` holds every open project. `DesktopState.projects` is its
+    handle and `active` the project on screen. A command with `session_id`
+    resolves its project with `project_for` (the open project whose state
+    lists the session, else the one on screen); every other command uses
+    `active()`. Provider changes reload every open project. `subscribe`
+    follows the on-screen project (a switch sends `ProjectSwitched`, then the
+    roster, selection and session) and forwards `Workspace` (every project's
+    sessions, pending requests and run slots) and `AttentionNew { count,
+    sound }`. The badge is `set_badge_count(total pending)`; new requests ask
+    the OS for attention only when the window isn't focused, and `sound` is
+    false when they are all in the session on screen with the window
+    focused. Project commands: `project_switch` (opens if closed),
+    `project_add` and `project_relocate` (folder picker), `project_trust`,
+    `project_close` (refuses the on-screen project; `busy` lists sessions by
+    label), `project_remove`; failures are `ProjectFailure { kind, message,
+    sessions }`. Startup resolves the launch folder through the registry: a
+    registered project or Git repository opens; an unregistered plain folder
+    waits on the trust screen as `Pending::Confirm` (accepting adds, trusts
+    and opens it).
+  - Page (4c): the sidebar header's project name opens the Projects
+    dialog (switch, Add project…, Close for open background projects,
+    Remove for closed ones; each row shows pending requests and running
+    slots). "Other projects" in the sidebar lists requests waiting in every
+    other project; selecting one switches project, then opens the session at
+    its decision card. `needs_trust` and `root_missing` failures open a
+    dialog (Trust and open / Locate… / Remove); `busy` opens the close
+    dialog (Go to session / Stop all and close). Session view records and
+    shells are keyed by session id and kept across switches: a roster prunes
+    only sessions owned by the project on screen (`view.js` `prunable`). The
+    chime (`chime.js`) is Web Audio, unlocked on the first gesture, and
+    played for `AttentionNew { sound: true }` when
+    `localStorage["forge.desktop.attentionSound"]` isn't `off` (toggle in
+    Help). The trust screen says "Open this folder as a project?" for
+    `needs_confirmation`.
 - `src/workspace.rs`: workspace browsing, search, file operations, image paste,
   the editor's save path and operator-driven Git writes.
   Confines every path to the active session's workspace, skips runtime and

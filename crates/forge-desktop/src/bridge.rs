@@ -1,16 +1,19 @@
 //! The IPC bridge: Forge's supervisor on one side, the webview on the other.
 //!
-//! Provisional. The event shape here is the walking skeleton's own and is
-//! not frozen; phase P replaces it with the versioned `forge-app` protocol
-//! (revision-keyed deltas instead of the whole transcript per update).
+//! Every open project goes through one `ProjectService`. Commands that name
+//! a session act on that session's project; commands on the current
+//! selection, and project-level ones, act on the project on screen. The
+//! page receives the on-screen project's events, plus a `Workspace` summary
+//! of every project and `AttentionNew` when requests arrive. This is the
+//! desktop's permanent transport (doc 2, D8); there is no protocol rewrite
+//! planned behind it.
 
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::State;
 
 use forge_session::{
-    RepositorySession, SessionLifecycle, SessionRuntimeSnapshot, SupervisorCommand,
-    SupervisorEvent, SupervisorHandle,
+    RepositorySession, SessionLifecycle, SessionRuntimeSnapshot, SupervisorCommand, SupervisorEvent,
 };
 use forge_types::{
     ApprovalKind, AskUserQuestionAnswerItem, AskUserQuestionResult, GrantDecision, HitlDecision,
@@ -98,6 +101,84 @@ pub enum DesktopEvent {
     Lagged {
         missed: u64,
     },
+    /// Every registered project, and which one is on screen. Sent whenever a
+    /// project opens, closes, or its sessions or pending requests change.
+    Workspace {
+        active: forge_session::ProjectId,
+        projects: Vec<ProjectView>,
+    },
+    /// Requests arrived that weren't pending before. `sound` is false when
+    /// all of them are in the session on screen and the window is focused.
+    AttentionNew {
+        count: usize,
+        sound: bool,
+    },
+    /// Another project is now on screen. Its roster, selection and selected
+    /// session follow as ordinary events.
+    ProjectSwitched {
+        project_id: forge_session::ProjectId,
+        supports_git: bool,
+    },
+}
+
+/// One project in the switcher.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectView {
+    pub id: forge_session::ProjectId,
+    pub name: String,
+    pub root: String,
+    pub open: bool,
+    pub running: usize,
+    pub limit: usize,
+    /// Requests waiting on you, oldest first.
+    pub attention: Vec<AttentionView>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AttentionView {
+    pub session_id: SessionId,
+    pub session_label: String,
+    /// `approval`, `question` or `child_approval`.
+    pub kind: &'static str,
+    pub call_id: String,
+    pub since: String,
+}
+
+pub fn project_views(workspace: &forge_session::WorkspaceState) -> Vec<ProjectView> {
+    workspace
+        .projects
+        .iter()
+        .map(|summary| ProjectView {
+            id: summary.project.id,
+            name: summary.project.name.clone(),
+            root: summary.project.root.display().to_string(),
+            open: summary.open,
+            running: summary.state.running,
+            limit: summary.state.limit,
+            attention: summary
+                .state
+                .attention
+                .iter()
+                .map(|item| AttentionView {
+                    session_id: item.session_id,
+                    session_label: summary
+                        .state
+                        .sessions
+                        .iter()
+                        .find(|session| session.session_id == item.session_id)
+                        .map(|session| session.label.clone())
+                        .unwrap_or_default(),
+                    kind: match item.kind {
+                        forge_session::AttentionKind::Approval => "approval",
+                        forge_session::AttentionKind::Question => "question",
+                        forge_session::AttentionKind::ChildApproval => "child_approval",
+                    },
+                    call_id: item.call_id.clone(),
+                    since: item.since.to_rfc3339(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -796,17 +877,12 @@ pub fn translate(event: SupervisorEvent) -> Option<DesktopEvent> {
 
 /// Process-wide state the commands share.
 pub struct DesktopState {
-    pub handle: SupervisorHandle,
-    /// Read for the live session state; taken (write) only at exit to shut
-    /// the supervisor down.
-    pub supervisor:
-        std::sync::Arc<tokio::sync::RwLock<Option<forge_session::RepositorySupervisor>>>,
-    pub session_id: SessionId,
-    /// The session as it was when the window opened, so the page can show
-    /// the transcript before the first update arrives.
-    pub initial: DesktopEvent,
-    /// Live sessions as they were when the window opened.
-    pub sessions: Vec<SessionRow>,
+    pub projects: forge_session::ProjectServiceHandle,
+    /// The project on screen. Commands that act on the current selection
+    /// (approve, answer, stop, model) and project-level commands (create,
+    /// attach) use it; commands that name a session use that session's
+    /// project instead, so a switch can never misroute them.
+    active: tokio::sync::watch::Sender<forge_session::OpenProjectRef>,
     /// The session's interactive shells (one per session, opened on demand).
     pub shells: crate::shell::Shells,
     /// The page has unsaved editor buffers or live turns; a close asks first.
@@ -821,20 +897,12 @@ pub struct DesktopState {
 
 impl DesktopState {
     pub fn new(
-        handle: SupervisorHandle,
-        supervisor: std::sync::Arc<
-            tokio::sync::RwLock<Option<forge_session::RepositorySupervisor>>,
-        >,
-        session_id: SessionId,
-        initial: &SessionRuntimeSnapshot,
-        sessions: Vec<SessionRow>,
+        projects: forge_session::ProjectServiceHandle,
+        active: forge_session::OpenProjectRef,
     ) -> Self {
         Self {
-            handle,
-            supervisor,
-            session_id,
-            initial: session_event(initial),
-            sessions,
+            projects,
+            active: tokio::sync::watch::channel(active).0,
             shells: crate::shell::Shells::default(),
             unsaved: std::sync::atomic::AtomicBool::new(false),
             busy: std::sync::atomic::AtomicBool::new(false),
@@ -843,41 +911,114 @@ impl DesktopState {
             self_test: None,
         }
     }
+
+    /// The project on screen.
+    pub fn active(&self) -> forge_session::OpenProjectRef {
+        self.active.borrow().clone()
+    }
+
+    /// The open project that owns `session_id`. Falls back to the project on
+    /// screen for a session no project lists yet (just created) or no longer
+    /// lists live (archived, being resumed).
+    pub async fn project_for(&self, session_id: SessionId) -> forge_session::OpenProjectRef {
+        let active = self.active();
+        if owns(&active, session_id) {
+            return active;
+        }
+        if let Ok(open) = self.projects.open_projects().await {
+            if let Some(project) = open.into_iter().find(|project| owns(project, session_id)) {
+                return project;
+            }
+        }
+        active
+    }
+
+    /// Put another open project on screen.
+    pub fn switch_to(&self, project: forge_session::OpenProjectRef) {
+        self.active.send_replace(project);
+    }
+
+    /// Provider credentials and definitions are user-level: every open
+    /// project picks the change up.
+    async fn reload_providers(&self) -> Result<(), String> {
+        let open = self
+            .projects
+            .open_projects()
+            .await
+            .map_err(|error| error.to_string())?;
+        for project in open {
+            project
+                .handle
+                .command(SupervisorCommand::ReloadProviders)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+fn owns(project: &forge_session::OpenProjectRef, session_id: SessionId) -> bool {
+    project
+        .handle
+        .project_state()
+        .borrow()
+        .sessions
+        .iter()
+        .any(|session| session.session_id == session_id)
+}
+
+/// What the trust screen is waiting for the operator to accept.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pending {
+    /// A registered project that isn't trusted.
+    Trust(forge_session::ProjectId),
+    /// A plain folder no project contains: accepting registers it, trusts
+    /// it, and opens it.
+    Confirm(std::path::PathBuf),
 }
 
 /// Whether the window should show the trust screen. Present in every build:
 /// the page asks before it subscribes.
 pub struct TrustState {
+    projects: forge_session::ProjectServiceHandle,
     /// `None` until the operator picks a folder: a launch with no path from
     /// `/` or the home folder never opens either implicitly.
     workspace: std::sync::Mutex<Option<std::path::PathBuf>>,
-    /// `Some` until the operator trusts the workspace and a session starts.
-    deferred: std::sync::Mutex<Option<forge_config::Config>>,
-    /// Why starting after trust failed, so a retry can say what happened.
+    /// `Some` until the operator accepts and the project opens.
+    pending: std::sync::Mutex<Option<Pending>>,
+    /// Why opening after trust failed, so a retry can say what happened.
     error: std::sync::Mutex<String>,
 }
 
 impl TrustState {
-    pub fn ready(workspace: std::path::PathBuf) -> Self {
+    pub fn ready(
+        projects: forge_session::ProjectServiceHandle,
+        workspace: std::path::PathBuf,
+    ) -> Self {
         Self {
+            projects,
             workspace: std::sync::Mutex::new(Some(workspace)),
-            deferred: std::sync::Mutex::new(None),
+            pending: std::sync::Mutex::new(None),
             error: std::sync::Mutex::new(String::new()),
         }
     }
 
-    pub fn pending(workspace: std::path::PathBuf, deferred: forge_config::Config) -> Self {
-        Self {
-            deferred: std::sync::Mutex::new(Some(deferred)),
-            ..Self::ready(workspace)
-        }
+    pub fn pending(
+        projects: forge_session::ProjectServiceHandle,
+        workspace: std::path::PathBuf,
+        pending: Pending,
+    ) -> Self {
+        let state = Self::ready(projects, workspace);
+        state.restore(pending);
+        state
     }
 
     /// Nothing open yet: the page shows a folder picker.
-    pub fn needs_folder() -> Self {
+    pub fn needs_folder(projects: forge_session::ProjectServiceHandle) -> Self {
         Self {
+            projects,
             workspace: std::sync::Mutex::new(None),
-            deferred: std::sync::Mutex::new(None),
+            pending: std::sync::Mutex::new(None),
             error: std::sync::Mutex::new(String::new()),
         }
     }
@@ -892,10 +1033,14 @@ impl TrustState {
         }
     }
 
-    fn restore(&self, deferred: forge_config::Config) {
-        if let Ok(mut slot) = self.deferred.lock() {
-            *slot = Some(deferred);
+    fn restore(&self, pending: Pending) {
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(pending);
         }
+    }
+
+    fn take_pending(&self) -> Option<Pending> {
+        self.pending.lock().ok().and_then(|mut slot| slot.take())
     }
 
     fn fail(&self, message: String) -> String {
@@ -912,6 +1057,8 @@ pub struct TrustView {
     /// No folder is open yet; the page shows the folder picker.
     pub needs_folder: bool,
     pub needs_trust: bool,
+    /// The folder isn't a project yet; accepting adds it.
+    pub needs_confirmation: bool,
     /// The folder awaiting trust isn't a Git repository, so the trust screen
     /// warns that agent edits can't be rolled back.
     pub no_git: bool,
@@ -927,13 +1074,9 @@ pub fn trust_status(state: State<'_, TrustState>) -> TrustView {
 
 pub fn trust_view(state: &TrustState) -> TrustView {
     let workspace = state.workspace();
-    let needs_trust = state
-        .deferred
-        .lock()
-        .map(|slot| slot.is_some())
-        .unwrap_or(false);
+    let pending = state.pending.lock().ok().and_then(|slot| slot.clone());
     // Only asked while the trust screen shows: detection runs `git`.
-    let no_git = needs_trust
+    let no_git = pending.is_some()
         && workspace.as_deref().is_some_and(|workspace| {
             forge_session::ProjectTopology::detect(workspace)
                 .is_ok_and(|topology| !topology.supports_git())
@@ -943,7 +1086,8 @@ pub fn trust_view(state: &TrustState) -> TrustView {
         workspace: workspace
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
-        needs_trust,
+        needs_trust: pending.is_some(),
+        needs_confirmation: matches!(pending, Some(Pending::Confirm(_))),
         no_git,
         error: state
             .error
@@ -953,40 +1097,42 @@ pub fn trust_view(state: &TrustState) -> TrustView {
     }
 }
 
-/// Record trust for the workspace, then open the session that was held back.
+/// Accept what the trust screen asked: register the folder if it is new,
+/// record trust, then open it in this window.
 ///
 /// Trust is written to the same store `forge` reads, so the terminal and the
-/// desktop agree from here on. The plan is re-prepared afterwards: `launch`
-/// re-reads trust from disk, and this is the check that would catch a store
-/// that refused the write.
+/// desktop agree from here on. Opening re-reads trust from disk, which is the
+/// check that would catch a store that refused the write.
 #[tauri::command]
 pub async fn trust_workspace(
     app: tauri::AppHandle,
     state: State<'_, TrustState>,
 ) -> Result<(), String> {
-    let Some(workspace) = state.workspace() else {
-        return Err("choose a folder first".into());
-    };
-    let Some(deferred) = state.deferred.lock().ok().and_then(|mut slot| slot.take()) else {
+    let Some(pending) = state.take_pending() else {
         return Err("this workspace is already trusted".into());
     };
-    if let Err(error) = forge_config::grant_trust(&workspace) {
-        state.restore(deferred);
-        return Err(state.fail(format!("cannot record trust: {error}")));
+    let result = async {
+        let id = match &pending {
+            Pending::Trust(id) => *id,
+            Pending::Confirm(root) => state.projects.add(root.clone()).await?.id,
+        };
+        state.projects.trust(id).await?;
+        open_in_window(&app, &state.projects, id).await
     }
-    let plan = match forge_session::LaunchPlan::prepare(&deferred).await {
-        Ok(plan) => plan,
-        Err(error) => {
-            state.restore(deferred);
-            return Err(state.fail(error.to_string()));
-        }
-    };
-    start_session(&app, &state, deferred, plan).await
+    .await;
+    if let Err(error) = result {
+        state.restore(pending);
+        return Err(state.fail(error.to_string()));
+    }
+    if let Ok(mut error) = state.error.lock() {
+        error.clear();
+    }
+    Ok(())
 }
 
-/// Ask for the folder to open, for a launch that had none. A folder that
-/// still needs trust goes to the trust screen; a trusted one opens now.
-/// Cancelling the picker leaves the picker showing.
+/// Ask for the folder to open, for a launch that had none. Picking a folder
+/// is the confirmation that it is a project; one that still needs trust goes
+/// to the trust screen, a trusted one opens now. Cancelling keeps the picker.
 #[tauri::command]
 pub async fn choose_folder(
     app: tauri::AppHandle,
@@ -996,93 +1142,119 @@ pub async fn choose_folder(
     if state.workspace().is_some() || app.try_state::<DesktopState>().is_some() {
         return Err("a folder is already open".into());
     }
-    // macOS requires the panel to be created on the main thread; the
-    // returned future is then awaited here.
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let _ = sender.send(
-            rfd::AsyncFileDialog::new()
-                .set_title("Open a folder in Forge")
-                .pick_folder(),
-        );
-    })
-    .map_err(|error| state.fail(error.to_string()))?;
-    let pick = receiver
+    let Some(folder) = pick_folder(&app, "Open a folder in Forge")
         .await
-        .map_err(|_| state.fail("the folder picker did not open".into()))?;
-    let Some(picked) = pick.await else {
+        .map_err(|error| state.fail(error))?
+    else {
         return Ok(trust_view(&state));
     };
-    let folder = picked.path().to_path_buf();
-    let cfg =
-        crate::startup::load_config(&folder).map_err(|error| state.fail(format!("{error:#}")))?;
-    let plan = forge_session::LaunchPlan::prepare(&cfg)
-        .await
-        .map_err(|error| state.fail(error.to_string()))?;
-    state.set_workspace(plan.workspace().to_path_buf());
-    if plan.needs_trust() {
-        state.restore(cfg);
-        return Ok(trust_view(&state));
+    let project = match state.projects.resolve_launch(folder).await {
+        Ok(forge_session::LaunchResolution::Project(project)) => project,
+        Ok(forge_session::LaunchResolution::NeedsConfirmation { root }) => state
+            .projects
+            .add(root)
+            .await
+            .map_err(|e| state.fail(e.to_string()))?,
+        Err(error) => return Err(state.fail(error.to_string())),
+    };
+    state.set_workspace(project.root.clone());
+    match open_in_window(&app, &state.projects, project.id).await {
+        Ok(()) => {}
+        Err(forge_session::ProjectError::NeedsTrust(_)) => {
+            state.restore(Pending::Trust(project.id))
+        }
+        Err(error) => return Err(state.fail(error.to_string())),
     }
-    start_session(&app, &state, cfg, plan).await?;
     Ok(trust_view(&state))
 }
 
-/// Open the session for `deferred` and hand it to the window. On failure the
-/// config goes back into the trust state so the operator can retry.
-async fn start_session(
+/// A native folder picker, created on the main thread as macOS requires.
+/// `None` when the operator cancels.
+pub(crate) async fn pick_folder(
     app: &tauri::AppHandle,
-    state: &TrustState,
-    deferred: forge_config::Config,
-    plan: forge_session::LaunchPlan,
-) -> Result<(), String> {
+    title: &'static str,
+) -> Result<Option<std::path::PathBuf>, String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _ = sender.send(rfd::AsyncFileDialog::new().set_title(title).pick_folder());
+    })
+    .map_err(|error| error.to_string())?;
+    let pick = receiver
+        .await
+        .map_err(|_| "the folder picker did not open".to_string())?;
+    Ok(pick.await.map(|picked| picked.path().to_path_buf()))
+}
+
+/// Open a project and make it the window's first project.
+async fn open_in_window(
+    app: &tauri::AppHandle,
+    projects: &forge_session::ProjectServiceHandle,
+    id: forge_session::ProjectId,
+) -> Result<(), forge_session::ProjectError> {
     use tauri::Manager;
-    let started = match crate::startup::open(deferred.clone(), plan, None).await {
-        Ok(started) => started,
-        Err(error) => {
-            state.restore(deferred);
-            return Err(state.fail(format!("{error:#}")));
-        }
-    };
-    let supervisor = std::sync::Arc::new(tokio::sync::RwLock::new(Some(started.supervisor)));
-    app.manage(DesktopState::new(
-        started.handle,
-        supervisor,
-        started.session_id,
-        &started.initial,
-        started.sessions,
-    ));
-    if let Ok(mut error) = state.error.lock() {
-        error.clear();
-    }
+    projects.open(id).await?;
+    let project = projects.project(id).await?;
+    app.manage(DesktopState::new(projects.clone(), project));
     Ok(())
 }
 
 /// What `subscribe` returns before events start flowing.
 #[derive(Debug, Serialize)]
 pub struct Hello {
+    pub project_id: forge_session::ProjectId,
     pub session_id: SessionId,
     pub initial: DesktopEvent,
     pub sessions: Vec<SessionRow>,
     /// Whether the project is a Git repository. When it isn't, worktree,
     /// branch, issue and pull-request controls are shown disabled.
     pub supports_git: bool,
+    pub projects: Vec<ProjectView>,
     /// Self-test builds only: the probe's parameters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub self_test: Option<serde_json::Value>,
 }
 
-/// Stream supervisor events into `channel` until the window goes away.
+/// The selected (or first) session of a project, for a first paint.
+async fn project_view_parts(
+    project: &forge_session::OpenProjectRef,
+) -> Result<(SessionId, DesktopEvent, Vec<SessionRow>), String> {
+    let guard = project.supervisor.read().await;
+    let supervisor = guard.as_ref().ok_or("the project has closed")?;
+    let snapshots = supervisor.snapshots().await;
+    let selected = supervisor.selected_session_id().await.ok().flatten();
+    let snapshot = match selected.and_then(|id| snapshots.iter().find(|s| s.task.session_id == id))
+    {
+        Some(snapshot) => snapshot,
+        None => snapshots.first().ok_or("the project has no sessions")?,
+    };
+    Ok((
+        snapshot.task.session_id,
+        session_event(snapshot),
+        session_rows(&snapshots),
+    ))
+}
+
+/// Stream the project on screen into `channel` until the window goes away,
+/// and every project's summary and new requests alongside.
 #[tauri::command]
-pub fn subscribe(
+pub async fn subscribe(
     app: tauri::AppHandle,
     state: State<'_, DesktopState>,
     channel: Channel<DesktopEvent>,
-) -> Hello {
-    let mut events = state.handle.subscribe();
-    let supervisor = state.supervisor.clone();
+) -> Result<Hello, String> {
+    let project = state.active();
+    let (session_id, initial, sessions) = project_view_parts(&project).await?;
+    let workspace = state.projects.workspace();
+    let projects = project_views(&workspace.borrow());
+    tauri::async_runtime::spawn(forward_workspace(
+        app.clone(),
+        channel.clone(),
+        workspace,
+        state.active.subscribe(),
+    ));
     #[cfg(feature = "self-test")]
     let probe = state.self_test.clone();
+    let active = state.active.subscribe();
     tauri::async_runtime::spawn(async move {
         // Force Tauri's large-message fetch path before the normal event
         // stream: blocking it stalls delivery of every subsequent frame.
@@ -1100,27 +1272,74 @@ pub fn subscribe(
         {
             return;
         }
+        forward_active_project(
+            channel,
+            active,
+            #[cfg(feature = "self-test")]
+            probe,
+        )
+        .await;
+    });
+    #[cfg(feature = "self-test")]
+    let self_test = state.self_test.as_ref().map(|probe| probe.hello());
+    #[cfg(not(feature = "self-test"))]
+    let self_test = None;
+    Ok(Hello {
+        project_id: project.project.id,
+        session_id,
+        initial,
+        sessions,
+        supports_git: project.handle.supports_git(),
+        projects,
+        self_test,
+    })
+}
+
+/// Forward the on-screen project's events. On a switch, follow the new
+/// project and send its roster, selection and selected session.
+async fn forward_active_project(
+    channel: Channel<DesktopEvent>,
+    mut active: tokio::sync::watch::Receiver<forge_session::OpenProjectRef>,
+    #[cfg(feature = "self-test")] probe: Option<std::sync::Arc<crate::self_test::Probe>>,
+) {
+    let mut switched = false;
+    loop {
+        let project = active.borrow_and_update().clone();
+        let mut events = project.handle.subscribe();
+        if switched {
+            let header = DesktopEvent::ProjectSwitched {
+                project_id: project.project.id,
+                supports_git: project.handle.supports_git(),
+            };
+            if channel.send(header).is_err() || !resend_view(&channel, &project).await {
+                return;
+            }
+        }
+        switched = true;
         loop {
-            let event = match events.recv().await {
+            let event = tokio::select! {
+                changed = active.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                    break;
+                }
+                event = events.recv() => event,
+            };
+            let event = match event {
                 Ok(event) => translate(event),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     Some(DesktopEvent::Lagged { missed })
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                // The project closed under us; wait for the next switch.
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    if active.changed().await.is_err() {
+                        return;
+                    }
+                    break;
+                }
             };
             let Some(event) = event else { continue };
-            // A background session needs the user: ask the OS for attention
-            // when the window is not already in front of them. This uses the
-            // core window API, so no notification plugin is added.
-            if matches!(event, DesktopEvent::Attention { .. }) {
-                use tauri::Manager;
-                if let Some(window) = app.get_webview_window("main") {
-                    if !window.is_focused().unwrap_or(true) {
-                        let _ = window
-                            .request_user_attention(Some(tauri::UserAttentionType::Informational));
-                    }
-                }
-            }
             #[cfg(feature = "self-test")]
             if let Some(probe) = &probe {
                 probe.delivering(&event);
@@ -1135,61 +1354,291 @@ pub fn subscribe(
             let lagged = matches!(&event, DesktopEvent::Lagged { .. });
             if channel.send(event).is_err() {
                 // The webview is gone.
-                break;
+                return;
             }
-            if lagged {
-                let guard = supervisor.read().await;
-                if let Some(supervisor) = guard.as_ref() {
-                    let snapshots = supervisor.snapshots().await;
-                    let roster = DesktopEvent::Roster {
-                        sessions: session_rows(&snapshots),
-                    };
-                    if channel.send(roster).is_err() {
-                        break;
-                    }
-                    if let Ok(Some(session_id)) = supervisor.selected_session_id().await {
-                        if channel
-                            .send(DesktopEvent::Selected {
-                                session_id: Some(session_id),
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                        if let Some(snapshot) = supervisor.snapshot(session_id).await {
-                            if channel.send(session_event(&snapshot)).is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
+            if lagged && !resend_view(&channel, &project).await {
+                return;
             }
             // Selecting emits only the id, but the page needs that session's
             // transcript. Send it right after the selection.
             if let Some(session_id) = selected {
-                if let Some(snapshot) = selected_snapshot(&supervisor, session_id).await {
+                if let Some(snapshot) = selected_snapshot(&project.supervisor, session_id).await {
                     #[cfg(feature = "self-test")]
                     if let Some(probe) = &probe {
                         probe.delivering(&snapshot);
                     }
                     if channel.send(snapshot).is_err() {
-                        break;
+                        return;
                     }
                 }
             }
         }
-    });
-    #[cfg(feature = "self-test")]
-    let self_test = state.self_test.as_ref().map(|probe| probe.hello());
-    #[cfg(not(feature = "self-test"))]
-    let self_test = None;
-    Hello {
-        session_id: state.session_id,
-        initial: state.initial.clone(),
-        sessions: state.sessions.clone(),
-        supports_git: state.handle.supports_git(),
-        self_test,
     }
+}
+
+/// Send a project's roster, selection and selected session. `false` once
+/// the webview is gone.
+async fn resend_view(
+    channel: &Channel<DesktopEvent>,
+    project: &forge_session::OpenProjectRef,
+) -> bool {
+    let guard = project.supervisor.read().await;
+    let Some(supervisor) = guard.as_ref() else {
+        return true;
+    };
+    let snapshots = supervisor.snapshots().await;
+    if channel
+        .send(DesktopEvent::Roster {
+            sessions: session_rows(&snapshots),
+        })
+        .is_err()
+    {
+        return false;
+    }
+    if let Ok(Some(session_id)) = supervisor.selected_session_id().await {
+        if channel
+            .send(DesktopEvent::Selected {
+                session_id: Some(session_id),
+            })
+            .is_err()
+        {
+            return false;
+        }
+        if let Some(snapshot) = supervisor.snapshot(session_id).await {
+            if channel.send(session_event(&snapshot)).is_err() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Forward every project's summary, keep the badge equal to the number of
+/// pending requests, and announce new ones once (D10, D11).
+async fn forward_workspace(
+    app: tauri::AppHandle,
+    channel: Channel<DesktopEvent>,
+    mut workspace: tokio::sync::watch::Receiver<forge_session::WorkspaceState>,
+    active: tokio::sync::watch::Receiver<forge_session::OpenProjectRef>,
+) {
+    use tauri::Manager;
+    // Requests already pending when the window opens are counted but never
+    // announced.
+    let mut previous = workspace.borrow().clone();
+    loop {
+        let current = workspace.borrow_and_update().clone();
+        let fresh = forge_session::new_attention(&previous, &current);
+        let window = app.get_webview_window("main");
+        let pending: usize = current
+            .projects
+            .iter()
+            .map(|summary| summary.state.attention.len())
+            .sum();
+        if let Some(window) = &window {
+            let _ = window.set_badge_count((pending > 0).then_some(pending as i64));
+        }
+        let project = active.borrow().clone();
+        if !fresh.is_empty() {
+            let focused = window
+                .as_ref()
+                .and_then(|window| window.is_focused().ok())
+                .unwrap_or(false);
+            let on_screen = match project.supervisor.read().await.as_ref() {
+                Some(supervisor) => supervisor.selected_session_id().await.ok().flatten(),
+                None => None,
+            };
+            let sound = fresh.iter().any(|(project_id, item)| {
+                !(focused
+                    && *project_id == project.project.id
+                    && Some(item.session_id) == on_screen)
+            });
+            if !focused {
+                if let Some(window) = &window {
+                    let _ = window
+                        .request_user_attention(Some(tauri::UserAttentionType::Informational));
+                }
+            }
+            let event = DesktopEvent::AttentionNew {
+                count: fresh.len(),
+                sound,
+            };
+            if channel.send(event).is_err() {
+                return;
+            }
+        }
+        let event = DesktopEvent::Workspace {
+            active: project.project.id,
+            projects: project_views(&current),
+        };
+        if channel.send(event).is_err() {
+            return;
+        }
+        previous = current;
+        if workspace.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Why a project command failed, in a shape the page can act on.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ProjectFailure {
+    /// `needs_trust`, `already_owned`, `busy`, `root_missing`, `open`,
+    /// `on_screen` or `error`.
+    pub kind: &'static str,
+    pub message: String,
+    /// For `busy`: the sessions that would lose work, for the close dialog.
+    pub sessions: Vec<BusySession>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BusySession {
+    pub session_id: SessionId,
+    pub label: String,
+    pub turn_state: &'static str,
+}
+
+impl ProjectFailure {
+    fn other(message: impl Into<String>) -> Self {
+        Self {
+            kind: "error",
+            message: message.into(),
+            sessions: Vec::new(),
+        }
+    }
+}
+
+impl From<forge_session::ProjectError> for ProjectFailure {
+    fn from(error: forge_session::ProjectError) -> Self {
+        use forge_session::ProjectError;
+        let kind = match &error {
+            ProjectError::NeedsTrust(_) => "needs_trust",
+            ProjectError::AlreadyOwned { .. } => "already_owned",
+            ProjectError::Busy { .. } => "busy",
+            ProjectError::RootMissing(_) => "root_missing",
+            ProjectError::Open => "open",
+            _ => "error",
+        };
+        let sessions = match &error {
+            ProjectError::Busy { sessions } => sessions
+                .iter()
+                .map(|(session_id, turn_state)| BusySession {
+                    session_id: *session_id,
+                    label: String::new(),
+                    turn_state: turn_state.label(),
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+            sessions,
+        }
+    }
+}
+
+/// Put a project on screen, opening it first if it is closed.
+#[tauri::command]
+pub async fn project_switch(
+    state: State<'_, DesktopState>,
+    project_id: forge_session::ProjectId,
+) -> Result<(), ProjectFailure> {
+    state.projects.open(project_id).await?;
+    let project = state.projects.project(project_id).await?;
+    state.switch_to(project);
+    Ok(())
+}
+
+/// Add a project from a folder the operator picks. Picking is the
+/// confirmation. `None` when they cancel.
+#[tauri::command]
+pub async fn project_add(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+) -> Result<Option<forge_session::ProjectId>, ProjectFailure> {
+    let Some(folder) = pick_folder(&app, "Add a project")
+        .await
+        .map_err(ProjectFailure::other)?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(state.projects.add(folder).await?.id))
+}
+
+#[tauri::command]
+pub async fn project_trust(
+    state: State<'_, DesktopState>,
+    project_id: forge_session::ProjectId,
+) -> Result<(), ProjectFailure> {
+    Ok(state.projects.trust(project_id).await?)
+}
+
+/// Close a project in the background. The project on screen can't be closed:
+/// switch away first. `busy` lists the sessions that would lose work unless
+/// `stop_running`.
+#[tauri::command]
+pub async fn project_close(
+    state: State<'_, DesktopState>,
+    project_id: forge_session::ProjectId,
+    stop_running: bool,
+) -> Result<(), ProjectFailure> {
+    if state.active().project.id == project_id {
+        return Err(ProjectFailure {
+            kind: "on_screen",
+            ..ProjectFailure::other("switch to another project before closing this one")
+        });
+    }
+    match state.projects.close(project_id, stop_running).await {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            let mut failure = ProjectFailure::from(error);
+            let workspace = state.projects.workspace().borrow().clone();
+            let sessions = workspace
+                .projects
+                .iter()
+                .filter(|summary| summary.project.id == project_id)
+                .flat_map(|summary| &summary.state.sessions);
+            for session in sessions {
+                if let Some(busy) = failure
+                    .sessions
+                    .iter_mut()
+                    .find(|busy| busy.session_id == session.session_id)
+                {
+                    busy.label = session.label.clone();
+                }
+            }
+            Err(failure)
+        }
+    }
+}
+
+/// Unregister a closed project. Its folder and saved sessions stay.
+#[tauri::command]
+pub async fn project_remove(
+    state: State<'_, DesktopState>,
+    project_id: forge_session::ProjectId,
+) -> Result<(), ProjectFailure> {
+    state.projects.remove(project_id).await?;
+    Ok(())
+}
+
+/// Point a project whose folder moved at its new location. `false` when the
+/// operator cancels the picker.
+#[tauri::command]
+pub async fn project_relocate(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    project_id: forge_session::ProjectId,
+) -> Result<bool, ProjectFailure> {
+    let Some(folder) = pick_folder(&app, "Locate the project folder")
+        .await
+        .map_err(ProjectFailure::other)?
+    else {
+        return Ok(false);
+    };
+    state.projects.relocate(project_id, folder).await?;
+    Ok(true)
 }
 
 /// The snapshot behind a selection, read from the supervisor's live actors.
@@ -1206,7 +1655,8 @@ async fn selected_snapshot(
 /// The session the operator currently has selected; the prompt, stop and
 /// approval commands target it.
 async fn selected_session(state: &DesktopState) -> Result<SessionId, String> {
-    let supervisor = state.supervisor.read().await;
+    let project = state.active();
+    let supervisor = project.supervisor.read().await;
     let Some(supervisor) = supervisor.as_ref() else {
         return Err("Forge is shutting down".into());
     };
@@ -1224,6 +1674,7 @@ pub async fn submit_prompt(
     text: String,
     attachment: Option<crate::workspace::PromptAttachment>,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     if text.trim().is_empty() {
         return Err("prompt is empty".into());
     }
@@ -1246,7 +1697,7 @@ pub async fn submit_prompt(
     if let Some(probe) = &state.self_test {
         probe.submitted();
     }
-    state
+    project
         .handle
         .submit(SupervisorCommand::SubmitPrompt { session_id, text })
         // Fire and forget: the outcome arrives on the event channel.
@@ -1269,11 +1720,12 @@ pub async fn submit_images(
     images: Vec<String>,
     attachment: Option<crate::workspace::PromptAttachment>,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     if selected_session(&state).await? != session_id {
         return Err("Session changed; paste the image again in the intended session".into());
     }
     let root = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         let snapshot = supervisor
             .as_ref()
             .ok_or("Forge is shutting down")?
@@ -1307,7 +1759,7 @@ pub async fn submit_images(
         tokio::task::spawn_blocking(move || crate::workspace::store_images(&root, &images))
             .await
             .map_err(|error| error.to_string())??;
-    state
+    project
         .handle
         .command(SupervisorCommand::SubmitPromptWithAttachments {
             session_id,
@@ -1330,11 +1782,12 @@ pub async fn create_session(
     label: String,
     github_issue_number: Option<u64>,
 ) -> Result<(), String> {
+    let project = state.active();
     let label = label.trim().to_string();
     if label.is_empty() {
         return Err("session name is empty".into());
     }
-    state
+    project
         .handle
         .command(SupervisorCommand::CreateSession {
             label,
@@ -1350,14 +1803,15 @@ pub async fn select_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<DesktopEvent, String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::SelectSession {
             session_id: Some(session_id),
         })
         .await
         .map_err(|error| error.to_string())?;
-    selected_snapshot(&state.supervisor, Some(session_id))
+    selected_snapshot(&project.supervisor, Some(session_id))
         .await
         .ok_or_else(|| "the selected session is gone".into())
 }
@@ -1369,7 +1823,8 @@ pub async fn archive_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<(), String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::ArchiveSession { session_id })
         .await
@@ -1385,8 +1840,9 @@ pub async fn attach_worktree(
     label: String,
     branch: String,
 ) -> Result<(), String> {
+    let project = state.active();
     let (workspace, label, branch) = attach_fields(&workspace, &label, &branch)?;
-    state
+    project
         .handle
         .command(SupervisorCommand::AttachWorktree {
             workspace,
@@ -1430,8 +1886,9 @@ pub async fn remove_worktree(
     session_id: SessionId,
     discard_dirty: bool,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     let record = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         let supervisor = supervisor.as_ref().ok_or("Forge is shutting down")?;
         supervisor
             .session_records()
@@ -1450,13 +1907,13 @@ pub async fn remove_worktree(
     // A retained row is a cleanup that already failed once; archiving it again
     // would be refused, so only a live session needs the archive step.
     if record.lifecycle == SessionLifecycle::Active {
-        state
+        project
             .handle
             .command(SupervisorCommand::ArchiveSession { session_id })
             .await
             .map_err(|error| error.to_string())?;
     }
-    state
+    project
         .handle
         .command(SupervisorCommand::RemoveManagedWorktree {
             session_id,
@@ -1467,7 +1924,7 @@ pub async fn remove_worktree(
     // A dirty worktree leaves the session retained instead of removed: say so
     // rather than reporting a cleanup that never happened.
     let lifecycle = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         let Some(supervisor) = supervisor.as_ref() else {
             return Err("Forge is shutting down".into());
         };
@@ -1493,9 +1950,10 @@ async fn resolve(
     call_id: String,
     decision: HitlDecision,
 ) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(state).await?;
     let pending = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         let Some(supervisor) = supervisor.as_ref() else {
             return Err("Forge is shutting down".into());
         };
@@ -1505,7 +1963,7 @@ async fn resolve(
             .and_then(|snapshot| snapshot.session.pending_hitl)
     };
     check_decision(pending.as_ref(), &call_id, &decision).map_err(|refusal| refusal.to_string())?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::ResolveApproval {
             session_id,
@@ -1539,7 +1997,8 @@ async fn pending_hitl(
     session_id: SessionId,
     call_id: &str,
 ) -> Result<HitlPayload, String> {
-    let supervisor = state.supervisor.read().await;
+    let project = state.project_for(session_id).await;
+    let supervisor = project.supervisor.read().await;
     let supervisor = supervisor
         .as_ref()
         .ok_or_else(|| "Forge is shutting down".to_string())?;
@@ -1568,6 +2027,7 @@ pub async fn decide_approval(
     note: Option<String>,
     confirmed: bool,
 ) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
     let payload = pending_hitl(&state, session_id, &call_id).await?;
     let chosen = approval_options(&payload)
@@ -1596,7 +2056,7 @@ pub async fn decide_approval(
         "approve_all" => GrantDecision::ApproveAll,
         other => return Err(format!("unknown decision `{other}`")),
     };
-    state
+    project
         .handle
         .submit(SupervisorCommand::DecideApproval {
             session_id,
@@ -1612,8 +2072,9 @@ pub async fn decide_approval(
 /// never persisted; the sandbox still prompts for an unconfined retry.
 #[tauri::command]
 pub async fn set_approve_all(state: State<'_, DesktopState>, on: bool) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::SetApproveAll { session_id, on })
         .map(drop)
@@ -1623,8 +2084,9 @@ pub async fn set_approve_all(state: State<'_, DesktopState>, on: bool) -> Result
 /// Forget every remembered pattern for the selected session.
 #[tauri::command]
 pub async fn clear_approvals(state: State<'_, DesktopState>) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::ClearSessionApprovals { session_id })
         .map(drop)
@@ -1706,9 +2168,10 @@ pub async fn answer_question(
     answers: Vec<AnswerInput>,
     skip: bool,
 ) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
     let pending = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         let supervisor = supervisor
             .as_ref()
             .ok_or_else(|| "Forge is shutting down".to_string())?;
@@ -1727,7 +2190,7 @@ pub async fn answer_question(
             answers: build_answers(&pending, &answers)?,
         })
     };
-    state
+    project
         .handle
         .submit(SupervisorCommand::ResolveQuestion {
             session_id,
@@ -1744,15 +2207,17 @@ pub async fn answer_question(
 pub async fn current_session(
     state: State<'_, DesktopState>,
 ) -> Result<Option<DesktopEvent>, String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    Ok(selected_snapshot(&state.supervisor, Some(session_id)).await)
+    Ok(selected_snapshot(&project.supervisor, Some(session_id)).await)
 }
 
 /// Resume the selected session's stopped or interrupted turn.
 #[tauri::command]
 pub async fn continue_turn(state: State<'_, DesktopState>) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::ContinueTurn { session_id })
         .map(drop)
@@ -1765,12 +2230,13 @@ pub async fn stop_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<DesktopEvent, String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::StopTurn { session_id })
         .await
         .map_err(|error| error.to_string())?;
-    selected_snapshot(&state.supervisor, Some(session_id))
+    selected_snapshot(&project.supervisor, Some(session_id))
         .await
         .ok_or_else(|| "the stopped session is gone".into())
 }
@@ -1781,10 +2247,11 @@ pub async fn close_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     // The window always needs a selected session to resume from; closing the
     // last one would strand the durable row with no conversation to replace.
     let active = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         supervisor
             .as_ref()
             .ok_or("Forge is shutting down")?
@@ -1799,7 +2266,7 @@ pub async fn close_session(
             "This is the last open session; start or resume another before closing it".into(),
         );
     }
-    state
+    project
         .handle
         .command(SupervisorCommand::CloseSession { session_id })
         .await
@@ -1812,7 +2279,8 @@ pub async fn close_session(
 pub async fn list_resumable_sessions(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<SessionRow>, String> {
-    let supervisor = state.supervisor.read().await;
+    let project = state.active();
+    let supervisor = project.supervisor.read().await;
     let Some(supervisor) = supervisor.as_ref() else {
         return Err("Forge is shutting down".into());
     };
@@ -1866,8 +2334,9 @@ fn same_workspace(left: &std::path::Path, right: &std::path::Path) -> bool {
 /// Fork the selected session into a new branch of the same worktree.
 #[tauri::command]
 pub async fn fork_session(state: State<'_, DesktopState>) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    state
+    project
         .handle
         .command(SupervisorCommand::ForkSession { session_id })
         .await
@@ -1880,8 +2349,9 @@ pub async fn resume_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     let current = selected_session(&state).await?;
-    state
+    project
         .handle
         .command(SupervisorCommand::ResumeSession {
             current_session_id: current,
@@ -1897,11 +2367,12 @@ pub async fn rename_session(
     session_id: SessionId,
     label: String,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     let label = label.trim().to_string();
     if label.is_empty() {
         return Err("session name is empty".into());
     }
-    state
+    project
         .handle
         .command(SupervisorCommand::RenameSession { session_id, label })
         .await
@@ -1915,7 +2386,8 @@ pub async fn pin_session(
     session_id: SessionId,
     slot: Option<u8>,
 ) -> Result<(), String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::PinSession {
             session_id,
@@ -1935,7 +2407,8 @@ pub async fn cancel_queued(
     source: QueueSource,
     position: usize,
 ) -> Result<(), String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .submit(SupervisorCommand::CancelQueuedPrompt {
             session_id,
@@ -1954,8 +2427,9 @@ pub async fn cancel_queued(
 /// Compact the selected session's context now.
 #[tauri::command]
 pub async fn compact_context(state: State<'_, DesktopState>) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::CompactContext { session_id })
         .map(drop)
@@ -1965,8 +2439,9 @@ pub async fn compact_context(state: State<'_, DesktopState>) -> Result<(), Strin
 /// Turn extended thinking on or off for the selected session.
 #[tauri::command]
 pub async fn set_thinking(state: State<'_, DesktopState>, enabled: bool) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::SetThinking {
             session_id,
@@ -1985,11 +2460,12 @@ pub async fn cancel_background(
     task_id: u64,
     run_id: String,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     let run_id: forge_core::BackgroundRunId = run_id
         .trim()
         .parse()
         .map_err(|_| "that background run is no longer valid".to_string())?;
-    state
+    project
         .handle
         .submit(SupervisorCommand::CancelBackgroundRun {
             session_id,
@@ -2011,8 +2487,9 @@ pub async fn resolve_child_approval(
     request_id: String,
     confirmed: bool,
 ) -> Result<(), String> {
+    let project = state.project_for(session_id).await;
     let request = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         supervisor
             .as_ref()
             .ok_or("Forge is shutting down")?
@@ -2034,7 +2511,7 @@ pub async fn resolve_child_approval(
     if approve && requires_native_confirm(&request.payload) && !confirmed {
         return Err("Confirm this child command's sandbox escalation or host grant first".into());
     }
-    state
+    project
         .handle
         .submit(SupervisorCommand::ResolveBackgroundRequest {
             session_id,
@@ -2058,8 +2535,9 @@ pub async fn child_transcript(
     task_id: u64,
     child_session_id: SessionId,
 ) -> Result<Vec<MessageView>, String> {
+    let project = state.project_for(session_id).await;
     let journal = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         let supervisor = supervisor.as_ref().ok_or("Forge is shutting down")?;
         let child = supervisor
             .snapshot(session_id)
@@ -2096,7 +2574,8 @@ pub async fn message_detail(
     session_id: SessionId,
     index: usize,
 ) -> Result<MessageView, String> {
-    let supervisor = state.supervisor.read().await;
+    let project = state.project_for(session_id).await;
+    let supervisor = project.supervisor.read().await;
     let snapshot = supervisor
         .as_ref()
         .ok_or("Forge is shutting down")?
@@ -2117,7 +2596,8 @@ async fn workspace_of(
     state: &DesktopState,
     session_id: SessionId,
 ) -> Result<std::path::PathBuf, String> {
-    let supervisor = state.supervisor.read().await;
+    let project = state.project_for(session_id).await;
+    let supervisor = project.supervisor.read().await;
     let Some(supervisor) = supervisor.as_ref() else {
         return Err("Forge is shutting down".into());
     };
@@ -2220,7 +2700,8 @@ async fn last_turn_cards(
     state: &DesktopState,
     session_id: SessionId,
 ) -> Result<Vec<(String, Vec<String>)>, String> {
-    let supervisor = state.supervisor.read().await;
+    let project = state.project_for(session_id).await;
+    let supervisor = project.supervisor.read().await;
     let snapshot = supervisor
         .as_ref()
         .ok_or("Forge is shutting down")?
@@ -2507,9 +2988,10 @@ pub async fn list_models() -> Result<Vec<ModelOption>, String> {
 /// Provider setup never sends a secret through the webview.
 #[tauri::command]
 pub async fn session_details(state: State<'_, DesktopState>) -> Result<serde_json::Value, String> {
+    let project = state.active();
     let id = selected_session(&state).await?;
     let details = {
-        let supervisor = state.supervisor.read().await;
+        let supervisor = project.supervisor.read().await;
         supervisor
             .as_ref()
             .ok_or("Forge is shutting down")?
@@ -2573,11 +3055,7 @@ pub async fn connect_provider(
     })
     .await
     .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())?;
+    state.reload_providers().await?;
     Ok(message)
 }
 
@@ -2589,11 +3067,7 @@ pub async fn disconnect_provider(
     let message = tokio::task::spawn_blocking(move || crate::providers::disconnect(&profile_id))
         .await
         .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())?;
+    state.reload_providers().await?;
     Ok(message)
 }
 
@@ -2606,11 +3080,7 @@ pub async fn import_provider_login(
     let message = tokio::task::spawn_blocking(move || crate::providers::import_login(&profile_id))
         .await
         .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())?;
+    state.reload_providers().await?;
     Ok(message)
 }
 
@@ -2621,7 +3091,8 @@ pub async fn github_create_pr(
     session_id: SessionId,
     issue_number: u64,
 ) -> Result<(), String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::CreateIssuePullRequest {
             session_id,
@@ -2638,7 +3109,8 @@ pub async fn github_refresh_pr(
     session_id: SessionId,
     issue_number: u64,
 ) -> Result<(), String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::RefreshIssuePullRequest {
             session_id,
@@ -2655,7 +3127,8 @@ pub async fn github_apply_feedback(
     session_id: SessionId,
     issue_number: u64,
 ) -> Result<(), String> {
-    state
+    let project = state.project_for(session_id).await;
+    project
         .handle
         .command(SupervisorCommand::ApplyIssuePullRequestFeedback {
             session_id,
@@ -2678,11 +3151,7 @@ pub async fn save_custom_provider(
     })
     .await
     .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())?;
+    state.reload_providers().await?;
     Ok(message)
 }
 
@@ -2698,11 +3167,7 @@ pub async fn update_custom_provider(
     })
     .await
     .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())?;
+    state.reload_providers().await?;
     Ok(message)
 }
 
@@ -2714,11 +3179,7 @@ pub async fn remove_custom_provider(
     let message = tokio::task::spawn_blocking(move || crate::providers::remove_custom(&id))
         .await
         .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())?;
+    state.reload_providers().await?;
     Ok(message)
 }
 
@@ -2731,11 +3192,7 @@ pub async fn add_model(
     tokio::task::spawn_blocking(move || forge_connect::save_manual_model(&profile_id, &model))
         .await
         .map_err(|error| error.to_string())??;
-    state
-        .handle
-        .command(SupervisorCommand::ReloadProviders)
-        .await
-        .map_err(|error| error.to_string())
+    state.reload_providers().await
 }
 
 /// Switch the selected session's model (and reasoning effort).
@@ -2746,13 +3203,14 @@ pub async fn set_model(
     profile_id: String,
     effort: Option<String>,
 ) -> Result<(), String> {
+    let project = state.active();
     let session_id = selected_session(&state).await?;
     let cache = forge_connect::ModelCatalogCache::user_default();
     let image_input_supported = cache.model_accepts_image_input(&model_id);
     let output = cache
         .model_limits(&model_id)
         .and_then(|limits| (limits.output > 0).then_some(limits.output));
-    state
+    project
         .handle
         .command(SupervisorCommand::SetModel {
             session_id,
@@ -2762,7 +3220,7 @@ pub async fn set_model(
         })
         .await
         .map_err(|error| error.to_string())?;
-    state
+    project
         .handle
         .command(SupervisorCommand::SetCapabilities {
             session_id,
@@ -3324,39 +3782,66 @@ mod tests {
         assert!(host.iter().all(|option| option.decision != "allow_once"));
     }
 
+    /// A service with an empty, private registry: the trust state only
+    /// needs a handle, never the user's projects.
+    fn service() -> forge_session::ProjectServiceHandle {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let registry = forge_session::ProjectRegistry::at(std::env::temp_dir().join(format!(
+            "forge-desktop-trust-{}-{nanos}/projects.toml",
+            std::process::id()
+        )));
+        let mut options = forge_session::ProjectServiceOptions::user().unwrap();
+        options.registry = registry;
+        forge_session::ProjectService::spawn(options).unwrap()
+    }
+
     /// The page trusts a workspace before it subscribes, so the answer has to
-    /// flip exactly when the deferred launch is consumed.
-    #[test]
-    fn the_trust_screen_lasts_until_the_deferred_launch_is_taken() {
-        let ready = TrustState::ready(std::path::PathBuf::from("/work/repo"));
+    /// flip exactly when the pending decision is taken.
+    #[tokio::test]
+    async fn the_trust_screen_lasts_until_the_pending_decision_is_taken() {
+        let projects = service();
+        let ready = TrustState::ready(projects.clone(), "/work/repo".into());
         assert_eq!(trust_view(&ready).workspace, "/work/repo");
         assert!(!trust_view(&ready).needs_trust);
 
-        let pending = TrustState::pending(
-            std::path::PathBuf::from("/work/repo"),
-            forge_config::Config::default(),
-        );
-        assert!(trust_view(&pending).needs_trust);
-        assert!(pending.deferred.lock().unwrap().take().is_some());
+        let id = forge_session::ProjectId::new();
+        let pending =
+            TrustState::pending(projects.clone(), "/work/repo".into(), Pending::Trust(id));
+        let view = trust_view(&pending);
+        assert!(view.needs_trust && !view.needs_confirmation);
+        assert_eq!(pending.take_pending(), Some(Pending::Trust(id)));
         assert!(!trust_view(&pending).needs_trust);
         assert_eq!(pending.fail("cannot start".into()), "cannot start");
         assert_eq!(trust_view(&pending).error, "cannot start");
+
+        // An unregistered plain folder asks to be added on the same screen.
+        let confirm = TrustState::pending(
+            projects,
+            "/work/notes".into(),
+            Pending::Confirm("/work/notes".into()),
+        );
+        let view = trust_view(&confirm);
+        assert!(view.needs_trust && view.needs_confirmation);
     }
 
     /// A launch with no folder shows the picker until one is chosen; a chosen
     /// folder that is untrusted then shows the trust screen.
-    #[test]
-    fn the_folder_picker_lasts_until_a_folder_is_chosen() {
-        let state = TrustState::needs_folder();
+    #[tokio::test]
+    async fn the_folder_picker_lasts_until_a_folder_is_chosen() {
+        let projects = service();
+        let state = TrustState::needs_folder(projects.clone());
         let view = trust_view(&state);
         assert!(view.needs_folder && !view.needs_trust && view.workspace.is_empty());
 
-        state.set_workspace(std::path::PathBuf::from("/work/notes"));
-        state.restore(forge_config::Config::default());
+        state.set_workspace("/work/notes".into());
+        state.restore(Pending::Trust(forge_session::ProjectId::new()));
         let view = trust_view(&state);
         assert!(!view.needs_folder && view.needs_trust);
         assert_eq!(view.workspace, "/work/notes");
-        assert!(!trust_view(&TrustState::ready("/work/repo".into())).needs_folder);
+        assert!(!trust_view(&TrustState::ready(projects, "/work/repo".into())).needs_folder);
     }
 
     #[test]

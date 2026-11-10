@@ -107,3 +107,21 @@ export function escapeReturn(screen, active) {
   if (active?.closest?.("textarea, input, .terminal-host")) return null;
   return screen === "terminal" ? "terminal" : "files";
 }
+
+// Sessions belong to one project. Views and shells of other projects are kept
+// across a switch (D9), so a roster may only prune its own project's records.
+// `owners` maps session id -> project id; an unknown session is treated as
+// the current project's.
+export function prunable(ids, owners, project, present) {
+  return ids.filter((id) => (owners[id] ?? project) === project && !present.has(id));
+}
+
+// Requests waiting in projects other than the one on screen, oldest first.
+export function otherAttention(projects, activeId) {
+  return projects
+    .filter((project) => project.id !== activeId)
+    .flatMap((project) =>
+      project.attention.map((item) => ({ ...item, project_id: project.id, project_name: project.name })),
+    )
+    .sort((a, b) => a.since.localeCompare(b.since));
+}
