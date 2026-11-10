@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
 
-  let { workspace = "", error = "", busy = false, needsFolder = false, needsConfirmation = false, noGit = false, onTrust, onChoose, onQuit } = $props();
+  let { workspace = "", error = "", busy = false, needsFolder = false, needsConfirmation = false, noGit = false, projects = [], onOpenProject, onTrust, onChoose, onQuit } = $props();
 </script>
 
 <div class="trust" role="dialog" aria-modal="true" aria-labelledby="trust-title" tabindex="-1" use:modal={{ busy }}>
@@ -10,13 +10,25 @@
     {#if needsFolder}
     <h1 id="trust-title">Open a folder</h1>
     <p>
-      Choose the project folder to work in. It can be a Git repository or any other folder. Nothing
-      is opened or written until you choose one.
+      {projects.length ? "Open one of your projects, or choose another folder." : "Choose the project folder to work in."}
+      It can be a Git repository or any other folder. Nothing is opened or written until you choose.
     </p>
+    {#if projects.length}
+      <ul class="projects" aria-label="Your projects">
+        {#each projects as project (project.id)}
+          <li>
+            <button type="button" class="project" disabled={busy} title={project.root} onclick={() => onOpenProject?.(project)}>
+              <span class="name">{project.name}</span>
+              <span class="root mono">{project.root}</span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     <div class="actions">
       <button type="button" class="btn primary" disabled={busy} onclick={onChoose}>
-        {busy ? "Opening…" : "Choose a folder…"}
+        {busy ? "Opening…" : projects.length ? "Choose another folder…" : "Choose a folder…"}
       </button>
       <button type="button" class="btn" onclick={onQuit}>Quit</button>
     </div>
@@ -117,6 +129,46 @@
 
   .warn {
     color: var(--warning);
+  }
+
+  .projects {
+    margin: 0 0 4px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .project {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    margin-bottom: 6px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .project:hover:not(:disabled) {
+    border-color: var(--border-strong);
+  }
+
+  .project .name {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .project .root {
+    overflow: hidden;
+    max-width: 100%;
+    color: var(--muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .actions {

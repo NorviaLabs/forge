@@ -239,6 +239,8 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::trust_status,
         bridge::trust_workspace,
         bridge::choose_folder,
+        bridge::list_projects,
+        bridge::open_project,
         bridge::project_switch,
         bridge::project_add,
         bridge::project_trust,

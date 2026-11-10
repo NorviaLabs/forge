@@ -1733,6 +1733,9 @@
   let trustNoGit = $state(false);
   // The folder isn't a project yet; accepting adds it (D5).
   let trustConfirm = $state(false);
+  // Registered projects, offered on the folder screen of a launch with no
+  // folder (the Dock, Finder).
+  let folderProjects = $state([]);
   let trustWorkspace = $state("");
   let trustError = $state("");
   let trusting = $state(false);
@@ -1773,23 +1776,36 @@
 
   // A launch with no folder (Dock, Finder): pick one, then either trust it or,
   // if it is already trusted, open it straight away.
-  async function chooseFolder() {
+  // From the folder screen: run `name`, then follow where it leads (still
+  // the folder screen, the trust screen, or an open project). True only when
+  // a project opened and the page booted.
+  async function fromFolderScreen(name, args) {
     trusting = true;
     trustError = "";
     try {
-      const status = await invoke("choose_folder");
+      const status = await invoke(name, args);
       trustWorkspace = status.workspace;
       trustError = status.error;
       trustNoGit = status.no_git;
+      trustConfirm = status.needs_confirmation;
       needsFolder = status.needs_folder;
-      if (needsFolder || status.needs_trust) return;
+      if (needsFolder || status.needs_trust) return false;
       await boot();
       needsTrust = false;
+      return true;
     } catch (cause) {
       trustError = String(cause);
+      return false;
     } finally {
       trusting = false;
     }
+  }
+
+  const chooseFolder = () => fromFolderScreen("choose_folder");
+  const openRegistered = (project) => fromFolderScreen("open_project", { projectId: project.id });
+
+  function lastProjectId() {
+    try { return localStorage.getItem("forge.desktop.lastProject"); } catch { return null; }
   }
 
   async function acceptTrust() {
@@ -1831,6 +1847,13 @@
         trustConfirm = status.needs_confirmation;
         needsTrust = status.needs_trust || status.needs_folder;
         trustError = status.error;
+        if (status.needs_folder) {
+          folderProjects = await invoke("list_projects").catch(() => []);
+          // Reopen the last project (D9); if it can't open, the folder
+          // screen stays with the reason.
+          const last = folderProjects.find((project) => project.id === lastProjectId());
+          if (last && (await fromFolderScreen("open_project", { projectId: last.id }))) return;
+        }
       } catch (cause) {
         error = String(cause);
       } finally {
@@ -2523,6 +2546,8 @@
       noGit={trustNoGit}
       needsConfirmation={trustConfirm}
       onChoose={chooseFolder}
+      projects={folderProjects}
+      onOpenProject={openRegistered}
       onTrust={acceptTrust}
       onQuit={() => invoke("quit_app").catch(() => {})}
     />

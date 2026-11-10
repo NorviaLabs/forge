@@ -81,6 +81,12 @@ appear in the root `Cargo.lock`.
     `localStorage["forge.desktop.attentionSound"]` isn't `off` (toggle in
     Help). The trust screen says "Open this folder as a project?" for
     `needs_confirmation`.
+  - Launch with no folder (Dock, Finder): the folder screen lists registered
+    projects (`list_projects`) and the page reopens
+    `localStorage["forge.desktop.lastProject"]` with `open_project`. An
+    untrusted project moves to the trust screen; any other failure (moved,
+    owned elsewhere) keeps the folder screen with the reason. Picking a
+    listed project uses the same command.
 - `src/workspace.rs`: workspace browsing, search, file operations, image paste,
   the editor's save path and operator-driven Git writes.
   Confines every path to the active session's workspace, skips runtime and

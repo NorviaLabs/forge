@@ -11,6 +11,8 @@
     "allow-trust-status",
     "allow-trust-workspace",
     "allow-choose-folder",
+    "allow-list-projects",
+    "allow-open-project",
     "allow-project-switch",
     "allow-project-add",
     "allow-project-trust",

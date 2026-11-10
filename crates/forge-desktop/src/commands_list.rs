@@ -8,6 +8,8 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "trust_status",
     "trust_workspace",
     "choose_folder",
+    "list_projects",
+    "open_project",
     "project_switch",
     "project_add",
     "project_trust",

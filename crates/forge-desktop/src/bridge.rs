@@ -1157,15 +1157,57 @@ pub async fn choose_folder(
             .map_err(|e| state.fail(e.to_string()))?,
         Err(error) => return Err(state.fail(error.to_string())),
     };
-    state.set_workspace(project.root.clone());
-    match open_in_window(&app, &state.projects, project.id).await {
-        Ok(()) => {}
+    open_or_ask_trust(&app, &state, project).await
+}
+
+/// Registered projects, for the folder screen before any project is open.
+#[tauri::command]
+pub fn list_projects(state: State<'_, TrustState>) -> Vec<ProjectView> {
+    project_views(&state.projects.workspace().borrow())
+}
+
+/// Open a registered project from the folder screen: the last project on a
+/// Dock launch, or one the operator picks from the list.
+#[tauri::command]
+pub async fn open_project(
+    app: tauri::AppHandle,
+    state: State<'_, TrustState>,
+    project_id: forge_session::ProjectId,
+) -> Result<TrustView, String> {
+    use tauri::Manager;
+    if state.workspace().is_some() || app.try_state::<DesktopState>().is_some() {
+        return Err("a folder is already open".into());
+    }
+    let project = state
+        .projects
+        .workspace()
+        .borrow()
+        .projects
+        .iter()
+        .find(|summary| summary.project.id == project_id)
+        .map(|summary| summary.project.clone());
+    let Some(project) = project else {
+        return Err(state.fail("that project is no longer registered".into()));
+    };
+    open_or_ask_trust(&app, &state, project).await
+}
+
+/// Open `project` in the window, or leave it on the trust screen when it
+/// isn't trusted. Any other failure keeps the folder screen, with the reason.
+async fn open_or_ask_trust(
+    app: &tauri::AppHandle,
+    state: &TrustState,
+    project: forge_session::Project,
+) -> Result<TrustView, String> {
+    match open_in_window(app, &state.projects, project.id).await {
+        Ok(()) => state.set_workspace(project.root.clone()),
         Err(forge_session::ProjectError::NeedsTrust(_)) => {
-            state.restore(Pending::Trust(project.id))
+            state.set_workspace(project.root.clone());
+            state.restore(Pending::Trust(project.id));
         }
         Err(error) => return Err(state.fail(error.to_string())),
     }
-    Ok(trust_view(&state))
+    Ok(trust_view(state))
 }
 
 /// A native folder picker, created on the main thread as macOS requires.
