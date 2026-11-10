@@ -3028,7 +3028,23 @@ async fn poll_background_tasks(state: &SupervisorState) {
                 .any(|task| !task.status.is_terminal())
             {
                 let _ = session.poll_background_tasks().await;
-                let _ = refresh_actor(state, &task_actor, &session).await;
+                // Republishing copies the whole transcript; do it only when
+                // the background list shows something new.
+                let current: Vec<_> = session
+                    .background()
+                    .list()
+                    .map(crate::BackgroundTaskSnapshot::capture)
+                    .collect();
+                let published = task_actor
+                    .snapshot
+                    .read()
+                    .await
+                    .details
+                    .as_ref()
+                    .map(|details| crate::snapshot::background_signature(&details.background));
+                if published != Some(crate::snapshot::background_signature(&current)) {
+                    let _ = refresh_actor(state, &task_actor, &session).await;
+                }
             }
         }
     }
@@ -3410,6 +3426,7 @@ async fn run_one_inner(
         None => session.run_agent_turns_in_scope(Some(stream_sender)).await,
     };
     drop(permit);
+    let loop_returned = std::time::Instant::now();
     *task_actor
         .running_cancel
         .lock()
@@ -3444,6 +3461,13 @@ async fn run_one_inner(
     }
     state.control.set_turn_state(session_id, turn_state).await?;
     refresh_actor(&state, &task_actor, &session).await?;
+    tracing::debug!(
+        target: "forge::timing",
+        %session_id,
+        turn_state = turn_state.label(),
+        ms = loop_returned.elapsed().as_millis() as u64,
+        "turn published after the agent loop returned"
+    );
     // Release the session lock before touching Git: cleanup/archive paths take
     // `git_mutation` and then the session lock, so taking them in the opposite
     // order here would deadlock.

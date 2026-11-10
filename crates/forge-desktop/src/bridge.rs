@@ -17,7 +17,7 @@ use forge_session::{
 };
 use forge_types::{
     ApprovalKind, AskUserQuestionAnswerItem, AskUserQuestionResult, GrantDecision, HitlDecision,
-    HitlPayload, MessageRole, SessionId,
+    HitlPayload, MessageRole, ModelStreamEvent, SessionId,
 };
 
 /// Tool output longer than this is cut in the transcript view.
@@ -81,6 +81,12 @@ pub enum DesktopEvent {
     /// The sessions the supervisor owns, in switcher order.
     Roster {
         sessions: Vec<SessionRow>,
+    },
+    /// A session not on screen changed turn state. Sent instead of its full
+    /// `Session` snapshot, which the page would only discard.
+    SessionState {
+        session_id: SessionId,
+        turn_state: &'static str,
     },
     /// The session the prompt and approval commands target. The following
     /// `Session` event carries its transcript.
@@ -897,6 +903,46 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
 
 /// Translate one supervisor event. `None` for events the skeleton does not
 /// show yet.
+/// Most text deltas one coalesced `Stream` event carries.
+const MAX_COALESCED_DELTA: usize = 16 * 1024;
+
+/// What the page needs from a supervisor event, given the session on screen.
+/// Streamed output and full snapshots of other sessions are never sent: the
+/// page discards them, and building a snapshot event copies the whole
+/// transcript. Only text deltas are streamed; the page ignores other kinds.
+pub fn route(event: SupervisorEvent, on_screen: Option<SessionId>) -> Option<DesktopEvent> {
+    match event {
+        SupervisorEvent::Stream { session_id, event } => {
+            let ModelStreamEvent::TextDelta { .. } = &event else {
+                return None;
+            };
+            (Some(session_id) == on_screen)
+                .then(|| translate(SupervisorEvent::Stream { session_id, event }))
+                .flatten()
+        }
+        SupervisorEvent::SessionUpdated(snapshot)
+            if Some(snapshot.task.session_id) != on_screen =>
+        {
+            Some(DesktopEvent::SessionState {
+                session_id: snapshot.task.session_id,
+                turn_state: snapshot.task.turn_state.label(),
+            })
+        }
+        event => translate(event),
+    }
+}
+
+/// The text of a delta for `session_id`, or `None` for anything else.
+fn delta_text(event: &SupervisorEvent, session_id: SessionId) -> Option<&str> {
+    match event {
+        SupervisorEvent::Stream {
+            session_id: id,
+            event: ModelStreamEvent::TextDelta { text },
+        } if *id == session_id => Some(text),
+        _ => None,
+    }
+}
+
 pub fn translate(event: SupervisorEvent) -> Option<DesktopEvent> {
     match event {
         SupervisorEvent::Stream { session_id, event } => Some(DesktopEvent::Stream {
@@ -1409,18 +1455,64 @@ async fn forward_active_project(
             }
         }
         switched = true;
+        // The session on screen: only its tokens and snapshots are sent.
+        let mut on_screen = match project.supervisor.read().await.as_ref() {
+            Some(supervisor) => supervisor.selected_session_id().await.ok().flatten(),
+            None => None,
+        };
+        // An event read while coalescing deltas, handled next.
+        let mut held: Option<Result<SupervisorEvent, tokio::sync::broadcast::error::RecvError>> =
+            None;
         loop {
-            let event = tokio::select! {
-                changed = active.changed() => {
-                    if changed.is_err() {
-                        return;
+            let event = match held.take() {
+                Some(event) => event,
+                None => tokio::select! {
+                    changed = active.changed() => {
+                        if changed.is_err() {
+                            return;
+                        }
+                        break;
                     }
-                    break;
-                }
-                event = events.recv() => event,
+                    event = events.recv() => event,
+                },
             };
+            // Join the deltas already queued behind this one into one
+            // message: a token burst costs one IPC send, not one per token.
             let event = match event {
-                Ok(event) => translate(event),
+                Ok(SupervisorEvent::Stream {
+                    session_id,
+                    event: ModelStreamEvent::TextDelta { mut text },
+                }) if Some(session_id) == on_screen => {
+                    while text.len() < MAX_COALESCED_DELTA {
+                        match events.try_recv() {
+                            Ok(next) => match delta_text(&next, session_id) {
+                                Some(more) => text.push_str(more),
+                                None => {
+                                    held = Some(Ok(next));
+                                    break;
+                                }
+                            },
+                            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(missed)) => {
+                                held = Some(Err(tokio::sync::broadcast::error::RecvError::Lagged(
+                                    missed,
+                                )));
+                                break;
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    Ok(SupervisorEvent::Stream {
+                        session_id,
+                        event: ModelStreamEvent::TextDelta { text },
+                    })
+                }
+                other => other,
+            };
+            if let Ok(SupervisorEvent::Selected(session_id)) = &event {
+                on_screen = *session_id;
+            }
+            let event = match event {
+                Ok(event) => route(event, on_screen),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     Some(DesktopEvent::Lagged { missed })
                 }
@@ -3938,6 +4030,53 @@ mod tests {
                 && option.label.contains("example.com")));
         assert!(host.iter().filter(|option| option.privileged).count() >= 2);
         assert!(host.iter().all(|option| option.decision != "allow_once"));
+    }
+
+    /// Only the session on screen gets tokens and full snapshots; another
+    /// session's update becomes a small state change, its tokens are dropped.
+    #[test]
+    fn only_the_session_on_screen_gets_tokens_and_transcripts() {
+        let (shown, other) = (SessionId::new_v4(), SessionId::new_v4());
+        let delta = |session_id| SupervisorEvent::Stream {
+            session_id,
+            event: ModelStreamEvent::TextDelta { text: "hi".into() },
+        };
+        assert!(matches!(
+            route(delta(shown), Some(shown)),
+            Some(DesktopEvent::Stream { .. })
+        ));
+        assert_eq!(route(delta(other), Some(shown)), None);
+        assert_eq!(
+            route(
+                SupervisorEvent::Stream {
+                    session_id: shown,
+                    event: ModelStreamEvent::ThinkingDelta { text: "hm".into() },
+                },
+                Some(shown)
+            ),
+            None,
+            "the page streams text deltas only"
+        );
+
+        let update = |id| {
+            SupervisorEvent::SessionUpdated(Box::new(snapshot(
+                id,
+                "s",
+                SessionLifecycle::Active,
+                forge_session::SupervisorTurnState::Running,
+            )))
+        };
+        assert!(matches!(
+            route(update(shown), Some(shown)),
+            Some(DesktopEvent::Session { .. })
+        ));
+        assert_eq!(
+            route(update(other), Some(shown)),
+            Some(DesktopEvent::SessionState {
+                session_id: other,
+                turn_state: "running"
+            })
+        );
     }
 
     #[test]

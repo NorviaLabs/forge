@@ -71,6 +71,7 @@ pub(super) async fn complete(
 
     let mut stream = response.bytes_stream();
     let mut pending = String::new();
+    let mut carry = Vec::new();
     let mut text = String::new();
     let mut thinking = String::new();
     let mut tool_calls = BTreeMap::new();
@@ -79,7 +80,7 @@ pub(super) async fn complete(
     let mut done = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        super::push_utf8(&mut pending, &mut carry, &chunk);
         process_sse_lines(&mut pending, |line| {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                 return Ok(());

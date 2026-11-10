@@ -205,6 +205,37 @@ pub struct BackgroundTaskSnapshot {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// What a background list shows that can change while its tasks run. Two
+/// lists with the same signature render identically, so a poll that finds
+/// the same signature has nothing to publish.
+pub(crate) fn background_signature(tasks: &[BackgroundTaskSnapshot]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for task in tasks {
+        task.id.hash(&mut hasher);
+        format!("{:?}", task.status).hash(&mut hasher);
+        task.latest_message.hash(&mut hasher);
+        task.finished_at.hash(&mut hasher);
+        task.pending_approval
+            .as_ref()
+            .map(|request| request.id)
+            .hash(&mut hasher);
+        if let Some(shell) = &task.shell {
+            let output = &shell.output;
+            (
+                output.started,
+                output.exited,
+                output.exit_code,
+                output.stdout.len(),
+                output.stderr.len(),
+                output.truncated,
+            )
+                .hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
 impl BackgroundTaskSnapshot {
     pub fn capture(task: &BackgroundTaskHandle) -> Self {
         Self {
@@ -385,6 +416,44 @@ pub async fn replayed_transcript(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_background_signature_changes_only_with_what_the_list_shows() {
+        let task = |stdout: &[u8], status| BackgroundTaskSnapshot {
+            id: forge_types::BackgroundTaskId(1),
+            run_id: uuid::Uuid::nil(),
+            label: "build".into(),
+            kind: forge_core::BackgroundTaskKind::Shell {
+                command: "make".into(),
+            },
+            shell: Some(ShellExecutionSnapshot {
+                cwd: "/w".into(),
+                output: forge_tools::ShellOutputSnapshot {
+                    started: true,
+                    stdout: std::sync::Arc::new(stdout.to_vec()),
+                    ..Default::default()
+                },
+            }),
+            child: None,
+            pending_approval: None,
+            status,
+            child_session_id: None,
+            latest_message: None,
+            worktree_path: None,
+            worktree_branch: None,
+            started_at: chrono::DateTime::UNIX_EPOCH,
+            finished_at: None,
+        };
+        let running = forge_core::BackgroundTaskStatus::Running;
+        let base = background_signature(&[task(b"a", running.clone())]);
+        assert_eq!(base, background_signature(&[task(b"a", running.clone())]));
+        assert_ne!(base, background_signature(&[task(b"ab", running)]));
+        assert_ne!(
+            base,
+            background_signature(&[task(b"a", forge_core::BackgroundTaskStatus::Cancelled)])
+        );
+        assert_ne!(base, background_signature(&[]));
+    }
     use forge_core::LoopConfig;
     use forge_model::MockModelClient;
     use forge_tools::ToolRegistry;

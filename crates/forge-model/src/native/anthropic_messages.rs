@@ -86,6 +86,7 @@ pub(super) async fn complete(
 
     let mut stream = response.bytes_stream();
     let mut pending = String::new();
+    let mut carry = Vec::new();
     let mut text = String::new();
     let mut thinking = String::new();
     let mut tool_uses = BTreeMap::new();
@@ -96,7 +97,7 @@ pub(super) async fn complete(
     let mut stopped = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        super::push_utf8(&mut pending, &mut carry, &chunk);
         process_sse_lines(&mut pending, |line| {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                 return Ok(());
@@ -131,6 +132,12 @@ pub(super) async fn complete(
             )?;
             Ok(())
         })?;
+        // Nothing follows `message_stop`. Some servers and proxies keep the
+        // connection open afterwards; waiting for them to close it held a
+        // finished turn open until the read timed out.
+        if stopped {
+            break;
+        }
     }
     // Messages streams end with `message_stop`; ending earlier is truncation.
     if !stopped {
@@ -872,6 +879,44 @@ mod tests {
             side_call: false,
         };
         Some(client.complete(request).await)
+    }
+
+    /// The turn ends at `message_stop` even when the server never closes the
+    /// connection. Before, the read waited for the close, and the turn hung
+    /// until the request timed out (and then failed).
+    #[tokio::test]
+    async fn a_finished_stream_on_a_connection_left_open_completes() {
+        let sse = concat!(
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"done\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n"
+        );
+        let Some(base_url) = crate::native::test_support::serve_and_hold(sse).await else {
+            eprintln!("skipping: this host denies binding a mock listener");
+            return;
+        };
+        let client = test_client(
+            forge_connect::builtin::builtin_profile("anthropic"),
+            &base_url,
+            key("anthropic-secret"),
+        );
+        let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
+            model: "anthropic/claude-sonnet-4-6".into(),
+            session_id: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+            messages: vec![Message::new(MessageRole::User, "hello")].into(),
+            tools: vec![],
+            prompt_cache: false,
+            side_call: false,
+        };
+        let response =
+            tokio::time::timeout(std::time::Duration::from_secs(5), client.complete(request))
+                .await
+                .expect("the turn ended at message_stop, not at the connection close")
+                .unwrap();
+        assert_eq!(response.text, "done");
     }
 
     #[tokio::test]

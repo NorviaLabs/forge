@@ -200,8 +200,19 @@ impl AgentSession {
         let cancel_token = self.cancel_token.clone();
         let turn_cancel_token = self.turn_cancel_token.clone();
         let mut stream_open = true;
+        // For the timing log: a gap between the last streamed event and the
+        // call returning is time the turn spent waiting on the provider.
+        let started = std::time::Instant::now();
+        let mut last_event = None;
         let response = loop {
             if handle.is_finished() {
+                tracing::debug!(
+                    target: "forge::timing",
+                    total_ms = started.elapsed().as_millis() as u64,
+                    after_last_event_ms = last_event
+                        .map(|at: std::time::Instant| at.elapsed().as_millis() as u64),
+                    "model call returned"
+                );
                 break handle
                     .join()
                     .await
@@ -215,6 +226,7 @@ impl AgentSession {
             tokio::select! {
                 event = rx.recv(), if stream_open => {
                     if let Some(event) = event {
+                        last_event = Some(std::time::Instant::now());
                         drain_ready_stream_events(
                             &mut rx,
                             event,

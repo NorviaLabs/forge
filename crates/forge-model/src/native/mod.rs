@@ -69,6 +69,43 @@ mod test_support {
         });
         Some((format!("http://{address}"), request_rx))
     }
+
+    /// Send `body` as an event stream with no length, then keep the
+    /// connection open: a server or proxy that never closes a finished
+    /// stream. The body only ends when the client stops reading.
+    pub async fn serve_and_hold(body: &'static str) -> Option<String> {
+        let listener = match TcpListener::bind("127.0.0.1:0").await {
+            Ok(listener) => listener,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return None,
+            Err(e) => panic!("bind mock listener: {e}"),
+        };
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut chunk = [0_u8; 4096];
+            let mut seen = Vec::new();
+            while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = socket.read(&mut chunk).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                seen.extend_from_slice(&chunk[..count]);
+            }
+            // Drain the request body, then answer without a length.
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                socket.read(&mut chunk),
+            )
+            .await;
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+            socket.write_all(head.as_bytes()).await.unwrap();
+            socket.write_all(body.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+            // Hold the socket until the client drops it.
+            let _ = socket.read(&mut chunk).await;
+        });
+        Some(format!("http://{address}"))
+    }
 }
 
 use std::collections::HashMap;
@@ -88,6 +125,32 @@ use crate::image::{load_image_ref, LoadedImage};
 use crate::{ModelClient, ModelError, ModelRequest, StreamEventTx};
 
 const IMAGE_CACHE_MAX_ENTRIES: usize = 16;
+
+/// How long to wait for a TCP and TLS connection to a provider.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Append a network chunk to the SSE text buffer. A multi-byte character can
+/// be split across chunks; its leading bytes wait in `carry` for the rest
+/// instead of becoming U+FFFD.
+pub(super) fn push_utf8(pending: &mut String, carry: &mut Vec<u8>, chunk: &[u8]) {
+    carry.extend_from_slice(chunk);
+    let valid = match std::str::from_utf8(carry) {
+        Ok(text) => {
+            pending.push_str(text);
+            carry.clear();
+            return;
+        }
+        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+        // Genuinely invalid bytes: replace them, as before.
+        Err(_) => {
+            pending.push_str(&String::from_utf8_lossy(carry));
+            carry.clear();
+            return;
+        }
+    };
+    pending.push_str(std::str::from_utf8(&carry[..valid]).expect("validated prefix"));
+    carry.drain(..valid);
+}
 
 struct CachedImage {
     modified: Option<std::time::SystemTime>,
@@ -114,6 +177,24 @@ pub(super) fn process_sse_lines(
 #[cfg(test)]
 mod sse_tests {
     use super::process_sse_lines;
+
+    #[test]
+    fn a_character_split_across_chunks_is_not_replaced() {
+        let mut pending = String::new();
+        let mut carry = Vec::new();
+        let text = "data: héllo → ok\n".as_bytes();
+        // Split inside both the two-byte `é` and the three-byte `→`.
+        for chunk in [&text[..8], &text[8..15], &text[15..]] {
+            super::push_utf8(&mut pending, &mut carry, chunk);
+        }
+        assert_eq!(pending, "data: héllo → ok\n");
+        assert!(carry.is_empty());
+        super::push_utf8(&mut pending, &mut carry, &[0xff, b'x']);
+        assert!(
+            pending.ends_with("\u{fffd}x"),
+            "invalid bytes are still replaced"
+        );
+    }
 
     #[test]
     fn keeps_partial_line_after_batch() {
@@ -222,8 +303,13 @@ impl NativeModelClient {
         // Never follow redirects: reqwest strips `Authorization` on a cross-host
         // hop but forwards `x-api-key`, `chatgpt-account-id` and, on 307/308,
         // the prompt body. A redirect surfaces as an error naming its target.
+        // `request_timeout_secs` bounds silence, not the whole request: a
+        // whole-request timeout cut long generations off mid-stream and left
+        // a finished stream that the server kept open hanging for its full
+        // length. Each read (headers, then every body chunk) gets the budget.
         let http = reqwest::Client::builder()
-            .timeout(timeout)
+            .connect_timeout(CONNECT_TIMEOUT.min(timeout))
+            .read_timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ModelError::Http(error.to_string()))?;

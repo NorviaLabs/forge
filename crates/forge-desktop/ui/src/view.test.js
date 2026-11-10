@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   closeDocument,
   attentionLabel,
+  streamSegments,
   flattenTree,
   foldersToLoad,
   windowRange,
@@ -219,4 +220,23 @@ test("only the rows on screen, plus overscan, are rendered", () => {
   assert.deepEqual(windowRange(10_000, 24_000, 240, 24, 5), { start: 995, end: 1015 });
   assert.deepEqual(windowRange(12, 0, 2400, 24, 5), { start: 0, end: 12 });
   assert.deepEqual(windowRange(0, 0, 240, 24), { start: 0, end: 0 });
+});
+
+test("streamed markdown splits at blank lines outside code fences", () => {
+  const text = "# Title\n\nFirst para\nstill first\n\n```js\nconst a = 1;\n\nconst b = 2;\n```\n\nTail grow";
+  const segments = streamSegments(text);
+  assert.equal(segments.join(""), text, "nothing is lost or duplicated");
+  assert.deepEqual(segments, [
+    "# Title\n\n",
+    "First para\nstill first\n\n",
+    "```js\nconst a = 1;\n\nconst b = 2;\n```\n\n",
+    "Tail grow",
+  ]);
+  // Inside an open fence nothing is final yet.
+  assert.deepEqual(streamSegments("```\na\n\nb"), ["```\na\n\nb"]);
+  assert.deepEqual(streamSegments(""), [""]);
+  // Earlier blocks keep their exact text as the tail grows, so they are not re-rendered.
+  const before = streamSegments("One\n\nTwo");
+  const after = streamSegments("One\n\nTwo and more");
+  assert.equal(before[0], after[0]);
 });

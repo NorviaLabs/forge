@@ -42,6 +42,8 @@ under the module bullets below are crate-internal seams used by `native/`.
 
 ## Invariants
 
+- Native HTTP transports: `request_timeout_secs` is a per-read idle timeout (`reqwest` `read_timeout`, covering headers and each body chunk) plus a 30 s connect timeout, never a whole-request cap, so long generations are not cut off. Each stream returns at its terminal event (`[DONE]`, `message_stop`, `response.completed`) without waiting for the server to close the connection. Chunks are decoded with `push_utf8`, which holds a character split across chunks until it is complete.
+
 - `SharedMessages` mutation is copy-on-write: cloning is O(1), and a `DerefMut` while another copy exists clones the storage and assigns a fresh `storage_id`. `storage_id` is therefore a valid identity for a specific transcript allocation.
 - `ModelError::ProviderStatus` `Display` is byte-identical to `"provider error: HTTP {StatusCode}: {detail}"`; `ProviderAuth` keeps its custom message verbatim. Status classification must never depend on parsing text.
 - `is_auth_failure` covers `MissingApiKey`, `ProviderAuth`, and `ProviderStatus` 401 only — a 403 refuses the request, not the credential. `is_retryable` covers `Transport`, 429, and ≥500 — a rejected credential is never retryable.

@@ -71,6 +71,32 @@
   let promptHistory = $state([]);
   let skillDescriptions = $state([]);
   let streaming = $state("");
+  // Deltas arrive once per token; the page applies them at most once per
+  // frame, so a burst costs one render instead of one per token.
+  let pendingDelta = "";
+  let deltaFrame = 0;
+  function queueDelta(text) {
+    pendingDelta += text;
+    if (deltaFrame) return;
+    deltaFrame = requestAnimationFrame(() => {
+      deltaFrame = 0;
+      const started = performance.now();
+      streaming += pendingDelta;
+      pendingDelta = "";
+      // Timing diagnostics: a streamed update that costs more than a frame
+      // is what makes output fall behind the model.
+      tick().then(() => {
+        const ms = performance.now() - started;
+        if (ms > 16) console.debug(`forge timing: streamed update rendered in ${ms.toFixed(1)} ms (${streaming.length} chars)`);
+      });
+    });
+  }
+  function resetStreaming() {
+    if (deltaFrame) cancelAnimationFrame(deltaFrame);
+    deltaFrame = 0;
+    pendingDelta = "";
+    streaming = "";
+  }
   // The Session menu destination, or null when the menu is closed.
   let sessionMenu = $state(null);
   // At compact width the rail is an overlay opened from the header.
@@ -521,7 +547,7 @@
     githubPr = event.github_pr_url ?? "";
     // Keep the live delta while the turn runs; a mid-turn snapshot would
     // wipe it. Clear once the turn settles so the final transcript owns it.
-    if (!["running", "waiting"].includes(event.turn_state)) streaming = "";
+    if (!["running", "waiting"].includes(event.turn_state)) resetStreaming();
   }
 
   // The TUI watches the filesystem; a light poll keeps the tree and status
@@ -649,7 +675,16 @@
       return;
     }
     if (event.type === "stream" && event.event.type === "text_delta") {
-      if (event.session_id === sessionId) streaming += event.event.text;
+      if (event.session_id === sessionId) queueDelta(event.event.text);
+      return;
+    }
+    if (event.type === "session_state") {
+      // A session not on screen changed state; the bridge sends only this.
+      setRowState(event.session_id, event.turn_state);
+      if (event.turn_state !== "waiting" && attention[event.session_id]) {
+        const { [event.session_id]: _, ...rest } = attention;
+        attention = rest;
+      }
       return;
     }
     if (event.type === "session") {
@@ -683,7 +718,7 @@
         messages = [];
         promptHistory = [];
         skillDescriptions = [];
-        streaming = "";
+        resetStreaming();
         approval = null;
         question = null;
         plan = null;

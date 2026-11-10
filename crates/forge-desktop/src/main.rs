@@ -31,5 +31,12 @@ fn main() {
         let rest: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
         std::process::exit(forge_tools::egress_connect::run(&rest));
     }
+    if let Ok(filter) = tracing_subscriber::EnvFilter::try_from_env("FORGE_LOG") {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .with_ansi(false)
+            .init();
+    }
     std::process::exit(startup::run());
 }

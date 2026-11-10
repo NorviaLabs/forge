@@ -178,3 +178,27 @@ export function windowRange(count, scrollTop, viewport, rowHeight, overscan = 8)
   const end = Math.min(count, Math.ceil((scrollTop + viewport) / rowHeight) + overscan);
   return { start, end: Math.max(start, end) };
 }
+
+// Split streamed markdown into blocks that will not change again, plus the
+// growing tail (always the last element). A block ends at a blank line that
+// is outside a fenced code block. Rendering finished blocks once and only
+// re-rendering the tail keeps each token's cost constant instead of growing
+// with the whole answer.
+export function streamSegments(text) {
+  const segments = [];
+  let start = 0;
+  let fence = null;
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const end = offset + line.length + 1;
+    const marker = line.trimStart().match(/^(```|~~~)/)?.[1];
+    if (marker && (fence === null || marker === fence)) fence = fence === null ? marker : null;
+    else if (fence === null && line.trim() === "" && end <= text.length && offset > start) {
+      segments.push(text.slice(start, end));
+      start = end;
+    }
+    offset = end;
+  }
+  segments.push(text.slice(start));
+  return segments;
+}

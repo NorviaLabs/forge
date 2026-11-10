@@ -209,6 +209,8 @@ themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
 
 ## Invariants
 
+- Streaming: the bridge sends tokens (`Stream`, text deltas only) and full `Session` snapshots for the session on screen only; another session's update is a `SessionState { session_id, turn_state }`. Text deltas already queued are joined into one `Stream` (up to 16 KB). The page applies deltas once per animation frame and renders the streamed message as blocks (`view.js` `streamSegments`, split at blank lines outside code fences), so only the growing tail re-renders. `FORGE_LOG` (an `EnvFilter`, e.g. `forge::timing=debug`) turns on stderr logging, including `forge::timing` lines for model-call return and turn publication; the webview logs streamed updates slower than 16 ms with `console.debug`.
+
 - The webview can call only the commands in `DESKTOP_COMMANDS`, and only
   from the `main` window. Self-test builds expose exactly the same
   commands.

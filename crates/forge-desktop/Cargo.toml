@@ -39,6 +39,8 @@ forge-tools = { path = "../forge-tools" }
 forge-types = { path = "../forge-types" }
 forge-transcript = { path = "../forge-transcript" }
 forge-workspace = { path = "../forge-workspace" }
+# Diagnostics on stderr, off unless FORGE_LOG is set (e.g. FORGE_LOG=forge::timing=debug).
+tracing-subscriber = { workspace = true }
 dirs = "7"
 portable-pty = "0.9"
 base64 = "0.22"

@@ -75,10 +75,11 @@ pub(super) async fn complete_chatgpt(
         .collect();
     let mut stream = response.bytes_stream();
     let mut pending = String::new();
+    let mut carry = Vec::new();
     let mut parsed = CodexStream::default();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        super::push_utf8(&mut pending, &mut carry, &chunk);
         process_sse_lines(&mut pending, |line| {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                 return Ok(());
@@ -91,6 +92,11 @@ pub(super) async fn complete_chatgpt(
             parsed.consume(&event, &reverse_aliases, tx.as_ref())?;
             Ok(())
         })?;
+        // Nothing follows `response.completed`; don't wait for the server to
+        // close a connection it may keep open.
+        if parsed.is_completed() {
+            break;
+        }
     }
     parsed.finish()?;
     if let Some(tx) = tx {
@@ -191,10 +197,11 @@ pub(super) async fn complete_gateway(
         .collect();
     let mut stream = response.bytes_stream();
     let mut pending = String::new();
+    let mut carry = Vec::new();
     let mut parsed = CodexStream::default();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|error| ModelError::Transport(error.to_string()))?;
-        pending.push_str(&String::from_utf8_lossy(&chunk));
+        super::push_utf8(&mut pending, &mut carry, &chunk);
         process_sse_lines(&mut pending, |line| {
             let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                 return Ok(());
@@ -207,6 +214,11 @@ pub(super) async fn complete_gateway(
             parsed.consume(&event, &reverse_aliases, tx.as_ref())?;
             Ok(())
         })?;
+        // Nothing follows `response.completed`; don't wait for the server to
+        // close a connection it may keep open.
+        if parsed.is_completed() {
+            break;
+        }
     }
     parsed.finish()?;
     if let Some(tx) = tx {
@@ -359,6 +371,10 @@ pub(super) struct CodexStream {
 impl CodexStream {
     /// A Responses stream is complete only after `response.completed`. A
     /// stream that ends earlier is truncated, not a short success.
+    pub(super) fn is_completed(&self) -> bool {
+        self.completed
+    }
+
     pub(super) fn finish(&self) -> Result<(), ModelError> {
         if self.completed {
             Ok(())

@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import Markdown from "../Markdown.svelte";
   import Icon from "./Icon.svelte";
+  import { streamSegments } from "../view.js";
 
   let {
     messages = [],
@@ -164,7 +165,10 @@
     <div class="turn assistant">
       <div class="who">Forge</div>
       <article class="message assistant streaming" data-role="assistant-streaming">
-        <Markdown text={streaming} />
+        <!-- Finished blocks keep their text, so only the growing tail re-renders. -->
+        {#each streamSegments(streaming) as segment, index (index)}
+          <Markdown text={segment} />
+        {/each}
       </article>
     </div>
   {/if}
