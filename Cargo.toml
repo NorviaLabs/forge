@@ -92,3 +92,19 @@ strip = "symbols"
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+
+# RUSTSEC-2026-0459: the SQLite that sqlx 0.9.0 bundles (via libsqlite3-sys
+# < 0.38) can return uninitialised memory for a crafted database and `-wal`
+# pair, and Forge opens databases under the project's `.forge/local/`. sqlx's
+# main branch allows the fixed libsqlite3-sys 0.39 but is unreleased, so the
+# sqlx crates come from one pinned commit of it (still version 0.9.0). Remove
+# this section, and the git allowance in deny.toml, once sqlx 0.9.1 or later
+# is on crates.io.
+[patch.crates-io]
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }
+sqlx-core = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }
+sqlx-macros = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }
+sqlx-macros-core = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }
+sqlx-mysql = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }
+sqlx-postgres = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }
+sqlx-sqlite = { git = "https://github.com/launchbadge/sqlx", rev = "fd56e1dffe74d4b6f9e7ce710bac02dd9026258e" }

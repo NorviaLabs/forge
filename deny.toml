@@ -38,6 +38,13 @@ ignore = [
     # vulnerability. Revisit by replacing `serde_yaml` with a maintained YAML
     # parser.
     { id = "RUSTSEC-2024-0449", reason = "unmaintained only; via serde_yaml for skill frontmatter parsing, no known vulnerability" },
+
+    # RUSTSEC-2024-0370 — `proc-macro-error` is unmaintained.
+    #
+    # Build-time only, through the gtk-rs 0.18 macros (`glib-macros`,
+    # `gtk3-macros`) that Tauri uses on Linux. Not a vulnerability, and no
+    # release of the chain drops it. Revisit when Tauri moves to a newer gtk-rs.
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained only; build-time proc macro via Tauri's gtk-rs 0.18 on Linux, no fixed release" },
 ]
 
 [bans]
@@ -66,6 +73,9 @@ skip = []
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# sqlx from a pinned commit until a release allows the patched SQLite
+# (RUSTSEC-2026-0459; see [patch.crates-io] in Cargo.toml). Remove with it.
+allow-git = ["https://github.com/launchbadge/sqlx"]
 
 # Licenses are not gated yet. Doing it properly needs a reviewed inventory of
 # every license in the tree and an explicit allow-list; switching it on with a
