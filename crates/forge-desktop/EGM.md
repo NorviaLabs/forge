@@ -87,6 +87,14 @@ appear in the root `Cargo.lock`.
     untrusted project moves to the trust screen; any other failure (moved,
     owned elsewhere) keeps the folder screen with the reason. Picking a
     listed project uses the same command.
+  - Quitting asks first when any open project, not just the one on screen,
+    has a queued, running or waiting session (`quit_risk` reads
+    `WorkspaceState::has_busy_sessions`); the quit dialog names the
+    background projects (`ProjectView.busy`). Errors and failed turns in
+    projects not on screen reach the page as `ProjectError { project_id,
+    project_name, message }` (`fresh_project_errors`, once per `seq`; none
+    replayed at startup or on a switch). `ProjectFailure` carries
+    `project_id` and its message starts with the project name.
 - `src/workspace.rs`: workspace browsing, search, file operations, image paste,
   the editor's save path and operator-driven Git writes.
   Confines every path to the active session's workspace, skips runtime and

@@ -223,8 +223,11 @@ fn quit_risk(handle: &tauri::AppHandle) -> bool {
     let Some(state) = handle.try_state::<DesktopState>() else {
         return false;
     };
-    (state.unsaved.load(Ordering::Relaxed) || state.busy.load(Ordering::Relaxed))
-        && !state.quitting.load(Ordering::Relaxed)
+    // `busy` from the page covers only the project on screen; agents in
+    // background projects are stopped by quitting too, so they count.
+    let busy = state.busy.load(Ordering::Relaxed)
+        || state.projects.workspace().borrow().has_busy_sessions();
+    (state.unsaved.load(Ordering::Relaxed) || busy) && !state.quitting.load(Ordering::Relaxed)
 }
 
 /// The page shows its discard dialog; `quit_app` ends the process if the

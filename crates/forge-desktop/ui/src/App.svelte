@@ -591,6 +591,12 @@
       if (event.sound && attentionSound) chime();
       return;
     }
+    if (event.type === "project_error") {
+      // The on-screen project's errors arrive as "error"; these come from
+      // projects in the background, so they say which.
+      error = `${event.project_name}: ${event.message}`;
+      return;
+    }
     if (event.type === "project_switched") {
       switchedTo(event.project_id, event.supports_git);
       return;
@@ -2219,6 +2225,9 @@
           {#if dirtyAnywhere(views)}The editor has unsaved changes. {/if}
           {#if sessions.some((session) => ["running", "waiting"].includes(session.turn_state)) || Object.keys(attention).length > 0}
             Work is still running, queued or waiting for an answer in another session.
+          {/if}
+          {#if projects.some((project) => project.id !== projectId && project.busy > 0)}
+            Agents are also working in {projects.filter((project) => project.id !== projectId && project.busy > 0).map((project) => project.name).join(", ")}.
           {/if}
           Quitting stops every session; the agent's file changes on disk are kept.
         </p>

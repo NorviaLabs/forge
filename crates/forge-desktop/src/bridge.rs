@@ -113,6 +113,13 @@ pub enum DesktopEvent {
         count: usize,
         sound: bool,
     },
+    /// A project that isn't on screen reported an error or a failed turn.
+    /// The on-screen project's errors arrive as `Error` and `Attention`.
+    ProjectError {
+        project_id: forge_session::ProjectId,
+        project_name: String,
+        message: String,
+    },
     /// Another project is now on screen. Its roster, selection and selected
     /// session follow as ordinary events.
     ProjectSwitched {
@@ -130,6 +137,8 @@ pub struct ProjectView {
     pub open: bool,
     pub running: usize,
     pub limit: usize,
+    /// Sessions queued, running, or waiting on you: what quitting would stop.
+    pub busy: usize,
     /// Requests waiting on you, oldest first.
     pub attention: Vec<AttentionView>,
 }
@@ -144,6 +153,31 @@ pub struct AttentionView {
     pub since: String,
 }
 
+/// Errors from projects not on screen that `seen` hasn't shown yet. Updates
+/// `seen`, including for the on-screen project, so switching away doesn't
+/// replay an error the page already showed.
+pub fn fresh_project_errors(
+    seen: &mut std::collections::HashMap<forge_session::ProjectId, u64>,
+    workspace: &forge_session::WorkspaceState,
+    active: forge_session::ProjectId,
+) -> Vec<DesktopEvent> {
+    let mut fresh = Vec::new();
+    for summary in &workspace.projects {
+        let Some(notice) = &summary.last_error else {
+            continue;
+        };
+        let previous = seen.insert(summary.project.id, notice.seq);
+        if summary.project.id != active && previous.is_none_or(|seq| seq < notice.seq) {
+            fresh.push(DesktopEvent::ProjectError {
+                project_id: summary.project.id,
+                project_name: summary.project.name.clone(),
+                message: notice.message.clone(),
+            });
+        }
+    }
+    fresh
+}
+
 pub fn project_views(workspace: &forge_session::WorkspaceState) -> Vec<ProjectView> {
     workspace
         .projects
@@ -155,6 +189,19 @@ pub fn project_views(workspace: &forge_session::WorkspaceState) -> Vec<ProjectVi
             open: summary.open,
             running: summary.state.running,
             limit: summary.state.limit,
+            busy: summary
+                .state
+                .sessions
+                .iter()
+                .filter(|session| {
+                    matches!(
+                        session.turn_state,
+                        forge_session::SupervisorTurnState::Queued
+                            | forge_session::SupervisorTurnState::Running
+                            | forge_session::SupervisorTurnState::Waiting
+                    )
+                })
+                .count(),
             attention: summary
                 .state
                 .attention
@@ -1464,9 +1511,11 @@ async fn forward_workspace(
     active: tokio::sync::watch::Receiver<forge_session::OpenProjectRef>,
 ) {
     use tauri::Manager;
-    // Requests already pending when the window opens are counted but never
-    // announced.
+    // Requests and errors already there when the window opens are counted
+    // but never announced.
     let mut previous = workspace.borrow().clone();
+    let mut seen_errors = std::collections::HashMap::new();
+    fresh_project_errors(&mut seen_errors, &previous, active.borrow().project.id);
     loop {
         let current = workspace.borrow_and_update().clone();
         let fresh = forge_session::new_attention(&previous, &current);
@@ -1508,6 +1557,11 @@ async fn forward_workspace(
                 return;
             }
         }
+        for event in fresh_project_errors(&mut seen_errors, &current, project.project.id) {
+            if channel.send(event).is_err() {
+                return;
+            }
+        }
         let event = DesktopEvent::Workspace {
             active: project.project.id,
             projects: project_views(&current),
@@ -1528,6 +1582,9 @@ pub struct ProjectFailure {
     /// `needs_trust`, `already_owned`, `busy`, `root_missing`, `open`,
     /// `on_screen` or `error`.
     pub kind: &'static str,
+    /// The project the command was about; `None` before one is known (the
+    /// folder picker).
+    pub project_id: Option<forge_session::ProjectId>,
     pub message: String,
     /// For `busy`: the sessions that would lose work, for the close dialog.
     pub sessions: Vec<BusySession>,
@@ -1544,9 +1601,27 @@ impl ProjectFailure {
     fn other(message: impl Into<String>) -> Self {
         Self {
             kind: "error",
+            project_id: None,
             message: message.into(),
             sessions: Vec::new(),
         }
+    }
+
+    /// Attach the project, and name it in the message.
+    fn about(mut self, state: &DesktopState, project_id: forge_session::ProjectId) -> Self {
+        self.project_id = Some(project_id);
+        let name = state
+            .projects
+            .workspace()
+            .borrow()
+            .projects
+            .iter()
+            .find(|summary| summary.project.id == project_id)
+            .map(|summary| summary.project.name.clone());
+        if let Some(name) = name {
+            self.message = format!("{name}: {}", self.message);
+        }
+        self
     }
 }
 
@@ -1574,6 +1649,7 @@ impl From<forge_session::ProjectError> for ProjectFailure {
         };
         Self {
             kind,
+            project_id: None,
             message: error.to_string(),
             sessions,
         }
@@ -1586,8 +1662,9 @@ pub async fn project_switch(
     state: State<'_, DesktopState>,
     project_id: forge_session::ProjectId,
 ) -> Result<(), ProjectFailure> {
-    state.projects.open(project_id).await?;
-    let project = state.projects.project(project_id).await?;
+    let about = |error| ProjectFailure::from(error).about(&state, project_id);
+    state.projects.open(project_id).await.map_err(about)?;
+    let project = state.projects.project(project_id).await.map_err(about)?;
     state.switch_to(project);
     Ok(())
 }
@@ -1613,7 +1690,11 @@ pub async fn project_trust(
     state: State<'_, DesktopState>,
     project_id: forge_session::ProjectId,
 ) -> Result<(), ProjectFailure> {
-    Ok(state.projects.trust(project_id).await?)
+    state
+        .projects
+        .trust(project_id)
+        .await
+        .map_err(|error| ProjectFailure::from(error).about(&state, project_id))
 }
 
 /// Close a project in the background. The project on screen can't be closed:
@@ -1629,12 +1710,13 @@ pub async fn project_close(
         return Err(ProjectFailure {
             kind: "on_screen",
             ..ProjectFailure::other("switch to another project before closing this one")
-        });
+        }
+        .about(&state, project_id));
     }
     match state.projects.close(project_id, stop_running).await {
         Ok(_) => Ok(()),
         Err(error) => {
-            let mut failure = ProjectFailure::from(error);
+            let mut failure = ProjectFailure::from(error).about(&state, project_id);
             let workspace = state.projects.workspace().borrow().clone();
             let sessions = workspace
                 .projects
@@ -1661,7 +1743,11 @@ pub async fn project_remove(
     state: State<'_, DesktopState>,
     project_id: forge_session::ProjectId,
 ) -> Result<(), ProjectFailure> {
-    state.projects.remove(project_id).await?;
+    state
+        .projects
+        .remove(project_id)
+        .await
+        .map_err(|error| ProjectFailure::from(error).about(&state, project_id))?;
     Ok(())
 }
 
@@ -1679,7 +1765,11 @@ pub async fn project_relocate(
     else {
         return Ok(false);
     };
-    state.projects.relocate(project_id, folder).await?;
+    state
+        .projects
+        .relocate(project_id, folder)
+        .await
+        .map_err(|error| ProjectFailure::from(error).about(&state, project_id))?;
     Ok(true)
 }
 
@@ -3822,6 +3912,61 @@ mod tests {
                 && option.label.contains("example.com")));
         assert!(host.iter().filter(|option| option.privileged).count() >= 2);
         assert!(host.iter().all(|option| option.decision != "allow_once"));
+    }
+
+    #[test]
+    fn errors_from_background_projects_are_shown_once() {
+        use forge_session::{ProjectId, ProjectNotice, ProjectSummary, WorkspaceState};
+        let project = |name: &str, seq: Option<u64>| ProjectSummary {
+            project: forge_session::Project {
+                id: ProjectId::new(),
+                root: format!("/{name}").into(),
+                name: name.into(),
+                added_at: chrono::Utc::now(),
+            },
+            open: true,
+            state: Default::default(),
+            last_error: seq.map(|seq| ProjectNotice {
+                seq,
+                session_id: None,
+                message: format!("{name} broke ({seq})"),
+            }),
+        };
+        let mut workspace = WorkspaceState {
+            version: 1,
+            projects: vec![
+                project("api", Some(1)),
+                project("notes", Some(1)),
+                project("sdk", None),
+            ],
+        };
+        let (api, notes) = (
+            workspace.projects[0].project.id,
+            workspace.projects[1].project.id,
+        );
+        let mut seen = std::collections::HashMap::new();
+        // Errors already there when the window opens are not replayed.
+        fresh_project_errors(&mut seen, &workspace, api);
+
+        workspace.projects[0].last_error.as_mut().unwrap().seq = 2;
+        workspace.projects[1].last_error = Some(ProjectNotice {
+            seq: 2,
+            session_id: None,
+            message: "notes broke (2)".into(),
+        });
+        let fresh = fresh_project_errors(&mut seen, &workspace, api);
+        // Only the background project; the on-screen one sends its own.
+        assert_eq!(
+            fresh,
+            vec![DesktopEvent::ProjectError {
+                project_id: notes,
+                project_name: "notes".into(),
+                message: "notes broke (2)".into(),
+            }]
+        );
+        assert!(fresh_project_errors(&mut seen, &workspace, api).is_empty());
+        // Switching to `notes` doesn't replay an error already shown.
+        assert!(fresh_project_errors(&mut seen, &workspace, notes).is_empty());
     }
 
     /// A service with an empty, private registry: the trust state only

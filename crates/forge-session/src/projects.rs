@@ -35,6 +35,19 @@ pub struct ProjectSummary {
     pub open: bool,
     /// Default (no sessions) while the project is closed.
     pub state: ProjectState,
+    /// The project's most recent error or failed turn. A frontend shows the
+    /// ones from projects that aren't on screen, since it doesn't receive
+    /// their events.
+    pub last_error: Option<ProjectNotice>,
+}
+
+/// An error a project reported. `seq` increases with each one, so a reader
+/// can tell a new error from one it already showed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectNotice {
+    pub seq: u64,
+    pub session_id: Option<SessionId>,
+    pub message: String,
 }
 
 /// Every registered project, in registry order.
@@ -43,6 +56,16 @@ pub struct WorkspaceState {
     /// Increases by one on every change.
     pub version: u64,
     pub projects: Vec<ProjectSummary>,
+}
+
+impl WorkspaceState {
+    /// Whether any open project has a session queued, running, or waiting on
+    /// you: quitting now would stop work, so the window asks first.
+    pub fn has_busy_sessions(&self) -> bool {
+        self.projects
+            .iter()
+            .any(|summary| !busy_sessions(&summary.state).is_empty())
+    }
 }
 
 /// Attention items in `next` that were not in `previous`, keyed by
@@ -317,6 +340,7 @@ impl ProjectService {
                     project,
                     open: false,
                     state: ProjectState::default(),
+                    last_error: None,
                 })
                 .collect(),
         });
@@ -452,6 +476,7 @@ impl ProjectService {
         let forwarder = tokio::spawn(forward_project_state(
             id,
             handle.project_state(),
+            handle.subscribe(),
             self.workspace.clone(),
         ));
         self.open.insert(
@@ -463,7 +488,12 @@ impl ProjectService {
                 forwarder,
             },
         );
-        Ok(launched.notices)
+        let name = &self.open[&id].project.name;
+        Ok(launched
+            .notices
+            .into_iter()
+            .map(|notice| format!("{name}: {notice}"))
+            .collect())
     }
 
     async fn close(
@@ -523,6 +553,7 @@ impl ProjectService {
                         state: kept
                             .map(|summary| summary.state.clone())
                             .unwrap_or_default(),
+                        last_error: kept.and_then(|summary| summary.last_error.clone()),
                         project,
                     }
                 })
@@ -554,6 +585,7 @@ fn busy_sessions(state: &ProjectState) -> Vec<(SessionId, SupervisorTurnState)> 
 /// [`CLOSE_TIMEOUT`] the supervisor is dropped, which releases the lock.
 async fn stop_project(open: OpenProject) -> Vec<String> {
     open.forwarder.abort();
+    let name = open.project.name.clone();
     // Taking it waits for readers to finish, and every later reader sees the
     // project closed.
     let Some(supervisor) = open.supervisor.write().await.take() else {
@@ -561,31 +593,71 @@ async fn stop_project(open: OpenProject) -> Vec<String> {
     };
     match tokio::time::timeout(CLOSE_TIMEOUT, supervisor.shutdown()).await {
         Ok(Ok(())) => Vec::new(),
-        Ok(Err(error)) => vec![format!("a session did not stop cleanly: {error}")],
+        Ok(Err(error)) => vec![format!("{name}: a session did not stop cleanly: {error}")],
         Err(_) => vec![format!(
-            "sessions did not stop within {} seconds; they were interrupted",
+            "{name}: sessions did not stop within {} seconds; they were interrupted",
             CLOSE_TIMEOUT.as_secs()
         )],
     }
 }
 
-/// Copy one project's state into the workspace whenever it changes.
+/// Copy one project's state into the workspace whenever it changes, and
+/// record its errors and failed turns as `last_error`.
 async fn forward_project_state(
     id: ProjectId,
     mut state: watch::Receiver<ProjectState>,
+    mut events: tokio::sync::broadcast::Receiver<crate::SupervisorEvent>,
     workspace: Arc<watch::Sender<WorkspaceState>>,
 ) {
-    loop {
-        let current = state.borrow_and_update().clone();
+    use tokio::sync::broadcast::error::RecvError;
+    let update = |change: &dyn Fn(&mut ProjectSummary)| {
         workspace.send_modify(|workspace| {
             if let Some(summary) = workspace.projects.iter_mut().find(|s| s.project.id == id) {
-                summary.open = true;
-                summary.state = current;
+                change(summary);
             }
             workspace.version += 1;
         });
-        if state.changed().await.is_err() {
-            return;
+    };
+    let mut seq = 0;
+    let mut state_open = true;
+    let mut events_open = true;
+    let current = state.borrow_and_update().clone();
+    update(&|summary| {
+        summary.open = true;
+        summary.state = current.clone();
+    });
+    while state_open || events_open {
+        tokio::select! {
+            changed = state.changed(), if state_open => {
+                if changed.is_err() {
+                    state_open = false;
+                    continue;
+                }
+                let current = state.borrow_and_update().clone();
+                update(&|summary| summary.state = current.clone());
+            }
+            event = events.recv(), if events_open => {
+                let notice = match event {
+                    Ok(crate::SupervisorEvent::Error { session_id, message }) => {
+                        Some((session_id, message))
+                    }
+                    Ok(crate::SupervisorEvent::Attention {
+                        session_id,
+                        state: SupervisorTurnState::Failed,
+                        message,
+                    }) => Some((Some(session_id), message)),
+                    Ok(_) | Err(RecvError::Lagged(_)) => None,
+                    Err(RecvError::Closed) => {
+                        events_open = false;
+                        None
+                    }
+                };
+                if let Some((session_id, message)) = notice {
+                    seq += 1;
+                    let notice = ProjectNotice { seq, session_id, message };
+                    update(&|summary| summary.last_error = Some(notice.clone()));
+                }
+            }
         }
     }
 }
@@ -713,6 +785,55 @@ mod tests {
         f.handle.shutdown().await.unwrap();
     }
 
+    /// A frontend only receives events from the project on screen, so a
+    /// failure elsewhere must show up in the workspace, numbered.
+    #[tokio::test]
+    async fn a_project_error_reaches_the_workspace_with_a_sequence_number() {
+        let f = fixture();
+        let root = folder(&f, "worker");
+        forge_config::grant_trust_at(&f.trust_store, &root).unwrap();
+        let project = f.handle.add(root).await.unwrap();
+        f.handle.open(project.id).await.unwrap();
+        let open = f.handle.project(project.id).await.unwrap();
+        let session_id = SessionId::new_v4();
+        {
+            let guard = open.supervisor.read().await;
+            let supervisor = guard.as_ref().unwrap();
+            supervisor.emit_for_test(crate::SupervisorEvent::Error {
+                session_id: None,
+                message: "provider unreachable".into(),
+            });
+            supervisor.emit_for_test(crate::SupervisorEvent::Attention {
+                session_id,
+                state: SupervisorTurnState::Failed,
+                message: "turn failed".into(),
+            });
+            // Not an error: a turn waiting on you is attention, not failure.
+            supervisor.emit_for_test(crate::SupervisorEvent::Attention {
+                session_id,
+                state: SupervisorTurnState::Waiting,
+                message: "waiting".into(),
+            });
+        }
+        let mut workspace = f.handle.workspace();
+        let state = tokio::time::timeout(
+            Duration::from_secs(2),
+            workspace.wait_for(|state| {
+                summary(state, project.id)
+                    .last_error
+                    .is_some_and(|notice| notice.seq == 2)
+            }),
+        )
+        .await
+        .expect("both errors arrived")
+        .unwrap()
+        .clone();
+        let notice = summary(&state, project.id).last_error.unwrap();
+        assert_eq!(notice.message, "turn failed");
+        assert_eq!(notice.session_id, Some(session_id));
+        f.handle.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn an_untrusted_project_opens_only_after_trust_and_writes_nothing_before() {
         let f = fixture();
@@ -810,6 +931,38 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_session_in_any_project_makes_the_workspace_busy() {
+        let summary = |turn_state| ProjectSummary {
+            project: Project {
+                id: ProjectId::new(),
+                root: "/p".into(),
+                name: "p".into(),
+                added_at: chrono::Utc::now(),
+            },
+            open: true,
+            state: ProjectState {
+                sessions: vec![session(turn_state)],
+                ..Default::default()
+            },
+            last_error: None,
+        };
+        let idle = WorkspaceState {
+            version: 1,
+            projects: vec![
+                summary(SupervisorTurnState::Idle),
+                summary(SupervisorTurnState::Completed),
+            ],
+        };
+        assert!(!idle.has_busy_sessions());
+        // The busy one is not the first project: a background project counts.
+        let mut background = idle.clone();
+        background
+            .projects
+            .push(summary(SupervisorTurnState::Waiting));
+        assert!(background.has_busy_sessions());
+    }
+
+    #[test]
     fn only_requests_not_seen_before_are_new() {
         let project = |id: ProjectId, calls: &[&str]| ProjectSummary {
             project: Project {
@@ -831,6 +984,7 @@ mod tests {
                     .collect(),
                 ..Default::default()
             },
+            last_error: None,
         };
         let (a, b) = (ProjectId::new(), ProjectId::new());
         let previous = WorkspaceState {

@@ -33,7 +33,7 @@ pub use launch::{config_for_workspace, LaunchError, LaunchPlan, LaunchTarget, La
 pub use project::{LaunchResolution, Project, ProjectId, ProjectRegistry, RegistryError};
 pub use project_state::{AttentionItem, AttentionKind, ProjectState, SessionSummary};
 pub use projects::{
-    new_attention, ConfigLoader, OpenProjectRef, ProjectError, ProjectService,
+    new_attention, ConfigLoader, OpenProjectRef, ProjectError, ProjectNotice, ProjectService,
     ProjectServiceHandle, ProjectServiceOptions, ProjectSummary, SharedSupervisor, WorkspaceState,
 };
 pub use snapshot::{

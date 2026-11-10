@@ -1234,6 +1234,12 @@ impl RepositorySupervisor {
         snapshots(&self.state).await
     }
 
+    /// Tests only: publish an event as if the supervisor had.
+    #[cfg(test)]
+    pub(crate) fn emit_for_test(&self, event: SupervisorEvent) {
+        let _ = self.state.events.send(event);
+    }
+
     pub async fn snapshot(&self, session_id: SessionId) -> Option<SessionRuntimeSnapshot> {
         let actor = self.state.actors.read().await.get(&session_id).cloned()?;
         let snapshot = actor.snapshot.read().await.clone();
