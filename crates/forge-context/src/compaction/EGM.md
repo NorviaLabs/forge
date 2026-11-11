@@ -46,7 +46,7 @@ lives in `forge-core`'s session module.
     `DEFAULT_EXPECTED_TURN_TOKENS`, `TOOL_SCHEMA_DEFERRAL_FRACTION`.
 - Prompt (`prompt.rs`): `compaction_instruction`, `compaction_message`,
   `checkpoint_message`.
-- Tail selection (`tail.rs`): `select_tail`, `is_valid_start`,
+- Tail selection (`tail.rs`): `select_tail`, `select_tail_in_turn`, `is_valid_start`,
   `tool_calls_are_paired`, `tool_results_are_complete`, `message_tokens`,
   `messages_tokens`, `TailSelection { start, tokens, starts_on_user }`.
 
@@ -77,6 +77,16 @@ lives in `forge-core`'s session module.
   assistant message; it backs up one extra message only when the start is an
   assistant reply directly following its user request, and may overshoot the
   token target to reach a valid boundary.
+- When keeping the current turn whole would leave the context over the runway
+  limit (or a target left no tail), `select_tail_in_turn` cuts inside the
+  turn: the tail is the turn's user request followed by the latest steps,
+  opening on any assistant message (tool calls included) whose results all
+  follow it. The tail is then not contiguous (`TailSelection::anchor` is the
+  request's index; `tail_start` is where the steps begin). A zero target keeps
+  the request alone, so a context never loses the user's request.
+- After a failed automatic compaction the session waits until the context has
+  grown by `max(window / 20, 4K)` tokens before trying again
+  (`AgentSession::auto_compaction_retry_at`); manual compaction is unaffected.
 - Policy arithmetic: trigger is `min(window * 0.85, usable_context)`;
   compaction is considered when current tokens plus the expected turn reach
   or exceed the trigger; tail target is `clamp(window * 0.12, 16K, 64K)`
