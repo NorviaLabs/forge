@@ -172,23 +172,21 @@ test("a waiting session with no card says what it needs", () => {
   assert.equal(waitingNote(waiting({ approval: { call_id: "c1" } })), null);
   assert.equal(waitingNote(waiting({ question: { call_id: "q1" } })), null);
 
-  // The agent asked in prose: the reply goes in the composer.
-  assert.match(waitingNote(waiting({ waitingOn: { kind: "reply", detail: "" } })).text, /waiting for your reply/);
-  assert.equal(waitingNote(waiting({ waitingOn: { kind: "reply", detail: "" } })).action, undefined);
-
   // A child's approval lives in the Session panel, so the note leads there,
   // and it outranks the session's own reason.
   const child = waitingNote(waiting({ waitingOn: { kind: "reply", detail: "" }, background: [{ id: 1, awaiting_approval: true }] }));
   assert.match(child.text, /background task/);
   assert.equal(child.action, "agents");
 
+  // Every other wait takes no new prompt, so the way out is to stop.
+  for (const waitingOn of [null, { kind: "reply", detail: "" }, { kind: "other", detail: "" }]) {
+    const note = waitingNote(waiting({ waitingOn }));
+    assert.equal(note.action, "stop");
+    assert.match(note.text, /Stop the session to continue/);
+  }
+  assert.match(waitingNote(waiting()).text, /no longer open/);
   assert.match(waitingNote(waiting({ waitingOn: { kind: "configuration", detail: "GITHUB_TOKEN" } })).text, /GITHUB_TOKEN/);
   assert.match(waitingNote(waiting({ waitingOn: { kind: "external", detail: "Merge the PR." } })).text, /Merge the PR\./);
-
-  // Nothing said why: the note admits it and still gives somewhere to look.
-  const unknown = waitingNote(waiting());
-  assert.match(unknown.text, /did not say what for/);
-  assert.equal(unknown.action, "agents");
 });
 
 test("the snapshot carries the wait reason", () => {

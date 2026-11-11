@@ -50,7 +50,7 @@ test("a default view is a fresh record with nothing open", () => {
     messageDetails: {},
     questionDrafts: {},
     approvalDrafts: {},
-    files: { listings: {}, status: { branch: "", files: [] }, lastTurnFiles: [], loading: false, error: "", request: 0 },
+    files: { listings: {}, status: { branch: "", files: [] }, lastTurnFiles: [], loading: false, loaded: false, error: "", request: 0 },
   });
   assert.notEqual(first.files, second.files, "records must not share a workspace");
   assert.notEqual(first.questionDrafts, second.questionDrafts, "records must not share drafts");
@@ -352,4 +352,16 @@ test("a refresh closes folders that have gone away and keeps the rest", () => {
   });
   assert.deepEqual(record.expanded, ["src", "docs"]);
   assert.deepEqual(Object.keys(record.files.listings), ["", "src"]);
+});
+
+test("only the first load is shown as loading; a poll keeps what is on screen", () => {
+  const record = defaultView();
+  const result = { folders: [""], loaded: [{ entries: [], truncated: false }], status: { branch: "main", files: [] }, lastTurnFiles: [] };
+  applyRefresh(record, beginRefresh(record.files), result);
+  assert.equal(record.files.loaded, true);
+  // A later refresh in flight leaves the listing and any error alone.
+  record.files.error = "cannot read the folder";
+  beginRefresh(record.files);
+  assert.equal(record.files.error, "cannot read the folder");
+  assert.equal(record.files.status.branch, "main");
 });

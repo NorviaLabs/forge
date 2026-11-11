@@ -29,20 +29,13 @@
     onStop,
     onClose,
     onResume,
-    onHelp,
-    onSettings,
     onNew,
     onCloseRail,
   } = $props();
 
-  let search = $state("");
-
-  const needle = $derived(search.trim().toLowerCase());
-  const matches = (session) => !needle || session.label.toLowerCase().includes(needle);
+  // Finding a session by name is the command palette's job (⌘K).
   const live = $derived(sessions.filter((session) => session.lifecycle === "active"));
   const closed = $derived(sessions.filter((session) => session.lifecycle !== "active"));
-  const shownLive = $derived(live.filter(matches));
-  const shownClosed = $derived(closed.filter(matches));
   // Roster order, never re-sorted: acting on a decision must not move rows.
   const waiting = $derived(sessions.filter((session) => attention.includes(session.session_id)));
   // The sessions belong under the on-screen project's heading; with no such
@@ -67,7 +60,7 @@
           <span>Creating session…</span>
         </li>
       {/if}
-      {#each shownLive as session (session.session_id)}
+      {#each live as session (session.session_id)}
         {@const needsYou = attention.includes(session.session_id)}
         <li
           class="row"
@@ -146,16 +139,14 @@
             New session
           </button>
         </li>
-      {:else if needle && shownLive.length === 0 && shownClosed.length === 0}
-        <li class="empty">No sessions match “{search.trim()}”.</li>
       {/if}
     </ul>
 
-    {#if shownClosed.length > 0}
-      <details class="closed" open={!!needle}>
-        <summary>{shownClosed.length} closed session{shownClosed.length === 1 ? "" : "s"}</summary>
+    {#if closed.length > 0}
+      <details class="closed">
+        <summary>{closed.length} closed session{closed.length === 1 ? "" : "s"}</summary>
         <ul class="session-list">
-          {#each shownClosed as session (session.session_id)}
+          {#each closed as session (session.session_id)}
             <li class="row">
               <button
                 type="button"
@@ -200,14 +191,14 @@
   <button type="button" class="rail-backdrop" aria-label="Close sessions" tabindex="-1" onclick={() => onCloseRail?.()}></button>
 {/if}
 <aside class="sidebar" class:open aria-label="Projects and sessions" {@attach open ? overlay : null}>
-  <div class="filter">
-    {#if open}
+  {#if open}
+    <div class="filter">
+      <span class="overlay-title">Sessions</span>
       <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
         <Icon name="close" size={13} />
       </button>
-    {/if}
-    <input class="field" bind:value={search} placeholder="Search sessions" aria-label="Search sessions" spellcheck="false" />
-  </div>
+    </div>
+  {/if}
 
   <div class="rail-scroll">
     {#if waiting.length > 0}
@@ -312,11 +303,7 @@
     {/if}
   </div>
 
-  <footer class="rail-foot">
-    <button class="btn ghost" type="button" onclick={onSettings}>Settings</button>
-    <span class="spacer"></span>
-    <button class="btn ghost" type="button" onclick={onHelp}>Help</button>
-  </footer>
+
 </aside>
 
 <style>
@@ -341,9 +328,9 @@
     margin-bottom: 12px;
   }
 
-  .filter .field {
+  .overlay-title {
     flex: 1;
-    min-width: 0;
+    font-weight: 600;
   }
 
   .filter .icon-btn {
@@ -737,17 +724,6 @@
   .new .field {
     flex: 1;
     min-width: 0;
-  }
-
-  .rail-foot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: var(--bar);
-    flex: none;
-    margin: 0 -12px;
-    padding: 0 12px;
-    border-top: 1px solid var(--border);
   }
 
   .spacer {

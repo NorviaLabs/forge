@@ -20,6 +20,23 @@
   let pageEnd = $state(null);
   const end = $derived(Math.min(pageEnd ?? messages.length, messages.length));
   const start = $derived(Math.max(0, end - PAGE_SIZE));
+  // Long output and reasoning show a clipped preview in the transcript and
+  // open in place: the transcript is the only thing that scrolls. Keyed by
+  // transcript index; "r" marks reasoning.
+  let opened = $state({});
+  const PREVIEW_LINES = { output: 8, reasoning: 12 };
+  const lineCount = (text) => text.split("\n").length;
+  const truncated = (text) => text.endsWith("…");
+  const isLong = (text, kind) => truncated(text) || lineCount(text) > PREVIEW_LINES[kind];
+  function toggle(key, absolute, text) {
+    if (!opened[key] && truncated(text)) onExpand?.(absolute);
+    opened[key] = !opened[key];
+  }
+  function toggleLabel(key, text, kind) {
+    if (opened[key] && !truncated(text)) return "Show less";
+    const what = kind === "output" ? "output" : "reasoning";
+    return truncated(text) ? `Show the full ${what}` : `Show all ${lineCount(text)} lines`;
+  }
   const visible = $derived(messages.slice(start, end));
 
   $effect(() => {
@@ -117,7 +134,7 @@
   {/if}
 
   {#each visible as message, index (start + index)}
-    <div class="turn {message.role}" class:multi={message.role === "tool" && !oneLine(message)} class:expanded={message.expanded}>
+    <div class="turn {message.role}" class:multi={message.role === "tool" && !oneLine(message)}>
       <div class="who">
         {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}<span class="sr-only">Tool</span>
           <span class="tool-name">{toolName(message)}</span>
@@ -125,11 +142,13 @@
         {/if}
       </div>
       {#if message.thinking}
+        {@const key = `r${start + index}`}
+        {@const long = isLong(message.thinking, "reasoning")}
         <details class="thinking">
           <summary>Reasoning</summary>
-          <pre>{message.thinking}</pre>
-          {#if onExpand && message.thinking.endsWith("…")}
-            <button class="btn expand" type="button" onclick={() => onExpand(start + index)}>Show full reasoning</button>
+          <pre class:clipped={long && !(opened[key] && !truncated(message.thinking))}>{message.thinking}</pre>
+          {#if long}
+            <button class="link expand" type="button" aria-expanded={!!opened[key] && !truncated(message.thinking)} onclick={() => toggle(key, start + index, message.thinking)}>{toggleLabel(key, message.thinking, "reasoning")}</button>
           {/if}
         </details>
       {/if}
@@ -139,9 +158,13 @@
         data-optimistic={message.optimistic ? "true" : undefined}
       >
         {#if message.role === "tool"}
-          {#if !oneLine(message)}<pre>{message.text}</pre>{/if}
-          {#if onExpand && message.text.endsWith("…")}
-            <button class="btn expand" type="button" onclick={() => onExpand(start + index)}>Show full output</button>
+          {#if !oneLine(message)}
+            {@const key = `o${start + index}`}
+            {@const long = isLong(message.text, "output")}
+            <pre class:clipped={long && !(opened[key] && !truncated(message.text))}>{message.text}</pre>
+            {#if long}
+              <button class="link expand" type="button" aria-expanded={!!opened[key] && !truncated(message.text)} onclick={() => toggle(key, start + index, message.text)}>{toggleLabel(key, message.text, "output")}</button>
+            {/if}
           {/if}
         {:else}
           <Markdown text={message.text} />
@@ -348,27 +371,39 @@
     margin-bottom: 4px;
   }
 
-  /* Asked for in full: no height cap, so the rest is on the page and not
-     inside a scrolling box. */
-  .turn.expanded pre {
-    max-height: none;
-  }
 
   /* Longer output starts on the tool's own row, beside its name. */
   .turn.tool.multi .message.tool {
     margin-top: -22px;
   }
 
+  /* No scroll box inside the transcript: long text is clipped to a preview
+     that fades out, and opens in place. */
   .message.tool pre {
-    max-height: 160px;
     margin: 0;
     padding: 0;
-    overflow: auto;
     color: var(--muted);
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     line-height: 20px;
     white-space: pre-wrap;
+  }
+
+  .message.tool pre.clipped {
+    max-height: 160px;
+  }
+
+  .thinking pre.clipped {
+    max-height: 240px;
+  }
+
+  pre.clipped {
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  }
+
+  .expand {
+    font-size: var(--text-sm);
   }
 
   .message.tool .expand {
@@ -392,10 +427,8 @@
   }
 
   .thinking pre {
-    max-height: 240px;
     margin: 8px 0 0;
     padding: 0 0 0 12px;
-    overflow: auto;
     border-left: 1px solid var(--border);
     color: var(--muted);
     font-family: var(--font-ui);

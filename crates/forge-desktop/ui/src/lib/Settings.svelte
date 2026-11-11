@@ -35,14 +35,14 @@
           <span>Model providers</span>
           <span class="note">Sign in, add a key, or add a custom provider.</span>
         </span>
-        <button class="btn" type="button" onclick={onProviders}>Manage…</button>
+        <button class="link" type="button" onclick={onProviders}>Manage</button>
       </div>
       <div class="row">
         <span class="what">
           <span>GitHub</span>
           <span class="note">{onGithub ? "Issues, pull requests and checks for this repository." : "Needs a Git repository: this project is a plain folder."}</span>
         </span>
-        <button class="btn" type="button" disabled={!onGithub} onclick={onGithub}>Open…</button>
+        <button class="link" type="button" disabled={!onGithub} onclick={onGithub}>Open</button>
       </div>
     </div>
   </div>

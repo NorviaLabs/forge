@@ -13,11 +13,7 @@
     turnState = "idle",
     approveAll = false,
     thinking = false,
-    plan = null,
     tokens = null,
-    background = [],
-    queue = [],
-    interrupted = [],
     counts = { tools: 0, skills: 0, allows: 0 },
     destination = null,
     onClose,
@@ -29,13 +25,6 @@
     onContinue,
     onCompact,
     onStopSession,
-    onCancelQueued,
-    onEditQueued,
-    onRestoreInterrupted,
-    onCancelBackground,
-    onOpenChild,
-    onInsertTask,
-    onResolveChild,
     onFork,
     onCloseSession,
     onArchive,
@@ -45,20 +34,7 @@
 
   const percent = $derived(Math.round(Math.min(Math.max(contextUsage, 0), 1) * 100));
   const level = $derived(percent >= 90 ? "high" : percent >= 70 ? "warm" : "");
-  let confirmChild = $state("");
   let panel = $state();
-
-  // State is a dot plus a word: the dot class and the word for each status.
-  const PLAN_DOTS = { in_progress: "running", completed: "completed" };
-  const PLAN_WORDS = { in_progress: "in progress", completed: "done", pending: "pending" };
-  const TASK_DOTS = {
-    queued: "queued",
-    running: "running",
-    waiting_for_approval: "waiting",
-    succeeded: "completed",
-    failed: "failed",
-    cancelled: "cancelled",
-  };
 
   // Opening at a destination puts that section at the top of the panel.
   onMount(async () => {
@@ -140,122 +116,6 @@
   </section>
 
 
-  {#if plan && plan.items.length > 0}
-    <section id="menu-plan">
-      <h2>Plan</h2>
-      {#if plan.explanation}<p class="small dim">{plan.explanation}</p>{/if}
-      <ul class="plan">
-        {#each plan.items as item, index (index)}
-          <li class={item.status}>
-            <span class="mark state-dot {PLAN_DOTS[item.status] ?? "queued"}" aria-hidden="true"></span>
-            <span class="step">{item.step}</span>
-            <span class="plan-status">{PLAN_WORDS[item.status] ?? String(item.status).replaceAll("_", " ")}</span>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if background.length > 0}
-    <section id="menu-agents">
-      <h2>Agents &amp; tasks <span class="count">{background.length}</span></h2>
-      <ul class="tasks">
-        {#each background as task (task.id)}
-          <li class={task.status} class:needs={task.awaiting_approval && task.approval}>
-            <div class="task-head">
-              <span class="task-label">{task.label}</span>
-              <span class="task-id mono">#{task.id}</span>
-              <span class="task-status"><span class="state-dot {TASK_DOTS[task.status] ?? ""}" aria-hidden="true"></span>{task.status.replaceAll("_", " ")}</span>
-            </div>
-            {#if task.detail}<p class="task-detail mono">{task.detail}</p>{/if}
-            {#if task.approval}<pre class="task-detail mono">{`${task.approval.tool}\n${task.approval.arguments}`}</pre>{/if}
-            <div class="row">
-              {#if task.awaiting_approval && task.approval}
-                {#if confirmChild === `${task.id}:${task.approval.call_id}`}
-                  <p class="small">This opens a sandbox-denied host or runs outside the filesystem sandbox.</p>
-                  <button type="button" class="btn danger" onclick={() => { onResolveChild(task.id, true, task.approval.call_id, task.approval.request_id, true); confirmChild = ""; }}>Confirm allow</button>
-                  <button type="button" class="btn" onclick={() => (confirmChild = "")}>Cancel</button>
-                {:else}
-                  <button type="button" class="btn primary" onclick={() => task.approval.privileged ? (confirmChild = `${task.id}:${task.approval.call_id}`) : onResolveChild(task.id, true, task.approval.call_id, task.approval.request_id, false)}>Allow</button>
-                {/if}
-                <button type="button" class="btn" onclick={() => onResolveChild(task.id, false, task.approval.call_id, task.approval.request_id, false)}>
-                  Don't run
-                </button>
-              {:else if !["succeeded", "failed", "cancelled"].includes(task.status)}
-                <button type="button" class="btn" onclick={() => onCancelBackground(task)}>
-                  Stop
-                </button>
-              {/if}
-              {#if task.child_session_id}
-                <button type="button" class="btn" onclick={() => onOpenChild(task)}>
-                  Read
-                </button>
-              {/if}
-              {#if ["succeeded", "failed", "cancelled"].includes(task.status) && (task.latest_message || task.detail)}
-                <button type="button" class="btn" onclick={() => onInsertTask(task)}>
-                  Insert result
-                </button>
-              {/if}
-            </div>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
-  {#if queue.length > 0 || interrupted.length > 0}
-    <section id="menu-queue">
-      <h2>Queue <span class="count">{queue.length + interrupted.length}</span></h2>
-      {#if queue.length > 0}
-      <ul class="queue">
-        {#each queue as item, index (`${item.source}:${item.id}`)}
-          <li>
-            <span class="queue-n mono" aria-hidden="true">{index + 1}</span>
-            <span class="queued-text">{item.text}</span>
-            <button
-              type="button"
-              class="icon-btn"
-              title="Edit this prompt in the composer"
-              aria-label="Edit queued prompt"
-              onclick={() => onEditQueued(item, index + 1)}
-            >
-              <Icon name="pencil" size={13} />
-            </button>
-            <button
-              type="button"
-              class="icon-btn"
-              title="Remove from the queue"
-              aria-label="Remove queued prompt"
-              onclick={() => onCancelQueued(sessionId, item.id, index + 1, item.source)}
-            >
-              <Icon name="close" size={13} />
-            </button>
-          </li>
-        {/each}
-      </ul>
-      {/if}
-      {#if interrupted.length > 0}
-      <h3>Interrupted</h3>
-      <ul class="queue">
-        {#each interrupted as item (item.id)}
-          <li>
-            <span class="queued-text">{item.text}</span>
-            <button
-              type="button"
-              class="icon-btn"
-              title="Put this prompt back in the composer"
-              aria-label="Restore interrupted prompt"
-              onclick={() => onRestoreInterrupted(item.text)}
-            >
-              <Icon name="pencil" size={13} />
-            </button>
-          </li>
-        {/each}
-      </ul>
-      {/if}
-    </section>
-  {/if}
-
   <section id="menu-context">
     <h2>Context &amp; usage</h2>
     <div class="meter" aria-label="Context window used">
@@ -283,7 +143,7 @@
       </dl>
     {/if}
     <div class="row">
-      <button class="btn" type="button" onclick={onDetails}>Status details…</button>
+      <button class="link" type="button" onclick={onDetails}>Token and cost details</button>
     </div>
   </section>
 </div>
@@ -339,8 +199,7 @@
   }
 
   /* Section labels. */
-  h2,
-  h3 {
+  h2 {
     display: flex;
     align-items: center;
     gap: 8px;
@@ -483,150 +342,6 @@
   .small {
     margin: 0;
     font-size: var(--text-sm);
-  }
-
-  p.small.dim {
-    margin-bottom: 8px;
-  }
-
-  .row .small {
-    flex-basis: 100%;
-    color: var(--secondary);
-  }
-
-  .plan,
-  .tasks,
-  .queue {
-    display: flex;
-    flex-direction: column;
-    margin: 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  .plan li {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    align-items: start;
-    gap: 8px;
-    min-height: 28px;
-    padding: 4px 0;
-    color: var(--secondary);
-    font-size: var(--text-sm);
-    line-height: 20px;
-  }
-
-  /* Centres the dot on the first line of the step. */
-  .plan .mark {
-    margin-top: 6px;
-  }
-
-  .plan .step {
-    overflow-wrap: anywhere;
-  }
-
-  .plan-status {
-    color: var(--muted);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-  }
-
-  .plan li.completed {
-    color: var(--muted);
-  }
-
-  .plan li.in_progress {
-    color: var(--text);
-  }
-
-  .tasks {
-    gap: 8px;
-  }
-
-  .tasks li {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-  }
-
-  .tasks li.needs {
-    border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
-  }
-
-  .task-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 20px;
-  }
-
-  .task-label {
-    min-width: 0;
-    overflow: hidden;
-    font-size: var(--text-sm);
-    font-weight: 500;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .task-id {
-    flex: none;
-    color: var(--muted);
-    font-size: var(--text-xs);
-  }
-
-  .task-status {
-    display: inline-flex;
-    flex: none;
-    align-items: center;
-    gap: 8px;
-    margin-left: auto;
-    color: var(--muted);
-    font-size: var(--text-xs);
-  }
-
-  .task-detail {
-    max-height: 120px;
-    margin: 0;
-    overflow: auto;
-    color: var(--muted);
-    font-size: var(--text-xs);
-    line-height: 16px;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
-  .queue li {
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    min-height: 28px;
-  }
-
-  .queue-n {
-    flex: none;
-    min-width: 16px;
-    color: var(--muted);
-    font-size: var(--text-xs);
-    line-height: 28px;
-  }
-
-  .queued-text {
-    display: -webkit-box;
-    flex: 1;
-    min-width: 0;
-    padding: 4px 0;
-    overflow: hidden;
-    color: var(--secondary);
-    font-size: var(--text-sm);
-    line-height: 20px;
-    overflow-wrap: anywhere;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    line-clamp: 2;
   }
 
   .meter {

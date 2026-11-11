@@ -1168,6 +1168,17 @@ impl RepositorySupervisor {
             if recovered.iter().any(|(id, _, _)| *id == task.session_id) {
                 task.turn_state = SupervisorTurnState::Interrupted;
             }
+            // The row can say "waiting" for a session that no longer waits
+            // on anything: its request did not survive the restart. Shown
+            // as waiting, it would ask for an answer nobody can give.
+            if task.turn_state == SupervisorTurnState::Waiting
+                && session.active_task.lifecycle != TaskLifecycle::Waiting
+            {
+                task.turn_state = SupervisorTurnState::Interrupted;
+                control
+                    .set_turn_state(task.session_id, SupervisorTurnState::Interrupted)
+                    .await?;
+            }
             let interrupted = control.interrupted_prompts(task.session_id).await?;
             let queued = control.queued_prompts(task.session_id).await?;
             let trusted = workspace_is_trusted(trust_store.as_deref(), &task.workspace);

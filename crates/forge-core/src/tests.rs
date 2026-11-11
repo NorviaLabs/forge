@@ -4678,6 +4678,47 @@ async fn mark_interrupted_if_stale_converts_running() {
 }
 
 #[tokio::test]
+async fn a_restored_wait_without_its_request_becomes_interrupted() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    // As a restart leaves it when the pending request could not be read
+    // back: waiting, with nothing to answer.
+    s.active_task = crate::lifecycle::ActiveTaskState::from_restored(
+        s.session_id,
+        TaskLifecycle::Waiting,
+        None,
+    );
+    assert!(matches!(
+        s.append_user_message("hello").await,
+        Err(LoopError::AwaitingHitl)
+    ));
+    s.mark_interrupted_if_stale().await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Interrupted);
+    // The operator can work again.
+    s.append_user_message("hello").await.unwrap();
+
+    // A wait whose request did come back is left for the operator.
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    let reason = WaitReason::Clarification {
+        request_id: "r1".into(),
+    };
+    s.active_task = crate::lifecycle::ActiveTaskState::from_restored(
+        s.session_id,
+        TaskLifecycle::Waiting,
+        Some(reason),
+    );
+    s.mark_interrupted_if_stale().await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+}
+
+#[tokio::test]
 async fn mark_cancelled_persists_terminal_state() {
     let dir = tempdir().unwrap();
     let model = Arc::new(MockModelClient::script(vec![ModelResponse {

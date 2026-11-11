@@ -41,6 +41,9 @@ export function defaultFiles() {
     status: { branch: "", files: [] },
     lastTurnFiles: [],
     loading: false,
+    // Whether any refresh has landed. Only the first load is shown as
+    // loading; the background poll updates in place, so nothing flickers.
+    loaded: false,
     error: "",
     // Counts refreshes, so an older reply never replaces a newer one.
     request: 0,
@@ -50,7 +53,6 @@ export function defaultFiles() {
 // Starts a refresh of a session's workspace and returns its ticket.
 export function beginRefresh(files) {
   files.loading = true;
-  files.error = "";
   return ++files.request;
 }
 
@@ -67,6 +69,8 @@ export function applyRefresh(record, ticket, { folders, loaded, status, lastTurn
   files.status = status;
   files.lastTurnFiles = lastTurnFiles;
   files.loading = false;
+  files.loaded = true;
+  files.error = "";
   return true;
 }
 

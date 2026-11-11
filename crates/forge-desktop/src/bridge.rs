@@ -69,6 +69,9 @@ pub enum DesktopEvent {
         skill_descriptions: Vec<(String, String)>,
         pattern_allows: usize,
         image_input: bool,
+        /// Whether the switch for extended thinking changes anything for
+        /// this session's model, so the page only offers it where it works.
+        thinking_switchable: bool,
         /// The active session's workspace, branch and model, for the
         /// inspector. No credentials.
         workspace: String,
@@ -818,6 +821,29 @@ fn waiting_view(waiting: &forge_session::WaitingOn) -> WaitingView {
     }
 }
 
+/// Whether turning thinking off reaches the model. Anthropic reasoning
+/// models take an explicit "disabled"; the other wires only honour it when
+/// the catalog lists "none" among the model's reasoning levels. Asked once
+/// per model: the answer reads the provider registry and the catalog file.
+fn thinking_switchable(model: &str) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static KNOWN: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    if model.is_empty() {
+        return false;
+    }
+    let known = KNOWN.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(answer) = known.lock().ok().and_then(|map| map.get(model).copied()) {
+        return answer;
+    }
+    let answer = forge_connect::effort::effort_for_model(model).supported()
+        || forge_connect::ModelCatalogCache::user_default().model_supports_thinking_off(model);
+    if let Ok(mut map) = known.lock() {
+        map.insert(model.to_string(), answer);
+    }
+    answer
+}
+
 fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
     let messages = snapshot
         .transcript
@@ -879,6 +905,10 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .details
             .as_ref()
             .is_some_and(|details| details.image_input_supported),
+        thinking_switchable: snapshot
+            .details
+            .as_ref()
+            .is_some_and(|details| thinking_switchable(&details.active_model)),
         workspace: snapshot.task.workspace.display().to_string(),
         branch: snapshot.task.branch.clone(),
         model: snapshot

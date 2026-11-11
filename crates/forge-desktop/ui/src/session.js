@@ -18,6 +18,7 @@ export function emptySnapshot() {
     approveAll: false,
     thinking: false,
     imageInput: false,
+    thinkingSwitchable: false,
     plan: null,
     tokens: null,
     background: [],
@@ -47,6 +48,7 @@ export function snapshotFrom(event, record) {
     approveAll: event.approve_all,
     thinking: event.thinking,
     imageInput: event.image_input ?? false,
+    thinkingSwitchable: event.thinking_switchable ?? false,
     plan: event.plan ?? null,
     tokens: event.tokens ?? null,
     background: event.background ?? [],
@@ -73,17 +75,17 @@ export function waitingNote(snapshot) {
   if (snapshot.background.some((task) => task.awaiting_approval || task.approval)) {
     return { text: "A background task of this session needs your approval.", action: "agents", label: "Review" };
   }
+  // A waiting session takes no new prompt, so every other case ends the
+  // same way: stop it, then carry on.
   const waiting = snapshot.waitingOn;
-  if (waiting?.kind === "reply") {
-    return { text: "Forge asked something in its last message and is waiting for your reply. Type it below and send." };
-  }
-  if (waiting?.kind === "configuration") {
-    return { text: `Forge is waiting for a missing setting: ${waiting.detail}. Add it, then reply below to continue.` };
-  }
-  if (waiting?.kind === "external") {
-    return { text: `Forge is waiting for something outside Forge: ${waiting.detail} Reply below when it is done.` };
-  }
-  return { text: "This session is waiting on you but did not say what for. Reply below, or open its tasks.", action: "agents", label: "Open tasks" };
+  const what = waiting?.kind === "reply"
+    ? "Forge is waiting for a reply it has no way to collect here."
+    : waiting?.kind === "configuration"
+      ? `Forge is waiting for a missing setting: ${waiting.detail}.`
+      : waiting?.kind === "external"
+        ? `Forge is waiting for something outside Forge: ${waiting.detail}`
+        : "This session is waiting on a request that is no longer open.";
+  return { text: `${what} Stop the session to continue with a new prompt.`, action: "stop", label: "Stop session" };
 }
 
 const busy = (turnState) => turnState === "running" || turnState === "waiting";

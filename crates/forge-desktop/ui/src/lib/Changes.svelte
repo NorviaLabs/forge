@@ -15,6 +15,11 @@
     error = "",
     onOpenDiff,
     onOpenFiles,
+    // The other view of this column: what the session does in the background.
+    view = $bindable("changes"),
+    activityCount = 0,
+    activityNeedsYou = false,
+    activity,
   } = $props();
 
   const PREVIEW_LINES = 400;
@@ -73,7 +78,10 @@
   async function show(path, diffSide) {
     const ticket = ++request;
     selected = path;
-    preview = { path, side: diffSide, lines: [], more: 0, loading: true, error: "" };
+    // Refreshing the file already shown keeps its diff on screen until the
+    // new one lands; only a different file starts from "Loading".
+    const same = preview.path === path && preview.side === diffSide && !preview.error;
+    if (!same) preview = { path, side: diffSide, lines: [], more: 0, loading: true, error: "" };
     try {
       const diff = await invoke("git_diff", { sessionId, path, side: diffSide });
       if (ticket !== request) return;
@@ -127,18 +135,23 @@
 </script>
 
 <aside class="changes" aria-label="Changes">
-  <header class="changes-head">
-    <h2>Changes</h2>
-    {#if supportsGit && status.files.length > 0}
-      <span class="total">{status.files.length} {status.files.length === 1 ? "file" : "files"}</span>
-    {/if}
+  <header class="changes-head" role="tablist" aria-label="Side panel">
+    <button type="button" role="tab" class="view-tab" aria-selected={view === "changes"} onclick={() => (view = "changes")}>
+      Changes{#if supportsGit && status.files.length > 0}<span class="total">{status.files.length}</span>{/if}
+    </button>
+    <button type="button" role="tab" class="view-tab" aria-selected={view === "activity"} onclick={() => (view = "activity")}>
+      Activity{#if activityCount > 0}<span class="total" class:needs={activityNeedsYou}>{activityCount}</span>{/if}
+      {#if activityNeedsYou}<span class="state-dot waiting" aria-label="needs you"></span>{/if}
+    </button>
   </header>
 
-  {#if !supportsGit}
+  {#if view === "activity"}
+    {@render activity?.()}
+  {:else if !supportsGit}
     <div class="empty">
       <strong>No Git repository here</strong>
       <p>Changes are tracked through Git. This folder is a plain directory, so there is nothing to compare.</p>
-      <button type="button" class="btn browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>
+      <button type="button" class="link browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>
     </div>
   {:else}
     <div class="tabs" role="tablist" aria-label="Which changes">
@@ -166,7 +179,7 @@
           <p>The worktree on {status.branch || "this branch"} is clean. Changes that were already committed are not listed here.</p>
         {/if}
         {#if !loading}
-          <button type="button" class="btn browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>
+          <button type="button" class="link browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>
         {/if}
       </div>
     {:else}
@@ -236,10 +249,37 @@
     padding: 0 8px 0 16px;
   }
 
-  h2 {
-    margin: 0;
+  /* The column's two views, as headings that switch. */
+  .view-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--muted);
     font-size: var(--text-md);
     font-weight: 600;
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  }
+
+  .view-tab:first-child {
+    margin-left: -8px;
+  }
+
+  .view-tab:hover {
+    color: var(--text);
+  }
+
+  .view-tab[aria-selected="true"] {
+    background: var(--raised);
+    color: var(--text);
+  }
+
+  .total.needs {
+    color: var(--warning);
   }
 
   .total,
@@ -466,13 +506,14 @@
     display: flex;
     flex: 1;
     flex-direction: column;
+    align-items: center;
     justify-content: center;
     gap: 4px;
     padding: 24px;
+    text-align: center;
   }
 
   .browse {
-    align-self: flex-start;
     margin-top: 12px;
   }
 
@@ -497,16 +538,6 @@
     color: var(--error);
     font-size: var(--text-sm);
     overflow-wrap: anywhere;
-  }
-
-  .link {
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--accent);
-    font-size: inherit;
-    text-decoration: underline;
-    text-underline-offset: 3px;
   }
 
   @media (prefers-reduced-motion: reduce) {

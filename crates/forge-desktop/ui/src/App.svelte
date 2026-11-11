@@ -9,6 +9,7 @@
   import Conversation from "./lib/Conversation.svelte";
   import Changes from "./lib/Changes.svelte";
   import Settings from "./lib/Settings.svelte";
+  import Activity from "./lib/Activity.svelte";
   import Composer from "./lib/Composer.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import Inspector from "./lib/Inspector.svelte";
@@ -142,7 +143,8 @@
   // It is fetched per session and kept in that session's view record, with
   // its Git status and last-turn files.
   const listings = $derived(currentView.files.listings);
-  const filesLoading = $derived(currentView.files.loading);
+  // Shown as loading only until the first listing lands.
+  const filesLoading = $derived(currentView.files.loading && !currentView.files.loaded);
   const filesError = $derived(currentView.files.error);
   const status = $derived(currentView.files.status);
   const lastTurnFiles = $derived(currentView.files.lastTurnFiles);
@@ -252,6 +254,23 @@
   const hasDecision = $derived(!!(question || approval));
   const needsYou = $derived(Object.keys(attention).length);
   const terminalShown = $derived(currentView.drawerOpen && !!shells[sessionId]);
+  // The side panel's second view: the plan, background work and the queue.
+  let sideView = $state("changes");
+  const activityCount = $derived(background.filter((task) => !["succeeded", "failed", "cancelled"].includes(task.status)).length + queue.length + interrupted.length);
+  const activityNeedsYou = $derived(background.some((task) => task.awaiting_approval && task.approval));
+  function showActivity(section) {
+    sideView = "activity";
+    tick().then(() => document.getElementById(`activity-${section}`)?.scrollIntoView({ block: "start" }));
+  }
+  const stepNumber = $derived(currentStep ? plan.items.indexOf(currentStep) + 1 : 0);
+  // The footer's figures: where the session works and what it costs.
+  const runSummary = $derived(currentProject && currentProject.open ? `${currentProject.running} of ${currentProject.limit} running` : "");
+  // The "more" menu in the top bar.
+  let moreOpen = $state(false);
+  function fromMore(action) {
+    moreOpen = false;
+    action();
+  }
   const waitNote = $derived(waitingNote(snapshot));
   // Context is shown only once it needs a decision: at 70% the operator can
   // compact before the session does it for them.
@@ -314,8 +333,8 @@
     { name: "/theme", help: "Switch the desktop theme", run: () => (settingsOpen = true) },
     { name: "/status", help: "Show session status and token usage", run: () => (detailsOpen = true) },
     { name: "/context", help: "Show the context breakdown", run: () => (detailsOpen = true) },
-    { name: "/plan", help: "Show the latest execution plan", run: () => (sessionMenu = "plan") },
-    { name: "/tasks", help: "Show background tasks and queued prompts", run: () => (sessionMenu = "agents") },
+    { name: "/plan", help: "Show the latest execution plan", run: () => showActivity("plan") },
+    { name: "/tasks", help: "Show background tasks and queued prompts", run: () => showActivity("agents") },
     { name: "/approve-all", help: "Toggle approve-all for this session", run: toggleApproveAll },
     { name: "/thinking", help: "Toggle model reasoning", run: toggleThinking },
     { name: "/compact", help: "Continue in a fresh context", run: compactContext },
@@ -413,9 +432,9 @@
       },
       { id: "action:files", group: "Actions", label: "Open Files", detail: chord("E"), action: openFiles },
       { id: "action:focus-terminal", group: "Actions", label: "Focus terminal", action: async () => { await openTerminal(); await focusTerminal(); } },
-      { id: "menu:plan", group: "Session", label: "Plan", action: () => (sessionMenu = "plan") },
-      { id: "menu:agents", group: "Session", label: "Agents & tasks", action: () => (sessionMenu = "agents") },
-      { id: "menu:queue", group: "Session", label: "Queue", action: () => (sessionMenu = "queue") },
+      { id: "menu:plan", group: "Session", label: "Plan", action: () => showActivity("plan") },
+      { id: "menu:agents", group: "Session", label: "Background tasks and agents", action: () => showActivity("agents") },
+      { id: "menu:queue", group: "Session", label: "Queue", action: () => showActivity("queue") },
       { id: "menu:context", group: "Session", label: "Context & usage", action: () => (sessionMenu = "context") },
       {
         id: "action:model",
@@ -1897,24 +1916,21 @@
       <button bind:this={railButton} type="button" class="icon-btn rail-toggle" aria-label="Sessions" aria-expanded={railOpen} onclick={() => (railOpen = true)}>
         <Icon name="layers" size={14} />
       </button>
-      {#if currentProject}
-        <span class="wordmark" title={currentProject.root}>{currentProject.name}</span>
-      {:else}
-        <span class="wordmark">Forge</span>
-      {/if}
+      <span class="wordmark" title={currentProject?.root}>{currentProject?.name ?? "Forge"}</span>
     </div>
     {#if currentView.screen === "session"}
       <div class="head-title">
         {#if activeSession}<span class="state-dot {turnState}" aria-hidden="true"></span>{/if}
         <strong>{activeSession?.label ?? "No session"}</strong>
         {#if activeSession}<span class="head-state">{turnWord(turnState)}</span>{/if}
-        {#if branch}<span class="chip mono head-branch" title={`${branch} · ${info.workspace}`}><Icon name="branch" size={11} /><span>{branch}</span></span>
-        {:else if info.workspace}<span class="chip mono head-branch checkout" title={info.workspace}><span>{basename(info.workspace)}</span></span>{/if}
+        {#if currentStep}
+          <button type="button" class="head-step" title="Open the plan" onclick={() => showActivity("plan")}>
+            <span class="step-count">Step {stepNumber} of {plan.items.length}</span>
+            <span class="step-text">{currentStep.step}</span>
+          </button>
+        {/if}
       </div>
       <span class="spacer"></span>
-      {#if needsYou > 0}
-        <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
-      {/if}
       <!-- Icons for the three everyday actions; each has its name as a tooltip
            and an accessible label. -->
       <button bind:this={filesButton} type="button" class="icon-btn head-icon" title={`Files (${chord("E")})`} aria-label="Files" disabled={!sessionId} onclick={openFiles}>
@@ -1937,9 +1953,23 @@
       <button type="button" class="icon-btn head-icon" title="New session" aria-label="New session" aria-haspopup="dialog" onclick={openNewSession}>
         <Icon name="plus" size={15} />
       </button>
-      <button type="button" class="icon-btn head-icon" title="Session: plan, tasks, queue, usage and actions" aria-label="Session" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>
-        <Icon name="more" size={15} />
-      </button>
+      <div class="more">
+        <button type="button" class="icon-btn head-icon" class:on={moreOpen} title="More" aria-label="More" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => (moreOpen = !moreOpen)}>
+          <Icon name="more" size={15} />
+        </button>
+        {#if moreOpen}
+          <div class="menu-scrim" role="presentation" onclick={() => (moreOpen = false)}></div>
+          <div class="menu" role="menu" aria-label="More" tabindex="-1" use:modal={{ onClose: () => (moreOpen = false) }}>
+            <button type="button" role="menuitem" disabled={!sessionId} onclick={() => fromMore(() => (sessionMenu = "actions"))}>Session<span class="menu-note">model, approvals, rename, close</span></button>
+            <button type="button" role="menuitem" disabled={!sessionId} onclick={() => fromMore(() => (detailsOpen = true))}>Context and usage</button>
+            <button type="button" role="menuitem" disabled={!sessionId} onclick={() => fromMore(() => showActivity("plan"))}>Activity<span class="menu-note">plan, tasks, agents, queue</span></button>
+            <button type="button" role="menuitem" disabled={!sessionId || !supportsGit} title={supportsGit ? undefined : "GitHub needs a Git repository"} onclick={() => fromMore(() => (githubOpen = true))}>GitHub<span class="menu-note">issues, pull requests, checks</span></button>
+            <hr />
+            <button type="button" role="menuitem" onclick={() => fromMore(() => (settingsOpen = true))}>Settings</button>
+            <button type="button" role="menuitem" onclick={() => fromMore(() => (helpOpen = true))}>Help and shortcuts</button>
+          </div>
+        {/if}
+      </div>
     {:else}
       <button type="button" class="btn head-btn" onclick={backToSession}>
         <Icon name="arrow-left" size={13} />
@@ -1993,8 +2023,6 @@
     onStop={stopSession}
     onClose={closeSession}
     onResume={(session) => { railOpen = false; command("resume_session", { sessionId: session.session_id, currentSessionId: sessionId }); }}
-    onHelp={() => (helpOpen = true)}
-    onSettings={() => (settingsOpen = true)}
     onNew={openNewSession}
   />
 
@@ -2025,17 +2053,11 @@
         </div>
       {/key}
 
-      {#if currentStep}
-        <p class="current-step">
-          <span>Current step: {currentStep.step}</span>
-          <button type="button" class="link" onclick={() => (sessionMenu = "plan")}>Open plan</button>
-        </p>
-      {/if}
 
       {#if hasQueue}
         <div class="queue-strip">
           <span class="queue-text">{queue.length} queued · {queue[0].text}</span>
-          <button type="button" class="btn" onclick={() => (sessionMenu = "queue")}>View</button>
+          <button type="button" class="link" onclick={() => showActivity("queue")}>View the queue</button>
         </div>
       {/if}
 
@@ -2044,7 +2066,11 @@
           <span class="state-dot waiting" aria-hidden="true"></span>
           <span>{waitNote.text}</span>
           {#if waitNote.action}
-            <button type="button" class="btn" onclick={() => (sessionMenu = waitNote.action)}>{waitNote.label}</button>
+            {#if waitNote.action === "stop"}
+              <button type="button" class="btn" disabled={stopping} onclick={stop}>{waitNote.label}</button>
+            {:else}
+              <button type="button" class="link" onclick={() => showActivity(waitNote.action)}>{waitNote.label}</button>
+            {/if}
           {/if}
         </p>
       {/if}
@@ -2052,7 +2078,7 @@
       {#if sessionId && contextPercent >= 70}
         <p class="wait-note context-note" role="status">
           <span>The context window is {contextPercent}% full. Compacting summarises the earlier turns to make room.</span>
-          <button type="button" class="btn" onclick={() => (detailsOpen = true)}>Details</button>
+          <button type="button" class="link" onclick={() => (detailsOpen = true)}>Details</button>
           <button type="button" class="btn" disabled={turnState === "running"} onclick={compactContext}>Compact</button>
         </p>
       {/if}
@@ -2093,8 +2119,6 @@
         onToggleTerminal={toggleTerminal}
         onFocusTerminal={focusTerminal}
         onStopTerminal={() => dropShell(sessionId)}
-        model={info.model}
-        onModel={openModelPicker}
         contextUsage={info.contextUsage}
         onContext={() => (detailsOpen = true)}
       />
@@ -2170,7 +2194,29 @@
         error={filesError}
         onOpenDiff={(path, side) => { openFiles(); openDiff(path, side); }}
         onOpenFiles={openFiles}
-      />
+        bind:view={sideView}
+        {activityCount}
+        {activityNeedsYou}
+      >
+        {#snippet activity()}
+          <Activity
+            {sessionId}
+            {plan}
+            {background}
+            {queue}
+            {interrupted}
+            onCancelQueued={(sessionIdOf, queueId, position, source) =>
+              command("cancel_queued", { sessionId: sessionIdOf, queueId, position, source })}
+            onEditQueued={(item, position) => editQueued(item, position)}
+            onRestoreInterrupted={(text) => restoreInterrupted(text)}
+            onCancelBackground={(task) => command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id })}
+            onOpenChild={(task) => openChild(task)}
+            onInsertTask={(task) => insertTask(task)}
+            onResolveChild={(taskId, approve, callId, requestId, confirmed) =>
+              command("resolve_child_approval", { sessionId, taskId, approve, callId, requestId, confirmed })}
+          />
+        {/snippet}
+      </Changes>
     {/key}
   {/if}
 
@@ -2188,11 +2234,7 @@
         {turnState}
         {approveAll}
         {thinking}
-        {plan}
         {tokens}
-        {background}
-        {queue}
-        {interrupted}
         {counts}
         onPickModel={() => { sessionMenu = null; openModelPicker(); }}
         onDetails={() => { sessionMenu = null; detailsOpen = true; }}
@@ -2202,15 +2244,6 @@
         onContinue={continueTurn}
         onCompact={compactContext}
         onStopSession={() => activeSession && stopSession(activeSession)}
-        onCancelQueued={(sessionIdOf, queueId, position, source) =>
-          command("cancel_queued", { sessionId: sessionIdOf, queueId, position, source })}
-        onEditQueued={(item, position) => { sessionMenu = null; editQueued(item, position); }}
-        onRestoreInterrupted={(text) => { sessionMenu = null; restoreInterrupted(text); }}
-        onCancelBackground={(task) => command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id })}
-        onOpenChild={(task) => { sessionMenu = null; openChild(task); }}
-        onInsertTask={(task) => { sessionMenu = null; insertTask(task); }}
-        onResolveChild={(taskId, approve, callId, requestId, confirmed) =>
-          command("resolve_child_approval", { sessionId, taskId, approve, callId, requestId, confirmed })}
         onFork={() => { sessionMenu = null; forkSession(); }}
         onCloseSession={() => { sessionMenu = null; if (activeSession) closeSession(activeSession); }}
         onArchive={() => { sessionMenu = null; if (activeSession) archiveSession(activeSession); }}
@@ -2220,10 +2253,42 @@
     </div>
   {/if}
 
+  <footer class="statusbar" aria-label="Status">
+    {#if currentProject}<span class="sb-item sb-project" title={currentProject.root}>{currentProject.name}</span>{/if}
+    {#if sessionId && (branch || info.workspace)}
+      <button type="button" class="sb-item sb-link" title={`${info.workspace} · open Files`} onclick={openFiles}>
+        <Icon name="branch" size={12} />
+        <span class="sb-branch">{branch || basename(info.workspace)}</span>
+        {#if status.ahead}<span class="sb-track"><Icon name="arrow-up" size={11} />{status.ahead}</span>{/if}
+        {#if status.behind}<span class="sb-track"><Icon name="arrow-down" size={11} />{status.behind}</span>{/if}
+      </button>
+    {/if}
+    {#if sessionId && supportsGit}
+      <button type="button" class="sb-item sb-link" onclick={() => (sideView = "changes")}>
+        {fileTotals.changed === 0 ? "No uncommitted changes" : `${fileTotals.changed} uncommitted`}
+      </button>
+    {/if}
+    <span class="spacer"></span>
+    {#if needsYou > 0}
+      <button type="button" class="sb-item sb-link sb-needs" onclick={showNeedsYou}>
+        <span class="state-dot waiting" aria-hidden="true"></span>{needsYou} {needsYou === 1 ? "needs" : "need"} you
+      </button>
+    {/if}
+    {#if runSummary}<span class="sb-item">{runSummary}</span>{/if}
+    {#if sessionId}
+      <button type="button" class="sb-item sb-link mono" title="Change model" onclick={openModelPicker}>{info.model || "Choose a model"}</button>
+      {#if snapshot.thinkingSwitchable}
+        <button type="button" class="sb-item sb-link" aria-pressed={thinking} title={thinking ? "Turn extended thinking off for this session" : "Turn extended thinking on for this session"} onclick={toggleThinking}>Thinking {thinking ? "on" : "off"}</button>
+      {/if}
+      {#if approveAll}<span class="sb-item sb-warn">Approve all</span>{/if}
+      <button type="button" class="sb-item sb-link" class:sb-warn={contextPercent >= 70} title="Token and cost details" onclick={() => (detailsOpen = true)}>Context {contextPercent}%</button>
+    {/if}
+  </footer>
+
   <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{screenAnnouncement}</div>
 
   <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
-    {question ? "Forge needs your answer." : approval ? "Forge needs your approval." : background.some((task) => task.awaiting_approval) ? "A background task needs your approval. Open the Session menu to review it." : `Forge: ${turnState}.`}
+    {question ? "Forge needs your answer." : approval ? "Forge needs your approval." : background.some((task) => task.awaiting_approval) ? "A background task needs your approval. It is in Activity, beside Changes." : `Forge: ${turnState}.`}
   </div>
 
   {#if pickerOpen}
@@ -2576,7 +2641,7 @@
           <input class="field new-session-name" bind:value={newSessionName} placeholder="What is this session for?" aria-label="New session name" />
           <div class="dialog-actions">
             {#if supportsGit}
-              <button class="btn ghost attach-instead" type="button" onclick={() => { newSessionOpen = false; openAttach(); }}>Attach an existing worktree…</button>
+              <button class="link attach-instead" type="button" onclick={() => { newSessionOpen = false; openAttach(); }}>Attach an existing worktree instead</button>
             {/if}
             <button class="btn" type="button" onclick={() => (newSessionOpen = false)}>Cancel</button>
             <button class="btn primary" type="submit" disabled={creating || !newSessionName.trim()}>Create</button>
@@ -2646,7 +2711,7 @@
   .app {
     display: grid;
     grid-template-columns: 280px minmax(0, 1fr) 400px;
-    grid-template-rows: var(--bar) minmax(0, 1fr);
+    grid-template-rows: var(--bar) minmax(0, 1fr) 28px;
     height: 100vh;
     min-height: 0;
     background: var(--bg);
@@ -2695,6 +2760,50 @@
   .head-branch :global(svg) { flex: none; }
   .head-icon { position: relative; flex: none; width: var(--control-lg); height: var(--control-lg); color: var(--secondary); }
   .head-icon.on { background: var(--raised); color: var(--text); }
+  /* The bar above the rail is left clear: the window's buttons and its
+     drag area. The project shows there only on a compact window. */
+  .brand .wordmark { display: none; }
+  .head-step {
+    display: flex; align-items: center; gap: 8px; min-width: 0; height: 20px; margin-left: 8px; padding: 0 0 0 12px; line-height: 20px; cursor: pointer;
+    border: 0; border-left: 1px solid var(--border); border-radius: 0; background: none; color: var(--muted); font-size: var(--text-sm);
+  }
+  .head-step:hover { color: var(--text); }
+  .step-count { flex: none; color: var(--secondary); }
+  .step-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Footer: where the session works and what it runs on. Quiet text;
+     what can be acted on underlines on hover. */
+  .statusbar {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 16px; min-width: 0; padding: 0 12px;
+    border-top: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: var(--text-xs);
+  }
+  .sb-item { display: inline-flex; align-items: center; gap: 4px; flex: none; min-width: 0; white-space: nowrap; }
+  .sb-project { color: var(--secondary); font-weight: 500; }
+  .sb-link {
+    height: 20px; padding: 0; border: 0; background: none; color: inherit; font-size: inherit; cursor: pointer;
+    text-decoration: none; text-underline-offset: 3px;
+  }
+  .sb-link.mono { font-family: var(--font-mono); }
+  .sb-link:hover { color: var(--text); text-decoration: underline; }
+  .sb-branch { max-width: 240px; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; }
+  .sb-track { display: inline-flex; align-items: center; gap: 2px; }
+  .sb-needs, .sb-warn { color: var(--warning); }
+  .more { position: relative; flex: none; }
+  .menu-scrim { position: fixed; inset: 0; z-index: 25; }
+  .menu {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 26;
+    display: flex; flex-direction: column; min-width: 320px; padding: 4px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); box-shadow: var(--shadow);
+  }
+  .menu button {
+    display: flex; align-items: baseline; gap: 8px; height: var(--control-lg); padding: 0 8px;
+    border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); font-size: var(--text-md); text-align: left;
+  }
+  .menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--hover); outline-offset: -2px; }
+  .menu button:disabled { color: var(--muted); }
+  .menu-note { margin-left: auto; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
+  .menu hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--border); }
   .head-icon .count { position: absolute; top: 0; right: 0; min-width: 14px; padding: 0 3px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; line-height: 14px; text-align: center; }
 
   .focus-head > strong { margin-left: 12px; }
@@ -2706,7 +2815,6 @@
   .rail-toggle { display: none; }
 
   /* The strips between the conversation and the composer share its column. */
-  .current-step,
   .queue-strip,
   .banner {
     width: calc(100% - 68px);
@@ -2715,12 +2823,6 @@
     margin-right: auto;
   }
 
-  .current-step {
-    display: flex; align-items: center; gap: 8px; margin-top: 0; margin-bottom: 8px;
-    color: var(--muted); font-size: var(--text-sm);
-  }
-  .current-step span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .link { padding: 0; border: 0; background: none; color: var(--accent); font-size: var(--text-sm); white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; }
 
   .queue-strip {
     display: flex; align-items: center; gap: 8px; margin-top: 0; margin-bottom: 8px; padding: 4px 4px 4px 12px;
@@ -2728,7 +2830,6 @@
     color: var(--muted); font-size: var(--text-sm);
   }
   .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .queue-strip .btn { height: 24px; padding: 0 8px; }
 
   /* A wait with no card of its own: what the session needs, in words. */
   .wait-note {
@@ -2743,7 +2844,7 @@
   .wait-note .btn { height: 24px; padding: 0 8px; flex: none; }
   .head-btn.on { background: var(--raised); color: var(--text); }
   .new-session-name { margin-bottom: 16px; }
-  .attach-instead { margin-right: auto; }
+  .attach-instead { margin-right: auto; align-self: center; font-size: var(--text-sm); }
 
   .decision { display: contents; }
 
@@ -2952,6 +3053,8 @@
     }
 
     .brand { width: auto; padding: 0 8px; }
+    .brand .wordmark { display: inline; }
+    .head-step, .statusbar .sb-project, .statusbar .mono { display: none; }
     /* The state word outlasts the branch chip: a dot alone says nothing. */
     .head-title .chip { display: none; }
 

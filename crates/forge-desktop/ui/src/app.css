@@ -211,6 +211,32 @@ a {
   color: var(--error);
 }
 
+/* A link-styled button: for going somewhere or seeing more, never for a
+   decision. Decisions and state changes stay buttons. */
+.link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  transition: text-decoration-color var(--fast) var(--ease);
+}
+
+.link:hover:not(:disabled) {
+  text-decoration-color: currentColor;
+}
+
+.link:disabled {
+  color: var(--muted);
+  text-decoration: none;
+  cursor: default;
+}
+
 .icon-btn {
   display: inline-flex;
   align-items: center;

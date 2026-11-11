@@ -610,8 +610,10 @@ impl AgentSession {
     }
 
     /// On resume/reload: a durable Running/AwaitingHitl task with no live runtime
-    /// cannot safely continue as Working. HITL remains Waiting; bare Running becomes
-    /// Interrupted. Legacy sessions with no terminal metadata stay Interrupted rather
+    /// cannot safely continue as Working. HITL remains Waiting while its request
+    /// was restored; a Waiting task whose request did not survive has nothing
+    /// the operator can answer and refuses new prompts, so it becomes
+    /// Interrupted like a bare Running one. Legacy sessions with no terminal metadata stay Interrupted rather
     /// than eternal Working. Completed/Failed/Cancelled are left untouched.
     pub async fn mark_interrupted_if_stale(&mut self) -> Result<(), LoopError> {
         match self.active_task.lifecycle {
@@ -625,7 +627,16 @@ impl AgentSession {
                 });
                 Ok(())
             }
-            // Waiting is still a recoverable state (operator can decide).
+            TaskLifecycle::Waiting if self.active_task.wait_reason.is_none() => {
+                self.transition(TaskLifecycle::Interrupted, TransitionReason::StaleOnResume)
+                    .await?;
+                self.events.push(TurnEvent {
+                    kind: "interrupted".into(),
+                    detail: "the request this task waited on was not recoverable".into(),
+                });
+                Ok(())
+            }
+            // Waiting on a restored request is recoverable (operator can decide).
             TaskLifecycle::Ready
             | TaskLifecycle::Waiting
             | TaskLifecycle::Completed

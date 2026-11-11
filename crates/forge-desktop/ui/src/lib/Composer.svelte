@@ -19,8 +19,6 @@
     onToggleTerminal,
     onFocusTerminal,
     onStopTerminal,
-    model = "",
-    onModel,
     contextUsage = 0,
     onContext,
     prompt = $bindable(""),
@@ -195,9 +193,6 @@
         {/each}
       </div>
     {/if}
-    <button class="context model" type="button" title="Change model" onclick={onModel}>
-      <span class="model-name">{model || "Choose a model"}</span>
-    </button>
     <span class="spacer"></span>
     {#if running}
       <button class="btn danger" type="button" disabled={stopping} onclick={onStop}>
@@ -312,33 +307,6 @@
     white-space: nowrap;
   }
 
-  .model-name {
-    max-width: 220px;
-    overflow: hidden;
-    font-family: var(--font-mono);
-    text-overflow: ellipsis;
-  }
-
-  .context {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    height: var(--control);
-    padding: 0 8px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--muted);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
-  }
-
-  .context:hover {
-    background: var(--hover);
-    color: var(--text);
-  }
-
   .slash {
     position: absolute;
     right: 0;
@@ -416,7 +384,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .composer,
-    .context,
     .slash button {
       transition: none;
     }

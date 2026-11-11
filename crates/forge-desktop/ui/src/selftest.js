@@ -220,7 +220,9 @@ export async function runSelfTest(params, sessionId) {
 
   results.theme_switches = false;
   try {
-    button(document, "Settings").click();
+    document.querySelector('button[aria-label="More"]').click();
+    await sleep(50);
+    button(document.querySelector(".menu"), "Settings").click();
     await sleep(50);
     const select = document.querySelector(".settings select");
     const previous = select.value;
