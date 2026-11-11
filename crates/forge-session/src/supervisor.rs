@@ -3002,10 +3002,30 @@ async fn close_all_sessions(state: &Arc<SupervisorState>) -> Result<(), Reposito
     }
 }
 
-async fn poll_background_tasks(state: &SupervisorState) {
+async fn poll_background_tasks(state: &Arc<SupervisorState>) {
     let actors: Vec<_> = state.actors.read().await.values().cloned().collect();
     for task_actor in actors {
         if let Ok(mut session) = task_actor.session.try_lock() {
+            // Completions that arrived while the session sat idle, or through
+            // a command that polled it, wait in its own queue until moved.
+            if !session.queue().is_empty() {
+                let session_id = task_actor.snapshot.read().await.task.session_id;
+                match hand_off_session_queue(state, session_id, &mut session).await {
+                    Ok(true) => {
+                        let _ = refresh_actor(state, &task_actor, &session).await;
+                        drop(session);
+                        let _ = start_prompt_driver(state.clone(), session_id).await;
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        let _ = state.events.send(SupervisorEvent::Error {
+                            session_id: Some(session_id),
+                            message: format!("could not queue a background result: {error}"),
+                        });
+                    }
+                }
+            }
             if session
                 .background()
                 .list()
@@ -3433,6 +3453,9 @@ async fn run_one_inner(
             SupervisorTurnState::Failed
         }
     };
+    // Results queued on the session during the turn run next; the driver
+    // picks them up from the prompt queue once this turn is recorded.
+    hand_off_session_queue(&state, session_id, &mut session).await?;
     if let Some((queue_id, _)) = prompt {
         let queue_status = match turn_state {
             SupervisorTurnState::Completed => "completed",
@@ -3489,6 +3512,27 @@ async fn run_one_inner(
         turn_state,
         SupervisorTurnState::Waiting | SupervisorTurnState::Cancelled
     ))
+}
+
+/// Move a session's own queue into the supervisor's prompt queue.
+///
+/// With approve-all on, a finished background task queues its result on the
+/// session, and the turn then yields at its next tool boundary. The
+/// supervisor runs prompts only from its durable queue, so the result moves
+/// there: the prompt driver runs it as the next turn, and the frontend shows
+/// and can cancel it like any queued prompt. Each item is queued before it
+/// leaves the session, so a failure can repeat a result but never lose one.
+async fn hand_off_session_queue(
+    state: &SupervisorState,
+    session_id: SessionId,
+    session: &mut AgentSession,
+) -> Result<bool, RepositorySupervisorError> {
+    let items: Vec<_> = session.queue().visible().cloned().collect();
+    for item in &items {
+        state.control.enqueue_prompt(session_id, &item.text).await?;
+        session.cancel_queued_item(item.id).await?;
+    }
+    Ok(!items.is_empty())
 }
 
 /// Materialize a branch for a branchless managed session once its worktree has
@@ -6097,6 +6141,48 @@ mod tests {
             .await
             .unwrap();
         assert!(control.queued_prompts(owner).await.unwrap().is_empty());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// A background result queued on the session (approve-all) is not left
+    /// there: the supervisor moves it to the prompt queue and runs it.
+    #[tokio::test]
+    async fn a_result_queued_on_the_session_runs_as_the_next_turn() {
+        let (_temp, supervisor, handle, owner, _sibling) = two_session_supervisor(Arc::new(
+            MockModelClient::script(vec![text_response("noted")]),
+        ))
+        .await;
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        task_actor
+            .session
+            .lock()
+            .await
+            .enqueue_task("Background task 'build' finished")
+            .await
+            .unwrap();
+
+        handle.command(SupervisorCommand::Refresh).await.unwrap();
+        let done = wait_for_task_state(&handle, owner, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                && snapshot.transcript.messages().iter().any(|message| {
+                    message.role == forge_types::MessageRole::User
+                        && message.content == "Background task 'build' finished"
+                })
+        })
+        .await;
+        assert!(done
+            .transcript
+            .messages()
+            .iter()
+            .any(|message| message.content == "noted"));
+        assert!(task_actor.session.lock().await.queue().is_empty());
+        assert!(supervisor
+            .state
+            .control
+            .queued_prompts(owner)
+            .await
+            .unwrap()
+            .is_empty());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
