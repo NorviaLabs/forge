@@ -770,7 +770,10 @@ impl RepositoryControl {
     /// The database travels with the folder, but it stores absolute paths. A
     /// row still naming the old location sends resume to a journal that is no
     /// longer there, which made a moved project impossible to open.
-    pub async fn adopt_root(&self, root: &Path) -> Result<(), RepositorySessionError> {
+    ///
+    /// Returns whether the root changed, so the caller can repair what Git
+    /// itself recorded about the old location.
+    pub async fn adopt_root(&self, root: &Path) -> Result<bool, RepositorySessionError> {
         let recorded: Option<String> =
             sqlx::query("SELECT root FROM repository_state WHERE id = 1")
                 .fetch_one(&self.pool)
@@ -789,7 +792,9 @@ impl RepositoryControl {
             .map(|row| PathBuf::from(row.get::<String, _>("workspace"))),
         };
         let mut transaction = self.pool.begin().await?;
-        if let Some(previous) = previous.filter(|previous| !same_path(previous, root)) {
+        let previous = previous.filter(|previous| !same_path(previous, root));
+        let moved = previous.is_some();
+        if let Some(previous) = previous {
             let rebased = |path: &str| {
                 Path::new(path)
                     .strip_prefix(&previous)
@@ -832,7 +837,7 @@ impl RepositoryControl {
             .execute(&mut *transaction)
             .await?;
         transaction.commit().await?;
-        Ok(())
+        Ok(moved)
     }
 
     pub async fn forget_unavailable_primary(
@@ -2195,7 +2200,7 @@ mod tests {
         }
 
         // No root recorded yet: the primary session's workspace names it.
-        control.adopt_root(&new_root).await.unwrap();
+        assert!(control.adopt_root(&new_root).await.unwrap(), "moved");
 
         let control = &control;
         let workspace = |id| async move { control.session(id).await.unwrap().workspace };
@@ -2216,7 +2221,7 @@ mod tests {
         control.adopt_root(&newer_root).await.unwrap();
         assert_eq!(workspace(primary_id).await, newer_root);
         // Reopening in place changes nothing.
-        control.adopt_root(&newer_root).await.unwrap();
+        assert!(!control.adopt_root(&newer_root).await.unwrap());
         assert_eq!(workspace(primary_id).await, newer_root);
     }
 

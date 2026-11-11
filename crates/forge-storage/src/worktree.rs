@@ -32,6 +32,8 @@ pub enum WorktreeError {
     RemoveFailed(String),
     #[error("git worktree list failed: {0}")]
     ListFailed(String),
+    #[error("git worktree repair failed: {0}")]
+    RepairFailed(String),
     #[error("worktree is dirty: {0}")]
     Dirty(String),
     #[error("worktree {path} is not registered with Git")]
@@ -420,6 +422,28 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<PathBuf>, WorktreeError> {
         .into_iter()
         .map(|record| record.path)
         .collect())
+}
+
+/// Reconnect linked worktrees after the repository (and the worktrees under
+/// it) moved. Git records each side's absolute path on the other, so a moved
+/// repository lists its worktrees at their old, missing paths until it is
+/// told where they are now. `worktrees` are their current locations.
+pub fn repair_worktrees(repo_root: &Path, worktrees: &[PathBuf]) -> Result<(), WorktreeError> {
+    if worktrees.is_empty() {
+        return Ok(());
+    }
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["worktree", "repair", "--"])
+        .args(worktrees)
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::RepairFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn list_worktree_records(repo_root: &Path) -> Result<Vec<WorktreeRecord>, WorktreeError> {

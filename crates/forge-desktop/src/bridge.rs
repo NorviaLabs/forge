@@ -1168,6 +1168,25 @@ impl TrustState {
         self.pending.lock().ok().and_then(|mut slot| slot.take())
     }
 
+    /// No folder yet, or one that is only being asked about. Once a folder
+    /// has opened (a workspace with nothing pending) the picker is closed.
+    fn can_choose_folder(&self) -> bool {
+        self.workspace().is_none() || self.pending.lock().is_ok_and(|slot| slot.is_some())
+    }
+
+    /// Drop the folder the trust screen was asking about, and its error,
+    /// before another one takes its place. Nothing was registered for a
+    /// folder that was only being confirmed.
+    fn forget_pending(&self) {
+        self.take_pending();
+        if let Ok(mut slot) = self.workspace.lock() {
+            *slot = None;
+        }
+        if let Ok(mut error) = self.error.lock() {
+            error.clear();
+        }
+    }
+
     fn fail(&self, message: String) -> String {
         if let Ok(mut error) = self.error.lock() {
             *error = message.clone();
@@ -1264,15 +1283,19 @@ pub async fn choose_folder(
     state: State<'_, TrustState>,
 ) -> Result<TrustView, String> {
     use tauri::Manager;
-    if state.workspace().is_some() || app.try_state::<DesktopState>().is_some() {
+    // A folder still waiting on the trust screen is not open: the operator
+    // may pick a different one instead (a wrong pick used to mean quitting).
+    if !state.can_choose_folder() || app.try_state::<DesktopState>().is_some() {
         return Err("a folder is already open".into());
     }
     let Some(folder) = pick_folder(&app, "Open a folder in Forge")
         .await
         .map_err(|error| state.fail(error))?
     else {
+        // Cancelled: whatever was on screen stays.
         return Ok(trust_view(&state));
     };
+    state.forget_pending();
     match picked_folder(&state.projects, folder, forge_config::is_trusted).await {
         Ok(Picked::Project(project)) => open_or_ask_trust(&app, &state, project).await,
         Ok(Picked::AskFirst(root)) => {
@@ -1915,13 +1938,13 @@ pub async fn project_trust(
 
 /// Close a project in the background. The project on screen can't be closed:
 /// switch away first. `busy` lists the sessions that would lose work unless
-/// `stop_running`.
+/// `stop_running`. Returns the close's notices, empty for a clean close.
 #[tauri::command]
 pub async fn project_close(
     state: State<'_, DesktopState>,
     project_id: forge_session::ProjectId,
     stop_running: bool,
-) -> Result<(), ProjectFailure> {
+) -> Result<Vec<String>, ProjectFailure> {
     if state.active().project.id == project_id {
         return Err(ProjectFailure {
             kind: "on_screen",
@@ -1953,12 +1976,14 @@ pub async fn project_close(
         roots.push(root);
     }
     match state.projects.close(project_id, stop_running).await {
-        Ok(_) => {
+        // The notices say what the close could not finish cleanly (a session
+        // still being stopped, say); the page shows them.
+        Ok(notices) => {
             for session_id in sessions {
                 state.shells.close(session_id);
             }
             state.indexes.forget(&roots);
-            Ok(())
+            Ok(notices)
         }
         Err(error) => {
             let mut failure = ProjectFailure::from(error).about(&state, project_id);
@@ -3660,6 +3685,35 @@ mod tests {
             load_config: std::sync::Arc::new(|_root| Err("not opened in this test".into())),
         })
         .unwrap()
+    }
+
+    /// The picker is open until a folder has actually opened: with no folder
+    /// yet, and while one is only being asked about on the trust screen.
+    #[tokio::test]
+    async fn another_folder_can_be_chosen_until_one_has_opened() {
+        let scratch = std::env::temp_dir().join(format!(
+            "forge-desktop-choose-{}",
+            forge_types::SessionId::new_v4()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let projects = picker_projects(&scratch);
+
+        let asking = TrustState::pending(
+            projects.clone(),
+            scratch.join("wrong-pick"),
+            Pending::Confirm(scratch.join("wrong-pick")),
+        );
+        assert!(asking.can_choose_folder());
+        asking.fail("could not open it".into());
+        asking.forget_pending();
+        let view = trust_view(&asking);
+        assert!(view.needs_folder && !view.needs_trust && view.error.is_empty());
+        assert!(asking.can_choose_folder());
+
+        let opened = TrustState::ready(projects.clone(), scratch.join("opened"));
+        assert!(!opened.can_choose_folder());
+        projects.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(scratch);
     }
 
     /// An untrusted pick registers nothing: backing out of the trust screen

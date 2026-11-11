@@ -758,7 +758,7 @@ impl RepositoryBootstrap {
             migrate_directory_runtime_files(topology.root())
         };
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
-        control.adopt_root(topology.root()).await?;
+        adopt_project_root(&control, &topology).await?;
         Ok(Self {
             lease,
             control,
@@ -1006,7 +1006,7 @@ impl RepositorySupervisor {
         let control_dir = storage.path_for(RuntimeDataKind::Control)?;
         let lease = RepositoryLease::acquire(&control_dir, cfg.workspace_root())?;
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
-        control.adopt_root(topology.root()).await?;
+        adopt_project_root(&control, &topology).await?;
         let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
         let mut unavailable_tasks: Vec<RepositorySession> = control
@@ -1639,6 +1639,44 @@ fn report_persist_error(
             message: format!("could not write personal permissions: {error}"),
         });
     }
+}
+
+/// Record where the project is now. When it has moved, the control database
+/// re-points its own paths, and Git is told where the project's linked
+/// worktrees went: they moved with the folder, but Git still lists them at
+/// their old paths, where reconciliation would find every managed session's
+/// worktree missing. A failed repair is logged and left for
+/// `git worktree repair` by hand; it must not stop the project opening.
+async fn adopt_project_root(
+    control: &RepositoryControl,
+    topology: &ProjectTopology,
+) -> Result<(), RepositorySupervisorError> {
+    let moved = control.adopt_root(topology.root()).await?;
+    if !moved || !topology.supports_git() {
+        return Ok(());
+    }
+    let worktrees: Vec<PathBuf> = control
+        .sessions()
+        .await?
+        .into_iter()
+        .filter(|session| {
+            matches!(
+                session.ownership,
+                WorktreeOwnership::Managed | WorktreeOwnership::Attached
+            ) && session.workspace.is_dir()
+        })
+        .map(|session| session.workspace)
+        .collect();
+    let root = topology.root().to_path_buf();
+    let repaired =
+        tokio::task::spawn_blocking(move || forge_storage::repair_worktrees(&root, &worktrees))
+            .await;
+    match repaired {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!("could not repair worktrees after a move: {error}"),
+        Err(error) => tracing::warn!("could not repair worktrees after a move: {error}"),
+    }
+    Ok(())
 }
 
 /// A session other than the one being opened could not be resumed (its
@@ -9618,6 +9656,82 @@ mod tests {
         blank.reasoning_effort = Some("low".into());
         restore_task_model(&mut session, &blank, &cfg);
         assert_eq!(session.active_model, "mock-v2");
+    }
+
+    /// Moving a repository moves its managed worktrees with it, but Git
+    /// still lists them at the old path. Opening the project at its new
+    /// location reconnects them, so their sessions stay available.
+    #[tokio::test]
+    async fn a_moved_repository_keeps_its_managed_sessions_available() {
+        let parent = TempDir::new().unwrap();
+        let old = parent.path().join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        forge_test_support::init_repo_with_commit(&old);
+        let base = old.join(".forge/local/worktrees");
+        std::fs::create_dir_all(&base).unwrap();
+        let linked = forge_storage::create_session_worktree(&old, &base).unwrap();
+        let below_root = linked.path.strip_prefix(&old).unwrap().to_path_buf();
+        let managed_id = SessionId::new_v4();
+        {
+            let storage = RepositoryRuntimeStorage::new(&old).unwrap();
+            let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+            let control = RepositoryControl::open(&control_dir).await.unwrap();
+            for (session_id, workspace, branch, ownership) in [
+                (
+                    SessionId::new_v4(),
+                    old.clone(),
+                    "main".to_string(),
+                    WorktreeOwnership::Primary,
+                ),
+                (
+                    managed_id,
+                    linked.path.clone(),
+                    linked.branch.clone(),
+                    WorktreeOwnership::Managed,
+                ),
+            ] {
+                control
+                    .register_session(
+                        NewRepositorySession {
+                            session_id,
+                            label: "session".into(),
+                            workspace,
+                            branch,
+                            ownership,
+                            slot: None,
+                            model_id: "mock".into(),
+                            profile_id: String::new(),
+                            reasoning_effort: None,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+            control.adopt_root(&old).await.unwrap();
+        }
+        let new = parent.path().join("new");
+        std::fs::rename(&old, &new).unwrap();
+
+        let topology = ProjectTopology::detect(&new).unwrap();
+        let control_dir = topology
+            .storage()
+            .unwrap()
+            .path_for(RuntimeDataKind::Control)
+            .unwrap();
+        let control = RepositoryControl::open(&control_dir).await.unwrap();
+        adopt_project_root(&control, &topology).await.unwrap();
+        control
+            .reconcile_worktrees(&topology.worktrees().unwrap())
+            .await
+            .unwrap();
+
+        let managed = control.session(managed_id).await.unwrap();
+        assert_eq!(managed.lifecycle, SessionLifecycle::Active);
+        assert!(managed.workspace.ends_with(&below_root));
+        assert!(managed.workspace.starts_with(topology.root()) || managed.workspace.is_dir());
+        // Git works inside the moved worktree again.
+        assert!(forge_storage::worktree_head(&managed.workspace).is_ok());
     }
 
     /// One session whose journal is gone must not make the project

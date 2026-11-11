@@ -60,6 +60,7 @@
       <button type="button" class="btn primary" disabled={busy} onclick={onTrust}>
         {busy ? "Opening…" : needsConfirmation ? "Add as a project and open it" : "Trust this folder and open it"}
       </button>
+      <button type="button" class="btn" disabled={busy} onclick={onChoose}>Choose a different folder…</button>
       <button type="button" class="btn ghost" onclick={onQuit}>Quit</button>
     </div>
     {/if}

@@ -849,8 +849,11 @@
       if (!(await switchProject(other))) return;
     }
     try {
-      await invoke("project_close", { projectId: project.id, stopRunning });
+      const notices = await invoke("project_close", { projectId: project.id, stopRunning });
       closeTarget = null;
+      // A close that could not finish cleanly says why (a session still
+      // being stopped keeps the project from reopening until it has).
+      if (notices?.length) error = notices.join(" ");
     } catch (failure) {
       projectFailed(project, failure);
     }
