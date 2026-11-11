@@ -39,6 +39,32 @@ pub fn command_writing(repo: &Path, also: &[&Path]) -> Command {
     command
 }
 
+/// Whether `repo` has Git LFS objects (`<git dir>/lfs` exists). Checking
+/// files out there can start an LFS download, which has no confined route
+/// yet.
+pub fn uses_lfs(repo: &Path) -> bool {
+    let Ok(output) = command(repo)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+    else {
+        return false;
+    };
+    let dir = String::from_utf8_lossy(&output.stdout);
+    let dir = dir.trim_end_matches('\n');
+    output.status.success() && !dir.is_empty() && repo.join(dir).join("lfs").is_dir()
+}
+
+/// `git -C <repo>` for an operation that checks files out (switching
+/// branch, adding a worktree): confined like [`command_writing`], except in
+/// a repository with LFS objects, where it runs on the host.
+pub fn command_checking_out(repo: &Path, also: &[&Path]) -> Command {
+    if uses_lfs(repo) {
+        unconfined(repo)
+    } else {
+        command_writing(repo, also)
+    }
+}
+
 /// How a confined git reaches a remote: the loopback endpoints Forge runs
 /// for it, and the environment that points git at them.
 pub struct Network {
@@ -156,12 +182,12 @@ pub fn command_networked(repo: &Path, also: &[&Path]) -> Networked {
 
 /// `git -C <repo>` on the host, not confined.
 ///
-/// For the operations that cannot work confined yet: the ones that contact
-/// a remote or check files out (credentials, SSH keys, an LFS download) and
-/// the ones that create a commit (signing keys). Each call of this function
-/// is a place where a hook or a program named by the repository's config
-/// still runs outside the sandbox, so the agent must not be able to write
-/// those, and no new call should be added without that reason.
+/// For what cannot work confined yet: a checkout in a repository with LFS
+/// objects, and network git on a repository no session governs. Each call
+/// of this function is a place where a hook or a program named by the
+/// repository's config still runs outside the sandbox, so the agent must not
+/// be able to write those, and no new call should be added without that
+/// reason.
 pub fn unconfined(repo: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo);

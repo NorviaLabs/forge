@@ -54,10 +54,20 @@ mod tests {
             (&["fetch", "--no-tags", "origin"], Route::Networked),
             (&["push"], Route::Networked),
             (&["pull", "--no-rebase", "--no-edit"], Route::Networked),
-            (&["switch", "--", "main"], Route::Host),
+            (&["switch", "--", "main"], Route::Confined),
         ] {
-            assert_eq!(route(args, unsigned), expected, "{args:?}");
+            assert_eq!(route(args, unsigned, || false), expected, "{args:?}");
         }
+        // Checking another branch out in a repository with LFS objects may
+        // download more, which only the host can do for now.
+        assert_eq!(
+            route(&["switch", "--", "main"], unsigned, || true),
+            Route::Host
+        );
+        assert_eq!(
+            route(&["switch", "-c", "new"], unsigned, || true),
+            Route::Confined
+        );
         // A signing key is out of the sandbox's reach, so anything that
         // creates a signed commit needs the workspace's signing broker.
         let signed = || true;
@@ -66,10 +76,13 @@ mod tests {
             &["merge", "--no-edit", "--", "refs/heads/b"],
             &["pull", "--no-rebase", "--no-edit"],
         ] {
-            assert_eq!(route(args, signed), Route::Networked, "{args:?}");
+            assert_eq!(route(args, signed, || false), Route::Networked, "{args:?}");
         }
-        assert_eq!(route(&["push"], signed), Route::Networked);
-        assert_eq!(route(&["merge", "--abort"], signed), Route::Confined);
+        assert_eq!(route(&["push"], signed, || false), Route::Networked);
+        assert_eq!(
+            route(&["merge", "--abort"], signed, || false),
+            Route::Confined
+        );
     }
 
     fn git(root: &Path, args: &[&str]) -> String {
@@ -1103,16 +1116,17 @@ enum Route {
 
 /// `signing` is whether commits here are signed: a signing key is out of a
 /// confined git's reach, so a signed commit goes through the workspace's
-/// signing broker. Checking another branch's files out may download LFS
-/// objects, which is not routed yet.
-fn route(args: &[&str], signing: impl FnOnce() -> bool) -> Route {
+/// signing broker. `lfs` is whether the repository has LFS objects: checking
+/// another branch's files out may then download more, which is not routed
+/// yet.
+fn route(args: &[&str], signing: impl FnOnce() -> bool, lfs: impl FnOnce() -> bool) -> Route {
     let creates_commit = match args.first().copied() {
         Some("commit" | "pull") => true,
         Some("merge") => !args.contains(&"--abort"),
         _ => false,
     };
     match args.first().copied() {
-        Some("switch") if !args.contains(&"-c") => Route::Host,
+        Some("switch") if !args.contains(&"-c") && lfs() => Route::Host,
         Some("pull" | "push" | "fetch") => Route::Networked,
         _ if creates_commit && signing() => Route::Networked,
         _ => Route::Confined,
@@ -1121,7 +1135,11 @@ fn route(args: &[&str], signing: impl FnOnce() -> bool) -> Route {
 
 fn scoped_command(root: &Path, args: &[&str]) -> forge_sandbox::git::Networked {
     use forge_sandbox::git;
-    let mut networked = match route(args, || git::signing_configured(root)) {
+    let mut networked = match route(
+        args,
+        || git::signing_configured(root),
+        || git::uses_lfs(root),
+    ) {
         Route::Confined => git::Networked::local(git::command(root), true),
         Route::Networked => git::command_networked(root, &[]),
         Route::Host => git::Networked::local(git::unconfined(root), false),

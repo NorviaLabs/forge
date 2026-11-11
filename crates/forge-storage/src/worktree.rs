@@ -92,7 +92,7 @@ pub fn create_session_worktree(
     let name = format!("session-{}", Uuid::new_v4());
     let branch = format!("forge/{name}");
     let path = base_dir.join(&name);
-    let output = forge_sandbox::git::unconfined(source_worktree)
+    let output = forge_sandbox::git::command_checking_out(source_worktree, &[base_dir])
         .args(["worktree", "add", "-q"])
         .arg(&path)
         .args(["-b", &branch, "HEAD"])
@@ -125,7 +125,7 @@ pub fn create_detached_session_worktree(
     std::fs::create_dir_all(base_dir)?;
     let name = format!("session-{}", Uuid::new_v4());
     let path = base_dir.join(&name);
-    let output = forge_sandbox::git::unconfined(source_worktree)
+    let output = forge_sandbox::git::command_checking_out(source_worktree, &[base_dir])
         .args(["worktree", "add", "-q", "--detach"])
         .arg(&path)
         .arg("HEAD")
@@ -388,7 +388,7 @@ pub fn create_worktree(
     let name = format!("subagent-{session_id}-{id}-{slug}");
     let branch = format!("forge/subagent/{name}");
     let path = base_dir.join(&name);
-    let output = forge_sandbox::git::unconfined(repo_root)
+    let output = forge_sandbox::git::command_checking_out(repo_root, &[base_dir])
         .args(["worktree", "add", "-q"])
         .arg(&path)
         .args(["-b", &branch])
@@ -542,6 +542,48 @@ mod tests {
         // than folded to `-`: subagent labels (the other caller) may contain it.
         assert_eq!(sanitize_label("foo_bar"), "foo_bar");
         assert_eq!(sanitize_label("foo_bar-baz"), "foo_bar-baz");
+    }
+
+    /// Creating a worktree runs the repository's `post-checkout` hook. It
+    /// runs confined: it can write the new worktree, not the rest of the
+    /// disk. With LFS objects present the checkout stays on the host.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_checkout_hook_runs_confined_when_a_worktree_is_created() {
+        use std::os::unix::fs::PermissionsExt as _;
+        if forge_sandbox::availability().is_err() {
+            return;
+        }
+        let repo = TempDir::new().unwrap();
+        let root = repo.path().canonicalize().unwrap();
+        init_repo(&root);
+        // Outside the repository, and not a location a sandbox may write.
+        let exe = std::env::current_exe().unwrap();
+        let outside = tempfile::tempdir_in(exe.parent().unwrap()).unwrap();
+        let escaped = outside.path().join("escaped");
+        let hook = root.join(".git/hooks/post-checkout");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\ntouch ran-in-worktree\ntouch '{}' || true\n",
+                escaped.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let base = root.join(".forge/local/worktrees");
+        let created = create_session_worktree(&root, &base).unwrap();
+        assert!(
+            created.path.join("ran-in-worktree").exists(),
+            "the hook ran"
+        );
+        assert!(!escaped.exists(), "the hook wrote outside the sandbox");
+
+        std::fs::create_dir(root.join(".git/lfs")).unwrap();
+        assert!(forge_sandbox::git::uses_lfs(&root));
+        create_session_worktree(&root, &base).unwrap();
+        assert!(escaped.exists(), "an LFS repository checks out on the host");
     }
 
     #[test]
