@@ -810,22 +810,29 @@ fn spawn_subagent_actor(
         .actor_channel(child_session_id)
         .map_err(|error| LoopError::Other(error.to_string()))?;
     tokio::spawn(async move {
-        let _writer_permit = match writer_gate {
-            Some(gate) => Some(gate.acquire_owned().await.expect("writer gate closed")),
-            None => None,
-        };
         let mut child = child;
+        // The writer gate is held for one run at a time, never across the
+        // idle wait below: a finished writer that kept it would block every
+        // later writer in the repository until the whole session was torn
+        // down.
+        let mut writer_permit = None;
         let result = if initial_prompt.is_some() || resume_turn {
-            let probe = ActivityProbe::start(runtime.latest_message.clone());
-            let result = if let Some(prompt) = initial_prompt {
-                child
-                    .run_user_message_with_stream(&prompt, Some(probe.sender()))
-                    .await
-            } else {
-                child.run_agent_turns(Some(probe.sender())).await
-            };
-            probe.finish();
-            Some(result)
+            match writer_turn(&writer_gate, child.cancel_token.as_ref()).await {
+                Err(cancelled) => Some(Err(cancelled)),
+                Ok(permit) => {
+                    writer_permit = permit;
+                    let probe = ActivityProbe::start(runtime.latest_message.clone());
+                    let result = if let Some(prompt) = initial_prompt {
+                        child
+                            .run_user_message_with_stream(&prompt, Some(probe.sender()))
+                            .await
+                    } else {
+                        child.run_agent_turns(Some(probe.sender())).await
+                    };
+                    probe.finish();
+                    Some(result)
+                }
+            }
         } else {
             None
         };
@@ -840,6 +847,7 @@ fn spawn_subagent_actor(
             )
             .await;
         }
+        drop(writer_permit.take());
 
         while let Some(AgentCommand::Wake { cancel }) = command_rx.recv().await {
             child.cancel_token = Some(cancel);
@@ -849,13 +857,21 @@ fn spawn_subagent_actor(
             if messages.is_empty() {
                 continue;
             }
-            // Give the child a viewer for the length of this run, so the strip
-            // can show what it is doing and not only what it finished.
-            let probe = ActivityProbe::start(runtime.latest_message.clone());
-            let result = child
-                .run_user_message_with_stream(&messages.join("\n\n"), Some(probe.sender()))
-                .await;
-            probe.finish();
+            let result = match writer_turn(&writer_gate, child.cancel_token.as_ref()).await {
+                Err(cancelled) => Err(cancelled),
+                Ok(permit) => {
+                    writer_permit = permit;
+                    // Give the child a viewer for the length of this run, so
+                    // the strip can show what it is doing and not only what
+                    // it finished.
+                    let probe = ActivityProbe::start(runtime.latest_message.clone());
+                    let result = child
+                        .run_user_message_with_stream(&messages.join("\n\n"), Some(probe.sender()))
+                        .await;
+                    probe.finish();
+                    result
+                }
+            };
             child = drive_subagent(
                 child,
                 result,
@@ -865,9 +881,32 @@ fn spawn_subagent_actor(
                 coordinator.clone(),
             )
             .await;
+            drop(writer_permit.take());
         }
     });
     Ok(())
+}
+
+/// Wait for this run's turn to write in the repository. `None` for a
+/// read-only child, which needs no turn. Gives up when the child is
+/// cancelled while it waits, so a queued writer can still be stopped (and
+/// its session retired) instead of waiting behind a long-running one.
+async fn writer_turn(
+    gate: &Option<Arc<Semaphore>>,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, LoopError> {
+    let Some(gate) = gate else {
+        return Ok(None);
+    };
+    let acquire = gate.clone().acquire_owned();
+    let permit = match cancel {
+        Some(cancel) => tokio::select! {
+            permit = acquire => permit,
+            _ = cancel.cancelled() => return Err(LoopError::Cancelled),
+        },
+        None => acquire.await,
+    };
+    Ok(Some(permit.expect("writer gate closed")))
 }
 
 /// How much of the in-progress assistant text the activity cell keeps. The
@@ -1321,6 +1360,15 @@ mod tests {
             wait_terminal(&mut session, next).await,
             BackgroundTaskStatus::Succeeded { .. }
         ));
+        // The follow-up replaced the first run's result channel. Polling
+        // must leave that finished run as it ended, not re-mark it cancelled.
+        for _ in 0..3 {
+            session.poll_background_tasks().await.unwrap();
+        }
+        assert!(matches!(
+            session.background().get(id).unwrap().status,
+            BackgroundTaskStatus::Succeeded { .. }
+        ));
         assert!(session.descendant_worktrees().is_empty());
         assert!(dir.path().join("a.txt").exists());
     }
@@ -1693,6 +1741,42 @@ mod tests {
         // Subagent results are retrieved explicitly through the orchestration
         // tools rather than being injected into the parent's prompt queue.
         assert_eq!(s.queue().len(), 0);
+    }
+
+    /// A writer that has finished waits for follow-ups without holding the
+    /// repository's writer gate, so the next writer can run.
+    #[tokio::test]
+    async fn a_second_writer_runs_after_the_first_has_finished() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path()).await;
+        let mut s = session_with_script(
+            dir.path(),
+            vec![text_response("first done"), text_response("second done")],
+        )
+        .await;
+        let writer = |role: &str| SubagentSpec {
+            role: role.into(),
+            prompt: "do the work".into(),
+            mode: AgentMode::Writer,
+            tool_allowlist: None,
+        };
+
+        let first = s.spawn_subagent(writer("first")).await.unwrap();
+        assert!(matches!(
+            wait_terminal(&mut s, first).await,
+            BackgroundTaskStatus::Succeeded { .. }
+        ));
+        let second = s.spawn_subagent(writer("second")).await.unwrap();
+        let status = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            wait_terminal(&mut s, second),
+        )
+        .await
+        .expect("the second writer must not wait behind a finished one");
+        assert!(
+            matches!(status, BackgroundTaskStatus::Succeeded { .. }),
+            "{status:?}"
+        );
     }
 
     #[tokio::test]

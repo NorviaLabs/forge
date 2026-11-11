@@ -428,6 +428,12 @@ impl BackgroundTaskRegistry {
     /// Like `spawn_slot`, but reuses a specific id instead of minting a
     /// fresh one — for reconciling a task that already has journal history
     /// under that id (an orphaned subagent marked interrupted on restart).
+    /// Never hand out an id at or below `highest` (ids already in the
+    /// journal of a resumed session).
+    pub(crate) fn reserve_ids_through(&mut self, highest: u64) {
+        self.next_id = self.next_id.max(highest.saturating_add(1));
+    }
+
     /// Bumps `next_id` past `id`
     /// so a later `spawn_slot` call can never collide with it. Unlike
     /// `spawn_slot`'s fresh ids (which reset every process and only ever
@@ -736,6 +742,14 @@ impl AgentSession {
         orphaned: &[forge_durable::RestoredBackgroundTask],
         subagent_workspaces: &HashMap<u64, std::path::PathBuf>,
     ) -> Result<(), LoopError> {
+        // Ids are the journal key for a task's start and finish, and part of
+        // a subagent's worktree and branch name. A resumed session must go
+        // on from the highest id the journal holds, finished tasks included:
+        // starting again at 1 let a new task's finish land on an old task's
+        // record, and collide with an old worktree.
+        if let Some(highest) = orphaned.iter().map(|task| task.id.0).max() {
+            self.tasks.background.reserve_ids_through(highest);
+        }
         for task in orphaned.iter().filter(|t| !t.finished) {
             if task.kind == "subagent" {
                 if let Some(workspace) = subagent_workspaces.get(&task.id.0) {
@@ -911,9 +925,23 @@ impl AgentSession {
                 .get(id)
                 .and_then(|task| task.child_session_id)
                 .is_some();
-            if !is_subagent {
+            // A closed channel can never deliver again. That is the normal
+            // end of a subagent's earlier run once a follow-up has replaced
+            // its sender, so stop polling it: left in place, every poll
+            // found it closed again, re-marked the finished run as cancelled
+            // and journalled another finish.
+            let closed = outcome.is_none();
+            if !is_subagent || closed {
                 self.tasks.receivers.remove(&id);
                 self.tasks.background.control().forget_hitl(id);
+            }
+            let already_final = self
+                .tasks
+                .background
+                .get(id)
+                .is_some_and(|task| task.status.is_terminal());
+            if closed && already_final {
+                continue;
             }
             self.finish_background_task(id, outcome).await?;
         }
@@ -1708,6 +1736,49 @@ mod tests {
             let task = resumed.background().list().next().unwrap();
             assert_eq!(task.label, "long-job");
             assert_eq!(task.status, super::BackgroundTaskStatus::Cancelled);
+        }
+
+        /// A task started after a resume gets an id the journal has not
+        /// used, including ids of tasks that finished before the restart.
+        #[tokio::test]
+        async fn a_task_started_after_resume_does_not_reuse_a_journalled_id() {
+            let dir = tempdir().unwrap();
+            let cfg = cfg(dir.path());
+            let model = Arc::new(MockModelClient::script(vec![]));
+            let (session_id, finished_id) = {
+                let mut s = AgentSession::create(cfg.clone(), model.clone(), ToolRegistry::new())
+                    .await
+                    .unwrap();
+                let id = s
+                    .spawn_background_shell("echo before-restart".into(), "before".into())
+                    .await
+                    .unwrap();
+                wait_terminal(&mut s, id).await;
+                (s.session_id, id)
+            };
+
+            let mut resumed =
+                AgentSession::resume(cfg.clone(), model.clone(), ToolRegistry::new(), session_id)
+                    .await
+                    .unwrap();
+            let after = resumed
+                .spawn_background_shell("echo after-restart".into(), "after".into())
+                .await
+                .unwrap();
+            assert_ne!(after, finished_id, "the journal already holds that id");
+            wait_terminal(&mut resumed, after).await;
+            drop(resumed);
+
+            // The journal pairs each start with its own finish: nothing is
+            // left looking orphaned for the next restart to cancel.
+            let again = AgentSession::resume(cfg, model, ToolRegistry::new(), session_id)
+                .await
+                .unwrap();
+            assert!(again
+                .background()
+                .list()
+                .all(|task| task.status.is_terminal()
+                    && task.status != super::BackgroundTaskStatus::Cancelled));
         }
 
         #[tokio::test]
