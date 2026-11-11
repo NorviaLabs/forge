@@ -2654,15 +2654,15 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    min-height: 42px;
-    padding: 0 12px;
+    min-height: 46px;
+    padding: 0 14px;
     border-bottom: 1px solid var(--border);
     background: var(--bg);
   }
 
   .head-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
   .head-title strong,
-  .focus-head strong { font-size: 13px; white-space: nowrap; }
+  .focus-head strong { font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
   .head-title strong { overflow: hidden; text-overflow: ellipsis; }
   .checkout,
   .head-session { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
@@ -2757,6 +2757,7 @@
     display: grid;
     place-items: center;
     background: rgba(5, 7, 9, 0.6);
+    backdrop-filter: blur(3px);
     z-index: 20;
   }
 
@@ -2764,17 +2765,18 @@
     width: min(26rem, calc(100vw - 48px));
     max-height: calc(100dvh - 48px);
     overflow: auto;
-    padding: 18px;
+    padding: 22px;
     border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    border-radius: 14px;
     background: var(--surface);
     box-shadow: var(--shadow);
   }
 
   .dialog h2 {
     margin: 0 0 6px;
-    font-size: 15px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 650;
+    letter-spacing: -0.015em;
   }
 
   .dialog p {

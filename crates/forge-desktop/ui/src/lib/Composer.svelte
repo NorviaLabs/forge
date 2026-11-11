@@ -248,12 +248,15 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    margin: 0 24px 16px;
-    padding: 9px 10px 8px;
+    max-width: 52rem;
+    margin: 0 auto 18px;
+    width: calc(100% - 48px);
+    padding: 11px 12px 9px;
     border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    border-radius: 14px;
     background: var(--surface);
     box-shadow: var(--shadow);
+    transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
   }
 
   .slash {
@@ -307,8 +310,7 @@
 
   .composer:focus-within {
     border-color: var(--accent);
-    outline: 2px solid var(--accent);
-    outline-offset: 1px;
+    box-shadow: var(--ring), var(--shadow);
   }
 
   textarea {
@@ -320,8 +322,8 @@
     background: none;
     outline: none;
     resize: none;
-    font-size: 13.5px;
-    line-height: 1.5;
+    font-size: 14px;
+    line-height: 1.55;
   }
 
   textarea::placeholder {

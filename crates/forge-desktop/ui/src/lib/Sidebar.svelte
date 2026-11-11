@@ -74,7 +74,9 @@
 {/if}
 <aside class="sidebar" class:open aria-label="Projects and sessions" {@attach open ? overlay : null}>
   <header class="workspace">
-    <span class="mark">F</span>
+    <span class="mark" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6h13.5a4.5 4.5 0 0 1-4 4.5V13H15a2 2 0 0 1 2 2v2h2v2H5v-2h2v-2a2 2 0 0 1 2-2h1.5v-2.5A4.5 4.5 0 0 1 3 6Z"/><path d="M19.5 3.5 21 5.5l-2 .8.4-2.8Z"/></svg>
+    </span>
     <strong class="brand">Forge</strong>
     {#if open}
       <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
@@ -364,10 +366,11 @@
     place-items: center;
     width: 26px;
     height: 26px;
-    border-radius: 7px;
+    border-radius: 8px;
     background: var(--accent);
-    color: #0e1115;
+    color: var(--accent-text);
     font-weight: 700;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 2px 6px -2px rgba(0, 0, 0, 0.4);
   }
 
   .panel {
@@ -392,10 +395,9 @@
 
   .label {
     color: var(--muted);
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    letter-spacing: 0.02em;
   }
 
   .mini {
@@ -429,8 +431,13 @@
     border-radius: var(--radius-sm);
   }
 
+  .session-list li {
+    margin-bottom: 1px;
+  }
+
   .session-list li.active {
     background: var(--selection);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
   }
 
   .session {
@@ -439,11 +446,12 @@
     gap: 8px;
     flex: 1;
     min-width: 0;
-    height: 32px;
-    padding: 0 8px;
+    height: 34px;
+    padding: 0 10px;
     border: 0;
     background: none;
     text-align: left;
+    transition: background 120ms var(--ease);
   }
 
   .session:hover {
@@ -581,8 +589,9 @@
 
 
   .brand {
-    font-size: 13px;
-    letter-spacing: 0.01em;
+    font-size: 13.5px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
   }
 
   /* Projects: always visible, so a background project's requests and running
@@ -697,7 +706,7 @@
     padding: 0 5px;
     border-radius: 9px;
     background: var(--warning);
-    color: #0e1115;
+    color: var(--accent-text);
     font-size: 10.5px;
     font-weight: 700;
     line-height: 17px;

@@ -44,7 +44,7 @@
     terminal = new Terminal({
       theme: terminalTheme(),
       fontFamily:
-        'ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace',
+        '"Geist Mono Variable", ui-monospace, "SF Mono", Menlo, monospace',
       fontSize: 12,
       lineHeight: 1.4,
       cursorBlink: true,

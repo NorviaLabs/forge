@@ -180,13 +180,13 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 18px 28px 8px;
+    padding: 28px 28px 12px;
     scroll-behavior: smooth;
   }
 
   .intro {
     max-width: 34rem;
-    margin: 12vh auto 0;
+    margin: 14vh auto 0;
     text-align: center;
     color: var(--secondary);
   }
@@ -206,8 +206,9 @@
   .intro h2 {
     margin: 0 0 6px;
     color: var(--text);
-    font-size: 17px;
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: 650;
+    letter-spacing: -0.02em;
   }
 
   .intro p {
@@ -232,7 +233,7 @@
     background: var(--surface);
     color: var(--secondary);
     font-size: 12px;
-    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+    transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
   }
 
   .suggestion:hover {
@@ -243,19 +244,18 @@
 
   .turn {
     max-width: 52rem;
-    margin: 0 auto 18px;
+    margin: 0 auto 26px;
   }
 
   .who {
     display: flex;
     align-items: baseline;
     gap: 7px;
-    margin-bottom: 5px;
+    margin-bottom: 6px;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+    letter-spacing: 0.01em;
   }
 
   .tool-name {
@@ -298,20 +298,21 @@
   }
 
   .message {
-    font-size: 13.5px;
-    line-height: 1.62;
+    font-size: 14px;
+    line-height: 1.65;
     overflow-wrap: anywhere;
   }
 
   .message.user {
-    padding: 10px 13px;
+    padding: 11px 15px;
     border: 1px solid var(--border);
-    border-radius: var(--radius);
+    border-radius: 14px;
     background: var(--surface);
   }
 
   .message.assistant :global(p) {
-    margin: 0 0 0.7em;
+    margin: 0 0 0.85em;
+    text-wrap: pretty;
   }
 
   .message.assistant :global(p:last-child) {
@@ -328,14 +329,16 @@
   }
 
   .message.assistant :global(a) {
-    color: #4fc9df;
-    text-decoration: none;
+    color: var(--link);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
+    text-underline-offset: 3px;
   }
 
   .message.assistant :global(code),
   .message.assistant :global(pre) {
     font-family: var(--font-mono);
-    font-size: 12px;
+    font-size: 12.5px;
   }
 
   .message.assistant :global(code) {
@@ -347,11 +350,12 @@
 
   .message.assistant :global(pre) {
     margin: 0.6em 0;
-    padding: 10px 12px;
+    padding: 12px 14px;
     border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius);
     background: var(--bg-deep);
     overflow: auto;
+    line-height: 1.6;
   }
 
   .message.assistant :global(pre code) {

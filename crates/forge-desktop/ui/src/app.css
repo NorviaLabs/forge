@@ -1,58 +1,63 @@
-/* Forge desktop: tokens and base layer. The palette is the TUI's
-   forge-dark theme, so the desktop reads as the same product. */
+/* Forge desktop: tokens and base layer. Layered, low-chroma surfaces with one
+   clear accent; depth comes from soft shadows and hairline borders. */
 :root {
   color-scheme: dark;
-  --bg: #14171b;
-  --bg-deep: #101318;
-  --surface: #1d2229;
-  --raised: #252c35;
-  --hover: #2a333e;
-  --border: #2a333e;
-  --border-strong: #65778c;
-  --text: #edf0f5;
-  --secondary: #b5becb;
-  --muted: #a2aebf;
-  --accent: #86b5ff;
-  --accent-text: #000000;
-  --accent-soft: #26364d;
-  --success: #9bd1ad;
-  --warning: #f3c575;
-  --error: #ee94a0;
-  --add: #183a28;
-  --remove: #4a2026;
-  --selection: #344154;
-  --strong: #ffa31d;
+  --bg: #161412;
+  --bg-deep: #0f0e0c;
+  --surface: #1d1b18;
+  --raised: #262320;
+  --hover: #2e2a26;
+  --border: #2c2824;
+  --border-strong: #7a7168;
+  --text: #f2eee8;
+  --secondary: #c4bcb1;
+  --muted: #aaa196;
+  --accent: #ff8a3d;
+  --accent-text: #1a0e05;
+  --accent-soft: #3a2515;
+  --success: #9ccf9a;
+  --warning: #f0c35e;
+  --error: #f08a86;
+  --add: #1b3523;
+  --remove: #4a2426;
+  --selection: #3d2f24;
+  --strong: #ffd2a8;
+  --link: #7cc4d6;
 
-  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  --radius: 8px;
-  --radius-sm: 6px;
-  --shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --font-ui: "Geist Variable", "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --radius: 10px;
+  --radius-sm: 7px;
+  --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 16px 40px -8px rgba(8, 6, 4, 0.6);
+  --ring: 0 0 0 3px rgba(255, 138, 61, 0.3);
+  --ease: cubic-bezier(0.2, 0, 0, 1);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f6f7f9;
-  --bg-deep: #e4e9f0;
-  --surface: #ebeff4;
+  --bg: #faf7f2;
+  --bg-deep: #ece6dc;
+  --surface: #f2ede4;
   --raised: #ffffff;
-  --hover: #dde4ee;
-  --border: #d5dde8;
-  --border-strong: #7285a2;
-  --text: #202936;
-  --secondary: #47576a;
-  --muted: #525c6d;
-  --accent: #255caa;
+  --hover: #e6dfd3;
+  --border: #ddd5c7;
+  --border-strong: #8a7f6f;
+  --text: #221d17;
+  --secondary: #51483c;
+  --muted: #62594c;
+  --accent: #b94a0b;
   --accent-text: #ffffff;
-  --accent-soft: #dfe8f6;
-  --success: #246040;
-  --warning: #745100;
+  --accent-soft: #f8e1d1;
+  --success: #2b6a3c;
+  --warning: #7a5200;
   --error: #a52d43;
   --add: #d3eedf;
   --remove: #f1dae2;
-  --selection: #cad7e8;
-  --strong: #8a4c00;
-  --shadow: 0 12px 32px rgba(32, 41, 54, 0.16);
+  --selection: #efd9c4;
+  --strong: #8a3a05;
+  --link: #1d6a7c;
+  --shadow: 0 1px 2px rgba(29, 36, 49, 0.06), 0 16px 40px -8px rgba(29, 36, 49, 0.2);
+  --ring: 0 0 0 3px rgba(185, 74, 11, 0.22);
 }
 
 * {
@@ -70,7 +75,10 @@ body {
   background: var(--bg);
   color: var(--text);
   font: 13px/1.55 var(--font-ui);
+    letter-spacing: -0.003em;
+  text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  caret-color: var(--accent);
   overflow: hidden;
 }
 
@@ -89,7 +97,8 @@ button {
 
 :focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
 button:disabled {
@@ -106,10 +115,19 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: color-mix(in srgb, var(--border-strong) 70%, transparent);
   border: 2px solid transparent;
   background-clip: padding-box;
-  border-radius: 6px;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 ::-webkit-scrollbar-track {
@@ -128,7 +146,12 @@ button:disabled {
   background: var(--surface);
   color: var(--secondary);
   white-space: nowrap;
-  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease),
+    box-shadow 140ms var(--ease), transform 90ms var(--ease);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
 }
 
 .btn:hover:not(:disabled) {
@@ -145,6 +168,7 @@ button:disabled {
   border-color: var(--accent);
   color: var(--accent-text);
   font-weight: 600;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 .btn.primary:hover:not(:disabled) {
@@ -179,6 +203,7 @@ button:disabled {
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
+  transition: background 140ms var(--ease), color 140ms var(--ease);
 }
 
 .icon-btn:hover:not(:disabled) {
@@ -199,6 +224,11 @@ button:disabled {
 
 .field:focus {
   border-color: var(--accent);
+  box-shadow: var(--ring);
+}
+
+.field {
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
 }
 
 .field::placeholder {
@@ -208,7 +238,20 @@ button:disabled {
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
+  font-feature-settings: "calt", "ss01";
+  letter-spacing: 0;
 }
+
+code, pre, kbd, samp {
+  font-feature-settings: "calt", "ss01";
+}
+
+h1, h2, h3 {
+  text-wrap: balance;
+  letter-spacing: -0.012em;
+}
+
+input, textarea { caret-color: var(--accent); }
 
 .chip {
   display: inline-flex;
@@ -263,6 +306,16 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   .spin {
     animation: none;
+  }
+
+  .btn,
+  .icon-btn,
+  .field {
+    transition: none;
+  }
+
+  .btn:active:not(:disabled) {
+    transform: none;
   }
 }
 
