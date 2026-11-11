@@ -423,7 +423,7 @@ impl ProviderSpec {
             .map(|s| s.as_str())
     }
 
-    pub fn needs_tui_api_key_prompt(&self) -> bool {
+    pub fn prompts_for_api_key(&self) -> bool {
         let auth = self.effective_auth();
         auth.kind == AuthKind::ApiKey && auth.prompt == AuthPrompt::Tui
     }
@@ -536,7 +536,7 @@ mod tests {
             vec!["demo/model-a".into(), "demo/model-b".into()],
         );
         assert_eq!(api.default_model(), Some("demo/model-a"));
-        assert!(api.needs_tui_api_key_prompt());
+        assert!(api.prompts_for_api_key());
         assert!(!api.effective_auth().is_oauth());
 
         let oauth = profile(
@@ -547,7 +547,7 @@ mod tests {
             vec![],
         );
         assert_eq!(oauth.default_model(), None);
-        assert!(!oauth.needs_tui_api_key_prompt());
+        assert!(!oauth.prompts_for_api_key());
         assert!(oauth.effective_auth().is_oauth());
     }
 

@@ -68,8 +68,8 @@ pub use resolve::{
 pub use route::{group_routes, normalize_model_id, route_model_id, ModelPickerEntry, ModelRoute};
 pub use selection::ModelSelection;
 pub use service::{
-    format_connected, handle_connect_action, has_connected_profile, needs_tui_api_key_prompt,
-    needs_tui_oauth, parse_connect_args, ConnectAction, ConnectError, ConnectService,
+    format_connected, handle_connect_action, has_connected_profile, parse_connect_args,
+    ConnectAction, ConnectError, ConnectService,
 };
 pub use store::{CredentialStore, StoreError};
 pub use verify::VerifyError;
@@ -187,14 +187,14 @@ mod tests {
     fn builtin_auth_modes() {
         let r = builtin_registry();
         assert!(r.get("xai").unwrap().effective_auth().is_oauth());
-        assert!(r.get("opencode_go").unwrap().needs_tui_api_key_prompt());
-        assert!(r.get("opencode_zen").unwrap().needs_tui_api_key_prompt());
-        assert!(r.get("openai").unwrap().needs_tui_api_key_prompt());
-        assert!(!r.get("openai_codex").unwrap().needs_tui_api_key_prompt());
-        assert!(r.get("anthropic").unwrap().needs_tui_api_key_prompt());
-        assert!(!r.get("ollama").unwrap().needs_tui_api_key_prompt());
+        assert!(r.get("opencode_go").unwrap().prompts_for_api_key());
+        assert!(r.get("opencode_zen").unwrap().prompts_for_api_key());
+        assert!(r.get("openai").unwrap().prompts_for_api_key());
+        assert!(!r.get("openai_codex").unwrap().prompts_for_api_key());
+        assert!(r.get("anthropic").unwrap().prompts_for_api_key());
+        assert!(!r.get("ollama").unwrap().prompts_for_api_key());
         let claude = r.get("claude_agent").unwrap();
-        assert!(!claude.needs_tui_api_key_prompt());
+        assert!(!claude.prompts_for_api_key());
         assert_eq!(claude.effective_wire(), WireKind::ClaudeAgent);
         assert_eq!(claude.effective_catalog_kind(), CatalogKind::ClaudeAgent);
         assert_eq!(claude.attach, Some(Attach::None));

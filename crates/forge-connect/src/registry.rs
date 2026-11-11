@@ -1523,7 +1523,7 @@ mod tests {
             .unwrap();
             assert_eq!(spec.default_model(), Some(expected));
             assert_eq!(spec.effective_wire(), crate::WireKind::ChatCompletions);
-            assert!(spec.needs_tui_api_key_prompt());
+            assert!(spec.prompts_for_api_key());
             assert!(spec.is_user());
             assert!(spec.api_key_env.is_empty());
             assert_eq!(loaded_registry_from(&path).get(id), Some(&spec));
@@ -1779,7 +1779,7 @@ my-llm = ["meta-llama/Llama-3.3-70B", "my-llm/meta-llama/Llama-3.3-70B"]
         assert_eq!(spec.model_provider_prefix, "my-llm");
         assert_eq!(spec.effective_wire(), WireKind::ChatCompletions);
         assert_eq!(spec.effective_auth().kind, AuthKind::ApiKeyOptional);
-        assert!(!spec.needs_tui_api_key_prompt());
+        assert!(!spec.prompts_for_api_key());
         assert_eq!(spec.manual_models, vec!["my-llm/meta-llama/Llama-3.3-70B"]);
     }
 

@@ -620,22 +620,6 @@ pub fn format_connected(outcome: &ConnectOutcome, title: &str) -> String {
     )
 }
 
-/// Whether the profile needs an API key prompt before calling connect.
-pub fn needs_tui_api_key_prompt(registry: &ConnectRegistry, profile_id: &str) -> bool {
-    registry
-        .get(profile_id)
-        .map(|p| p.needs_tui_api_key_prompt())
-        .unwrap_or(false)
-}
-
-/// Whether connecting the profile runs an OAuth flow.
-pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
-    registry
-        .get(profile_id)
-        .map(|p| p.effective_auth().is_oauth())
-        .unwrap_or(false)
-}
-
 pub fn handle_connect_action(
     action: ConnectAction,
     registry: &ConnectRegistry,
@@ -1346,39 +1330,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(svc.connected_profiles().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn needs_tui_flags() {
-        let reg = {
-            let mut r = ConnectRegistry::new();
-            let mut go = crate::profile::test_spec(
-                "opencode_go",
-                crate::AuthSpec::api_key(crate::AuthPrompt::Tui),
-                vec!["m".into()],
-            );
-            go.title = "Go".into();
-            go.api_key_env = vec![];
-            go.model_provider_prefix = "o".into();
-            go.provider = "opencode".into();
-            go.provider_label = "OpenCode".into();
-            go.label = "Go".into();
-            r.register(go);
-            let mut xai = crate::profile::test_spec(
-                "xai",
-                crate::builtin::builtin_profile("xai").auth.unwrap(),
-                vec!["xai/m".into()],
-            );
-            xai.title = "Grok".into();
-            xai.api_key_env = vec![];
-            xai.provider_label = "Grok".into();
-            r.register(xai);
-            r
-        };
-        assert!(needs_tui_api_key_prompt(&reg, "opencode_go"));
-        assert!(!needs_tui_api_key_prompt(&reg, "xai"));
-        assert!(needs_tui_oauth(&reg, "xai"));
-        assert!(!needs_tui_oauth(&reg, "opencode_go"));
     }
 
     #[test]

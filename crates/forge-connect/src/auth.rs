@@ -159,7 +159,7 @@ mod tests {
     fn xai_is_oauth_and_opencode_go_prompts_for_a_key() {
         let xai = crate::builtin::builtin_profile("xai");
         assert!(xai.effective_auth().is_oauth());
-        assert!(!xai.needs_tui_api_key_prompt());
+        assert!(!xai.prompts_for_api_key());
         assert_eq!(xai.effective_auth().label(), "oauth");
         assert!(xai
             .effective_auth()
@@ -167,7 +167,7 @@ mod tests {
             .is_some_and(|issuer| issuer.contains("auth.x.ai")));
 
         let go = crate::builtin::builtin_profile("opencode_go");
-        assert!(go.needs_tui_api_key_prompt());
+        assert!(go.prompts_for_api_key());
         assert_eq!(go.effective_auth().label(), "api_key");
     }
 

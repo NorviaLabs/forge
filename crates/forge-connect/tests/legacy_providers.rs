@@ -47,7 +47,7 @@ fn a_legacy_custom_entry_loads_keeps_its_override_and_normalizes_models() {
     assert!(spec.is_user());
     assert_eq!(spec.base_url, "https://edge.sailresearch.com/v1");
     assert_eq!(spec.effective_wire(), WireKind::ChatCompletions);
-    assert!(spec.needs_tui_api_key_prompt());
+    assert!(spec.prompts_for_api_key());
     // A custom entry's typed `default_models` list with its manual models;
     // the bare duplicate collapses into the prefixed one.
     assert!(spec.default_models.is_empty());

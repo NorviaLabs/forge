@@ -24,7 +24,7 @@ mod openai {
     fn profile_shape() {
         let p = openai_profile();
         assert_eq!(p.id, "openai");
-        assert!(p.needs_tui_api_key_prompt());
+        assert!(p.prompts_for_api_key());
         assert!(p.default_models.iter().all(|m| m.starts_with("openai/")));
         assert!(p.prompt_cache_key);
     }
@@ -144,7 +144,7 @@ mod anthropic {
     fn profile_shape() {
         let p = anthropic_profile();
         assert_eq!(p.id, "anthropic");
-        assert!(p.needs_tui_api_key_prompt());
+        assert!(p.prompts_for_api_key());
         assert!(p.default_models.iter().all(|m| m.starts_with("anthropic/")));
     }
 
@@ -233,7 +233,7 @@ mod xai {
         let p = xai_grok_profile();
         assert_eq!(p.id, "xai");
         assert!(p.effective_auth().is_oauth());
-        assert!(!p.needs_tui_api_key_prompt());
+        assert!(!p.prompts_for_api_key());
         assert_eq!(p.api_key_env, vec!["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
         assert!(p.default_model().unwrap().starts_with("xai/"));
     }
@@ -354,7 +354,7 @@ mod ollama {
     fn profile_shape() {
         let p = ollama_profile();
         assert_eq!(p.id, "ollama");
-        assert!(!p.needs_tui_api_key_prompt());
+        assert!(!p.prompts_for_api_key());
         assert!(p.default_models.is_empty());
         assert!(p.base_url.contains("11434"));
     }
@@ -402,9 +402,7 @@ mod opencode_go {
     }
     use crate::preferences::PreferenceStore;
     use crate::registry::ConnectRegistry;
-    use crate::service::{
-        handle_connect_action, needs_tui_api_key_prompt, ConnectAction, ConnectError,
-    };
+    use crate::service::{handle_connect_action, ConnectAction, ConnectError};
     use crate::store::CredentialStore;
     use tempfile::tempdir;
 
@@ -417,15 +415,8 @@ mod opencode_go {
         let p = opencode_go_profile();
         assert_eq!(p.id, "opencode_go");
         assert!(!p.effective_auth().is_oauth());
-        assert!(p.needs_tui_api_key_prompt());
+        assert!(p.prompts_for_api_key());
         assert!(p.auth_url.as_deref().unwrap().contains("opencode.ai"));
-    }
-
-    #[test]
-    fn tui_flag_true_for_opencode_go() {
-        let mut reg = ConnectRegistry::new();
-        reg.register(opencode_go_profile());
-        assert!(needs_tui_api_key_prompt(&reg, "opencode_go"));
     }
 
     #[test]
@@ -557,7 +548,7 @@ mod opencode_zen {
     fn profile_shape() {
         let p = opencode_zen_profile();
         assert_eq!(p.id, "opencode_zen");
-        assert!(p.needs_tui_api_key_prompt());
+        assert!(p.prompts_for_api_key());
         assert!(p.base_url.ends_with("/zen/v1"));
         assert!(!p.base_url.contains("/go/"));
         assert!(p

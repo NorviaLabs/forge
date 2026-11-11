@@ -10,7 +10,6 @@ mod fast_file_tools;
 mod git_network;
 #[doc(hidden)]
 pub use git_network::set_egress_connect_exe;
-mod invocation;
 mod orchestration;
 mod output_filters;
 mod registry;
@@ -32,7 +31,6 @@ pub use builtins::{
 };
 pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};
-pub use invocation::tool_invocation;
 pub use orchestration::{
     AgentMessageAction, AgentMessageArgs, AgentMode, SendMessageTool, SpawnAgentArgs,
     SpawnAgentTool, WaitAgentArgs, WaitAgentTool,

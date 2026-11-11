@@ -12,10 +12,9 @@ all logic lives in `src/`.
 ## Interface
 
 - Child component contract: [`./src/EGM.md`](./src/EGM.md) — `WorkspaceIndex`,
-  `WorkspaceIndexOptions`, `SearchError`, `merge_search_results`,
-  `score_quick_open`, and the result types
-  (`FileSearchHit`, `GrepSearchHit`, `FindResponse`, `GrepResponse`,
-  `MergedSearch`, `GrepQueryMode`).
+  `WorkspaceIndexOptions`, `SearchError`, `score_quick_open`, and the result
+  types (`FileSearchHit`, `GrepSearchHit`, `FindResponse`, `GrepResponse`,
+  `GrepQueryMode`).
 
 ## Invariants
 

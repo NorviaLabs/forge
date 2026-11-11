@@ -74,7 +74,6 @@ pub struct ActiveTaskState {
     pub attempt_id: AttemptId,
     pub lifecycle: TaskLifecycle,
     pub wait_reason: Option<WaitReason>,
-    pub cancel_requested: bool,
     pub revision: u64,
 }
 
@@ -86,7 +85,6 @@ impl ActiveTaskState {
             attempt_id: AttemptId(0),
             lifecycle: TaskLifecycle::Ready,
             wait_reason: None,
-            cancel_requested: false,
             revision: 0,
         }
     }
@@ -142,7 +140,6 @@ impl ActiveTaskState {
         self.attempt_id = AttemptId(1);
         self.lifecycle = TaskLifecycle::Working;
         self.wait_reason = None;
-        self.cancel_requested = false;
         self.revision += 1;
         Ok(self.revision)
     }
@@ -170,7 +167,6 @@ impl ActiveTaskState {
             attempt_id: AttemptId(has_task as u64),
             lifecycle,
             wait_reason,
-            cancel_requested: false,
             revision: 0,
         }
     }

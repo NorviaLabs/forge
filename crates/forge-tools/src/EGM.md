@@ -67,7 +67,6 @@ Subdirectories:
   `ValidationBudget` (`new`,
   `with_default_max`, `record_failure_with_signature`).
 - Output shaping: `compress_tool_output`.
-- Invocation display: `tool_invocation`.
 - Sandbox (`sandbox.rs`): `SandboxPolicy` (`for_workspace`,
   `with_read_only_workspace`, `workspace_writable`, `with_command_access`,
   `toolchain_env`, `with_read_path`, `with_git_writable`, `with_session_tmp`,

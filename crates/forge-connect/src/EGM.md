@@ -44,7 +44,7 @@ prefix (`<profile_id>/<model>`).
   `guidance`, `min_key_len`, `billing_url`/`billing_note`, `effort_family`,
   `prompt_cache_key`,
   `model_provider_prefix`, `provider`, `provider_label`, `label`, `origin`.
-  Methods: `default_model`, `needs_tui_api_key_prompt`, `is_user`,
+  Methods: `default_model`, `prompts_for_api_key`, `is_user`,
   `effective_wire` (default `chat-completions`), `effective_auth` (default
   app-prompted API key), `effective_catalog_kind` (default from wire),
   `wire_for_model(bare)`.
@@ -105,8 +105,7 @@ prefix (`<profile_id>/<model>`).
   `connect_start_oauth`, `disconnect`, `profile`, `ensure_oauth_fresh`,
   `connected_profiles`, `report_auth_failure`, `report_auth_success`),
   `ConnectAction`, `ConnectError`, `parse_connect_args`,
-  `handle_connect_action`, `has_connected_profile`, `format_connected`,
-  `needs_tui_api_key_prompt`, `needs_tui_oauth`.
+  `handle_connect_action`, `has_connected_profile`, `format_connected`.
 - Catalog (`catalog.rs`): `ModelCatalogCache` (`new`, `user_default`,
   `path`, `with_ttl`, `is_fresh`, `registry_is_fresh`, `get_cached`, `put`,
   `clear_profile`, `get_registry_cached`,
