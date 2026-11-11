@@ -38,11 +38,16 @@ fn load_at(path: &Path) -> Result<TrustFile, TrustError> {
     Ok(toml::from_str(&text)?)
 }
 
+/// Replace the file atomically: a crash mid-write must not leave a
+/// truncated file, which reads as "nothing is trusted".
 fn save_at(path: &Path, file: &TrustFile) -> Result<(), TrustError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, toml::to_string_pretty(file)?)?;
+    use std::io::Write;
+    let text = toml::to_string_pretty(file)?;
+    let temporary = path.with_extension(format!("toml.tmp-{}", std::process::id()));
+    let mut out = fs::File::create(&temporary)?;
+    out.write_all(text.as_bytes())?;
+    out.sync_all()?;
+    fs::rename(&temporary, path)?;
     Ok(())
 }
 
@@ -81,12 +86,23 @@ pub fn grant_trust(cwd: &Path) -> Result<PathBuf, TrustError> {
 
 pub fn grant_trust_at(store: &Path, cwd: &Path) -> Result<PathBuf, TrustError> {
     let canonical = cwd.canonicalize().map_err(|_| TrustError::Canonicalize)?;
+    let dir = store.parent().unwrap_or(Path::new("."));
+    fs::create_dir_all(dir)?;
+    // Read, change and replace under a lock, so two grants at once (two
+    // Forge windows, or a project and one of its worktrees) both land.
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("trust.lock"))?;
+    lock.lock()?;
     let mut file = load_at(store)?;
     let key = canonical.display().to_string();
     if !file.paths.iter().any(|p| p == &key) {
         file.paths.push(key);
         save_at(store, &file)?;
     }
+    drop(lock);
     Ok(canonical)
 }
 
@@ -94,6 +110,32 @@ pub fn grant_trust_at(store: &Path, cwd: &Path) -> Result<PathBuf, TrustError> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// Grants racing from several threads must all land: each one reads,
+    /// adds its path and replaces the whole file.
+    #[test]
+    fn concurrent_grants_all_land() {
+        let dir = TempDir::new().unwrap();
+        let store = dir.path().join("config").join("trust.toml");
+        let folders: Vec<PathBuf> = (0..8)
+            .map(|index| {
+                let folder = dir.path().join(format!("project-{index}"));
+                fs::create_dir_all(&folder).unwrap();
+                folder
+            })
+            .collect();
+
+        std::thread::scope(|scope| {
+            for folder in &folders {
+                let store = &store;
+                scope.spawn(move || grant_trust_at(store, folder).unwrap());
+            }
+        });
+
+        for folder in &folders {
+            assert!(is_trusted_at(&store, folder), "{} lost", folder.display());
+        }
+    }
 
     #[test]
     fn missing_store_is_untrusted() {

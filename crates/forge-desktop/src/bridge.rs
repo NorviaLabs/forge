@@ -1252,11 +1252,23 @@ pub async fn choose_folder(
     };
     let project = match state.projects.resolve_launch(folder).await {
         Ok(forge_session::LaunchResolution::Project(project)) => project,
-        Ok(forge_session::LaunchResolution::NeedsConfirmation { root }) => state
-            .projects
-            .add(root)
-            .await
-            .map_err(|e| state.fail(e.to_string()))?,
+        // A new folder that is already trusted opens now. One that is not
+        // goes to the trust screen unregistered, as a launch from it would:
+        // registering first left a mistaken pick (the home folder, say)
+        // in the registry after the operator backed out, where it captured
+        // every later launch from beneath it.
+        Ok(forge_session::LaunchResolution::NeedsConfirmation { root }) => {
+            if !forge_config::is_trusted(&root) {
+                state.set_workspace(root.clone());
+                state.restore(Pending::Confirm(root));
+                return Ok(trust_view(&state));
+            }
+            state
+                .projects
+                .add(root)
+                .await
+                .map_err(|e| state.fail(e.to_string()))?
+        }
         Err(error) => return Err(state.fail(error.to_string())),
     };
     open_or_ask_trust(&app, &state, project).await
