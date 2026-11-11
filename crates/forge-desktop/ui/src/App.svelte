@@ -21,7 +21,10 @@
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
   import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
-  import { attentionLabel, clearShown, flattenTree, foldersToLoad, keepDraft, projectStatus, prunable, shownMessages } from "./view.js";
+  import {
+    applyRefresh, attentionLabel, beginRefresh, clearShown, failRefresh, flattenTree, foldersToLoad,
+    keepDraft, projectStatus, prunable, shownMessages,
+  } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
   import {
@@ -129,14 +132,16 @@
 
   // The Files tree, one folder at a time: folder path ("" is the root) ->
   // `{ entries, truncated }`. Open folders live in the session's view record.
-  let listings = $state({});
+  // It is fetched per session and kept in that session's view record, with
+  // its Git status and last-turn files.
+  const listings = $derived(currentView.files.listings);
+  const filesLoading = $derived(currentView.files.loading);
+  const filesError = $derived(currentView.files.error);
+  const status = $derived(currentView.files.status);
+  const lastTurnFiles = $derived(currentView.files.lastTurnFiles);
   // Show entries .gitignore excludes (dependencies, build output).
   let showIgnored = $state(false);
   const fileTree = $derived(flattenTree(listings, currentView.expanded ?? [], showIgnored));
-  let filesLoading = $state(false);
-  let filesError = $state("");
-  let status = $state({ branch: "", files: [] });
-  let lastTurnFiles = $state([]);
 
   let creating = $state(false);
   let pendingClose = $state("");
@@ -575,17 +580,15 @@
     finally { syncing = false; }
   }
 
-  let filesRequest = 0;
-  async function refreshFiles() {
-    if (!sessionId) return;
-    const request = ++filesRequest;
-    const owner = sessionId;
-    filesLoading = true;
-    filesError = "";
+  // Refresh one session's workspace into its own record. The session need
+  // not be on screen when the reply arrives.
+  async function refreshFiles(owner = sessionId) {
+    if (!owner) return;
+    const record = viewFor(views, owner);
+    const ticket = beginRefresh(record.files);
     try {
       // Reload the root and every open folder, never the whole tree. A
       // folder that has gone away (deleted, renamed) is simply closed.
-      const record = viewFor(views, owner);
       const folders = foldersToLoad(record.expanded);
       // A folder that isn't a Git repository has files but no Git status;
       // asking for it would fail and hide the file list too.
@@ -594,18 +597,13 @@
         supportsGit ? invoke("git_status", { sessionId: owner }) : { branch: "", files: [] },
         supportsGit ? invoke("git_last_turn_files", { sessionId: owner }) : [],
       ]);
-      if (request !== filesRequest || owner !== sessionId) return;
-      const next = {};
-      folders.forEach((path, index) => { if (loaded[index]) next[path] = loaded[index]; });
-      record.expanded = record.expanded.filter((path) => !folders.includes(path) || next[path]);
-      listings = next;
-      status = nextStatus;
-      lastTurnFiles = written;
-      markStaleDiffs(owner, nextStatus);
+      // The record may have been replaced (a document opened) meanwhile.
+      const current = viewFor(views, owner);
+      if (applyRefresh(current, ticket, { folders, loaded, status: nextStatus, lastTurnFiles: written })) {
+        markStaleDiffs(owner, nextStatus);
+      }
     } catch (cause) {
-      if (request === filesRequest && owner === sessionId) filesError = String(cause);
-    } finally {
-      if (request === filesRequest && owner === sessionId) filesLoading = false;
+      failRefresh(viewFor(views, owner).files, ticket, String(cause));
     }
   }
 
@@ -618,14 +616,14 @@
       return;
     }
     record.expanded = [...record.expanded, path];
-    if (listings[path]) return;
+    if (record.files.listings[path]) return;
     try {
       const listing = await invoke("list_dir", { sessionId: owner, path });
-      if (owner === sessionId) listings = { ...listings, [path]: listing };
+      viewFor(views, owner).files.listings[path] = listing;
     } catch (cause) {
-      if (owner !== sessionId) return;
-      record.expanded = record.expanded.filter((entry) => entry !== path);
-      filesError = String(cause);
+      const current = viewFor(views, owner);
+      current.expanded = current.expanded.filter((entry) => entry !== path);
+      current.files.error = String(cause);
     }
   }
 
@@ -725,10 +723,8 @@
         // The session's record already holds its documents, draft, screen
         // and drawer; selection only changes which record renders.
         if (next) viewFor(views, next);
-        // The tree and branch must never show the previous session. Status
-        // and last-turn files are kept until the refresh replaces them, so
-        // the Files badge and Stage all do not blink off during the switch.
-        listings = {};
+        // The tree, status and last-turn files come from the selected
+        // session's own record, so they cannot show the previous session.
         info = { ...info, branch: "" };
         if (next) refreshFiles();
       }
@@ -804,9 +800,6 @@
     projectId = id;
     supportsGit = git !== false;
     attention = {};
-    listings = {};
-    status = { branch: "", files: [] };
-    lastTurnFiles = [];
     resumable = [];
     rememberProject(id);
     loadResumable();
@@ -1314,7 +1307,7 @@
     } finally {
       gitBusy = false;
     }
-    if (owner === sessionId) refreshFiles();
+    refreshFiles(owner);
   }
 
   // A comparison whose side no longer exists keeps its tab but says so,
@@ -1512,7 +1505,7 @@
       } else {
         patchDoc(owner, tab.id, { file, draft: file.text, dirty: false, error: "", saving: false });
       }
-      if (owner === sessionId) refreshFiles();
+      refreshFiles(owner);
     } catch (cause) {
       patchDoc(owner, tab.id, { error: String(cause), saving: false });
     }
@@ -1549,7 +1542,7 @@
       await invoke("git_discard_hunk", { sessionId: owner, path: target.path, hunkIndex: target.index });
       patchDoc(owner, target.id, { diff: null });
       await readDoc(target.id, owner);
-      if (owner === sessionId) refreshFiles();
+      refreshFiles(owner);
     } catch (cause) {
       if (owner === sessionId) error = String(cause);
       patchDoc(owner, target.id, { error: String(cause) });
@@ -1565,7 +1558,7 @@
       await invoke("git_restore", { sessionId: owner, path: tab.path });
       patchDoc(owner, id, { diff: null });
       await readDoc(id, owner);
-      if (owner === sessionId) refreshFiles();
+      refreshFiles(owner);
     } catch (cause) {
       patchDoc(owner, id, { error: String(cause) });
     }

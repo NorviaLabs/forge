@@ -27,7 +27,54 @@ export function defaultView() {
     // Half-written answers to pending requests, by call id.
     questionDrafts: {},
     approvalDrafts: {},
+    // The session's workspace as last fetched. A reply always lands on the
+    // record of the session it was asked for, so one that arrives after the
+    // operator has moved on is simply not on screen.
+    files: defaultFiles(),
   };
+}
+
+export function defaultFiles() {
+  return {
+    // Folder path ("" is the root) -> `{ entries, truncated }`.
+    listings: {},
+    status: { branch: "", files: [] },
+    lastTurnFiles: [],
+    loading: false,
+    error: "",
+    // Counts refreshes, so an older reply never replaces a newer one.
+    request: 0,
+  };
+}
+
+// Starts a refresh of a session's workspace and returns its ticket.
+export function beginRefresh(files) {
+  files.loading = true;
+  files.error = "";
+  return ++files.request;
+}
+
+// Applies a refresh's result, unless a newer refresh has started since.
+// `folders` are the paths that were asked for and `loaded` their listings,
+// null for a folder that has gone away; such a folder is closed.
+export function applyRefresh(record, ticket, { folders, loaded, status, lastTurnFiles }) {
+  const files = record.files;
+  if (ticket !== files.request) return false;
+  const listings = {};
+  folders.forEach((path, index) => { if (loaded[index]) listings[path] = loaded[index]; });
+  record.expanded = record.expanded.filter((path) => !folders.includes(path) || listings[path]);
+  files.listings = listings;
+  files.status = status;
+  files.lastTurnFiles = lastTurnFiles;
+  files.loading = false;
+  return true;
+}
+
+// Records a failed refresh, unless a newer refresh has started since.
+export function failRefresh(files, ticket, message) {
+  if (ticket !== files.request) return;
+  files.error = message;
+  files.loading = false;
 }
 
 // The transcript as this session shows it: without what `/clear` hid, and

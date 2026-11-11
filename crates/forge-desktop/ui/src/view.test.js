@@ -9,7 +9,10 @@ import {
   windowRange,
   projectStatus,
   prunable,
+  applyRefresh,
+  beginRefresh,
   clearShown,
+  failRefresh,
   defaultView,
   keepDraft,
   shownMessages,
@@ -47,7 +50,9 @@ test("a default view is a fresh record with nothing open", () => {
     messageDetails: {},
     questionDrafts: {},
     approvalDrafts: {},
+    files: { listings: {}, status: { branch: "", files: [] }, lastTurnFiles: [], loading: false, error: "", request: 0 },
   });
+  assert.notEqual(first.files, second.files, "records must not share a workspace");
   assert.notEqual(first.questionDrafts, second.questionDrafts, "records must not share drafts");
   assert.notEqual(first.messageDetails, second.messageDetails);
   assert.notEqual(first, second);
@@ -287,4 +292,64 @@ test("a draft is kept per request and forgotten once it is empty", () => {
   keepDraft(first.approvalDrafts, "call-1", "");
   assert.deepEqual(first.questionDrafts, {});
   assert.deepEqual(first.approvalDrafts, {});
+});
+
+const listing = (...names) => ({ entries: names.map((name) => ({ name })), truncated: false });
+
+test("a workspace reply lands on the session it was asked for", () => {
+  // The operator asks for A's files, then switches to B before the reply.
+  const views = { a: defaultView(), b: defaultView() };
+  const ticket = beginRefresh(views.a.files);
+  assert.equal(views.a.files.loading, true);
+  beginRefresh(views.b.files);
+
+  const applied = applyRefresh(views.a, ticket, {
+    folders: [""],
+    loaded: [listing("a.txt")],
+    status: { branch: "feature-a", files: [{ path: "a.txt" }] },
+    lastTurnFiles: ["a.txt"],
+  });
+  assert.equal(applied, true);
+  assert.equal(views.a.files.status.branch, "feature-a");
+  assert.deepEqual(Object.keys(views.a.files.listings), [""]);
+  assert.equal(views.a.files.loading, false);
+
+  // B, now on screen, shows nothing of A's and is still loading its own.
+  assert.deepEqual(views.b.files.listings, {});
+  assert.equal(views.b.files.status.branch, "");
+  assert.equal(views.b.files.loading, true);
+});
+
+test("an older workspace reply never replaces a newer one", () => {
+  const record = defaultView();
+  const slow = beginRefresh(record.files);
+  const fast = beginRefresh(record.files);
+  const result = (branch) => ({ folders: [""], loaded: [listing()], status: { branch, files: [] }, lastTurnFiles: [] });
+  assert.equal(applyRefresh(record, fast, result("new")), true);
+  assert.equal(applyRefresh(record, slow, result("old")), false);
+  assert.equal(record.files.status.branch, "new");
+
+  // A stale failure is dropped too; a current one is shown.
+  failRefresh(record.files, slow, "old failure");
+  assert.equal(record.files.error, "");
+  const third = beginRefresh(record.files);
+  failRefresh(record.files, third, "cannot read the folder");
+  assert.equal(record.files.error, "cannot read the folder");
+  assert.equal(record.files.loading, false);
+  assert.equal(record.files.status.branch, "new", "a failure keeps the last good listing");
+});
+
+test("a refresh closes folders that have gone away and keeps the rest", () => {
+  const record = defaultView();
+  record.expanded = ["src", "gone", "docs"];
+  const ticket = beginRefresh(record.files);
+  // A folder this refresh did not ask for (`docs`) is left alone.
+  applyRefresh(record, ticket, {
+    folders: ["", "src", "gone"],
+    loaded: [listing("src"), listing("main.rs"), null],
+    status: { branch: "", files: [] },
+    lastTurnFiles: [],
+  });
+  assert.deepEqual(record.expanded, ["src", "docs"]);
+  assert.deepEqual(Object.keys(record.files.listings), ["", "src"]);
 });
