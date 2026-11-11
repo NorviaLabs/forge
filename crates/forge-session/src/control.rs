@@ -910,6 +910,39 @@ impl RepositoryControl {
         operation_id: u64,
         error: &str,
     ) -> Result<(Option<PathBuf>, Option<SessionId>), RepositorySessionError> {
+        self.cancel_creation_inner(operation_id, error, false).await
+    }
+
+    /// As [`Self::cancel_creation`], for a creation that already completed
+    /// but could not be finished (recording trust failed): its row goes too,
+    /// so no session is left pointing at the checkout being removed.
+    pub async fn abandon_creation(
+        &self,
+        operation_id: u64,
+        error: &str,
+    ) -> Result<(Option<PathBuf>, Option<SessionId>), RepositorySessionError> {
+        self.cancel_creation_inner(operation_id, error, true).await
+    }
+
+    /// Whether the creation finished and its session is live.
+    pub async fn creation_completed(
+        &self,
+        operation_id: u64,
+    ) -> Result<bool, RepositorySessionError> {
+        let status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM pending_operations WHERE operation_id = ?")
+                .bind(operation_id as i64)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(status.as_deref() == Some("completed"))
+    }
+
+    async fn cancel_creation_inner(
+        &self,
+        operation_id: u64,
+        error: &str,
+        include_completed: bool,
+    ) -> Result<(Option<PathBuf>, Option<SessionId>), RepositorySessionError> {
         let row = sqlx::query(
             "SELECT target_workspace, session_id, status FROM pending_operations \
              WHERE operation_id = ?",
@@ -929,7 +962,7 @@ impl RepositoryControl {
             .get::<Option<String>, _>("session_id")
             .map(parse_session_id)
             .transpose()?;
-        if status == "completed" {
+        if status == "completed" && !include_completed {
             return Ok((target, session_id));
         }
         let mut transaction = self.pool.begin().await?;
@@ -1833,11 +1866,15 @@ impl RepositoryControl {
                     | SessionLifecycle::Retained
             )
         }) {
-            // The main worktree is the operator's own checkout: they switch
-            // branches in it freely, and the session follows. Its row tracks
-            // whatever is checked out now instead of going unavailable
-            // because the branch it started on is no longer the current one.
-            let followed_branch = (session.ownership == WorktreeOwnership::Primary)
+            // A session follows the branch checked out in its worktree. The
+            // operator switches branches in their own checkout freely, and a
+            // managed session's agent (or the Branches dialog) switches or
+            // renames its branch too. The row tracks whatever is checked out
+            // now instead of going unavailable, with no way to resume or
+            // remove it, because the branch it started on is gone. The
+            // worktree path is what ties a session to its checkout; a
+            // directory project has no branches to follow.
+            let followed_branch = (session.ownership != WorktreeOwnership::Directory)
                 .then(|| {
                     worktrees
                         .iter()
@@ -3301,6 +3338,96 @@ mod tests {
 
     /// Sessions of a directory project all run in the project root. Reopening
     /// the project must leave every one of them active.
+    /// A creation that completed but could not be finished is abandoned
+    /// whole: operation and row together. A plain cancel of a completed
+    /// creation leaves the live session alone.
+    #[tokio::test]
+    async fn abandoning_a_completed_creation_removes_its_row() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let pending = control
+            .begin_managed_creation("abandoned", dir.path(), None)
+            .await
+            .unwrap();
+        let session = new_session(&workspace, "abandoned", None);
+        let session_id = session.session_id;
+        control
+            .register_session(session, Some(pending.operation_id))
+            .await
+            .unwrap();
+        control
+            .complete_creation(pending.operation_id)
+            .await
+            .unwrap();
+        assert!(control
+            .creation_completed(pending.operation_id)
+            .await
+            .unwrap());
+
+        control
+            .cancel_creation(pending.operation_id, "ignored")
+            .await
+            .unwrap();
+        assert!(
+            control.session(session_id).await.is_ok(),
+            "plain cancel keeps it"
+        );
+
+        control
+            .abandon_creation(pending.operation_id, "trust could not be recorded")
+            .await
+            .unwrap();
+        assert!(
+            control.session(session_id).await.is_err(),
+            "the row is gone"
+        );
+    }
+
+    /// A managed session whose branch was switched or renamed (by its agent
+    /// or the Branches dialog) must come back available after a restart.
+    #[tokio::test]
+    async fn a_managed_session_follows_a_branch_change_in_its_worktree() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("session");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&workspace, "parser", Some(1));
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+
+        control
+            .reconcile_worktrees(&[WorktreeRecord {
+                path: workspace.clone(),
+                branch: Some("fix/login".into()),
+                head: None,
+                prunable: false,
+            }])
+            .await
+            .unwrap();
+
+        let row = control.session(session_id).await.unwrap();
+        assert_eq!(row.lifecycle, SessionLifecycle::Active);
+        assert_eq!(row.branch, "fix/login");
+        assert_eq!(row.slot, Some(1), "the slot is kept");
+
+        // A different directory is still a different checkout.
+        control
+            .reconcile_worktrees(&[WorktreeRecord {
+                path: dir.path().join("elsewhere"),
+                branch: Some("fix/login".into()),
+                head: None,
+                prunable: false,
+            }])
+            .await
+            .unwrap();
+        assert_eq!(
+            control.session(session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
+        );
+    }
+
     #[tokio::test]
     async fn directory_sessions_sharing_the_root_stay_active_across_reconciliation() {
         let dir = TempDir::new().unwrap();

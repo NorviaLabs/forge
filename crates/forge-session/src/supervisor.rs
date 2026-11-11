@@ -923,12 +923,7 @@ impl RepositorySupervisor {
                 .await?;
         }
 
-        let mut unavailable_tasks: Vec<RepositorySession> = control
-            .sessions()
-            .await?
-            .into_iter()
-            .filter(|task| task.lifecycle == SessionLifecycle::Unavailable)
-            .collect();
+        let mut unavailable_tasks = listed_closed_sessions(&control).await?;
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.set_route_table(route_table());
@@ -1009,12 +1004,7 @@ impl RepositorySupervisor {
         adopt_project_root(&control, &topology).await?;
         let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
-        let mut unavailable_tasks: Vec<RepositorySession> = control
-            .sessions()
-            .await?
-            .into_iter()
-            .filter(|task| task.lifecycle == SessionLifecycle::Unavailable)
-            .collect();
+        let mut unavailable_tasks = listed_closed_sessions(&control).await?;
 
         let model: Arc<dyn ModelClient> = Arc::from(client_from_config(cfg)?);
         model.set_route_table(route_table());
@@ -1679,6 +1669,30 @@ async fn adopt_project_root(
     Ok(())
 }
 
+/// The sessions a project lists without a live actor: those that cannot be
+/// opened (unavailable), and those that finished but still own a checkout on
+/// disk, which only the roster can offer to clean up. A retained session is
+/// an archived one whose removal is still outstanding; an archived managed
+/// session whose worktree was kept (plain Archive leaves it) is the same
+/// thing with the removal not yet asked for. Without them a relaunch left
+/// the checkout on disk with nothing in the app that could remove it.
+async fn listed_closed_sessions(
+    control: &RepositoryControl,
+) -> Result<Vec<RepositorySession>, RepositorySupervisorError> {
+    Ok(control
+        .sessions()
+        .await?
+        .into_iter()
+        .filter(|task| match task.lifecycle {
+            SessionLifecycle::Unavailable | SessionLifecycle::Retained => true,
+            SessionLifecycle::Archived => {
+                task.ownership == WorktreeOwnership::Managed && task.workspace.is_dir()
+            }
+            _ => false,
+        })
+        .collect())
+}
+
 /// A session other than the one being opened could not be resumed (its
 /// journal is missing or does not replay). One broken session must not make
 /// the whole project unopenable, so it is marked unavailable, where it is
@@ -2240,7 +2254,7 @@ async fn execute_command(
                 if let Some(session_id) = completed.session_id {
                     let workspace = state.control.session(session_id).await?.workspace;
                     if let Err(error) = state.grant_trust(&workspace) {
-                        let _ = rollback_creation(&state, pending.operation_id).await;
+                        let _ = rollback_creation(&state, pending.operation_id, true).await;
                         let _ = state
                             .events
                             .send(SupervisorEvent::Roster(snapshots(&state).await));
@@ -2665,7 +2679,7 @@ async fn execute_command(
                 if let Err(error) = state.grant_trust(&workspace) {
                     // Persisting failed: roll the creation back rather than
                     // leave a task that looks trusted but is not recorded.
-                    let _ = rollback_creation(&state, operation_id).await;
+                    let _ = rollback_creation(&state, operation_id, true).await;
                     let _ = state
                         .events
                         .send(SupervisorEvent::Roster(snapshots(&state).await));
@@ -2688,7 +2702,7 @@ async fn execute_command(
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
         }
         SupervisorCommand::CancelCreation { operation_id } => {
-            rollback_creation(&state, operation_id).await?;
+            rollback_creation(&state, operation_id, false).await?;
             let _ = state
                 .events
                 .send(SupervisorEvent::Roster(snapshots(&state).await));
@@ -3255,14 +3269,31 @@ fn validate_attach_target(
 /// Undo a managed creation: drop the provisional task row and actor, then
 /// remove the worktree if Git will let go of it cleanly. A worktree holding
 /// uncommitted work is left in place — losing work is worse than an orphan.
+/// Undo a creation. `abandon_completed` is for a creation that finished but
+/// whose trust could not be recorded: its session goes with its checkout.
+/// Without it, cancelling a creation that already completed is refused, since
+/// the session is live and a cancel must not tear it down.
 async fn rollback_creation(
     state: &Arc<SupervisorState>,
     operation_id: u64,
+    abandon_completed: bool,
 ) -> Result<(), RepositorySupervisorError> {
-    let (workspace, session_id) = state
-        .control
-        .cancel_creation(operation_id, "cancelled by operator")
-        .await?;
+    let (workspace, session_id) = if abandon_completed {
+        state
+            .control
+            .abandon_creation(operation_id, "trust could not be recorded")
+            .await?
+    } else {
+        if state.control.creation_completed(operation_id).await? {
+            return Err(RepositorySupervisorError::Command(
+                "that session was already created; archive it to remove it".into(),
+            ));
+        }
+        state
+            .control
+            .cancel_creation(operation_id, "cancelled by operator")
+            .await?
+    };
     if let Some(session_id) = session_id {
         state.actors.write().await.remove(&session_id);
         // Creation selects the new session before trust is confirmed, so a
@@ -3763,7 +3794,13 @@ async fn materialize_managed_branch(
     session_id: SessionId,
 ) -> Result<(), RepositorySupervisorError> {
     let task = state.control.session(session_id).await?;
-    if task.ownership != WorktreeOwnership::Managed || !task.branch.is_empty() {
+    if task.ownership != WorktreeOwnership::Managed {
+        return Ok(());
+    }
+    if !task.branch.is_empty() {
+        // Already on a branch. The agent may have switched or renamed it
+        // during the turn; keep the row on the one that is checked out.
+        follow_checked_out_branch(state, &task).await?;
         return Ok(());
     }
     let workspace = task.workspace.clone();
@@ -3811,6 +3848,36 @@ async fn materialize_managed_branch(
     Ok(())
 }
 
+/// Put the row on the branch its worktree has checked out now, when that is
+/// a different one. Returns the row as it stands afterwards. A worktree that
+/// is gone, or no longer listed by Git, leaves the row alone.
+async fn follow_checked_out_branch(
+    state: &Arc<SupervisorState>,
+    task: &RepositorySession,
+) -> Result<RepositorySession, RepositorySupervisorError> {
+    if !task.workspace.is_dir() {
+        return Ok(task.clone());
+    }
+    let current = state
+        .topology
+        .worktrees()?
+        .into_iter()
+        .find(|record| same_path(&record.path, &task.workspace))
+        .map(|record| record.branch.unwrap_or_default());
+    match current {
+        Some(branch) if branch != task.branch => {
+            state
+                .control
+                .set_session_branch(task.session_id, &branch)
+                .await?;
+            // An archived session has no actor to publish to.
+            let _ = publish_actor(state, task.session_id).await;
+            Ok(state.control.session(task.session_id).await?)
+        }
+        _ => Ok(task.clone()),
+    }
+}
+
 /// Before a branchless managed session's checkout is removed: if its detached
 /// `HEAD` holds commits no branch reaches, put a branch on them and record it
 /// on the row. Returns the row as it stands afterwards.
@@ -3818,6 +3885,9 @@ async fn preserve_detached_commits(
     state: &Arc<SupervisorState>,
     task: RepositorySession,
 ) -> Result<RepositorySession, RepositorySupervisorError> {
+    // The row's branch may be stale (switched or renamed since): removal
+    // checks the checkout against it, so refresh it first.
+    let task = follow_checked_out_branch(state, &task).await?;
     if !task.branch.is_empty() || !task.workspace.is_dir() {
         return Ok(task);
     }
@@ -6711,6 +6781,104 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    /// Archiving keeps the checkout on disk. After a restart the archived
+    /// session must still be listed, or nothing could ever remove it.
+    #[tokio::test]
+    async fn an_archived_session_that_keeps_its_worktree_is_listed_after_a_restart() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let journals = scratch.path().join("journals");
+        let (mut cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &journals).await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "kept".into(),
+                first_prompt: None,
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "kept")
+            .expect("created task");
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        assert!(task.workspace.exists(), "plain archive keeps the checkout");
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        drop(control);
+
+        // Restart: a new supervisor over the same repository.
+        cfg.model.mock = true;
+        let primary = scripted_session(&cfg, "primary").await;
+        let bootstrap = loop {
+            match RepositoryBootstrap::acquire(&cfg).await {
+                Ok(bootstrap) => break bootstrap,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
+            }
+        };
+        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();
+
+        let listed = supervisor
+            .snapshots()
+            .await
+            .into_iter()
+            .any(|snapshot| snapshot.task.session_id == task.session_id);
+        assert!(listed, "the archived session's checkout is still on disk");
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Cancelling a creation that already completed must not tear down the
+    /// live session it produced.
+    #[tokio::test]
+    async fn cancelling_a_completed_creation_leaves_the_session_alone() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "live".into(),
+                first_prompt: None,
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "live")
+            .expect("created task");
+        // The first (and only) creation operation.
+        assert!(control.creation_completed(1).await.unwrap());
+
+        let error = handle
+            .command(SupervisorCommand::CancelCreation { operation_id: 1 })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already created"), "{error}");
+        assert!(task.workspace.exists());
+        assert_eq!(
+            control.session(task.session_id).await.unwrap().lifecycle,
+            SessionLifecycle::Active
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
     /// Archiving a session whose prompt is queued but not started must go
     /// through: its tools are retired first, so a refusal would leave a live
     /// session that can no longer run anything.
@@ -8927,6 +9095,65 @@ mod tests {
                 _ => continue,
             }
         }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// A managed session whose branch was switched can still be cleaned up:
+    /// the checkout is checked against the branch it is on now, not the one
+    /// the row remembered.
+    #[tokio::test]
+    async fn a_session_whose_branch_was_switched_can_still_remove_its_worktree() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "switched".into(),
+                first_prompt: None,
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "switched")
+            .expect("created task");
+        // The agent (or the Branches dialog) moves the checkout to a branch
+        // of its own choosing.
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(&task.workspace)
+            .args(["switch", "-q", "-c", "fix/login"])
+            .status()
+            .unwrap()
+            .success());
+
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+                discard_dirty: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(!task.workspace.exists());
+        let row = control.session(task.session_id).await.unwrap();
+        assert_eq!(row.lifecycle, SessionLifecycle::Removed);
+        assert_eq!(row.branch, "fix/login");
+        assert!(forge_storage::branch_exists(repo.path(), "fix/login").unwrap());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
