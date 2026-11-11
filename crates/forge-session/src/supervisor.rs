@@ -918,7 +918,7 @@ impl RepositorySupervisor {
                 .await?;
         }
 
-        let unavailable_tasks = control
+        let mut unavailable_tasks: Vec<RepositorySession> = control
             .sessions()
             .await?
             .into_iter()
@@ -951,20 +951,28 @@ impl RepositorySupervisor {
             task_cfg.journal.path = journal_dir.display().to_string();
             let model = model.clone();
             session_tasks.spawn(async move {
-                open_session_with_model(&task_cfg, SessionTarget::Resume(task.session_id), model)
-                    .await
-                    .map(|mut opened| {
-                        restore_task_model(&mut opened.session, &task, &task_cfg);
-                        (task, opened.session)
-                    })
+                let opened = open_session_with_model(
+                    &task_cfg,
+                    SessionTarget::Resume(task.session_id),
+                    model,
+                )
+                .await
+                .map(|mut opened| {
+                    restore_task_model(&mut opened.session, &task, &task_cfg);
+                    opened.session
+                });
+                (task, opened)
             });
         }
         while let Some(result) = session_tasks.join_next().await {
-            sessions.push(
-                result.map_err(|error| {
-                    RepositorySupervisorError::Assembly(anyhow::anyhow!(error))
-                })??,
-            );
+            let (task, opened) = result
+                .map_err(|error| RepositorySupervisorError::Assembly(anyhow::anyhow!(error)))?;
+            match opened {
+                Ok(session) => sessions.push((task, session)),
+                Err(error) => {
+                    unavailable_tasks.push(set_aside_unopenable(&control, task, &error).await?)
+                }
+            }
         }
         Self::spawn_with_unavailable_tasks(
             control,
@@ -996,7 +1004,7 @@ impl RepositorySupervisor {
         control.adopt_root(topology.root()).await?;
         let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
-        let unavailable_tasks = control
+        let mut unavailable_tasks: Vec<RepositorySession> = control
             .sessions()
             .await?
             .into_iter()
@@ -1083,10 +1091,17 @@ impl RepositorySupervisor {
                 SessionTarget::Resume(task.session_id),
                 model.clone(),
             )
-            .await?;
-            let mut session = opened.session;
-            restore_task_model(&mut session, &task, &task_cfg);
-            sessions.push((task, session));
+            .await;
+            match opened {
+                Ok(opened) => {
+                    let mut session = opened.session;
+                    restore_task_model(&mut session, &task, &task_cfg);
+                    sessions.push((task, session));
+                }
+                Err(error) => {
+                    unavailable_tasks.push(set_aside_unopenable(&control, task, &error).await?)
+                }
+            }
         }
         Self::spawn_with_unavailable_tasks(
             control,
@@ -1619,6 +1634,24 @@ fn report_persist_error(
             message: format!("could not write personal permissions: {error}"),
         });
     }
+}
+
+/// A session other than the one being opened could not be resumed (its
+/// journal is missing or does not replay). One broken session must not make
+/// the whole project unopenable, so it is marked unavailable, where it is
+/// listed and can still be archived, and the rest of the project opens.
+async fn set_aside_unopenable(
+    control: &RepositoryControl,
+    task: RepositorySession,
+    error: &anyhow::Error,
+) -> Result<RepositorySession, RepositorySupervisorError> {
+    tracing::warn!(
+        session_id = %task.session_id,
+        label = %task.label,
+        "session could not be reopened and was set aside: {error:#}"
+    );
+    control.mark_unavailable(task.session_id).await?;
+    Ok(control.session(task.session_id).await?)
 }
 
 /// The turn state to record when an attempt is over, or `None` while it is
@@ -9343,6 +9376,104 @@ mod tests {
         blank.reasoning_effort = Some("low".into());
         restore_task_model(&mut session, &blank, &cfg);
         assert_eq!(session.active_model, "mock-v2");
+    }
+
+    /// One session whose journal is gone must not make the project
+    /// unopenable: it is set aside as unavailable and the rest opens.
+    #[tokio::test]
+    async fn a_session_that_cannot_be_reopened_does_not_block_the_project() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let base = scratch.path().join("worktrees");
+        std::fs::create_dir_all(&base).unwrap();
+        let linked = forge_storage::create_session_worktree(repo.path(), &base).unwrap();
+        let journal = scratch.path().join("journals");
+
+        let storage = RepositoryRuntimeStorage::new(repo.path()).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+
+        let config_at = |workspace: &std::path::Path| {
+            let mut cfg = Config {
+                resolved_workspace: workspace.to_path_buf(),
+                workspace_root: Some(workspace.display().to_string()),
+                model: forge_config::ModelConfig {
+                    mock: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            cfg.journal.path = journal.display().to_string();
+            cfg
+        };
+        let cfg = config_at(repo.path());
+        let primary = scripted_session(&cfg, "primary answer").await;
+        let primary_id = primary.session_id;
+        let managed = scripted_session(&config_at(&linked.path), "managed answer").await;
+        let managed_id = managed.session_id;
+        drop(managed);
+        for (session_id, label, workspace, branch, ownership, slot) in [
+            (
+                primary_id,
+                "main",
+                repo.path().to_path_buf(),
+                "main".to_string(),
+                WorktreeOwnership::Primary,
+                Some(1),
+            ),
+            (
+                managed_id,
+                "managed",
+                linked.path.clone(),
+                linked.branch.clone(),
+                WorktreeOwnership::Managed,
+                None,
+            ),
+        ] {
+            control
+                .register_session(
+                    NewRepositorySession {
+                        session_id,
+                        label: label.into(),
+                        workspace,
+                        branch,
+                        ownership,
+                        slot,
+                        model_id: "mock".into(),
+                        profile_id: String::new(),
+                        reasoning_effort: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        for entry in std::fs::read_dir(&journal).unwrap() {
+            let path = entry.unwrap().path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(&managed_id.to_string()))
+            {
+                std::fs::remove_file(path).unwrap();
+            }
+        }
+
+        let bootstrap = RepositoryBootstrap::acquire(&cfg).await.unwrap();
+        let (supervisor, handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();
+
+        assert_eq!(
+            control.session(managed_id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
+        );
+        assert!(supervisor
+            .snapshots()
+            .await
+            .iter()
+            .any(|snapshot| snapshot.task.session_id == primary_id
+                && snapshot.task.lifecycle == SessionLifecycle::Active));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]

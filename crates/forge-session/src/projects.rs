@@ -263,8 +263,6 @@ enum Request {
     Relocate(ProjectId, PathBuf, Reply<Project>),
     Close(ProjectId, bool, Reply<Vec<String>>),
     Remove(ProjectId, Reply<Project>),
-    Project(ProjectId, Reply<OpenProjectRef>),
-    OpenProjects(Reply<Vec<OpenProjectRef>>),
     Shutdown(Reply<Vec<String>>),
 }
 
@@ -274,7 +272,14 @@ enum Request {
 pub struct ProjectServiceHandle {
     requests: mpsc::Sender<Request>,
     workspace: watch::Receiver<WorkspaceState>,
+    open: OpenProjects,
 }
+
+/// The open projects, shared with every handle. Session commands look their
+/// project up here instead of asking the service, so stopping, approving or
+/// submitting in one project never waits for another to finish opening or
+/// closing.
+type OpenProjects = Arc<std::sync::RwLock<Vec<OpenProjectRef>>>;
 
 impl ProjectServiceHandle {
     /// Every registered project and the state of the open ones. A slow
@@ -334,12 +339,22 @@ impl ProjectServiceHandle {
 
     /// An open project's supervisor, for its sessions and events.
     pub async fn project(&self, id: ProjectId) -> Result<OpenProjectRef, ProjectError> {
-        self.ask(|reply| Request::Project(id, reply)).await
+        self.open
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .find(|open| open.project.id == id)
+            .cloned()
+            .ok_or(ProjectError::NotOpen)
     }
 
     /// Every open project, in registry order.
     pub async fn open_projects(&self) -> Result<Vec<OpenProjectRef>, ProjectError> {
-        self.ask(Request::OpenProjects).await
+        Ok(self
+            .open
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone())
     }
 
     /// Session targeting: the open project that owns `session_id`, whether
@@ -407,6 +422,8 @@ impl OpenProject {
 pub struct ProjectService {
     options: ProjectServiceOptions,
     open: HashMap<ProjectId, OpenProject>,
+    /// What handles read: kept in step with `open` by `publish_open`.
+    published: OpenProjects,
     workspace: Arc<watch::Sender<WorkspaceState>>,
 }
 
@@ -428,15 +445,18 @@ impl ProjectService {
                 .collect(),
         });
         let (requests, receiver) = mpsc::channel(64);
+        let published = OpenProjects::default();
         let service = Self {
             options,
             open: HashMap::new(),
+            published: published.clone(),
             workspace: Arc::new(workspace),
         };
         tokio::spawn(service.run(receiver));
         Ok(ProjectServiceHandle {
             requests,
             workspace: workspace_rx,
+            open: published,
         })
     }
 
@@ -470,22 +490,6 @@ impl ProjectService {
                 Request::Remove(id, reply) => {
                     let _ = reply.send(self.remove(id));
                 }
-                Request::Project(id, reply) => {
-                    let _ = reply.send(
-                        self.open
-                            .get(&id)
-                            .map(OpenProject::reference)
-                            .ok_or(ProjectError::NotOpen),
-                    );
-                }
-                Request::OpenProjects(reply) => {
-                    let order = self.options.registry.list().unwrap_or_default();
-                    let _ = reply.send(Ok(order
-                        .iter()
-                        .filter_map(|project| self.open.get(&project.id))
-                        .map(OpenProject::reference)
-                        .collect()));
-                }
                 Request::Shutdown(reply) => {
                     let _ = reply.send(Ok(self.close_all().await));
                     return;
@@ -494,6 +498,30 @@ impl ProjectService {
         }
         // Every handle is gone: nobody can close the projects, so stop them.
         self.close_all().await;
+    }
+
+    /// Publish the open projects to the handles, in registry order. A
+    /// project the registry no longer lists (removed by another Forge, or a
+    /// registry that cannot be read right now) is still open here and stays
+    /// reachable, after the listed ones.
+    fn publish_open(&self) {
+        let order = self.options.registry.list().unwrap_or_default();
+        let mut open: Vec<OpenProjectRef> = order
+            .iter()
+            .filter_map(|project| self.open.get(&project.id))
+            .map(OpenProject::reference)
+            .collect();
+        let mut unlisted: Vec<&OpenProject> = self
+            .open
+            .values()
+            .filter(|open| !order.iter().any(|project| project.id == open.project.id))
+            .collect();
+        unlisted.sort_by(|left, right| left.project.name.cmp(&right.project.name));
+        open.extend(unlisted.into_iter().map(OpenProject::reference));
+        *self
+            .published
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = open;
     }
 
     fn add(&mut self, path: &Path) -> Result<Project, ProjectError> {
@@ -571,6 +599,7 @@ impl ProjectService {
                 forwarder,
             },
         );
+        self.publish_open();
         let name = &self.open[&id].project.name;
         Ok(launched
             .notices
@@ -590,6 +619,7 @@ impl ProjectService {
             return Err(ProjectError::Busy { sessions });
         }
         let open = self.open.remove(&id).ok_or(ProjectError::NotOpen)?;
+        self.publish_open();
         let notices = stop_project(open).await;
         self.workspace.send_modify(|workspace| {
             if let Some(summary) = workspace.projects.iter_mut().find(|s| s.project.id == id) {
@@ -606,6 +636,7 @@ impl ProjectService {
         for (_, open) in self.open.drain() {
             stopping.spawn(stop_project(open));
         }
+        self.publish_open();
         let mut notices = Vec::new();
         while let Some(result) = stopping.join_next().await {
             notices.extend(result.unwrap_or_default());
@@ -664,8 +695,12 @@ fn busy_sessions(state: &ProjectState) -> Vec<(SessionId, SupervisorTurnState)> 
         .collect()
 }
 
-/// Stop a project's sessions and release its owner lock. Bounded: past
-/// [`CLOSE_TIMEOUT`] the supervisor is dropped, which releases the lock.
+/// Stop a project's sessions and release its owner lock. Waits at most
+/// [`CLOSE_TIMEOUT`]. A session that has not stopped by then keeps the lock
+/// until it does: the lock is what stops a second owner writing the same
+/// session state, so it is never released under a turn that is still
+/// running. The shutdown runs to completion on its own task either way, so
+/// the lock is released the moment the last turn ends.
 async fn stop_project(open: OpenProject) -> Vec<String> {
     open.forwarder.abort();
     let name = open.project.name.clone();
@@ -674,11 +709,14 @@ async fn stop_project(open: OpenProject) -> Vec<String> {
     let Some(supervisor) = open.supervisor.write().await.take() else {
         return Vec::new();
     };
-    match tokio::time::timeout(CLOSE_TIMEOUT, supervisor.shutdown()).await {
-        Ok(Ok(())) => Vec::new(),
-        Ok(Err(error)) => vec![format!("{name}: a session did not stop cleanly: {error}")],
+    let mut shutdown = tokio::spawn(supervisor.shutdown());
+    match tokio::time::timeout(CLOSE_TIMEOUT, &mut shutdown).await {
+        Ok(Ok(Ok(()))) => Vec::new(),
+        Ok(Ok(Err(error))) => vec![format!("{name}: a session did not stop cleanly: {error}")],
+        Ok(Err(error)) => vec![format!("{name}: stopping its sessions failed: {error}")],
         Err(_) => vec![format!(
-            "{name}: sessions did not stop within {} seconds; they were interrupted",
+            "{name}: a session has not stopped after {} seconds. It is still being stopped; \
+             the project can be reopened once it has",
             CLOSE_TIMEOUT.as_secs()
         )],
     }

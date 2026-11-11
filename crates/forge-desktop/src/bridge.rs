@@ -1870,8 +1870,37 @@ pub async fn project_close(
         }
         .about(&state, project_id));
     }
+    // What the project holds open in this process, read while it can still
+    // answer: its sessions' terminals and its folders' watched indexes.
+    let (sessions, mut roots) = match state.projects.project(project_id).await {
+        Ok(project) => {
+            let records = project.session_records().await.unwrap_or_default();
+            (
+                records.iter().map(|record| record.session_id).collect(),
+                records.into_iter().map(|record| record.workspace).collect(),
+            )
+        }
+        Err(_) => (Vec::new(), Vec::new()),
+    };
+    if let Some(root) = state
+        .projects
+        .workspace()
+        .borrow()
+        .projects
+        .iter()
+        .find(|summary| summary.project.id == project_id)
+        .map(|summary| summary.project.root.clone())
+    {
+        roots.push(root);
+    }
     match state.projects.close(project_id, stop_running).await {
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            for session_id in sessions {
+                state.shells.close(session_id);
+            }
+            state.indexes.forget(&roots);
+            Ok(())
+        }
         Err(error) => {
             let mut failure = ProjectFailure::from(error).about(&state, project_id);
             let workspace = state.projects.workspace().borrow().clone();

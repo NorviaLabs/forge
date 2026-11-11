@@ -775,6 +775,18 @@ impl Indexes {
         indexes.insert(root, index.clone());
         Ok(index)
     }
+
+    /// Drop the index (and its file watcher) for each of `roots`. Called
+    /// when a project closes, so nothing goes on watching its folders.
+    pub fn forget(&self, roots: &[PathBuf]) {
+        let Ok(mut indexes) = self.0.lock() else {
+            return;
+        };
+        for root in roots {
+            let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+            indexes.remove(&root);
+        }
+    }
 }
 
 /// Content search through the workspace index (gitignore-aware, watched, no
