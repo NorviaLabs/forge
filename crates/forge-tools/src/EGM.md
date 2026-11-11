@@ -230,6 +230,11 @@ Subdirectories:
   (rules `remote_write(target)`), else it is held and asked through the same
   `HostAsk` channel with `write: Some(summary)` and `host` set to the
   target. With no asker it is refused.
+- `own_git::Provider` always opens a network: the registered session's
+  grant, or for a workspace no session governs, a standalone gateway with
+  the project's permissions plus the built-in hosts and no asker.
+  The SSH broker also accepts `git-lfs-authenticate <path> download|upload`;
+  an upload is gated like a push.
 - Built-in allow-list (`EgressPolicy::with_builtin_hosts`, applied by
   `forge_core::egress_policy_for_workspace`): `BUILTIN_CODE_HOSTS`
   (github.com, gitlab.com, bitbucket.org, with subdomains) and

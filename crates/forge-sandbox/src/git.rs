@@ -55,13 +55,14 @@ pub fn uses_lfs(repo: &Path) -> bool {
 }
 
 /// `git -C <repo>` for an operation that checks files out (switching
-/// branch, adding a worktree): confined like [`command_writing`], except in
-/// a repository with LFS objects, where it runs on the host.
-pub fn command_checking_out(repo: &Path, also: &[&Path]) -> Command {
+/// branch, adding a worktree): confined like [`command_writing`], and in a
+/// repository with LFS objects also given the network, since the checkout
+/// may download them.
+pub fn command_checking_out(repo: &Path, also: &[&Path]) -> Networked {
     if uses_lfs(repo) {
-        unconfined(repo)
+        command_networked(repo, also)
     } else {
-        command_writing(repo, also)
+        Networked::local(command_writing(repo, also), true)
     }
 }
 
@@ -131,23 +132,36 @@ pub fn signing_configured(repo: &Path) -> bool {
 /// for this repository. The host policy that governs the agent's commands in
 /// that workspace governs this one too.
 ///
-/// Falls back to [`unconfined`] when the host cannot confine, no provider is
-/// installed, or it has nothing for this repository.
+/// Without a network (no provider installed, or it could not open one) the
+/// command is still confined, with no network: it fails at the boundary
+/// rather than running where the repository's config would be obeyed
+/// outside the sandbox. Only a host that cannot confine at all gets
+/// [`unconfined`].
 pub fn command_networked(repo: &Path, also: &[&Path]) -> Networked {
-    let network = availability()
-        .ok()
-        .and_then(|()| NETWORK_PROVIDER.get())
-        .and_then(|provider| provider.open(repo));
-    let Some(network) = network else {
+    if availability().is_err() {
         return Networked {
             command: unconfined(repo),
             confined: false,
             _keep: None,
         };
+    }
+    // A remote that is another repository on this disk is reached through
+    // the file system, not the network.
+    let local_remotes = local_remote_repositories(repo);
+    let network = NETWORK_PROVIDER
+        .get()
+        .and_then(|provider| provider.open(repo));
+    let Some(network) = network else {
+        let mut writable: Vec<&Path> = also.to_vec();
+        writable.extend(local_remotes.iter().map(PathBuf::as_path));
+        return Networked::local(command_writing(repo, &writable), true);
     };
     let mut policy = SandboxPolicy::for_workspace(worktree_root(repo))
         .with_git_open()
         .with_egress_proxy(network.proxy_port);
+    for path in &local_remotes {
+        policy = policy.with_write_path(path);
+    }
     for port in &network.loopback_ports {
         policy = policy.with_loopback_port(*port);
     }
@@ -180,14 +194,66 @@ pub fn command_networked(repo: &Path, also: &[&Path]) -> Networked {
     }
 }
 
+/// The repositories on this disk that `repo`'s remotes point at (`/path`,
+/// `file:///path`, `../path`, `~/path`): a push writes there, a fetch reads
+/// from there. Only directories that are git repositories are returned, so
+/// a remote URL cannot open an arbitrary directory.
+pub fn local_remote_repositories(repo: &Path) -> Vec<PathBuf> {
+    let Ok(output) = command(repo)
+        .args([
+            "config",
+            "-z",
+            "--get-regexp",
+            r"^remote\..+\.(url|pushurl)$",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let root = worktree_root(repo);
+    let mut found = Vec::new();
+    for entry in String::from_utf8_lossy(&output.stdout).split('\0') {
+        let Some((_, url)) = entry.split_once('\n') else {
+            continue;
+        };
+        let path = if let Some(path) = url.strip_prefix("file://") {
+            PathBuf::from(path)
+        } else if url.contains("://") || is_scp_like(url) {
+            continue;
+        } else if let Some(rest) = url.strip_prefix("~/") {
+            match std::env::var_os("HOME") {
+                Some(home) => PathBuf::from(home).join(rest),
+                None => continue,
+            }
+        } else {
+            root.join(url)
+        };
+        let Ok(path) = path.canonicalize() else {
+            continue;
+        };
+        let is_repository = (path.join("HEAD").is_file() && path.join("objects").is_dir())
+            || path.join(".git").exists();
+        if is_repository && !found.contains(&path) {
+            found.push(path);
+        }
+    }
+    found
+}
+
+/// `[user@]host:path`, git's scp-like syntax: a colon before any slash.
+fn is_scp_like(url: &str) -> bool {
+    match (url.find(':'), url.find('/')) {
+        (Some(colon), Some(slash)) => colon < slash,
+        (Some(_), None) => true,
+        _ => false,
+    }
+}
+
 /// `git -C <repo>` on the host, not confined.
 ///
-/// For what cannot work confined yet: a checkout in a repository with LFS
-/// objects, and network git on a repository no session governs. Each call
-/// of this function is a place where a hook or a program named by the
-/// repository's config still runs outside the sandbox, so the agent must not
-/// be able to write those, and no new call should be added without that
-/// reason.
+/// Only for a host that cannot confine at all. A hook or a program named by
+/// the repository's config runs outside the sandbox here, and a sandboxed
+/// command may write those, so no other use should be added.
 pub fn unconfined(repo: &Path) -> Command {
     let mut command = Command::new("git");
     command.arg("-C").arg(repo);
@@ -225,6 +291,35 @@ mod tests {
             assert!(out.status.success(), "{args:?}: {out:?}");
         }
         dir
+    }
+
+    /// Only remotes that are repositories on this disk are opened; a URL
+    /// naming any other directory, or a network remote, is not.
+    #[test]
+    fn only_local_remotes_that_are_repositories_are_opened() {
+        let repo = repository();
+        let bare = tempfile::tempdir().unwrap();
+        let status = Command::new("git")
+            .args(["init", "-q", "--bare"])
+            .current_dir(bare.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let plain = tempfile::tempdir().unwrap();
+        let file_url = format!("file://{}", bare.path().display());
+        for (name, url) in [
+            ("bare", bare.path().to_str().unwrap()),
+            ("file", file_url.as_str()),
+            ("plain", plain.path().to_str().unwrap()),
+            ("hub", "git@github.com:o/r.git"),
+            ("web", "https://github.com/o/r.git"),
+        ] {
+            assert!(git(repo.path(), &["remote", "add", name, url])
+                .status
+                .success());
+        }
+        let found = local_remote_repositories(repo.path());
+        assert_eq!(found, [bare.path().canonicalize().unwrap()]);
     }
 
     #[test]

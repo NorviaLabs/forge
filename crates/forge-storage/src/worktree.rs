@@ -92,7 +92,9 @@ pub fn create_session_worktree(
     let name = format!("session-{}", Uuid::new_v4());
     let branch = format!("forge/{name}");
     let path = base_dir.join(&name);
-    let output = forge_sandbox::git::command_checking_out(source_worktree, &[base_dir])
+    let mut git = forge_sandbox::git::command_checking_out(source_worktree, &[base_dir]);
+    let output = git
+        .command
         .args(["worktree", "add", "-q"])
         .arg(&path)
         .args(["-b", &branch, "HEAD"])
@@ -125,7 +127,9 @@ pub fn create_detached_session_worktree(
     std::fs::create_dir_all(base_dir)?;
     let name = format!("session-{}", Uuid::new_v4());
     let path = base_dir.join(&name);
-    let output = forge_sandbox::git::command_checking_out(source_worktree, &[base_dir])
+    let mut git = forge_sandbox::git::command_checking_out(source_worktree, &[base_dir]);
+    let output = git
+        .command
         .args(["worktree", "add", "-q", "--detach"])
         .arg(&path)
         .arg("HEAD")
@@ -388,7 +392,9 @@ pub fn create_worktree(
     let name = format!("subagent-{session_id}-{id}-{slug}");
     let branch = format!("forge/subagent/{name}");
     let path = base_dir.join(&name);
-    let output = forge_sandbox::git::command_checking_out(repo_root, &[base_dir])
+    let mut git = forge_sandbox::git::command_checking_out(repo_root, &[base_dir]);
+    let output = git
+        .command
         .args(["worktree", "add", "-q"])
         .arg(&path)
         .args(["-b", &branch])
@@ -546,7 +552,7 @@ mod tests {
 
     /// Creating a worktree runs the repository's `post-checkout` hook. It
     /// runs confined: it can write the new worktree, not the rest of the
-    /// disk. With LFS objects present the checkout stays on the host.
+    /// disk.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_checkout_hook_runs_confined_when_a_worktree_is_created() {
@@ -580,10 +586,12 @@ mod tests {
         );
         assert!(!escaped.exists(), "the hook wrote outside the sandbox");
 
+        // A repository with LFS objects checks out confined too.
         std::fs::create_dir(root.join(".git/lfs")).unwrap();
         assert!(forge_sandbox::git::uses_lfs(&root));
-        create_session_worktree(&root, &base).unwrap();
-        assert!(escaped.exists(), "an LFS repository checks out on the host");
+        let created = create_session_worktree(&root, &base).unwrap();
+        assert!(created.path.join("ran-in-worktree").exists());
+        assert!(!escaped.exists(), "the hook wrote outside the sandbox");
     }
 
     #[test]

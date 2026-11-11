@@ -76,9 +76,10 @@ impl SshRequest {
             .map_or(self.destination.as_str(), |(_, host)| host)
     }
 
-    /// Whether the request writes to the remote.
+    /// Whether the request writes to the remote: a push, or an LFS upload.
     pub fn is_push(&self) -> bool {
         self.service == "git-receive-pack"
+            || (self.service == "git-lfs-authenticate" && self.command.ends_with(" upload"))
     }
 }
 
@@ -131,11 +132,29 @@ pub fn parse_request(args: &[String]) -> Result<SshRequest, String> {
     let (service, path) = command
         .split_once(' ')
         .ok_or("the remote command is not a git service")?;
-    if !GIT_SERVICES.contains(&service) {
-        return Err(format!("{service:?} is not a git service"));
-    }
-    if !is_one_quoted_word(path) {
-        return Err("the repository path is not quoted the way git quotes it".into());
+    if service == "git-lfs-authenticate" {
+        // Git LFS asks the remote for an HTTPS token this way:
+        // `git-lfs-authenticate <path> download|upload`.
+        let (path, operation) = path
+            .rsplit_once(' ')
+            .ok_or("git-lfs-authenticate without an operation")?;
+        if !matches!(operation, "download" | "upload") {
+            return Err(format!("{operation:?} is not an LFS operation"));
+        }
+        let plain = !path.is_empty()
+            && path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/._-~".contains(c));
+        if !plain && !is_one_quoted_word(path) {
+            return Err("the repository path is not one plain or quoted word".into());
+        }
+    } else {
+        if !GIT_SERVICES.contains(&service) {
+            return Err(format!("{service:?} is not a git service"));
+        }
+        if !is_one_quoted_word(path) {
+            return Err("the repository path is not quoted the way git quotes it".into());
+        }
     }
     Ok(SshRequest {
         port,
@@ -588,6 +607,33 @@ mod tests {
 
     fn args(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| word.to_string()).collect()
+    }
+
+    #[test]
+    fn git_lfs_may_ask_for_a_token_and_an_upload_is_a_push() {
+        let download = parse_request(&args(&[
+            "git@github.com",
+            "git-lfs-authenticate 'NorviaLabs/forge.git' download",
+        ]))
+        .unwrap();
+        assert!(!download.is_push());
+        let upload = parse_request(&args(&[
+            "git@github.com",
+            "git-lfs-authenticate NorviaLabs/forge.git upload",
+        ]))
+        .unwrap();
+        assert!(upload.is_push());
+        for command in [
+            "git-lfs-authenticate repo.git delete",
+            "git-lfs-authenticate repo.git;id download",
+            "git-lfs-authenticate download",
+            "git-lfs-authenticate 'a' 'b' download",
+        ] {
+            assert!(
+                parse_request(&args(&["git@github.com", command])).is_err(),
+                "{command}"
+            );
+        }
     }
 
     #[test]

@@ -690,7 +690,7 @@ async fn a_confined_git_reaches_github_over_the_ssh_broker() {
 
 /// Git that Forge itself runs on a workspace (the Fetch button) is confined
 /// and reaches the remote through that workspace's gateway and the SSH
-/// broker. A workspace nobody registered falls back to the host.
+/// broker. A workspace nobody registered gets a gateway of its own.
 ///
 /// Ignored by default, like the test above, and for the same reason.
 #[tokio::test(flavor = "multi_thread")]
@@ -727,9 +727,11 @@ async fn forges_own_git_reaches_github_confined_under_the_workspace_policy() {
         .unwrap()
     };
 
-    // Nothing governs this workspace yet: the host path, as before.
-    let (confined, _) = ls_remote(ws.path().to_path_buf()).await;
-    assert!(!confined);
+    // No session governs this workspace: confined anyway, under the
+    // project's policy and the built-in hosts, which include GitHub.
+    let (confined, out) = ls_remote(ws.path().to_path_buf()).await;
+    assert!(confined);
+    assert!(out.status.success(), "{out:?}");
 
     // Registered with a policy that does not allow the host: confined, and
     // refused at the gateway.

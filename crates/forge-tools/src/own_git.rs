@@ -100,19 +100,41 @@ struct Provider {
 
 impl forge_sandbox::git::NetworkProvider for Provider {
     fn open(&self, repo: &Path) -> Option<forge_sandbox::git::Network> {
-        let grant = grant_for(repo)?;
+        let grant = grant_for(repo);
         // The caller is synchronous code on some thread; the endpoints are
         // async. Start them on the runtime and wait here for the result.
         let (done, result) = std::sync::mpsc::channel();
         let repo = repo.to_path_buf();
         self.runtime.spawn(async move {
-            let _ = done.send(open_network(&grant, &repo).await);
+            let network = match grant {
+                Some(grant) => open_network(&grant, &repo).await,
+                None => open_standalone(&repo).await,
+            };
+            let _ = done.send(network);
         });
         result
             .recv_timeout(std::time::Duration::from_secs(15))
             .ok()
             .flatten()
     }
+}
+
+/// The network for git on a repository no session governs (a Pull clicked
+/// with no session open): a gateway of its own, with the project's host
+/// policy and the built-in hosts. Nobody can be asked, so anything else is
+/// refused.
+async fn open_standalone(repo: &Path) -> Option<forge_sandbox::git::Network> {
+    let (permissions, _) = forge_config::load_permissions(repo);
+    let policy = crate::egress::EgressPolicy::from_permissions(&permissions).with_builtin_hosts();
+    let proxy = crate::egress::EgressProxy::start(policy).await.ok()?;
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path: PathBuf::new(),
+        control: Some(proxy.shared().clone()),
+    };
+    let mut network = open_network(&grant, repo).await?;
+    network.keep = Box::new((network.keep, proxy));
+    Some(network)
 }
 
 async fn open_network(grant: &EgressGrant, repo: &Path) -> Option<forge_sandbox::git::Network> {

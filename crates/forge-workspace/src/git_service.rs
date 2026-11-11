@@ -59,10 +59,10 @@ mod tests {
             assert_eq!(route(args, unsigned, || false), expected, "{args:?}");
         }
         // Checking another branch out in a repository with LFS objects may
-        // download more, which only the host can do for now.
+        // download more: it gets the network.
         assert_eq!(
             route(&["switch", "--", "main"], unsigned, || true),
-            Route::Host
+            Route::Networked
         );
         assert_eq!(
             route(&["switch", "-c", "new"], unsigned, || true),
@@ -1110,15 +1110,12 @@ enum Route {
     /// Confined, with the workspace's gateway, SSH broker and signing
     /// broker.
     Networked,
-    /// On the host: it needs something the sandbox cannot supply yet.
-    Host,
 }
 
 /// `signing` is whether commits here are signed: a signing key is out of a
 /// confined git's reach, so a signed commit goes through the workspace's
 /// signing broker. `lfs` is whether the repository has LFS objects: checking
-/// another branch's files out may then download more, which is not routed
-/// yet.
+/// another branch's files out may then download more.
 fn route(args: &[&str], signing: impl FnOnce() -> bool, lfs: impl FnOnce() -> bool) -> Route {
     let creates_commit = match args.first().copied() {
         Some("commit" | "pull") => true,
@@ -1126,7 +1123,7 @@ fn route(args: &[&str], signing: impl FnOnce() -> bool, lfs: impl FnOnce() -> bo
         _ => false,
     };
     match args.first().copied() {
-        Some("switch") if !args.contains(&"-c") && lfs() => Route::Host,
+        Some("switch") if !args.contains(&"-c") && lfs() => Route::Networked,
         Some("pull" | "push" | "fetch") => Route::Networked,
         _ if creates_commit && signing() => Route::Networked,
         _ => Route::Confined,
@@ -1142,7 +1139,6 @@ fn scoped_command(root: &Path, args: &[&str]) -> forge_sandbox::git::Networked {
     ) {
         Route::Confined => git::Networked::local(git::command(root), true),
         Route::Networked => git::command_networked(root, &[]),
-        Route::Host => git::Networked::local(git::unconfined(root), false),
     };
     let command = &mut networked.command;
     command.current_dir(root);

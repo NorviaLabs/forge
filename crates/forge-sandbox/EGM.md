@@ -18,17 +18,18 @@ as `forge_tools::sandbox` and adds the egress-proxy glue.
   `temp_env`, `shell_env`, `egress_env`.
 - `git::command_networked(repo, also)`: confined git with the network the
   installed `git::NetworkProvider` supplies for that repository (gateway
-  port, SSH and signing broker ports, environment); falls back to
-  `git::unconfined` when nothing governs the repository.
-  `git::signing_configured(repo)`: such a commit must use `command_networked`.
+  port, SSH and signing broker ports, environment), plus write access to
+  remotes that are repositories on disk (`git::local_remote_repositories`).
+  With no network it is still confined, with none. Only a host that cannot
+  confine gets `git::unconfined`. `git::signing_configured(repo)`: such a
+  commit must use `command_networked`.
 - `git::command_checking_out(repo, also)`: for switching branch and
-  `worktree add`; confined like `command_writing`, on the host when
-  `git::uses_lfs(repo)` (`<git dir>/lfs` exists).
+  `worktree add`; `command_writing`, or `command_networked` when
+  `git::uses_lfs(repo)`.
 - `git::command(repo)` / `git::command_writing(repo, also)`: `git -C <repo>`
   confined to the worktree containing `repo` and its git dirs, whole git dir
-  writable, no network. `git::unconfined(repo)`: host git, for operations
-  that need an LFS download, and the fallback when nothing governs the
-  repository.
+  writable, no network. `git::unconfined(repo)`: host git, only where the
+  host cannot confine.
 
 ## Invariants
 

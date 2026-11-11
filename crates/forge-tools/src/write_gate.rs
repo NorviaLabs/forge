@@ -69,11 +69,12 @@ pub fn target_for_remote_url(url: &str) -> Option<String> {
 /// `git-receive-pack '<path>'`.
 pub fn target_for_ssh_push(host: &str, command: &str) -> String {
     let host = host.to_ascii_lowercase();
-    let path = command
-        .split_once(' ')
-        .map_or("", |(_, path)| path)
-        .replace(r"'\''", "'")
-        .replace(r"'\!'", "!");
+    let mut path = command.split_once(' ').map_or("", |(_, path)| path);
+    // `git-lfs-authenticate <path> upload`: the operation is not the path.
+    if command.starts_with("git-lfs-authenticate ") {
+        path = path.rsplit_once(' ').map_or(path, |(path, _)| path);
+    }
+    let path = path.replace(r"'\''", "'").replace(r"'\!'", "!");
     let path = path.trim_matches('\'');
     match repository(path) {
         Some(repo) => format!("{host}/{repo}"),
@@ -255,6 +256,10 @@ mod tests {
         assert_eq!(
             target_for_ssh_push("host.test", "git-receive-pack '/srv/git/it'\\''s'"),
             "host.test"
+        );
+        assert_eq!(
+            target_for_ssh_push("github.com", "git-lfs-authenticate 'o/r.git' upload"),
+            "github.com/o/r"
         );
     }
 
