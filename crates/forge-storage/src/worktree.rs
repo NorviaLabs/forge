@@ -183,6 +183,31 @@ pub fn materialize_branch(worktree_path: &Path, branch: &str) -> Result<(), Work
     Ok(())
 }
 
+/// Whether the worktree's `HEAD` commit is reachable from any branch, local
+/// or remote-tracking. A detached `HEAD` that is not holds commits only the
+/// worktree's own reflog remembers: removing the worktree loses them.
+pub fn head_is_on_a_branch(worktree_path: &Path) -> Result<bool, WorktreeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(worktree_path)
+        .args([
+            "for-each-ref",
+            "--contains",
+            "HEAD",
+            "--count=1",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .output()?;
+    if !output.status.success() {
+        return Err(WorktreeError::ListFailed(
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        ));
+    }
+    Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+}
+
 /// Whether `refs/heads/<branch>` already exists in the repository.
 pub fn branch_exists(repo_root: &Path, branch: &str) -> Result<bool, WorktreeError> {
     let status = Command::new("git")

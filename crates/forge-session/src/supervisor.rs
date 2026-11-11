@@ -2442,6 +2442,24 @@ async fn execute_command(
                     "only archived managed Sessions can remove a worktree".into(),
                 ));
             }
+            // A fork or an in-place resume archives its predecessor on the
+            // very checkout the successor now works in. Cleaning up that
+            // archived row must not take the live session's worktree (and,
+            // with the discard option, its uncommitted work) with it.
+            if let Some(live) = state.control.sessions().await?.into_iter().find(|other| {
+                other.session_id != session_id
+                    && other.lifecycle == SessionLifecycle::Active
+                    && same_path(&other.workspace, &task.workspace)
+            }) {
+                let name = if live.label.is_empty() {
+                    live.session_id.to_string()
+                } else {
+                    live.label
+                };
+                return Err(RepositorySupervisorError::Command(format!(
+                    "this worktree is still in use by session `{name}`; archive that session to remove it"
+                )));
+            }
 
             let task_actor = retire_actor_resources(&state, session_id, false).await?;
             // Read the child checkouts after the drain, so every child still in
@@ -2456,6 +2474,16 @@ async fn execute_command(
                 None => Vec::new(),
             };
 
+            // Commits made on a branchless session's detached HEAD exist
+            // nowhere else. Give them a branch before the checkout goes:
+            // removal never deletes a branch, so the work stays reachable.
+            let task = match preserve_detached_commits(&state, task).await {
+                Ok(task) => task,
+                Err(error) => {
+                    finish_actor_retirement(task_actor.as_ref());
+                    return Err(error);
+                }
+            };
             let main_worktree = state.topology.root().to_path_buf();
             let blocked = {
                 let _git_mutation = state.git_mutation.lock().await;
@@ -3757,7 +3785,12 @@ async fn materialize_managed_branch(
     }
     let head = forge_storage::worktree_head(&workspace)?;
     let dirty = forge_storage::worktree_is_dirty(&workspace)?;
-    let head_moved = task.base_sha.as_deref().is_some_and(|base| base != head);
+    // A forked or resumed session has no recorded base, so compare against
+    // the repository instead: a HEAD no branch reaches holds new commits.
+    let head_moved = match task.base_sha.as_deref() {
+        Some(base) => base != head,
+        None => !forge_storage::head_is_on_a_branch(&workspace)?,
+    };
     if !dirty && !head_moved {
         return Ok(());
     }
@@ -3772,6 +3805,36 @@ async fn materialize_managed_branch(
         .await?;
     publish_actor(state, session_id).await?;
     Ok(())
+}
+
+/// Before a branchless managed session's checkout is removed: if its detached
+/// `HEAD` holds commits no branch reaches, put a branch on them and record it
+/// on the row. Returns the row as it stands afterwards.
+async fn preserve_detached_commits(
+    state: &Arc<SupervisorState>,
+    task: RepositorySession,
+) -> Result<RepositorySession, RepositorySupervisorError> {
+    if !task.branch.is_empty() || !task.workspace.is_dir() {
+        return Ok(task);
+    }
+    let detached = state
+        .topology
+        .worktrees()?
+        .iter()
+        .any(|record| same_path(&record.path, &task.workspace) && record.branch.is_none());
+    if !detached || forge_storage::head_is_on_a_branch(&task.workspace)? {
+        return Ok(task);
+    }
+    let branch = unique_session_branch(state, &task.label, task.session_id)?;
+    {
+        let _git_mutation = state.git_mutation.lock().await;
+        forge_storage::materialize_branch(&task.workspace, &branch)?;
+    }
+    state
+        .control
+        .set_session_branch(task.session_id, &branch)
+        .await?;
+    Ok(state.control.session(task.session_id).await?)
 }
 
 /// `forge/<slug>` from the session label, disambiguated with the session's
@@ -8857,6 +8920,143 @@ mod tests {
                 _ => continue,
             }
         }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Commits on a branchless session's detached HEAD exist nowhere else.
+    /// Removing its checkout must leave them on a branch.
+    #[tokio::test]
+    async fn removing_a_branchless_session_keeps_its_commits_on_a_branch() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "keep my commits".into(),
+                first_prompt: None,
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "keep my commits")
+            .expect("created task");
+        assert!(task.branch.is_empty(), "the session starts detached");
+        // A commit made outside any turn, as the Commit dialog or the
+        // session's terminal would.
+        std::fs::write(task.workspace.join("work.txt"), "important\n").unwrap();
+        for args in [
+            vec!["add", "work.txt"],
+            vec![
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "work on a detached head",
+            ],
+        ] {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&task.workspace)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        }
+
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::RemoveManagedWorktree {
+                session_id: task.session_id,
+                discard_dirty: false,
+            })
+            .await
+            .unwrap();
+
+        assert!(!task.workspace.exists());
+        let branch = control.session(task.session_id).await.unwrap().branch;
+        assert!(branch.starts_with("forge/"), "{branch:?}");
+        let subject = std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["log", "-1", "--format=%s", &branch])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&subject.stdout).trim(),
+            "work on a detached head"
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Forking archives the old conversation on the checkout the new one
+    /// works in. Cleaning up that archived row must not remove the checkout.
+    #[tokio::test]
+    async fn a_forks_predecessor_cannot_remove_the_worktree_the_fork_is_using() {
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let trust_store = scratch.path().join("trust.toml");
+        let (_cfg, control, handle) =
+            git_backed_supervisor(repo.path(), &trust_store, &scratch.path().join("journals"))
+                .await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "forked".into(),
+                first_prompt: None,
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        let original = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "forked")
+            .expect("created task");
+        handle
+            .command(SupervisorCommand::ForkSession {
+                session_id: original.session_id,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            control
+                .session(original.session_id)
+                .await
+                .unwrap()
+                .lifecycle,
+            SessionLifecycle::Archived
+        );
+
+        for discard_dirty in [false, true] {
+            let error = handle
+                .command(SupervisorCommand::RemoveManagedWorktree {
+                    session_id: original.session_id,
+                    discard_dirty,
+                })
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("still in use"), "{error}");
+        }
+        assert!(original.workspace.exists());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

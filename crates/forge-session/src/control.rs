@@ -1001,6 +1001,21 @@ impl RepositoryControl {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        // The successor works on the same checkout towards the same issue
+        // and pull request, from the same starting commit. Without these it
+        // could not create or refresh that pull request ("issue does not
+        // match"), and had no base to tell new commits from old ones.
+        sqlx::query(
+            "UPDATE sessions SET (github_issue_number, github_pr_url, github_retry_attempts, \
+              github_tests_passed, base_sha) = \
+             (SELECT github_issue_number, github_pr_url, github_retry_attempts, \
+              github_tests_passed, base_sha FROM sessions WHERE session_id = ?) \
+             WHERE session_id = ?",
+        )
+        .bind(previous.to_string())
+        .bind(next.to_string())
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("UPDATE repository_state SET selected_session_id = ? WHERE id = 1")
             .bind(next.to_string())
             .execute(&mut *tx)
@@ -2641,6 +2656,38 @@ mod tests {
             control.session(session_id).await.unwrap().turn_state,
             SupervisorTurnState::Interrupted
         );
+    }
+
+    /// A fork or in-place resume continues the same work: its row keeps the
+    /// issue, pull request and base commit of the one it replaces.
+    #[tokio::test]
+    async fn a_replacement_session_keeps_the_issue_and_base_of_its_predecessor() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", Some(1));
+        let previous = session.session_id;
+        control.register_session(session, None).await.unwrap();
+        control.set_github_issue(previous, 42).await.unwrap();
+        control
+            .set_pr_url(previous, "https://github.com/o/r/pull/7")
+            .await
+            .unwrap();
+        control.set_session_branch(previous, "").await.unwrap();
+        control.set_base_sha(previous, "abc123").await.unwrap();
+
+        let next = SessionId::new_v4();
+        control
+            .replace_active_session(previous, next)
+            .await
+            .unwrap();
+
+        let row = control.session(next).await.unwrap();
+        assert_eq!(row.github_issue_number, Some(42));
+        assert_eq!(
+            row.github_pr_url.as_deref(),
+            Some("https://github.com/o/r/pull/7")
+        );
+        assert_eq!(row.base_sha.as_deref(), Some("abc123"));
     }
 
     /// Queueing a follow-up must not hide that a turn is still in flight:
