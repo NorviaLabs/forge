@@ -74,7 +74,34 @@ pub(crate) async fn start_ssh_broker(
         let (names, connect_addr) = (std::sync::Arc::clone(&names), connect_addr.clone());
         Box::pin(async move { crate::git_network::host_ssh_command(&names, &connect_addr).await })
     });
-    let broker = crate::ssh_broker::SshBroker::start(compose, std::sync::Arc::new(|_| Ok(())))
+    // A push changes the remote under the user's identity: it goes through
+    // when its target is recorded for the project, or the user allows it.
+    let shared = invocation.shared().clone();
+    let authorize: crate::ssh_broker::Authorize = std::sync::Arc::new(move |request| {
+        let shared = shared.clone();
+        Box::pin(async move {
+            if !request.is_push() {
+                return Ok(());
+            }
+            let target = crate::write_gate::target_for_ssh_push(request.host(), &request.command);
+            let write = crate::write_gate::Write {
+                summary: format!("git push to {target}"),
+                target,
+            };
+            match shared.admit_write(&write).await {
+                crate::egress::Admission::Allowed => Ok(()),
+                crate::egress::Admission::RefusedByUser => {
+                    Err(format!("the user refused the push to {}", write.target))
+                }
+                crate::egress::Admission::Refused => Err(format!(
+                    "{}: pushing to {} was not approved",
+                    crate::egress::SANDBOX_DENIED_REASON,
+                    write.target
+                )),
+            }
+        })
+    });
+    let broker = crate::ssh_broker::SshBroker::start(compose, authorize)
         .await
         .ok()?;
     let git_ssh_command = broker.git_ssh_command(&exe);

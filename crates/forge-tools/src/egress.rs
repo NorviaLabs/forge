@@ -58,6 +58,9 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 pub struct EgressPolicy {
     allow: Vec<String>,
     deny: Vec<String>,
+    /// Write targets (`host/owner/repo`, or `host`) a confined process may
+    /// change under the user's identity without being asked.
+    writes: Vec<String>,
 }
 
 pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
@@ -118,6 +121,10 @@ pub struct HostAsk {
     pub port: u16,
     /// The tool call (or MCP server) the connection belongs to.
     pub label: Option<String>,
+    /// Set when this is not about reaching a host but about changing
+    /// something on it under the user's identity: what is being done.
+    /// `host` is then the write target (`host/owner/repo`, or the host).
+    pub write: Option<String>,
     pub reply: tokio::sync::oneshot::Sender<HostAnswer>,
 }
 
@@ -300,7 +307,29 @@ impl EgressPolicy {
         for pattern in file.deny.iter().filter_map(|raw| host_rule(raw)) {
             policy.deny(pattern);
         }
+        for target in file.allow.iter().filter_map(|raw| write_rule(raw)) {
+            policy.allow_write(target);
+        }
         policy
+    }
+
+    /// Let writes to `target` through without asking.
+    pub fn allow_write(&mut self, target: impl Into<String>) -> &mut Self {
+        let target = target.into().trim().trim_matches('/').to_ascii_lowercase();
+        if !target.is_empty() && !self.writes.contains(&target) {
+            self.writes.push(target);
+        }
+        self
+    }
+
+    /// Whether a write to `target` needs no question: the target itself is
+    /// allowed, or its whole host is.
+    pub fn permits_write(&self, target: &str) -> bool {
+        let target = target.to_ascii_lowercase();
+        let host = target.split('/').next().unwrap_or(&target);
+        self.writes
+            .iter()
+            .any(|allowed| *allowed == target || allowed == host)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -353,6 +382,12 @@ impl EgressPolicy {
         !self.deny.iter().any(|p| matches_pattern(p, &host))
             && !self.allow.iter().any(|p| matches_pattern(p, &host))
     }
+}
+
+fn write_rule(raw: &str) -> Option<&str> {
+    let raw = raw.trim();
+    let inner = raw.strip_prefix("remote_write(")?.strip_suffix(')')?.trim();
+    (!inner.is_empty()).then_some(inner)
 }
 
 fn host_rule(raw: &str) -> Option<&str> {
@@ -416,6 +451,8 @@ pub struct EgressShared {
     /// Credentialed hosts whose client would not accept the session
     /// authority's certificate, for this invocation.
     untrusting: Arc<Mutex<Vec<String>>>,
+    /// Write targets let through for this invocation only.
+    once_writes: Arc<Mutex<Vec<String>>>,
 }
 
 /// What [`EgressShared::admit`] decided.
@@ -476,6 +513,7 @@ impl EgressShared {
             intercept: Arc::default(),
             intercepting: Arc::default(),
             untrusting: Arc::default(),
+            once_writes: Arc::default(),
         }
     }
 
@@ -587,6 +625,7 @@ impl EgressShared {
             host: host.trim().trim_end_matches('.').to_ascii_lowercase(),
             port,
             label: self.attribution(),
+            write: None,
             reply,
         };
         if asker.send(ask).is_err() {
@@ -632,6 +671,7 @@ impl EgressShared {
             intercept: Arc::clone(&self.intercept),
             intercepting: Arc::default(),
             untrusting: Arc::default(),
+            once_writes: Arc::default(),
         }
     }
 
@@ -732,6 +772,76 @@ impl EgressShared {
             .policy
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
+    }
+
+    /// Let writes to `target` through without asking, for the rest of this
+    /// proxy's life.
+    pub fn grant_write(&self, target: &str) {
+        self.policy
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .allow_write(target);
+    }
+
+    /// Whether a write to `target` goes through without a question.
+    pub fn permits_write(&self, target: &str) -> bool {
+        self.policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .permits_write(target)
+    }
+
+    /// Decide a write under the user's identity: allowed when its target is
+    /// recorded, otherwise held while the user is asked, like an undecided
+    /// host. With nobody to ask it is refused.
+    pub async fn admit_write(&self, write: &crate::write_gate::Write) -> Admission {
+        let target = write.target.to_ascii_lowercase();
+        let allowed_once = || {
+            self.once_writes
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&target)
+        };
+        if self.permits_write(&target) || allowed_once() {
+            return Admission::Allowed;
+        }
+        let asker = self
+            .asker
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let Some(asker) = asker else {
+            return Admission::Refused;
+        };
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let ask = HostAsk {
+            host: target.clone(),
+            port: 443,
+            label: self.attribution(),
+            write: Some(write.summary.clone()),
+            reply,
+        };
+        if asker.send(ask).is_err() {
+            return Admission::Refused;
+        }
+        match tokio::time::timeout(self.options.hold_timeout, answer).await {
+            Ok(Ok(HostAnswer::Allow)) if self.permits_write(&target) => Admission::Allowed,
+            Ok(Ok(HostAnswer::AllowOnce)) => {
+                self.once_writes
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(target);
+                Admission::Allowed
+            }
+            Ok(Ok(HostAnswer::Deny)) => {
+                self.refused
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(format!("{target} (to change it as you)"));
+                Admission::RefusedByUser
+            }
+            _ => Admission::Refused,
+        }
     }
 
     /// Permit `pattern` for the rest of this proxy's life.
@@ -1211,6 +1321,8 @@ impl CallGateway {
 /// Upper bound on a request or response head the gateway parses. Anything
 /// larger is refused rather than buffered without limit.
 const MAX_HEAD_BYTES: usize = 64 * 1024;
+/// Largest request body the gateway reads to tell a read from a write.
+const MAX_INSPECTED_BODY_BYTES: usize = 1024 * 1024;
 
 /// What a client asked the gateway to do, once its head parsed.
 #[derive(Debug, PartialEq, Eq)]
@@ -1464,6 +1576,7 @@ where
     CW: AsyncWrite + Unpin,
     U: AsyncRead + AsyncWrite + Unpin,
 {
+    use tokio::io::AsyncReadExt as _;
     let (shared, host) = (attempt.shared, attempt.host);
     let failed = |why: String| attempt.record(EgressOutcome::UpstreamFailed(why), None, 0, 0);
     let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
@@ -1474,12 +1587,15 @@ where
     };
     let headers = match secret {
         Some(secret) => crate::tls_intercept::supply_credentials(secret, headers),
-        None => Ok(headers
-            .into_iter()
-            .map(|(name, value)| (name.to_string(), value.to_string()))
-            .collect()),
+        None => Ok((
+            headers
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            false,
+        )),
     };
-    let Ok(headers) = headers else {
+    let Ok((headers, as_the_user)) = headers else {
         attempt.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
         let body = format!(
             "{SANDBOX_DENIED_REASON}: this request to {host} carries credentials Forge did not \
@@ -1493,7 +1609,60 @@ where
         }
     }
     request_head.push_str(&format!("Host: {host}\r\nConnection: close\r\n\r\n"));
-    if let Err(error) = upstream_write.write_all(request_head.as_bytes()).await {
+
+    // A request made with the user's credential that changes something is
+    // held until its target is known to be allowed. Reads go through.
+    let mut client_read = client_read;
+    let mut body = Vec::new();
+    if let Some(secret) = secret.filter(|_| as_the_user) {
+        let mut line = head[0].split(' ');
+        let (method, target) = (line.next().unwrap_or(""), line.next().unwrap_or(""));
+        let mut classified = crate::write_gate::classify(&secret.host, host, method, target);
+        if classified == crate::write_gate::Classified::GraphQl {
+            // Query or mutation is only in the body.
+            let length = headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .and_then(|(_, value)| value.parse::<usize>().ok())
+                .filter(|length| *length <= MAX_INSPECTED_BODY_BYTES);
+            classified = match length {
+                Some(length) => {
+                    body = vec![0; length];
+                    client_read.read_exact(&mut body).await?;
+                    crate::write_gate::classify_graphql(&secret.host, &body)
+                }
+                None => crate::write_gate::Classified::Write(crate::write_gate::Write {
+                    target: secret.host.clone(),
+                    summary: "API change".into(),
+                }),
+            };
+        }
+        if let crate::write_gate::Classified::Write(write) = classified {
+            match shared.admit_write(&write).await {
+                Admission::Allowed => {}
+                Admission::RefusedByUser => {
+                    attempt.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
+                    let body = format!("Refused by the user: {}\n", write.summary);
+                    return respond(&mut client_write, 403, "Refused By User", &body).await;
+                }
+                Admission::Refused => {
+                    attempt.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
+                    let body = format!(
+                        "{SANDBOX_DENIED_REASON}: {} on {} was not approved. A command in the \
+                         sandbox may change things under the user's identity only where the \
+                         user has allowed it.\n",
+                        write.summary, write.target
+                    );
+                    return respond(&mut client_write, 403, SANDBOX_DENIED_REASON, &body).await;
+                }
+            }
+        }
+    }
+    let sent = async {
+        upstream_write.write_all(request_head.as_bytes()).await?;
+        upstream_write.write_all(&body).await
+    };
+    if let Err(error) = sent.await {
         failed(format!("write {upstream_addr}: {error}"));
         return respond(&mut client_write, 502, "Bad Gateway", "").await;
     }
@@ -3059,6 +3228,77 @@ mod tests {
     }
 
     /// A deny rule is a decision already made; it is not put to the user.
+    /// A write under the user's identity goes through when its target (or
+    /// its whole host) is recorded; otherwise it is held and asked about,
+    /// and with nobody to ask it is refused.
+    #[tokio::test]
+    async fn a_write_is_allowed_by_its_record_or_by_the_user() {
+        let write = |target: &str| crate::write_gate::Write {
+            target: target.into(),
+            summary: "git push".into(),
+        };
+        let shared = EgressShared::new(EgressPolicy::new(), EgressOptions::default());
+        assert_eq!(
+            shared.admit_write(&write("github.com/o/r")).await,
+            Admission::Refused
+        );
+
+        shared.grant_write("GitHub.com/O/R");
+        assert!(shared.admit_write(&write("github.com/o/r")).await.allowed());
+        assert!(!shared
+            .admit_write(&write("github.com/o/other"))
+            .await
+            .allowed());
+        shared.grant_write("gitlab.example");
+        assert!(shared
+            .admit_write(&write("gitlab.example/g/p"))
+            .await
+            .allowed());
+
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
+        shared.set_asker(Some(asker));
+        let invocation = shared.for_invocation(Some("call-1"));
+        let answering = tokio::spawn(async move {
+            let ask = asks.recv().await.unwrap();
+            assert_eq!(ask.host, "github.com/o/other");
+            assert_eq!(ask.write.as_deref(), Some("git push"));
+            let _ = ask.reply.send(HostAnswer::AllowOnce);
+            let ask = asks.recv().await.unwrap();
+            let _ = ask.reply.send(HostAnswer::Deny);
+        });
+        assert!(invocation
+            .admit_write(&write("github.com/o/other"))
+            .await
+            .allowed());
+        // Once: this invocation again without asking, but not the policy.
+        assert!(invocation
+            .admit_write(&write("github.com/o/other"))
+            .await
+            .allowed());
+        assert!(!shared.permits_write("github.com/o/other"));
+        assert_eq!(
+            invocation.admit_write(&write("github.com/o/third")).await,
+            Admission::RefusedByUser
+        );
+        answering.await.unwrap();
+    }
+
+    #[test]
+    fn remote_write_rules_come_from_the_permission_file() {
+        let file = forge_config::PermissionsFile {
+            allow: vec![
+                "host(github.com)".into(),
+                "remote_write(github.com/o/r)".into(),
+            ],
+            ..Default::default()
+        };
+        let policy = EgressPolicy::from_permissions(&file);
+        assert!(policy.permits("github.com"));
+        assert!(policy.permits_write("github.com/o/r"));
+        assert!(!policy.permits_write("github.com/o/x"));
+        assert!(!policy.permits_write("github.com"));
+    }
+
     #[tokio::test]
     async fn a_denied_host_is_refused_without_asking() {
         let mut policy = EgressPolicy::new();

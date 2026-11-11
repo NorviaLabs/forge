@@ -19,8 +19,9 @@ use thiserror::Error;
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub use permissions::{
-    append_project_host, append_user_allow_rule, load_permissions, parse_permissions_toml,
-    project_hosts, user_permissions_path, workspace_permissions_path, PermissionsFile,
+    append_project_host, append_project_write, append_user_allow_rule, load_permissions,
+    parse_permissions_toml, project_hosts, record_project_remotes, user_permissions_path,
+    workspace_permissions_path, PermissionsFile,
 };
 pub use theme::{parse_theme_toml, Rgb, SyntaxPalette, ThemeDefinition, ThemePalette};
 pub use trust::{

@@ -12,9 +12,12 @@ mod own_git;
 pub mod sign_broker;
 pub mod ssh_broker;
 mod tls_intercept;
+pub mod write_gate;
 #[doc(hidden)]
 pub use git_network::set_egress_connect_exe;
-pub use own_git::{install_git_network, register_workspace_egress, WorkspaceEgress};
+pub use own_git::{
+    install_git_network, register_workspace_egress, remote_write_targets, WorkspaceEgress,
+};
 mod orchestration;
 mod output_filters;
 mod registry;

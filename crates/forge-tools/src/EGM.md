@@ -220,6 +220,16 @@ Subdirectories:
   without the placeholder is refused with a 403. Other hosts and other
   endpoints keep opaque tunnels. A client that rejects the certificate is
   reported by `untrusting_note`.
+- Writes under the user's identity are gated (`write_gate.rs`,
+  `EgressShared::admit_write`). A request the gateway put the credential
+  into is classified: `GET`/`HEAD`/`OPTIONS` and `git-upload-pack` are
+  reads; `git-receive-pack`, other methods and GraphQL mutations (the body is
+  read, up to 1 MiB) are writes with a target (`host/owner/repo`, or the
+  host). The SSH broker's `Authorize` hook does the same for
+  `git-receive-pack`. A write goes through when `EgressPolicy::permits_write`
+  (rules `remote_write(target)`), else it is held and asked through the same
+  `HostAsk` channel with `write: Some(summary)` and `host` set to the
+  target. With no asker it is refused.
 - `gh` cannot trust the authority (Go on macOS uses the system verifier
   only), so `GH_CONFIG_DIR` points it at a config with `http_unix_socket`
   set to the invocation's Unix socket. That socket alone accepts origin-form

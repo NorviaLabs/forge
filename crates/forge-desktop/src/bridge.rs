@@ -897,6 +897,7 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
                 host: question.host.clone(),
                 port: question.port,
                 call_id: question.call_id.clone(),
+                write: question.write.clone(),
             })
             .collect(),
         thinking: snapshot
@@ -2396,6 +2397,9 @@ pub struct HostQuestionView {
     pub port: u16,
     /// The tool call that is waiting on it, when known.
     pub call_id: Option<String>,
+    /// Set when the command wants to change something on `host` as the
+    /// user, rather than reach it: what it is doing.
+    pub write: Option<String>,
 }
 
 /// Decide a host a running command is waiting to reach: `allow_once`,

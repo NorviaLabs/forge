@@ -266,6 +266,12 @@ async fn open_session_with_model(
     // every key name the loaded profiles read (custom `api_key_env` too).
     session.set_route_table(route_table());
 
+    // The project's own remotes are where its pushes go: record them once,
+    // so only a push somewhere else asks.
+    let _ = forge_config::record_project_remotes(
+        cfg.workspace_root(),
+        &forge_tools::remote_write_targets(cfg.workspace_root()),
+    );
     let (permissions, permission_notices) = forge_config::load_permissions(cfg.workspace_root());
     notices.extend(permission_notices);
     session.set_governance(Governance::default().with_pattern_rules(

@@ -199,13 +199,15 @@ pub(crate) struct ForeignCredentials;
 ///
 /// An `Authorization` header that does not carry the placeholder is somebody
 /// else's credential and is refused. A request with no `Authorization` is
-/// forwarded as it is: the host answers it as anonymous.
+/// forwarded as it is: the host answers it as anonymous. Also returns whether
+/// the credential was put in, which is what makes a request the user's.
 pub(crate) fn supply_credentials(
     secret: &Secret,
     headers: Vec<(&str, &str)>,
-) -> Result<Vec<(String, String)>, ForeignCredentials> {
+) -> Result<(Vec<(String, String)>, bool), ForeignCredentials> {
     let engine = base64::engine::general_purpose::STANDARD;
     let mut supplied = Vec::with_capacity(headers.len());
+    let mut used = false;
     for (name, value) in headers {
         let mut value = value.to_string();
         if name.eq_ignore_ascii_case("authorization") {
@@ -218,18 +220,21 @@ pub(crate) fn supply_credentials(
                 Some(pair) if pair.contains(&secret.placeholder) => {
                     let pair = pair.replace(&secret.placeholder, &secret.password);
                     value = format!("Basic {}", engine.encode(pair));
+                    used = true;
                 }
                 None if value.contains(&secret.placeholder) => {
                     value = value.replace(&secret.placeholder, &secret.password);
+                    used = true;
                 }
                 _ => return Err(ForeignCredentials),
             }
         } else if value.contains(&secret.placeholder) {
             value = value.replace(&secret.placeholder, &secret.password);
+            used = true;
         }
         supplied.push((name.to_string(), value));
     }
-    Ok(supplied)
+    Ok((supplied, used))
 }
 
 #[cfg(test)]
@@ -262,11 +267,12 @@ mod tests {
     fn the_placeholder_becomes_the_credential_in_each_scheme() {
         let engine = base64::engine::general_purpose::STANDARD;
         let basic = format!("Basic {}", engine.encode("me:forge-placeholder-abc"));
-        let supplied = supply_credentials(
+        let (supplied, used) = supply_credentials(
             &secret(),
             vec![("Authorization", &basic), ("Accept", "*/*")],
         )
         .unwrap();
+        assert!(used);
         assert_eq!(
             supplied[0].1,
             format!("Basic {}", engine.encode("me:real-token"))
@@ -286,11 +292,12 @@ mod tests {
             ),
             ("PRIVATE-TOKEN", "forge-placeholder-abc", "real-token"),
         ] {
-            let supplied = supply_credentials(&secret(), vec![(name, value)]).unwrap();
+            let (supplied, _) = supply_credentials(&secret(), vec![(name, value)]).unwrap();
             assert_eq!(supplied[0].1, expected);
         }
         // Anonymous requests pass untouched.
-        assert!(supply_credentials(&secret(), vec![("Accept", "*/*")]).is_ok());
+        let (_, used) = supply_credentials(&secret(), vec![("Accept", "*/*")]).unwrap();
+        assert!(!used);
     }
 
     #[test]

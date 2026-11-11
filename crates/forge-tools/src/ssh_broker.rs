@@ -200,7 +200,19 @@ impl Drop for SshBroker {
 
 /// Decides whether a checked request may run. Returning `Err` refuses it
 /// with that message, which git prints.
-pub type Authorize = Arc<dyn Fn(&SshRequest) -> Result<(), String> + Send + Sync>;
+pub type Authorize = Arc<
+    dyn Fn(
+            SshRequest,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// An [`Authorize`] that lets every checked request run.
+pub fn authorize_all() -> Authorize {
+    Arc::new(|_| Box::pin(async { Ok(()) }))
+}
 
 /// Produces the host ssh command line for a request, or why SSH cannot be
 /// used. Called when a request arrives, so a git invocation that never uses
@@ -367,7 +379,7 @@ async fn serve(
         Ok(request) => request,
         Err(why) => return refuse(&mut write_half, &why).await,
     };
-    if let Err(why) = authorize(&request) {
+    if let Err(why) = authorize(request.clone()).await {
         return refuse(&mut write_half, &why).await;
     }
     let ssh_command = match compose().await {
@@ -701,7 +713,7 @@ mod tests {
     #[tokio::test]
     async fn a_git_request_round_trips_through_the_broker() {
         let (_dir, command) = fake_ssh();
-        let broker = SshBroker::start_fixed(command, Arc::new(|_| Ok(())))
+        let broker = SshBroker::start_fixed(command, authorize_all())
             .await
             .unwrap();
         let token = broker.token.clone();
@@ -727,12 +739,14 @@ mod tests {
         let (_dir, command) = fake_ssh();
         let broker = SshBroker::start_fixed(
             command,
-            Arc::new(|request: &SshRequest| {
-                if request.is_push() {
-                    Err("pushing was not allowed".into())
-                } else {
-                    Ok(())
-                }
+            Arc::new(|request: SshRequest| {
+                Box::pin(async move {
+                    if request.is_push() {
+                        Err("pushing was not allowed".into())
+                    } else {
+                        Ok(())
+                    }
+                })
             }),
         )
         .await

@@ -1016,6 +1016,40 @@ async fn the_gateway_supplies_the_credential_for_a_plain_request_on_its_socket()
         "{foreign}"
     );
 
+    // A write made with the user's credential is refused until its target
+    // is allowed; a fetch, which is also a POST, is a read.
+    let post = |path: &'static str| {
+        let (socket, host, placeholder) = (
+            socket.clone(),
+            format!("localhost:{port}"),
+            placeholder.clone(),
+        );
+        async move {
+            let mut stream = UnixStream::connect(&socket).await.unwrap();
+            let request = format!(
+                "POST {path} HTTP/1.1\r\nHost: {host}\r\nAuthorization: token {placeholder}\r\nContent-Length: 0\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream.read_to_string(&mut response),
+            )
+            .await;
+            response
+        }
+    };
+    let push = post("/o/r.git/git-receive-pack").await;
+    assert!(push.starts_with("HTTP/1.1 403"), "{push}");
+    assert!(push.contains("was not approved"), "{push}");
+    let fetch = post("/o/r.git/git-upload-pack").await;
+    assert!(fetch.starts_with("HTTP/1.1 200"), "{fetch}");
+    proxy.shared().grant_write("localhost/o/r");
+    let push = post("/o/r.git/git-receive-pack").await;
+    assert!(push.starts_with("HTTP/1.1 200"), "{push}");
+    let elsewhere = post("/o/other.git/git-receive-pack").await;
+    assert!(elsewhere.starts_with("HTTP/1.1 403"), "{elsewhere}");
+
     // A host the policy does not allow is refused before any connection.
     let denied = exchange(format!("token {placeholder}"), "other.example".into()).await;
     assert!(denied.starts_with("HTTP/1.1 403"), "{denied}");

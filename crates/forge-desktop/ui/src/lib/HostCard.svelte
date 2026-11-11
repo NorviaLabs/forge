@@ -21,12 +21,19 @@
 <section class="host" aria-label="A command is waiting to reach a host" data-host={question.host}>
   <header>
     <span class="state-dot waiting" aria-hidden="true"></span>
-    <span class="badge">Allow network access?</span>
+    <span class="badge">{question.write ? "Allow this change as you?" : "Allow network access?"}</span>
   </header>
-  <p class="text">
-    A running command is trying to reach <code>{question.host}</code>{#if question.port !== 443}<span class="port"> on port {question.port}</span>{/if}.
-    It is paused until you decide.
-  </p>
+  {#if question.write}
+    <p class="text">
+      A running command wants to change <code>{question.host}</code> using your account:
+      <code>{question.write}</code>. It is paused until you decide.
+    </p>
+  {:else}
+    <p class="text">
+      A running command is trying to reach <code>{question.host}</code>{#if question.port !== 443}<span class="port"> on port {question.port}</span>{/if}.
+      It is paused until you decide.
+    </p>
+  {/if}
   <div class="actions">
     <button type="button" class="btn primary" disabled={busy} onclick={() => answer("allow_once")}>Allow once</button>
     <button type="button" class="btn" disabled={busy} onclick={() => answer("allow_for_session")}>Allow this session</button>

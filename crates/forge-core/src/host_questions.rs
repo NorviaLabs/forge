@@ -30,6 +30,10 @@ pub struct HostQuestion {
     pub port: u16,
     /// The tool call (or MCP server) that opened the first held connection.
     pub call_id: Option<String>,
+    /// Set when the question is not about reaching a host but about
+    /// changing something on it as the user: what is being done. `host` is
+    /// then the target (`host/owner/repo`, or the host).
+    pub write: Option<String>,
 }
 
 /// What the user chose for a held host.
@@ -141,6 +145,29 @@ impl HostQuestions {
 
         let call_id = pending.question.call_id.as_deref();
         let mut answered = HostAnswered::default();
+        if pending.question.write.is_some() {
+            // A write target, not a host: recorded in its own list.
+            let reply = match decision {
+                HostDecision::Deny => HostAnswer::Deny,
+                HostDecision::AllowOnce => HostAnswer::AllowOnce,
+                HostDecision::AllowForSession => {
+                    lock(&self.inner.shared).grant_write(host);
+                    HostAnswer::Allow
+                }
+                HostDecision::AllowAlways => {
+                    answered.persist_error =
+                        forge_config::append_project_write(&self.inner.workspace, host)
+                            .err()
+                            .map(|error| error.to_string());
+                    lock(&self.inner.shared).grant_write(host);
+                    HostAnswer::Allow
+                }
+            };
+            for waiter in pending.waiters {
+                let _ = waiter.send(reply);
+            }
+            return Ok(answered);
+        }
         let reply = match decision {
             HostDecision::Deny => HostAnswer::Deny,
             HostDecision::AllowOnce => HostAnswer::AllowOnce,
@@ -211,6 +238,7 @@ async fn receive(inner: Weak<Inner>, mut asks: mpsc::UnboundedReceiver<HostAsk>)
                             host: ask.host,
                             port: ask.port,
                             call_id: ask.label,
+                            write: ask.write,
                         },
                         waiters: vec![ask.reply],
                     });
@@ -255,6 +283,33 @@ mod tests {
                 .expect("the pending set changes")
                 .unwrap();
         }
+    }
+
+    /// A write under the user's identity is asked about like a host, and
+    /// the answer is recorded as a write target, not as a reachable host.
+    #[tokio::test]
+    async fn a_write_is_asked_about_and_allowed_for_the_session() {
+        let (questions, shared, _workspace) = questions(EgressOptions::default());
+        let write = forge_tools::write_gate::Write {
+            target: "github.com/o/r".into(),
+            summary: "git push to o/r".into(),
+        };
+        let held = tokio::spawn({
+            let (shared, write) = (shared.clone(), write.clone());
+            async move { shared.admit_write(&write).await }
+        });
+        wait_for(&questions, 1).await;
+        let pending = questions.pending();
+        assert_eq!(pending[0].host, "github.com/o/r");
+        assert_eq!(pending[0].write.as_deref(), Some("git push to o/r"));
+
+        questions
+            .answer("github.com/o/r", HostDecision::AllowForSession)
+            .unwrap();
+        assert!(held.await.unwrap().allowed());
+        assert!(shared.permits_write("github.com/o/r"));
+        assert!(!shared.permits_host("github.com"));
+        assert!(shared.admit_write(&write).await.allowed());
     }
 
     /// Several connections to one host are one question, and one answer

@@ -74,6 +74,13 @@ pub fn load_permissions(workspace: &Path) -> (PermissionsFile, Vec<String>) {
             .into_iter()
             .map(|host| format!("host({host})")),
     );
+    // Likewise the places a sandboxed command may change under the user's
+    // identity: the project's own remotes, and what the user allowed.
+    merged.allow.extend(
+        project_writes(workspace)
+            .into_iter()
+            .map(|target| format!("remote_write({target})")),
+    );
 
     let repo_path = workspace_permissions_path(workspace);
     if let Ok(content) = std::fs::read_to_string(&repo_path) {
@@ -116,6 +123,13 @@ struct ProjectHosts {
     path: PathBuf,
     #[serde(default)]
     hosts: Vec<String>,
+    /// Write targets (`host/owner/repo`, or a host) allowed for the project.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    writes: Vec<String>,
+    /// Whether the project's own remotes have been recorded in `writes`.
+    /// Done once: a remote that appears later is asked about.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    remotes_recorded: bool,
 }
 
 /// The project a workspace belongs to, for host grants: the workspace
@@ -187,6 +201,8 @@ pub fn append_project_host(workspace: &Path, host: &str) -> std::io::Result<()> 
             file.projects.push(ProjectHosts {
                 path: key,
                 hosts: Vec::new(),
+                writes: Vec::new(),
+                remotes_recorded: false,
             });
             file.projects.len() - 1
         }
@@ -196,12 +212,102 @@ pub fn append_project_host(workspace: &Path, host: &str) -> std::io::Result<()> 
         return Ok(());
     }
     entry.hosts.push(host);
+    write_project_hosts(&path, &file)
+}
+
+fn write_project_hosts(path: &Path, file: &ProjectHostsFile) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let serialized =
-        toml::to_string_pretty(&file).map_err(|e| std::io::Error::other(e.to_string()))?;
+        toml::to_string_pretty(file).map_err(|e| std::io::Error::other(e.to_string()))?;
     std::fs::write(path, serialized)
+}
+
+/// Write targets allowed for the project `workspace` belongs to.
+pub fn project_writes(workspace: &Path) -> Vec<String> {
+    let Some(path) = project_hosts_path() else {
+        return Vec::new();
+    };
+    let key = project_key(workspace);
+    read_project_hosts(&path)
+        .map(|file| {
+            file.projects
+                .into_iter()
+                .filter(|project| project.path == key)
+                .flat_map(|project| project.writes)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Change the write targets of the project `workspace` belongs to.
+fn update_project_writes(
+    workspace: &Path,
+    update: impl FnOnce(&mut ProjectHosts) -> bool,
+) -> std::io::Result<()> {
+    let path = project_hosts_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no platform config directory available",
+        )
+    })?;
+    let key = project_key(workspace);
+    let mut file = read_project_hosts(&path)?;
+    let index = match file.projects.iter().position(|project| project.path == key) {
+        Some(index) => index,
+        None => {
+            file.projects.push(ProjectHosts {
+                path: key,
+                hosts: Vec::new(),
+                writes: Vec::new(),
+                remotes_recorded: false,
+            });
+            file.projects.len() - 1
+        }
+    };
+    if update(&mut file.projects[index]) {
+        write_project_hosts(&path, &file)?;
+    }
+    Ok(())
+}
+
+/// Allow writes to `target` for the project `workspace` belongs to, from
+/// now on. A no-op when it is already there.
+pub fn append_project_write(workspace: &Path, target: &str) -> std::io::Result<()> {
+    let target = target.trim().trim_matches('/').to_ascii_lowercase();
+    update_project_writes(workspace, |project| {
+        let new = !project.writes.contains(&target);
+        if new {
+            project.writes.push(target);
+        }
+        new
+    })
+}
+
+/// Record the project's own remotes (`targets`) as write targets, the first
+/// time the project is seen. Later calls change nothing: a remote added
+/// afterwards, by anyone, is asked about on its first push.
+///
+/// A project with no remotes yet is left unrecorded, so nothing is written
+/// for it.
+pub fn record_project_remotes(workspace: &Path, targets: &[String]) -> std::io::Result<()> {
+    if targets.is_empty() {
+        return Ok(());
+    }
+    update_project_writes(workspace, |project| {
+        if project.remotes_recorded {
+            return false;
+        }
+        project.remotes_recorded = true;
+        for target in targets {
+            let target = target.trim().trim_matches('/').to_ascii_lowercase();
+            if !target.is_empty() && !project.writes.contains(&target) {
+                project.writes.push(target);
+            }
+        }
+        true
+    })
 }
 
 /// Append an `allow` pattern to the personal permissions file, creating it
@@ -320,6 +426,33 @@ mod tests {
             );
         }
         assert!(load_permissions(other.path()).0.allow.is_empty());
+    }
+
+    /// A project's own remotes are recorded once, as write targets; what the
+    /// user allows later is added; a second recording changes nothing.
+    #[test]
+    fn a_projects_remotes_are_recorded_once_and_allowed_writes_are_kept() {
+        let _user = IsolatedUserConfig::new();
+        let project = TempDir::new().unwrap();
+        record_project_remotes(project.path(), &[]).unwrap();
+        assert!(project_writes(project.path()).is_empty());
+
+        record_project_remotes(project.path(), &["GitHub.com/O/R".into()]).unwrap();
+        append_project_write(project.path(), "github.com/o/fork").unwrap();
+        // Recorded already: a remote that shows up later is not trusted.
+        record_project_remotes(project.path(), &["evil.example/x/y".into()]).unwrap();
+        assert_eq!(
+            project_writes(project.path()),
+            ["github.com/o/r", "github.com/o/fork"]
+        );
+        let (merged, _) = load_permissions(project.path());
+        assert_eq!(
+            merged.allow,
+            [
+                "remote_write(github.com/o/r)",
+                "remote_write(github.com/o/fork)"
+            ]
+        );
     }
 
     #[test]

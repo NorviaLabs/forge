@@ -67,6 +67,33 @@ fn grant_for(repo: &Path) -> Option<Arc<EgressGrant>> {
         .map(|entry| Arc::clone(&entry.grant))
 }
 
+/// The write targets of `workspace`'s own remotes (`host/owner/repo` for
+/// each push URL), read with a confined git.
+pub fn remote_write_targets(workspace: &Path) -> Vec<String> {
+    let Ok(output) = forge_sandbox::git::command(workspace)
+        .args(["remote", "-v"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut targets = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some(url) = line
+            .strip_suffix(" (push)")
+            .and_then(|line| line.split_once('\t'))
+            .map(|(_, url)| url)
+        else {
+            continue;
+        };
+        if let Some(target) = crate::write_gate::target_for_remote_url(url) {
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+    }
+    targets
+}
+
 struct Provider {
     runtime: tokio::runtime::Handle,
 }
