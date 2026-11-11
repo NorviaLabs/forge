@@ -917,6 +917,9 @@ pub struct EgressInvocation {
     proxy: EgressProxy,
     /// Present in sandbox mode only.
     grant: Option<crate::sandbox::EgressGrant>,
+    /// Other per-invocation services (the SSH broker) that must live exactly
+    /// as long as this endpoint does.
+    held: Vec<Box<dyn std::any::Any + Send + Sync>>,
 }
 
 impl EgressInvocation {
@@ -960,6 +963,7 @@ impl EgressInvocation {
         Ok(Self {
             proxy,
             grant: Some(grant),
+            held: Vec::new(),
         })
     }
 
@@ -975,7 +979,16 @@ impl EgressInvocation {
             return Ok(None);
         };
         let proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
-        Ok(Some(Self { proxy, grant: None }))
+        Ok(Some(Self {
+            proxy,
+            grant: None,
+            held: Vec::new(),
+        }))
+    }
+
+    /// Keep `service` alive until this endpoint is dropped.
+    pub fn hold(&mut self, service: impl std::any::Any + Send + Sync) {
+        self.held.push(Box::new(service));
     }
 
     /// The grant a sandbox policy consumes. `None` in TCP mode, which has no

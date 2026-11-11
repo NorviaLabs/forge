@@ -11,7 +11,7 @@ as `forge_tools::sandbox` and adds the egress-proxy glue.
 
 - `SandboxPolicy` (`for_workspace`, `with_home`, `with_session_tmp`,
   `with_tool_cache`, `default_tool_cache`, `with_read_path`,
-  `with_write_path`, `with_read_only_workspace`, `with_git_writable`,
+  `with_write_path`, `with_loopback_port`, `with_read_only_workspace`, `with_git_writable`,
   `with_git_open`, `with_command_access`, `with_egress_proxy`,
   `with_egress_socket`, `toolchain_env`), `seatbelt_profile`,
   `wrap_shell_command`, `wrap_command`, `availability`, `Unavailable`,

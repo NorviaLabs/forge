@@ -79,12 +79,21 @@ enum Command {
 fn main() {
     // Internal helpers run before clap so they stay out of `--help`.
     let mut args = std::env::args_os().skip(1);
-    if args
-        .next()
+    let helper = args.next();
+    let rest = || -> Vec<String> { args.map(|arg| arg.to_string_lossy().into_owned()).collect() };
+    if helper
+        .as_ref()
         .is_some_and(|arg| arg == forge_tools::egress_connect::SUBCOMMAND)
     {
-        let rest: Vec<String> = args.map(|arg| arg.to_string_lossy().into_owned()).collect();
-        std::process::exit(forge_tools::egress_connect::run(&rest));
+        std::process::exit(forge_tools::egress_connect::run(&rest()));
+    }
+    // A confined git's ssh: forwards the session to the broker in the
+    // running Forge, which holds the keys.
+    if helper
+        .as_ref()
+        .is_some_and(|arg| arg == forge_tools::ssh_broker::SUBCOMMAND)
+    {
+        std::process::exit(forge_tools::ssh_broker::run(&rest()));
     }
 
     let cli = Cli::parse();

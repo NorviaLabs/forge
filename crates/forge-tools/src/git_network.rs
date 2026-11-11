@@ -551,6 +551,66 @@ pub(crate) async fn route_through_gateway(
     })
 }
 
+/// The Forge executable that provides the hidden helper subcommands.
+pub(crate) fn helper_exe() -> Result<String, String> {
+    let exe = match EGRESS_CONNECT_EXE.get() {
+        Some(exe) => exe.clone(),
+        None => std::env::current_exe()
+            .map_err(|e| format!("cannot locate the forge executable: {e}"))?,
+    };
+    exe.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| "the forge executable path is not UTF-8".to_string())
+}
+
+/// The ssh command Forge runs on the host for a confined git: the user's own
+/// ssh, routed through the gateway at `connect_addr`.
+///
+/// Built from the user's settings only: the environment and the global and
+/// system git config. The repository's config is not read. A confined
+/// process can write it, and `core.sshCommand` there would otherwise choose
+/// the program that runs outside the sandbox with the user's keys.
+pub(crate) async fn host_ssh_command(
+    credential_env_names: &[String],
+    connect_addr: &str,
+) -> Result<String, String> {
+    let neutral = std::env::temp_dir();
+    let user = LocalRepo {
+        root: &neutral,
+        credential_env_names,
+    };
+    let core_ssh_command = user
+        .config_all_scoped("core.sshCommand", false)
+        .await
+        .map_err(|error| error.to_string())?
+        .pop();
+    let ssh_variant = match env_value("GIT_SSH_VARIANT") {
+        Some(variant) => Some(variant),
+        None => user
+            .config_all_scoped("ssh.variant", false)
+            .await
+            .map_err(|error| error.to_string())?
+            .pop(),
+    };
+    let setup = UserGitSetup {
+        git_ssh_command: env_value("GIT_SSH_COMMAND"),
+        core_ssh_command,
+        git_ssh: env_value("GIT_SSH"),
+        ssh_variant,
+        proxy_keys: Vec::new(),
+    };
+    let exe = helper_exe()?;
+    compose_ssh_command(
+        &setup,
+        &GatewayEndpoint {
+            proxy_url: "",
+            connect_addr,
+            exe: &exe,
+            git_proxy_command: "",
+        },
+    )
+}
+
 /// The executable that provides `__egress-connect`, when it is not the
 /// running one. Only [`set_egress_connect_exe`] sets it.
 static EGRESS_CONNECT_EXE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

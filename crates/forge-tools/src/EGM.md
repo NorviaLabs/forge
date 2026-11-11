@@ -169,6 +169,17 @@ Subdirectories:
   session egress policy; non-http(s) schemes are refused.
 - `git` network subcommands are pre-checked against the host allowlist and then
   routed through the call gateway so unseen hosts are still refused.
+- SSH for confined git (`ssh_broker.rs`): every confined shell with a gateway
+  gets `GIT_SSH_COMMAND=<forge exe> __ssh-broker <addr> <token>`. The client
+  forwards git's ssh arguments and stdio to an `SshBroker` in the Forge
+  process, which runs the real ssh on the host (through the invocation's
+  gateway, so the host policy and hold-and-ask apply) and relays output and
+  exit status. Keys and the agent socket never enter the sandbox. The broker
+  accepts only what git sends (`parse_request`: `-p`, `-4`/`-6`,
+  `-o SendEnv=GIT_PROTOCOL`, a destination, one git service with one quoted
+  path) and composes the ssh command from the environment and global git
+  config only (`git_network::host_ssh_command`), never the repository's.
+  Both binaries dispatch `__ssh-broker` before argument parsing.
 - Hold-and-ask: a host no rule decides (`EgressPolicy::undecided`) is not
   refused when an asker is set (`EgressShared::set_asker`). The gateway holds
   the connection (`admit`/`admission`, up to `EGRESS_HOLD_TIMEOUT`) and sends a

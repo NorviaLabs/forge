@@ -60,6 +60,27 @@ pub struct ShellSpawnSpec {
     egress_invocation: Option<EgressInvocation>,
 }
 
+/// Start the SSH broker for one confined invocation, and the
+/// `GIT_SSH_COMMAND` that reaches it. `None` when it cannot be started; the
+/// command then runs with no SSH, as it did before the broker existed.
+async fn start_ssh_broker(
+    invocation: &EgressInvocation,
+    credential_env_names: &[String],
+) -> Option<(crate::ssh_broker::SshBroker, String)> {
+    let exe = crate::git_network::helper_exe().ok()?;
+    let connect_addr = invocation.tcp_addr().to_string();
+    let names: std::sync::Arc<[String]> = credential_env_names.into();
+    let compose: crate::ssh_broker::Compose = std::sync::Arc::new(move || {
+        let (names, connect_addr) = (std::sync::Arc::clone(&names), connect_addr.clone());
+        Box::pin(async move { crate::git_network::host_ssh_command(&names, &connect_addr).await })
+    });
+    let broker = crate::ssh_broker::SshBroker::start(compose, std::sync::Arc::new(|_| Ok(())))
+        .await
+        .ok()?;
+    let git_ssh_command = broker.git_ssh_command(&exe);
+    Some((broker, git_ssh_command))
+}
+
 impl ShellSpawnSpec {
     /// Decide how to spawn `request`.
     ///
@@ -88,7 +109,7 @@ impl ShellSpawnSpec {
                 });
             }
         }
-        let egress_invocation = if requested_confined {
+        let mut egress_invocation = if requested_confined {
             EgressInvocation::start_labeled(egress, egress_label)
                 .await
                 .map_err(|error| {
@@ -98,6 +119,14 @@ impl ShellSpawnSpec {
                 })?
         } else {
             None
+        };
+        // Git over SSH from inside the sandbox: the keys stay outside, so
+        // git is pointed at a broker that runs the real ssh on the host,
+        // through this invocation's gateway. Without it, an SSH remote
+        // could only work by running the whole command unconfined.
+        let ssh_broker = match &egress_invocation {
+            Some(invocation) => start_ssh_broker(invocation, credential_env_names).await,
+            None => None,
         };
         let command_egress = egress_invocation
             .as_ref()
@@ -112,6 +141,9 @@ impl ShellSpawnSpec {
         }
         if let Some(session_tmp) = session_tmp {
             policy = policy.with_session_tmp(session_tmp);
+        }
+        if let Some((broker, _)) = &ssh_broker {
+            policy = policy.with_loopback_port(broker.addr().port());
         }
         if requested_confined {
             if let Some(cache) = crate::sandbox::SandboxPolicy::default_tool_cache() {
@@ -175,6 +207,18 @@ impl ShellSpawnSpec {
                 ))
                 .chain(policy.toolchain_env());
             env_set.extend(confined_env.map(|(name, value)| (name, OsString::from(value))));
+        }
+        if let Some((broker, git_ssh_command)) = ssh_broker {
+            if confined {
+                env_set.push(("GIT_SSH_COMMAND".into(), git_ssh_command.into()));
+                // An explicit variant: git must not probe the client with
+                // `-G` to find out what it is.
+                env_set.push(("GIT_SSH_VARIANT".into(), "ssh".into()));
+            }
+            // The broker lives as long as the invocation's gateway does.
+            if let Some(invocation) = egress_invocation.as_mut() {
+                invocation.hold(broker);
+            }
         }
 
         Ok(Self {
@@ -363,6 +407,22 @@ mod tests {
             let mut spec = ShellSpawnSpec::build(req).await.unwrap();
             let names = decisions(&spec).2;
             assert!(names.iter().any(|n| n == "HTTPS_PROXY"), "{mode:?}");
+            // Git's SSH goes to the broker, and the sandbox can reach it.
+            let broker = spec
+                .env_set()
+                .iter()
+                .find(|(name, _)| name == "GIT_SSH_COMMAND")
+                .map(|(_, value)| value.to_string_lossy().into_owned())
+                .expect("a confined command with a gateway gets the SSH broker");
+            assert!(broker.contains(crate::ssh_broker::SUBCOMMAND), "{broker}");
+            let port = broker
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix("127.0.0.1:"))
+                .expect("the broker address");
+            assert!(
+                spec.args()[1].contains(&format!("localhost:{port}")),
+                "the profile must let the command reach the broker"
+            );
             let invocation = spec.take_egress_invocation().expect("gateway");
             assert_eq!(invocation.label(), Some("call-1"), "{mode:?}");
             seen.push(names);

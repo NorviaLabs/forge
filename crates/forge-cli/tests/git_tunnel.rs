@@ -571,3 +571,113 @@ async fn http_fetch_runs_through_the_gateway() {
         assert_eq!(event.label.as_deref(), Some(CALL_ID));
     }
 }
+
+/// A confined shell command reaches a real SSH remote through the broker:
+/// git runs in the sandbox, where the user's keys are unreadable, and the
+/// real ssh runs on the host through the gateway.
+///
+/// Ignored by default: it needs the network and the developer's own SSH
+/// access to GitHub. Run it by hand with
+/// `cargo test -p forge-cli --test git_tunnel -- --ignored confined`.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the network and SSH access to github.com"]
+async fn a_confined_git_reaches_github_over_the_ssh_broker() {
+    if forge_tools::sandbox::availability().is_err() {
+        return;
+    }
+    use_real_forge();
+    let ws = workspace();
+    git(
+        ws.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:NorviaLabs/forge.git",
+        ],
+    );
+    let scratch = tempfile::tempdir().unwrap();
+    let mut policy = EgressPolicy::new();
+    policy.allow("github.com");
+    let proxy = EgressProxy::start_with_options(policy, EgressOptions::default())
+        .await
+        .unwrap();
+    let grant = EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path: scratch.path().join("unused.sock"),
+        control: Some(proxy.shared().clone()),
+    };
+
+    // The keys are out of reach inside the sandbox...
+    let keys = forge_tools::run_shell_command_with_egress_and_temp(
+        "ls ~/.ssh",
+        ws.path(),
+        Some(&grant),
+        Some(scratch.path()),
+    )
+    .await;
+    assert!(
+        !matches!(&keys, Ok(output) if !output.is_error),
+        "~/.ssh must be unreadable in the sandbox: {keys:?}"
+    );
+
+    // ...and git over SSH works anyway.
+    let out = forge_tools::run_shell_command_with_egress_and_temp(
+        "git ls-remote origin HEAD",
+        ws.path(),
+        Some(&grant),
+        Some(scratch.path()),
+    )
+    .await
+    .unwrap();
+    assert!(!out.is_error, "{out:?}");
+    assert!(out.content.contains("HEAD"), "{out:?}");
+
+    // The repository's own config cannot choose the ssh that runs on the
+    // host: a confined process can write it.
+    let marker = scratch.path().join("hijacked");
+    git(
+        ws.path(),
+        &[
+            "config",
+            "core.sshCommand",
+            &format!("sh -c ': > {}; exit 1' --", marker.display()),
+        ],
+    );
+    let out = forge_tools::run_shell_command_with_egress_and_temp(
+        "git ls-remote origin HEAD",
+        ws.path(),
+        Some(&grant),
+        Some(scratch.path()),
+    )
+    .await
+    .unwrap();
+    assert!(!out.is_error && out.content.contains("HEAD"), "{out:?}");
+    assert!(
+        !marker.exists(),
+        "the repository's ssh command must not run"
+    );
+
+    // A host the policy does not allow is refused at the gateway, on the
+    // host side of the broker.
+    git(
+        ws.path(),
+        &[
+            "remote",
+            "add",
+            "other",
+            "git@gitlab.com:gitlab-org/gitlab.git",
+        ],
+    );
+    let refused = forge_tools::run_shell_command_with_egress_and_temp(
+        "git ls-remote other HEAD",
+        ws.path(),
+        Some(&grant),
+        Some(scratch.path()),
+    )
+    .await;
+    assert!(
+        !matches!(&refused, Ok(output) if !output.is_error),
+        "an unallowed SSH host must not be reached: {refused:?}"
+    );
+}

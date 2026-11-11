@@ -8,6 +8,7 @@ pub mod egress;
 pub mod egress_connect;
 mod fast_file_tools;
 mod git_network;
+pub mod ssh_broker;
 #[doc(hidden)]
 pub use git_network::set_egress_connect_exe;
 mod orchestration;

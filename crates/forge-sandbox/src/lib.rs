@@ -464,6 +464,9 @@ pub struct SandboxPolicy {
     /// With `git_writable`, also open the parts of a git dir that decide
     /// what git executes (`hooks`, `config`). See [`Self::with_git_open`].
     git_metadata_writable: bool,
+    /// Further loopback ports the process may connect to, besides the egress
+    /// proxy: the SSH broker a confined git speaks to.
+    extra_loopback_ports: Vec<u16>,
     /// Further directories the process may read and write: where a new
     /// worktree is created, or one being removed.
     extra_write_paths: Vec<PathBuf>,
@@ -609,6 +612,7 @@ impl SandboxPolicy {
             tool_cache: None,
             git_metadata_writable: false,
             extra_write_paths: Vec::new(),
+            extra_loopback_ports: Vec::new(),
         }
     }
 
@@ -620,6 +624,15 @@ impl SandboxPolicy {
     pub fn with_git_open(mut self) -> Self {
         self.git_writable = true;
         self.git_metadata_writable = true;
+        self
+    }
+
+    /// Also let the process connect to `port` on loopback. For a service
+    /// Forge itself runs for this process; never a way onto the network.
+    pub fn with_loopback_port(mut self, port: u16) -> Self {
+        if port != 0 && !self.extra_loopback_ports.contains(&port) {
+            self.extra_loopback_ports.push(port);
+        }
         self
     }
 
@@ -1267,6 +1280,11 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     // Order matters as ever: the allow must follow the deny to take effect.
     profile.push_str("(deny network*)\n");
     if let Some(port) = policy.egress_proxy_port {
+        profile.push_str(&format!(
+            "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
+        ));
+    }
+    for port in &policy.extra_loopback_ports {
         profile.push_str(&format!(
             "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
         ));
