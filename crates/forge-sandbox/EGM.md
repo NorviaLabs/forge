@@ -16,6 +16,10 @@ as `forge_tools::sandbox` and adds the egress-proxy glue.
   `with_egress_socket`, `toolchain_env`), `seatbelt_profile`,
   `wrap_shell_command`, `wrap_command`, `availability`, `Unavailable`,
   `temp_env`, `shell_env`, `egress_env`.
+- `git::command_networked(repo, also)`: confined git with the network the
+  installed `git::NetworkProvider` supplies for that repository (gateway
+  port, SSH broker port, environment); falls back to `git::unconfined` when
+  nothing governs the repository. `git::signing_configured(repo)`.
 - `git::command(repo)` / `git::command_writing(repo, also)`: `git -C <repo>`
   confined to the worktree containing `repo` and its git dirs, whole git dir
   writable, no network. `git::unconfined(repo)`: host git, for operations

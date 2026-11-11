@@ -1209,6 +1209,9 @@ impl RepositorySupervisor {
         trust_store: Option<PathBuf>,
         git_mutation: Arc<Mutex<()>>,
     ) -> Result<(Self, SupervisorHandle), RepositorySupervisorError> {
+        // Git that Forge runs for the user reaches remotes through the
+        // session's gateway from here on.
+        forge_tools::install_git_network(tokio::runtime::Handle::current());
         let (events, _) = broadcast::channel(512);
         let topology = ProjectTopology::detect(cfg.workspace_root())?;
         let recovered = control.reconcile_running_prompt_claims().await?;

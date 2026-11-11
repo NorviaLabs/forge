@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use thiserror::Error;
 
@@ -35,7 +35,42 @@ pub enum GitServiceError {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
     use tempfile::TempDir;
+
+    /// Which operations leave the sandbox, and which get the network.
+    #[test]
+    fn operations_are_routed_by_what_they_need() {
+        let unsigned = || false;
+        for (args, expected) in [
+            (&["status"][..], Route::Confined),
+            (&["switch", "-c", "new"], Route::Confined),
+            (&["merge", "--abort"], Route::Confined),
+            (&["commit", "-m", "x"], Route::Confined),
+            (
+                &["merge", "--no-edit", "--", "refs/heads/b"],
+                Route::Confined,
+            ),
+            (&["fetch", "--no-tags", "origin"], Route::Networked),
+            (&["push"], Route::Networked),
+            (&["pull", "--no-rebase", "--no-edit"], Route::Networked),
+            (&["switch", "--", "main"], Route::Host),
+        ] {
+            assert_eq!(route(args, unsigned), expected, "{args:?}");
+        }
+        // A signing key is out of the sandbox's reach, so anything that
+        // creates a commit stays on the host when commits are signed.
+        let signed = || true;
+        for args in [
+            &["commit", "-m", "x"][..],
+            &["merge", "--no-edit", "--", "refs/heads/b"],
+            &["pull", "--no-rebase", "--no-edit"],
+        ] {
+            assert_eq!(route(args, signed), Route::Host, "{args:?}");
+        }
+        assert_eq!(route(&["push"], signed), Route::Networked);
+        assert_eq!(route(&["merge", "--abort"], signed), Route::Confined);
+    }
 
     fn git(root: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
@@ -642,6 +677,7 @@ impl LocalGit {
             return Err(GitServiceError::InvalidRoot);
         }
         let output = scoped_command(&root, &["rev-parse"])
+            .command
             .args(["rev-parse", "--show-toplevel"])
             .output()
             .map_err(|source| GitServiceError::Io {
@@ -673,7 +709,9 @@ impl LocalGit {
     /// scrubbed environment. Callers that must read a non-zero exit themselves
     /// (a detached `HEAD`) use this instead of [`Self::run`].
     fn spawn(&self, operation: &'static str, args: &[&str]) -> Result<Output, GitServiceError> {
-        scoped_command(&self.root, args)
+        // Held until git exits: it keeps the gateway and broker up.
+        let mut git = scoped_command(&self.root, args);
+        git.command
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", "true")
@@ -1051,24 +1089,42 @@ fn valid_branch_name(name: &str) -> Result<(), GitServiceError> {
     Ok(())
 }
 
-/// Whether `args` is an operation that cannot run confined yet: it contacts
-/// a remote, creates a commit (which may be signed), or checks another
-/// branch's files out (which may download LFS objects).
-fn needs_host(args: &[&str]) -> bool {
-    match args.first().copied() {
-        Some("pull" | "push" | "fetch" | "commit") => true,
+/// How one git operation is run.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// Confined to the repository, no network.
+    Confined,
+    /// Confined, with the workspace's gateway and SSH broker.
+    Networked,
+    /// On the host: it needs something the sandbox cannot supply yet.
+    Host,
+}
+
+/// `signing` is whether commits here are signed: a signing key is out of a
+/// confined git's reach. Checking another branch's files out may download
+/// LFS objects, which is not routed yet.
+fn route(args: &[&str], signing: impl FnOnce() -> bool) -> Route {
+    let creates_commit = match args.first().copied() {
+        Some("commit" | "pull") => true,
         Some("merge") => !args.contains(&"--abort"),
-        Some("switch") => !args.contains(&"-c"),
         _ => false,
+    };
+    match args.first().copied() {
+        Some("switch") if !args.contains(&"-c") => Route::Host,
+        _ if creates_commit && signing() => Route::Host,
+        Some("pull" | "push" | "fetch") => Route::Networked,
+        _ => Route::Confined,
     }
 }
 
-fn scoped_command(root: &Path, args: &[&str]) -> Command {
-    let mut command = if needs_host(args) {
-        forge_sandbox::git::unconfined(root)
-    } else {
-        forge_sandbox::git::command(root)
+fn scoped_command(root: &Path, args: &[&str]) -> forge_sandbox::git::Networked {
+    use forge_sandbox::git;
+    let mut networked = match route(args, || git::signing_configured(root)) {
+        Route::Confined => git::Networked::local(git::command(root), true),
+        Route::Networked => git::command_networked(root, &[]),
+        Route::Host => git::Networked::local(git::unconfined(root), false),
     };
+    let command = &mut networked.command;
     command.current_dir(root);
     for name in [
         "GIT_DIR",
@@ -1082,7 +1138,7 @@ fn scoped_command(root: &Path, args: &[&str]) -> Command {
     ] {
         command.env_remove(name);
     }
-    command
+    networked
 }
 
 fn output_text(operation: &'static str, output: Output) -> Result<String, GitServiceError> {

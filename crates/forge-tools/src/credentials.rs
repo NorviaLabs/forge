@@ -209,11 +209,25 @@ fn fill_https_credential(host: &str, workspace_root: &Path) -> Option<HostCreden
     filled
 }
 
-fn fill_https_credential_uncached(host: &str, workspace_root: &Path) -> Option<HostCredential> {
+/// Ask the user's credential helper for `host`.
+///
+/// Run outside any repository, so only the user's own (global and system)
+/// configuration applies. `credential.helper` names a program, and this
+/// call is not confined: read from the workspace's config, which a confined
+/// process can write, it would run whatever that config named.
+fn fill_https_credential_uncached(host: &str, _workspace_root: &Path) -> Option<HostCredential> {
     let mut command = Command::new("git");
     crate::builtins::strip_credentials(&mut command, &[]);
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_CONFIG",
+        "GIT_CONFIG_GLOBAL",
+    ] {
+        command.env_remove(name);
+    }
     let mut child = command
-        .current_dir(workspace_root)
+        .current_dir(std::env::temp_dir())
         .args(["credential", "fill"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::piped())
@@ -250,6 +264,49 @@ fn parse_credential_fill(host: &str, body: &str) -> Option<HostCredential> {
             .unwrap_or_else(|| "git".into()),
         password,
     })
+}
+
+/// The credential helper for a confined git that keeps the user's own
+/// global configuration (name, email, aliases): the helper list is replaced
+/// through the environment, which outranks every config file.
+///
+/// The user's own helpers are dropped either way. They cannot work in the
+/// sandbox (the keychain is out of reach), and one that fails slowly or
+/// loudly would only get in the way. Credentials are offered for hosts the
+/// grant already permits, looked up on the host.
+pub(crate) fn credential_helper_env(
+    grant: Option<&EgressGrant>,
+    config_dir: &Path,
+    workspace_root: &Path,
+) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = vec![
+        ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+        ("GIT_CONFIG_KEY_0".into(), "credential.helper".into()),
+        ("GIT_CONFIG_VALUE_0".into(), String::new()),
+    ];
+    let mut count = 1;
+    let credentials = grant
+        .map(|grant| credentials_for_grant(grant, workspace_root))
+        .unwrap_or_default();
+    let store = config_dir.join("https-credentials");
+    let helper = config_dir.join("git-credential-forge");
+    if !credentials.is_empty()
+        && write_credential_store(&store, &credentials).is_ok()
+        && write_credential_helper(&helper).is_ok()
+    {
+        env.push((
+            "FORGE_HOST_CREDENTIALS".into(),
+            store.to_string_lossy().into_owned(),
+        ));
+        env.push(("GIT_CONFIG_KEY_1".into(), "credential.helper".into()));
+        env.push((
+            "GIT_CONFIG_VALUE_1".into(),
+            format!("!sh '{}'", helper.to_string_lossy()),
+        ));
+        count = 2;
+    }
+    env.push(("GIT_CONFIG_COUNT".into(), count.to_string()));
+    env
 }
 
 fn project_identity(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {
@@ -542,35 +599,50 @@ mod tests {
         assert_eq!(cred.password, "s3cret");
     }
 
-    /// A repo-local `credential.helper` must apply to lookups made for that
-    /// project, and one project's identity must never satisfy another's.
-    /// The host is under the reserved `.invalid` TLD so no real credential
-    /// store can answer for it.
+    /// A repository's own `credential.helper` names a program, and the
+    /// lookup runs on the host. A confined process can write that config, so
+    /// the lookup must neither run it nor believe its answer. The host is
+    /// under the reserved `.invalid` TLD so no real store answers for it.
     #[test]
-    fn credentials_are_resolved_and_cached_per_workspace() {
+    fn a_repository_credential_helper_is_neither_run_nor_believed() {
         let host = "forge-credential-test.invalid";
-        let first = repo_with_helper("first-secret");
-        let second = repo_with_helper("second-secret");
+        let repo = repo_with_helper("planted-secret");
+        let marker = repo.path().join("helper-ran");
+        let helper = format!(
+            "!f() {{ : > {}; echo username=tester; echo password=planted-secret; }}; f",
+            marker.display()
+        );
+        let status = Command::new("git")
+            .args(["config", "--local", "credential.helper", &helper])
+            .current_dir(repo.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
 
-        let from_first = fill_https_credential(host, first.path()).expect("first workspace fill");
-        let from_second =
-            fill_https_credential(host, second.path()).expect("second workspace fill");
+        let filled = fill_https_credential(host, repo.path());
+        assert!(
+            filled.is_none_or(|credential| credential.password != "planted-secret"),
+            "the repository's helper must not supply the credential"
+        );
+        assert!(!marker.exists(), "the repository's helper must not run");
+    }
 
-        assert_eq!(from_first.password, "first-secret");
-        assert_eq!(from_second.password, "second-secret");
-
-        // Same workspace: the cached value is returned even though the helper
-        // no longer answers, which is what makes the per-workspace key load-bearing.
-        let helper = first.path().join(".git/config");
-        let body = std::fs::read_to_string(&helper).unwrap();
-        let stripped: String = body
-            .lines()
-            .filter(|line| !line.contains("helper"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        std::fs::write(&helper, stripped).unwrap();
-        let cached = fill_https_credential(host, first.path()).expect("cached fill");
-        assert_eq!(cached.password, "first-secret");
+    /// The helper list a confined git gets replaces the user's own, and
+    /// names Forge's helper only when there is a credential to offer.
+    #[test]
+    fn the_confined_helper_env_resets_the_users_helpers() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = credential_helper_env(None, dir.path(), dir.path());
+        let value = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        assert_eq!(value("GIT_CONFIG_COUNT"), Some("1"));
+        assert_eq!(value("GIT_CONFIG_KEY_0"), Some("credential.helper"));
+        assert_eq!(value("GIT_CONFIG_VALUE_0"), Some(""));
+        assert_eq!(value("GIT_TERMINAL_PROMPT"), Some("0"));
+        assert!(value("FORGE_HOST_CREDENTIALS").is_none());
     }
 
     fn repo_with_helper(password: &str) -> tempfile::TempDir {

@@ -156,6 +156,9 @@ pub struct AgentSession {
     /// Hosts the gateway is holding connections for; `Some` once the owner
     /// asked for them (see `AgentSession::host_questions`).
     host_questions: Option<host_questions::HostQuestions>,
+    /// Holds git that Forge itself runs on this workspace (the Push, Pull
+    /// and Fetch buttons) to this session's egress policy.
+    egress_registration: Option<forge_tools::WorkspaceEgress>,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the

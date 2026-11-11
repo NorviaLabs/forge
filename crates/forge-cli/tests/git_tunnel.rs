@@ -681,3 +681,69 @@ async fn a_confined_git_reaches_github_over_the_ssh_broker() {
         "an unallowed SSH host must not be reached: {refused:?}"
     );
 }
+
+/// Git that Forge itself runs on a workspace (the Fetch button) is confined
+/// and reaches the remote through that workspace's gateway and the SSH
+/// broker. A workspace nobody registered falls back to the host.
+///
+/// Ignored by default, like the test above, and for the same reason.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs the network and SSH access to github.com"]
+async fn forges_own_git_reaches_github_confined_under_the_workspace_policy() {
+    use forge_tools::sandbox::git as confined_git;
+
+    if forge_tools::sandbox::availability().is_err() {
+        return;
+    }
+    use_real_forge();
+    forge_tools::install_git_network(tokio::runtime::Handle::current());
+    let ws = workspace();
+    git(
+        ws.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:NorviaLabs/forge.git",
+        ],
+    );
+    let ls_remote = |repo: PathBuf| async move {
+        tokio::task::spawn_blocking(move || {
+            let mut git = confined_git::command_networked(&repo, &[]);
+            let out = git
+                .command
+                .args(["ls-remote", "origin", "HEAD"])
+                .output()
+                .unwrap();
+            (git.confined, out)
+        })
+        .await
+        .unwrap()
+    };
+
+    // Nothing governs this workspace yet: the host path, as before.
+    let (confined, _) = ls_remote(ws.path().to_path_buf()).await;
+    assert!(!confined);
+
+    // Registered with a policy that does not allow the host: confined, and
+    // refused at the gateway.
+    let proxy = EgressProxy::start_with_options(EgressPolicy::new(), EgressOptions::default())
+        .await
+        .unwrap();
+    let grant = Arc::new(EgressGrant {
+        proxy_port: proxy.addr().port(),
+        socket_path: PathBuf::new(),
+        control: Some(proxy.shared().clone()),
+    });
+    let _registered = forge_tools::register_workspace_egress(ws.path(), Arc::clone(&grant));
+    let (confined, out) = ls_remote(ws.path().to_path_buf()).await;
+    assert!(confined);
+    assert!(!out.status.success(), "{out:?}");
+
+    // Allowed: the same confined git reads the remote head.
+    proxy.shared().grant_host("github.com");
+    let (confined, out) = ls_remote(ws.path().to_path_buf()).await;
+    assert!(confined);
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8_lossy(&out.stdout).contains("HEAD"));
+}

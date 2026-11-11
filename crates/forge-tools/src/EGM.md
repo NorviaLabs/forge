@@ -169,6 +169,17 @@ Subdirectories:
   session egress policy; non-http(s) schemes are refused.
 - `git` network subcommands are pre-checked against the host allowlist and then
   routed through the call gateway so unseen hosts are still refused.
+- Forge's own network git (`own_git.rs`): `register_workspace_egress`
+  ties a workspace to a session's `EgressGrant`; `install_git_network`
+  installs the `forge_sandbox::git::NetworkProvider` that, for a repository
+  inside a registered workspace, starts a per-invocation gateway endpoint and
+  SSH broker and supplies the credential-helper environment. Only installed
+  on a multi-threaded runtime.
+- `git credential fill` runs outside any repository, so only the user's
+  global and system helpers apply; a repository's `credential.helper` is
+  neither run nor believed. `credential_helper_env` replaces the helper list
+  for a confined git through `GIT_CONFIG_*` without replacing the user's
+  global config.
 - SSH for confined git (`ssh_broker.rs`): every confined shell with a gateway
   gets `GIT_SSH_COMMAND=<forge exe> __ssh-broker <addr> <token>`. The client
   forwards git's ssh arguments and stdio to an `SshBroker` in the Forge

@@ -227,6 +227,7 @@ impl AgentSession {
             workspace_trusted: false,
             audit: Default::default(),
             host_questions: None,
+            egress_registration: None,
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage: SessionTokenUsage::default(),
@@ -327,6 +328,7 @@ impl AgentSession {
             workspace_trusted: false,
             audit: Default::default(),
             host_questions: None,
+            egress_registration: None,
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage,
@@ -497,14 +499,25 @@ impl AgentSession {
                 Arc::clone(&self.audit),
                 self.tool_ctx.workspace_root.clone(),
             ));
+            self.register_workspace_egress();
         }
         self.host_questions.clone()
     }
 
-    fn reattach_host_questions(&self) {
+    fn reattach_host_questions(&mut self) {
         if let (Some(questions), Some(runtime)) = (&self.host_questions, &self.egress) {
             questions.attach(runtime.shared().clone());
+            self.register_workspace_egress();
         }
+    }
+
+    /// A supervised session governs the network of its workspace: git that
+    /// Forge runs there is held to this session's policy, and a host nobody
+    /// has allowed is asked about here.
+    fn register_workspace_egress(&mut self) {
+        self.egress_registration = self.egress.as_ref().map(|runtime| {
+            forge_tools::register_workspace_egress(&self.tool_ctx.workspace_root, runtime.grant())
+        });
     }
 
     /// Serve `shared` — live egress state built before the session, which

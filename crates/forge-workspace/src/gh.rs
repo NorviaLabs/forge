@@ -544,19 +544,21 @@ const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 /// credential prompts are disabled, stdin is closed, and the call is killed
 /// at `timeout` (with its process group). Runs on blocking workers, so an
 /// interactive prompt would otherwise hang one indefinitely.
-fn git_command(workspace: &Path, args: &[&str]) -> Command {
-    // A push contacts the remote with the user's credentials and cannot run
-    // confined yet; everything else here only reads the repository.
-    let mut command = if args.first() == Some(&"push") {
-        forge_sandbox::git::unconfined(workspace)
+fn git_command(workspace: &Path, args: &[&str]) -> forge_sandbox::git::Networked {
+    use forge_sandbox::git;
+    // A push contacts the remote, so it gets the workspace's gateway and
+    // SSH broker; everything else here only reads the repository.
+    let mut networked = if args.first() == Some(&"push") {
+        git::command_networked(workspace, &[])
     } else {
-        forge_sandbox::git::command(workspace)
+        git::Networked::local(git::command(workspace), true)
     };
-    command
+    networked
+        .command
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(std::process::Stdio::null());
-    command
+    networked
 }
 
 fn run_git(
@@ -564,11 +566,9 @@ fn run_git(
     args: &[&str],
     timeout: std::time::Duration,
 ) -> Result<BoundedCommandOutput, GithubError> {
-    bounded_command(
-        &mut git_command(workspace, args),
-        MAX_GIT_OUTPUT_BYTES,
-        timeout,
-    )
+    // Held until git exits: it keeps the gateway and broker up.
+    let mut git = git_command(workspace, args);
+    bounded_command(&mut git.command, MAX_GIT_OUTPUT_BYTES, timeout)
 }
 const MAX_GH_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 
@@ -830,7 +830,7 @@ mod tests {
     /// off and stdin is closed (a deadline still bounds the call).
     #[test]
     fn git_commands_cannot_prompt() {
-        let command = git_command(Path::new("/repo"), &["push", "-u", "origin", "b"]);
+        let command = git_command(Path::new("/repo"), &["push", "-u", "origin", "b"]).command;
         assert!(command
             .get_envs()
             .any(|(key, value)| key == "GIT_TERMINAL_PROMPT"
@@ -861,7 +861,7 @@ mod tests {
             ],
             vec!["remote", "add", "origin", "https://127.0.0.1:9/none.git"],
         ] {
-            assert!(git_command(repo, &args).status().unwrap().success());
+            assert!(git_command(repo, &args).command.status().unwrap().success());
         }
         let started = std::time::Instant::now();
         let error = push_branch(repo, "main").unwrap_err();

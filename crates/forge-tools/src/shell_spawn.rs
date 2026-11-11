@@ -63,7 +63,7 @@ pub struct ShellSpawnSpec {
 /// Start the SSH broker for one confined invocation, and the
 /// `GIT_SSH_COMMAND` that reaches it. `None` when it cannot be started; the
 /// command then runs with no SSH, as it did before the broker existed.
-async fn start_ssh_broker(
+pub(crate) async fn start_ssh_broker(
     invocation: &EgressInvocation,
     credential_env_names: &[String],
 ) -> Option<(crate::ssh_broker::SshBroker, String)> {
