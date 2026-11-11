@@ -338,49 +338,6 @@ pub fn requires_native_confirm(payload: &HitlPayload) -> bool {
     )
 }
 
-/// Why the app refused to forward an approval decision.
-#[derive(Debug, PartialEq)]
-pub enum Refusal {
-    NoApprovalId,
-    /// Nothing is pending, or the pending request is a different one.
-    NotPending,
-    /// Approve on a privileged request; only deny is possible from the page.
-    NeedsNativeConfirm,
-}
-
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Refusal::NoApprovalId => "no approval id",
-            Refusal::NotPending => "that request is no longer pending",
-            Refusal::NeedsNativeConfirm => {
-                "this request needs a native confirmation, which arrives in a later release: \
-                 approve it in the terminal, or deny it here"
-            }
-        })
-    }
-}
-
-/// Decide, against the request actually pending, whether the page's
-/// decision may be forwarded. Deny is always allowed for the pending
-/// request; Approve is refused for privileged requests.
-pub fn check_decision(
-    pending: Option<&HitlPayload>,
-    call_id: &str,
-    decision: &HitlDecision,
-) -> Result<(), Refusal> {
-    if call_id.trim().is_empty() {
-        return Err(Refusal::NoApprovalId);
-    }
-    let Some(pending) = pending.filter(|payload| payload.call_id == call_id) else {
-        return Err(Refusal::NotPending);
-    };
-    if matches!(decision, HitlDecision::Approve) && requires_native_confirm(pending) {
-        return Err(Refusal::NeedsNativeConfirm);
-    }
-    Ok(())
-}
-
 /// One decision the approval card offers. The backend, not the page, decides
 /// which grants exist for a request; the page only names one.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -2169,54 +2126,6 @@ pub async fn remove_worktree(
     Ok(())
 }
 
-async fn resolve(
-    state: &DesktopState,
-    session_id: SessionId,
-    call_id: String,
-    decision: HitlDecision,
-) -> Result<(), SessionFailure> {
-    let project = state.project_for(session_id).await?;
-    let pending = project
-        .snapshot(session_id)
-        .await?
-        .and_then(|snapshot| snapshot.session.pending_hitl);
-    check_decision(pending.as_ref(), &call_id, &decision).map_err(|refusal| refusal.to_string())?;
-    project
-        .handle
-        .submit(SupervisorCommand::ResolveApproval {
-            session_id,
-            // Always bound to the request the page showed: if it changed
-            // after the check above, the session actor refuses it.
-            expected_call_id: Some(call_id),
-            decision,
-            actor: "desktop".into(),
-            feedback: None,
-        })
-        .map(drop)
-        .map_err(SessionFailure::from)
-}
-
-/// Approve the displayed request once. Refused for privileged requests
-/// (sandbox escalation, network grant), which need the native confirmation
-/// (M2); broad grants (always-allow, approve-all) have no command at all.
-#[tauri::command]
-pub async fn approve_once(
-    state: State<'_, DesktopState>,
-    session_id: SessionId,
-    call_id: String,
-) -> Result<(), SessionFailure> {
-    resolve(&state, session_id, call_id, HitlDecision::Approve).await
-}
-
-#[tauri::command]
-pub async fn deny(
-    state: State<'_, DesktopState>,
-    session_id: SessionId,
-    call_id: String,
-) -> Result<(), SessionFailure> {
-    resolve(&state, session_id, call_id, HitlDecision::Deny).await
-}
-
 /// The pending request the page is acting on, by id.
 async fn pending_hitl(
     state: &DesktopState,
@@ -2232,7 +2141,7 @@ async fn pending_hitl(
         .session
         .pending_hitl
         .filter(|payload| payload.call_id == call_id)
-        .ok_or_else(|| Refusal::NotPending.to_string().into())
+        .ok_or_else(|| "that request is no longer pending".into())
 }
 
 /// Answer with a typed grant: run once, remember the pattern, open a host,
@@ -2922,29 +2831,7 @@ async fn last_turn_cards(
         .snapshot(session_id)
         .await?
         .ok_or("No live session to review")?;
-    let model = forge_transcript::ConversationModel::from_messages(
-        snapshot.transcript.messages(),
-        snapshot.transcript.events(),
-        snapshot.session.lifecycle,
-        forge_transcript::ConversationViewOpts::default(),
-    );
-    let start = model
-        .items
-        .iter()
-        .rposition(|item| matches!(item, forge_transcript::ChatItem::User { .. }))
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    let mut cards: Vec<(String, Vec<String>)> = Vec::new();
-    for item in &model.items[start..] {
-        if let forge_transcript::ChatItem::DiffCard { path, lines, .. } = item {
-            match cards.iter_mut().find(|(seen, _)| seen == path) {
-                Some(entry) => entry.1 = lines.clone(),
-                None => cards.push((path.clone(), lines.clone())),
-            }
-        }
-    }
-    cards.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(cards)
+    Ok(crate::last_turn::diff_cards(snapshot.transcript.messages()))
 }
 
 /// Paths written during the most recent assistant turn.
@@ -3863,48 +3750,11 @@ mod tests {
     }
 
     #[test]
-    fn privileged_requests_can_only_be_denied_from_the_page() {
+    fn sandbox_escalations_and_host_grants_need_a_second_confirmation() {
         for privileged in [payload(true, None), payload(false, Some("example.com"))] {
-            assert!(requires_native_confirm(&privileged));
-            assert_eq!(
-                check_decision(Some(&privileged), "call-1", &HitlDecision::Approve),
-                Err(Refusal::NeedsNativeConfirm),
-                "{privileged:?}"
-            );
-            assert_eq!(
-                check_decision(Some(&privileged), "call-1", &HitlDecision::Deny),
-                Ok(())
-            );
+            assert!(requires_native_confirm(&privileged), "{privileged:?}");
         }
-    }
-
-    #[test]
-    fn a_plain_request_approves_once() {
-        let plain = payload(false, None);
-        assert!(!requires_native_confirm(&plain));
-        assert_eq!(
-            check_decision(Some(&plain), "call-1", &HitlDecision::Approve),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn decisions_need_the_request_that_is_actually_pending() {
-        let plain = payload(false, None);
-        for decision in [HitlDecision::Approve, HitlDecision::Deny] {
-            assert_eq!(
-                check_decision(None, "call-1", &decision),
-                Err(Refusal::NotPending)
-            );
-            assert_eq!(
-                check_decision(Some(&plain), "call-2", &decision),
-                Err(Refusal::NotPending)
-            );
-            assert_eq!(
-                check_decision(Some(&plain), " ", &decision),
-                Err(Refusal::NoApprovalId)
-            );
-        }
+        assert!(!requires_native_confirm(&payload(false, None)));
     }
 
     fn question_payload() -> forge_types::QuestionPayload {

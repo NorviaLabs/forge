@@ -10,6 +10,7 @@
 mod bridge;
 mod commands_list;
 mod github;
+mod last_turn;
 mod pinned;
 mod providers;
 #[cfg(feature = "self-test")]

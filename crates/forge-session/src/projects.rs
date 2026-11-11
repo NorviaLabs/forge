@@ -20,8 +20,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 use crate::{
     AttentionItem, LaunchError, LaunchPlan, LaunchTarget, LeaseOwner, Project, ProjectId,
     ProjectRegistry, ProjectState, RegistryError, RepositorySession, RepositorySessionError,
-    RepositorySupervisor, RepositorySupervisorError, SessionRuntimeSnapshot, SupervisorCommand,
-    SupervisorHandle, SupervisorTurnState,
+    RepositorySupervisor, RepositorySupervisorError, SessionRuntimeSnapshot, SupervisorHandle,
+    SupervisorTurnState,
 };
 use forge_types::SessionId;
 
@@ -370,15 +370,6 @@ impl ProjectServiceHandle {
     /// The supervisor handle of an open project.
     pub async fn supervisor(&self, id: ProjectId) -> Result<SupervisorHandle, ProjectError> {
         Ok(self.project(id).await?.handle)
-    }
-
-    /// Send a session command to an open project.
-    pub async fn session_command(
-        &self,
-        id: ProjectId,
-        command: SupervisorCommand,
-    ) -> Result<(), ProjectError> {
-        Ok(self.supervisor(id).await?.command(command).await?)
     }
 
     /// Stop every project's agents and close them all, in parallel.
@@ -767,7 +758,7 @@ fn launch_error(error: LaunchError) -> ProjectError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AttentionKind, SessionLifecycle, SessionSummary};
+    use crate::{AttentionKind, SessionLifecycle, SessionSummary, SupervisorCommand};
     use tempfile::TempDir;
 
     struct Fixture {

@@ -20,8 +20,6 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "current_session",
     "submit_prompt",
     "submit_images",
-    "approve_once",
-    "deny",
     "decide_approval",
     "answer_question",
     "set_approve_all",

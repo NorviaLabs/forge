@@ -9,7 +9,6 @@ members = [
     "crates/forge-core",
     "crates/forge-session",
     "crates/forge-mcp",
-    "crates/forge-transcript",
     "crates/forge-workspace",
     "crates/forge-cli",
     "crates/forge-governance",
@@ -71,7 +70,6 @@ forge-durable = { path = "crates/forge-durable" }
 forge-core = { path = "crates/forge-core" }
 forge-session = { path = "crates/forge-session" }
 forge-mcp = { path = "crates/forge-mcp" }
-forge-transcript = { path = "crates/forge-transcript" }
 forge-workspace = { path = "crates/forge-workspace" }
 forge-governance = { path = "crates/forge-governance" }
 forge-context = { path = "crates/forge-context" }

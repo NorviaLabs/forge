@@ -23,8 +23,6 @@
     "allow-current-session",
     "allow-submit-prompt",
     "allow-submit-images",
-    "allow-approve-once",
-    "allow-deny",
     "allow-decide-approval",
     "allow-answer-question",
     "allow-set-approve-all",

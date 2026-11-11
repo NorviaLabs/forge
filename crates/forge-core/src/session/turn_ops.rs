@@ -567,10 +567,8 @@ impl AgentSession {
     /// provider. Mirrors `mark_cancelled`'s shape: a lifecycle transition
     /// plus a durable `TURN_FAILED_MARKER` assistant message carrying the
     /// failure reason, so the next prompt/continue has the context to take a
-    /// fresh, corrected action. The marker is hidden from the transcript view
-    /// (see forge-transcript) but visible to the model and survives resume —
-    /// unlike a live-only error banner, which is what the non-supervised TUI
-    /// still shows on top of this.
+    /// fresh, corrected action. The marker is visible to the model and survives
+    /// resume, unlike a live-only error banner.
     pub async fn mark_model_call_failed(&mut self, detail: &str) -> Result<(), LoopError> {
         match self.active_task.lifecycle {
             TaskLifecycle::Working | TaskLifecycle::Waiting => {

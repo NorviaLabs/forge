@@ -13,7 +13,6 @@ flowchart TB
 
     subgraph runtime[Agent runtime]
         core[forge-core\nAgent coordinator, turns, queues\nstreaming, permissions, persistence]
-        transcript[forge-transcript\nRenderable conversation projection]
         tools[forge-tools\nValidated tool protocol and execution]
         mcp[forge-mcp\nMCP client bridge]
         model[forge-model\nNative provider transports]
@@ -46,7 +45,6 @@ flowchart TB
     cli -. opens .-> desktop
     cli --> session
     desktop --> session
-    desktop --> transcript
     desktop --> workspace
     session --> core
     session --> config
@@ -64,9 +62,6 @@ flowchart TB
     core --> durable
     core --> storage
     core --> types
-    transcript --> core
-    transcript --> tools
-    transcript --> types
 
     tools --> search
     tools --> context
@@ -101,7 +96,7 @@ flowchart TB
     classDef external fill:#5c4033,stroke:#f4a261,color:#fff
 
     class desktop,cli,session entry
-    class core,transcript,tools,mcp,model runtime
+    class core,tools,mcp,model runtime
     class context,workspace,search,governance,connect,config service
     class durable,storage,types data
     class providers,mcpservers,repo,local external

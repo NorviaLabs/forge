@@ -1,13 +1,12 @@
 //! Facts about git that more than one crate has to agree on.
 //!
-//! [`is_readonly_git_subcommand`] had two identical copies: one in
-//! `forge-governance`, deciding whether a `bash git …` call can be rewritten
-//! onto the confined `git` tool without a HITL prompt, and one in
-//! `forge-transcript`, deciding whether a `git` call is presented as
-//! exploration or as a change. They must not drift — a subcommand the
-//! transcript calls read-only while governance treats it as mutating (or the
-//! reverse) is a user-visible inconsistency between what the UI says happened
-//! and what was actually allowed to happen without asking.
+//! [`is_readonly_git_subcommand`] decides, in `forge-governance`, whether a
+//! `bash git …` call can be rewritten onto the confined `git` tool without a
+//! HITL prompt. It lives here so any crate that presents a `git` call as
+//! exploration or as a change uses the same rule: a subcommand the UI calls
+//! read-only while governance treats it as mutating (or the reverse) would
+//! be a user-visible inconsistency between what the UI says happened and
+//! what was actually allowed to happen without asking.
 
 /// True when a git subcommand only reads the repository.
 ///

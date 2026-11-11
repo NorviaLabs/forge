@@ -32,9 +32,6 @@ Agent runtime:
   agent loop. `ActiveTaskState` lifecycle, evidence-based completion, the HITL
   and grant flow, a single audited `authorize_tool_call`, the queue, background
   tasks, subagents, and egress runtime.
-- forge-transcript: [./forge-transcript/EGM.md](./forge-transcript/EGM.md) -
-  Pure, deterministic projection of messages and turn events into chat items
-  and presentation structs.
 - forge-tools: [./forge-tools/EGM.md](./forge-tools/EGM.md) - Tool trait,
   registry, schema validation, built-in tools, the sandbox (Seatbelt and
   bubblewrap), the shell spawn spec, and egress proxy/gateway.
