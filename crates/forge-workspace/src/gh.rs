@@ -101,6 +101,7 @@ pub fn create_issue_pull_request_for_branch(
         &issue.title,
         &format!("Closes #{}\n\n{}", issue.number, issue.url),
         &base,
+        &branch,
     )
 }
 
@@ -305,12 +306,16 @@ pub fn create_pull_request(
     title: &str,
     body: &str,
     base: &str,
+    head: &str,
 ) -> Result<String, GithubError> {
     let repo = repository(workspace)?;
+    // `--head`: gh runs outside the repository, so it cannot read the
+    // current branch itself.
     let output = run_gh(
         workspace,
         [
             "pr", "create", "--repo", &repo, "--title", title, "--body", body, "--base", base,
+            "--head", head,
         ],
     )?;
     Ok(String::from_utf8_lossy(&output).trim().to_string())
@@ -355,18 +360,16 @@ pub fn check_details(workspace: &Path, reference: &str) -> Result<Vec<CheckDetai
     let repo = repository(workspace)?;
     // `gh pr checks` returns 1 for failed checks and 8 for pending checks,
     // even when it produced a valid JSON response.
-    let mut command = Command::new("gh");
-    command
-        .args([
-            "pr",
-            "checks",
-            reference,
-            "--repo",
-            &repo,
-            "--json",
-            "bucket,name,state,link,workflow,startedAt,completedAt,description",
-        ])
-        .current_dir(workspace);
+    let mut command = gh_command();
+    command.args([
+        "pr",
+        "checks",
+        reference,
+        "--repo",
+        &repo,
+        "--json",
+        "bucket,name,state,link,workflow,startedAt,completedAt,description",
+    ]);
     let output = bounded_command(&mut command, MAX_GH_OUTPUT_BYTES, GH_TIMEOUT)?;
     if output.truncated {
         return Err(GithubError::Command(
@@ -441,12 +444,11 @@ pub fn ci_logs(
         ));
     }
     let repo = repository(workspace)?;
-    let mut command = Command::new("gh");
+    let mut command = gh_command();
     command.args(["run", "view", &run_id.to_string(), "--repo", &repo, "--log"]);
     if let Some(job_id) = job_id {
         command.args(["--job", &job_id.to_string()]);
     }
-    command.current_dir(workspace);
     let output = bounded_command(
         &mut command,
         max_bytes.clamp(1, MAX_CI_LOG_BYTES),
@@ -673,12 +675,35 @@ fn terminate_command_tree(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
+/// `gh`, run outside the repository.
+///
+/// Every call names the repository with `--repo`, so gh has no reason to
+/// look at the workspace. Run in it, gh would run git there, and git would
+/// obey the repository's own config (`core.fsmonitor`, aliases), which a
+/// sandboxed command may write. From a neutral directory it reads only the
+/// user's own settings.
+fn gh_command() -> Command {
+    let mut command = Command::new("gh");
+    command.current_dir(std::env::temp_dir());
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+    ] {
+        command.env_remove(name);
+    }
+    command
+}
+
 pub(crate) fn run_gh(
-    workspace: &Path,
+    _workspace: &Path,
     args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
 ) -> Result<Vec<u8>, GithubError> {
-    let mut command = Command::new("gh");
-    command.args(args).current_dir(workspace);
+    let mut command = gh_command();
+    command.args(args);
     let output = bounded_command(&mut command, MAX_GH_OUTPUT_BYTES, GH_TIMEOUT)?;
     if !output.status.success() {
         return Err(gh_command_error(&output.stderr));
@@ -765,6 +790,20 @@ pub fn validate_pull_request_branch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// gh never runs in the repository, so git started by gh never reads
+    /// the repository's own config.
+    #[test]
+    fn gh_runs_outside_the_repository() {
+        let command = gh_command();
+        let dir = command
+            .get_current_dir()
+            .expect("a working directory is set");
+        assert_eq!(dir, std::env::temp_dir());
+        assert!(command
+            .get_envs()
+            .any(|(name, value)| name == "GIT_DIR" && value.is_none()));
+    }
 
     #[test]
     fn issue_pr_identity_rejects_cross_repo_and_fork_heads() {

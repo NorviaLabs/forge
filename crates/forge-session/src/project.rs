@@ -143,6 +143,16 @@ impl ProjectRegistry {
     /// registered returns the existing project.
     pub fn add(&self, path: &Path) -> Result<Project, RegistryError> {
         let root = project_root(path)?;
+        // The project's own remotes are where its pushes may go without a
+        // question. Recorded now, beside this registry and before any
+        // session has run in it, so a remote a session adds later is not
+        // mistaken for one of them.
+        let hosts = self.path.with_file_name("project-hosts.toml");
+        let _ = forge_config::record_project_remotes_in(
+            &hosts,
+            &root,
+            &forge_tools::remote_write_targets(&root),
+        );
         self.update(|file| {
             if let Some(existing) = file.projects.iter().find(|p| p.root == root) {
                 return Ok(existing.clone());

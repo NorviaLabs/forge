@@ -252,6 +252,15 @@ fn update_project_writes(
             "no platform config directory available",
         )
     })?;
+    update_project_writes_in(&path, workspace, update)
+}
+
+fn update_project_writes_in(
+    path: &Path,
+    workspace: &Path,
+    update: impl FnOnce(&mut ProjectHosts) -> bool,
+) -> std::io::Result<()> {
+    let path = path.to_path_buf();
     let key = project_key(workspace);
     let mut file = read_project_hosts(&path)?;
     let index = match file.projects.iter().position(|project| project.path == key) {
@@ -295,7 +304,23 @@ pub fn record_project_remotes(workspace: &Path, targets: &[String]) -> std::io::
     if targets.is_empty() {
         return Ok(());
     }
-    update_project_writes(workspace, |project| {
+    update_project_writes(workspace, record(targets))
+}
+
+/// As [`record_project_remotes`], into the grant file at `path`, and even
+/// when there are no remotes: for a project being registered, before any
+/// session could have changed its configuration. A remote added after that
+/// is asked about on its first push.
+pub fn record_project_remotes_in(
+    path: &Path,
+    workspace: &Path,
+    targets: &[String],
+) -> std::io::Result<()> {
+    update_project_writes_in(path, workspace, record(targets))
+}
+
+fn record(targets: &[String]) -> impl FnOnce(&mut ProjectHosts) -> bool + '_ {
+    move |project| {
         if project.remotes_recorded {
             return false;
         }
@@ -307,7 +332,7 @@ pub fn record_project_remotes(workspace: &Path, targets: &[String]) -> std::io::
             }
         }
         true
-    })
+    }
 }
 
 /// Append an `allow` pattern to the personal permissions file, creating it
@@ -453,6 +478,18 @@ mod tests {
                 "remote_write(github.com/o/fork)"
             ]
         );
+    }
+
+    /// Registering a project with no remotes still records it, so a remote
+    /// added later (by a session) is not taken as the project's own.
+    #[test]
+    fn a_project_registered_without_remotes_does_not_trust_later_ones() {
+        let _user = IsolatedUserConfig::new();
+        let project = TempDir::new().unwrap();
+        let path = project_hosts_path().unwrap();
+        record_project_remotes_in(&path, project.path(), &[]).unwrap();
+        record_project_remotes(project.path(), &["evil.example/x/y".into()]).unwrap();
+        assert!(project_writes(project.path()).is_empty());
     }
 
     #[test]
