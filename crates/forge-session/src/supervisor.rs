@@ -3640,8 +3640,8 @@ async fn run_one_inner(
             SupervisorTurnState::Waiting
         }
         // The turn loop returns `Ok` for a turn the evaluator failed, too
-        // (a command that exited non-zero, a denied call the work needed, no
-        // final answer): the session's lifecycle says how it ended.
+        // (a command that exited non-zero, no final answer): the session's
+        // lifecycle says how it ended.
         Ok(_) => ended_turn_state(session.active_task.lifecycle)
             .unwrap_or(SupervisorTurnState::Completed),
         // A continue sent while the session waits on a request changes
@@ -5879,14 +5879,13 @@ mod tests {
                 .unwrap();
         }
         for (session_id, label) in [(primary_id, "primary"), (managed_id, "managed")] {
-            // The approved `git reset` fails in this fixture (the workspace
-            // is not a repository), so the evaluator fails the turn after
-            // its final answer, and the row says so.
+            // The request was denied once, with feedback. That is not a
+            // failure: the turn completes with the model's answer.
             let done = wait_for_task_state(&handle, session_id, |snapshot| {
-                snapshot.task.turn_state == SupervisorTurnState::Failed
+                snapshot.task.turn_state == SupervisorTurnState::Completed
             })
             .await;
-            assert_eq!(done.session.lifecycle, TaskLifecycle::Failed);
+            assert_eq!(done.session.lifecycle, TaskLifecycle::Completed);
             assert!(done.transcript.messages().iter().any(|message| message
                 .content
                 .contains(&format!("{label} interaction complete"))));

@@ -1478,16 +1478,13 @@ mod tests {
             .resolve_hitl(BackgroundTaskId(999), forge_types::HitlDecision::Approve));
     }
 
-    /// A denied tool call is evidence of a failed turn — same evaluator
-    /// behavior the single-session path already has — so a denial finishes
-    /// the subagent as `Failed`, not `Succeeded`. What this test actually
-    /// guards: (a) denial doesn't hang the subagent forever waiting for a
-    /// user that will never show up, and (b) the reported failure carries
-    /// the real completion-evaluator reason, not a generic placeholder —
-    /// see the `TaskLifecycle::Failed` arm in `spawn_subagent`'s status
-    /// derivation.
+    /// A single denial is the operator's decision, not a failure: the same
+    /// rule as the single-session path. The child is told its call was
+    /// refused, answers without it, and finishes as `Succeeded` with that
+    /// answer. This also guards that a denial doesn't leave the subagent
+    /// waiting forever for a user who has already answered.
     #[tokio::test]
-    async fn denying_a_subagent_hitl_request_finishes_it_as_failed_with_the_real_reason() {
+    async fn denying_a_subagent_hitl_request_lets_it_finish_with_its_own_answer() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path()).await;
         let mut s = session_with_script(
@@ -1527,15 +1524,12 @@ mod tests {
             .resolve_hitl(id, forge_types::HitlDecision::Deny));
 
         let status = wait_terminal(&mut s, id).await;
-        match status {
-            BackgroundTaskStatus::Failed { error } => {
-                assert!(
-                    !error.contains("ended without a terminal status"),
-                    "expected the real completion-evaluator reason, got: {error}"
-                );
+        assert_eq!(
+            status,
+            BackgroundTaskStatus::Succeeded {
+                summary: "acknowledged the denial".into()
             }
-            other => panic!("expected Failed, got {other:?}"),
-        }
+        );
     }
 
     /// A model client whose call never resolves — used to hold a subagent

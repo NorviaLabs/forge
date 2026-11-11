@@ -19,8 +19,7 @@ use crate::pinned::PINNED_CSP;
 /// The scripted model behind the journey, one step per model request:
 /// - the markdown prompt's answer;
 /// - a gated `git reset --hard` the page approves once, then its answer;
-/// - a gated `git clean -f` the page denies, then its answer (the turn ends
-///   failed: its only action was refused);
+/// - a gated `git clean -f` the page denies, then its answer;
 /// - a model call held mid-stream until the page presses Stop.
 ///
 /// It is strict: any request beyond these fails the turn.
@@ -82,7 +81,7 @@ struct PageResults {
     egress_fetch_blocked: bool,
     egress_websocket_blocked: bool,
     approved_turn_completed: bool,
-    denied_turn_failed: bool,
+    denied_turn_completed: bool,
     stopped_during_hold: bool,
 }
 
@@ -196,7 +195,7 @@ impl Probe {
                     ("egress_fetch_blocked", page.egress_fetch_blocked),
                     ("egress_websocket_blocked", page.egress_websocket_blocked),
                     ("approved_turn_completed", page.approved_turn_completed),
-                    ("denied_turn_failed", page.denied_turn_failed),
+                    ("denied_turn_completed", page.denied_turn_completed),
                     ("stopped_during_hold", page.stopped_during_hold),
                 ];
                 for (name, passed) in checks {

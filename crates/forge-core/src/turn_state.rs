@@ -86,6 +86,19 @@ impl TurnState {
             .retain(|candidate| call_shape(candidate) != shape);
     }
 
+    /// Drop a call the operator declined from the turn's call list.
+    ///
+    /// A "no" is the operator's decision, not a failure of the turn. The
+    /// model is told the call was refused and carries on without it; the
+    /// turn is then judged on what did run. Kept in the list, the declined
+    /// call was a required operation with no success behind it, so one
+    /// denial failed the whole turn even when the model answered well.
+    pub(crate) fn retire_declined_call(&mut self, call: &ToolCall) {
+        let shape = call_shape(call);
+        self.calls
+            .retain(|candidate| candidate.id != call.id && call_shape(candidate) != shape);
+    }
+
     pub(crate) fn record_failed_confined_bash(&mut self, call: ToolCall) {
         if call.name == "bash" && !self.failed_unconfined_call_matches(&call) {
             self.failed_confined_bash.insert(call.id.clone(), call);

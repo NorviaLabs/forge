@@ -6286,6 +6286,38 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
     );
 }
 
+/// A single denial is not a failure. The model is told the call was refused,
+/// answers without it, and the turn completes.
+#[tokio::test]
+async fn a_turn_completes_after_one_denied_call_and_an_answer() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "echo gated"}),
+        }]),
+        text_only("Understood, I will not run that."),
+    ]);
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FailedBashTool));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    with_shell_hitl(&mut s);
+    s.run_user_message_with_stream("go", None).await.unwrap();
+    assert!(s.pending_hitl().is_some());
+
+    s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
+    s.run_agent_turns(None).await.unwrap();
+
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+    assert!(s
+        .messages
+        .iter()
+        .any(|message| message.content == "Understood, I will not run that."));
+}
+
 /// Continue after Stop is a fresh attempt too, so it can pause for an
 /// approval. Run under the old `Cancelled` lifecycle it could not enter
 /// `Waiting`, and the continued turn died at its first gated call.

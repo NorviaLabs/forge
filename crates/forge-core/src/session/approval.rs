@@ -115,16 +115,20 @@ impl AgentSession {
                     name: payload.tool.clone(),
                     arguments: payload.args_redacted.clone(),
                 });
-            self.turn.record_call(call.clone());
-            self.push_denied_evidence(&call, &output.content);
+            // The operator said no. That is their decision, not a failed
+            // step: the call leaves the turn's required work, and no failure
+            // is recorded against it. Repeated denials still stop the turn
+            // (below).
+            self.turn.retire_declined_call(&call);
             self.journal_tool_intent(&call).await?;
             self.publish_tool_result(&call, &output).await?;
-            // Stale evidence from the paused call must not leak into a later
+            // Evidence from the paused call must not leak into a later
             // completion decision within this same turn (see `apply_model_response`).
-            self.turn
-                .evidence_mut()
-                .0
-                .retain(|e| e.event() != ExecutionEvent::WaitingForUser);
+            let call_id = call.id.clone();
+            self.turn.evidence_mut().0.retain(|e| {
+                e.event() != ExecutionEvent::WaitingForUser
+                    && e.operation_id.as_deref() != Some(call_id.as_str())
+            });
 
             self.transition(TaskLifecycle::Working, TransitionReason::HitlResolved)
                 .await?;

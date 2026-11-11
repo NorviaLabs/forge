@@ -291,9 +291,9 @@ export async function runSelfTest(params, sessionId) {
   // 2. The approval journey: approve once, deny, then Stop during a held
   //    model call. Rust checks the effects on disk independently.
   results.approved_turn_completed = await decide("approve journey", "approve-me", "Run once", "after approve", "completed");
-  // A turn whose only action was refused did not do its work: the model
-  // still answers, and the turn is shown as failed, not completed.
-  results.denied_turn_failed = await decide("deny journey", "deny-me", "Don't run", "after deny", "failed");
+  // A single "no" is the operator's decision, not a failure: the model
+  // answers without the refused call and the turn completes.
+  results.denied_turn_completed = await decide("deny journey", "deny-me", "Don't run", "after deny", "completed");
   const stopResult = await stopDuringHold();
   results.stopped_during_hold = stopResult.stopped;
   results.optimistic_prompt_visible = stopResult.optimistic;
