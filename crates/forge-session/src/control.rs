@@ -1185,6 +1185,25 @@ impl RepositoryControl {
 
     /// Mark a claimed prompt as ambiguous after an in-process dispatch error.
     /// The conditional update leaves a normally completed claim untouched.
+    /// A turn ended in an error before its outcome was recorded. A row still
+    /// saying `running` would show a turn nothing is driving, with a Stop
+    /// that stops nothing, so it becomes `interrupted`. Returns whether the
+    /// row changed.
+    pub async fn interrupt_if_running(
+        &self,
+        session_id: SessionId,
+    ) -> Result<bool, RepositorySessionError> {
+        let result = sqlx::query(
+            "UPDATE sessions SET turn_state = 'interrupted', updated_at = ? \
+             WHERE session_id = ? AND lifecycle = 'active' AND turn_state = 'running'",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn interrupt_prompt_claim(
         &self,
         queue_id: u64,
@@ -2590,6 +2609,33 @@ mod tests {
             .await
             .unwrap();
         control.archive(session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn only_a_running_row_is_marked_interrupted() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+
+        for settled in [SupervisorTurnState::Completed, SupervisorTurnState::Waiting] {
+            control.set_turn_state(session_id, settled).await.unwrap();
+            assert!(!control.interrupt_if_running(session_id).await.unwrap());
+            assert_eq!(
+                control.session(session_id).await.unwrap().turn_state,
+                settled
+            );
+        }
+        control
+            .set_turn_state(session_id, SupervisorTurnState::Running)
+            .await
+            .unwrap();
+        assert!(control.interrupt_if_running(session_id).await.unwrap());
+        assert_eq!(
+            control.session(session_id).await.unwrap().turn_state,
+            SupervisorTurnState::Interrupted
+        );
     }
 
     /// Queueing a follow-up must not hide that a turn is still in flight:

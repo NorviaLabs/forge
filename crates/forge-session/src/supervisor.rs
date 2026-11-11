@@ -185,6 +185,10 @@ pub enum SupervisorCommand {
     },
     ResolveQuestion {
         session_id: SessionId,
+        /// The question being answered. `Some` rejects the answer when a
+        /// different question (or none) is pending by the time it is applied,
+        /// so a repeated or late answer cannot land on the next question.
+        expected_call_id: Option<String>,
         answers: Option<AskUserQuestionResult>,
         actor: String,
     },
@@ -2751,11 +2755,22 @@ async fn execute_command(
         }
         SupervisorCommand::ResolveQuestion {
             session_id,
+            expected_call_id,
             answers,
             actor: answer_actor,
         } => {
             let task_actor = actor(&state, session_id).await?;
             let mut session = try_session(&task_actor)?;
+            if expected_call_id.as_deref().is_some_and(|call_id| {
+                session
+                    .pending_question()
+                    .is_none_or(|payload| payload.call_id != call_id)
+            }) {
+                return Err(LoopError::Other(
+                    "that question is no longer pending; answer the current one".into(),
+                )
+                .into());
+            }
             session.resolve_question(answers, &answer_actor).await?;
             refresh_actor(&state, &task_actor, &session).await?;
             drop(session);
@@ -3236,7 +3251,7 @@ async fn replace_conversation(
                 .into(),
         ));
     }
-    let replacement = if let Some(session_id) = resume {
+    let mut replacement = if let Some(session_id) = resume {
         if let Ok(record) = state.control.session(session_id).await {
             if !same_path(&record.workspace, session.workspace_root()) {
                 return Err(RepositorySupervisorError::Command(
@@ -3261,6 +3276,10 @@ async fn replace_conversation(
     let next = replacement.session_id;
     state.control.replace_active_session(previous, next).await?;
     let record = state.control.session(next).await?;
+    // The row is what the page shows and what a restart restores. A resumed
+    // session opens on the last global selection instead, so put it on the
+    // row's model (with that model's capabilities) before it can run.
+    restore_task_model(&mut replacement, &record, &state.cfg);
     let trusted = workspace_is_trusted(state.trust_store.as_deref(), &record.workspace);
     drop(session);
     let mut actors = state.actors.write().await;
@@ -3458,8 +3477,13 @@ async fn run_one(
 ) -> Result<bool, RepositorySupervisorError> {
     let session_id = task_actor.snapshot.read().await.task.session_id;
     let queue_id = prompt.as_ref().map(|(queue_id, _)| *queue_id);
-    let result = run_one_inner(state.clone(), task_actor, prompt).await;
+    let result = run_one_inner(state.clone(), task_actor.clone(), prompt).await;
     if result.is_err() {
+        // The turn is over however it failed: nothing is left to cancel.
+        *task_actor
+            .running_cancel
+            .lock()
+            .expect("turn cancel lock poisoned") = None;
         if let Some(queue_id) = queue_id {
             if state.control.interrupt_prompt_claim(queue_id).await? {
                 let _ = publish_actor(&state, session_id).await;
@@ -3469,6 +3493,12 @@ async fn run_one(
                     message: "A prompt was interrupted; review it before retrying".into(),
                 });
             }
+        }
+        // A continuation has no prompt claim, and a prompt's claim may
+        // already be settled when a later step fails. Either way the row
+        // must not go on saying a turn is running.
+        if state.control.interrupt_if_running(session_id).await? {
+            let _ = publish_actor(&state, session_id).await;
         }
     }
     result
@@ -5715,9 +5745,22 @@ mod tests {
             })
             .await;
             assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+            // An answer addressed to some other question is refused, and the
+            // real one stays pending.
+            let stale = handle
+                .command(SupervisorCommand::ResolveQuestion {
+                    session_id,
+                    expected_call_id: Some("an-earlier-question".into()),
+                    answers: None,
+                    actor: "test".into(),
+                })
+                .await
+                .unwrap_err();
+            assert!(stale.to_string().contains("no longer pending"), "{stale}");
             handle
                 .command(SupervisorCommand::ResolveQuestion {
                     session_id,
+                    expected_call_id: None,
                     answers: Some(AskUserQuestionResult {
                         answers: vec![AskUserQuestionAnswerItem {
                             id: "choice".into(),
@@ -6471,6 +6514,59 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    /// Resuming another conversation in place keeps the session's row, and
+    /// with it the model the page shows. The resumed session must run on that
+    /// model, not on whatever it happened to open with.
+    #[tokio::test]
+    async fn a_conversation_resumed_in_place_runs_on_the_model_its_row_shows() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: owner,
+                model_id: "mock-v2".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: Some("high".into()),
+            })
+            .await
+            .unwrap();
+        // A dormant conversation in the same workspace, opened with no model.
+        let dormant = {
+            let task_actor = actor(&supervisor.state, owner).await.unwrap();
+            let session = task_actor.session.lock().await;
+            let mut cfg = supervisor.state.cfg.clone();
+            cfg.resolved_workspace = session.workspace_root().to_path_buf();
+            cfg.workspace_root = Some(cfg.resolved_workspace.display().to_string());
+            cfg.journal.path = session.journal_dir().display().to_string();
+            let opened = open_session_with_model(
+                &cfg,
+                SessionTarget::New,
+                Arc::new(MockModelClient::script(vec![])),
+            )
+            .await
+            .unwrap();
+            assert_ne!(opened.session.model_selection().model, "mock-v2");
+            opened.session.session_id
+        };
+
+        handle
+            .command(SupervisorCommand::ResumeSession {
+                current_session_id: owner,
+                session_id: dormant,
+            })
+            .await
+            .unwrap();
+
+        let task_actor = actor(&supervisor.state, dormant).await.unwrap();
+        let selection = task_actor.session.lock().await.model_selection();
+        assert_eq!(selection.model, "mock-v2");
+        assert_eq!(selection.profile_id, "native-v2");
+        assert_eq!(selection.reasoning_effort.as_deref(), Some("high"));
+        let row = supervisor.state.control.session(dormant).await.unwrap();
+        assert_eq!(row.model_id, "mock-v2");
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
     /// A prompt that arrives while a driver still holds its claim cannot
     /// start one. It must leave the note that driver checks on its way out.
     #[tokio::test]
@@ -6708,6 +6804,7 @@ mod tests {
         assert!(handle
             .command(SupervisorCommand::ResolveQuestion {
                 session_id: id_a,
+                expected_call_id: None,
                 answers: None,
                 actor: "test".into(),
             })
@@ -9875,6 +9972,7 @@ mod tests {
             },
             SupervisorCommand::ResolveQuestion {
                 session_id: id,
+                expected_call_id: None,
                 answers: None,
                 actor: "test".into(),
             },

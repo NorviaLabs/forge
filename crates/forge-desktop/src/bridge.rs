@@ -2456,6 +2456,7 @@ pub async fn answer_question(
         .handle
         .submit(SupervisorCommand::ResolveQuestion {
             session_id,
+            expected_call_id: Some(call_id),
             answers,
             actor: "desktop".into(),
         })
