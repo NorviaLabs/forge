@@ -425,12 +425,21 @@ pub struct ProjectService {
     /// What handles read: kept in step with `open` by `publish_open`.
     published: OpenProjects,
     workspace: Arc<watch::Sender<WorkspaceState>>,
+    /// How long a close waits for sessions to stop; see [`stop_project`].
+    close_timeout: Duration,
 }
 
 impl ProjectService {
     /// Start the service. Reads the registry once so the first
     /// [`WorkspaceState`] lists every project.
     pub fn spawn(options: ProjectServiceOptions) -> Result<ProjectServiceHandle, RegistryError> {
+        Self::spawn_with_close_timeout(options, CLOSE_TIMEOUT)
+    }
+
+    fn spawn_with_close_timeout(
+        options: ProjectServiceOptions,
+        close_timeout: Duration,
+    ) -> Result<ProjectServiceHandle, RegistryError> {
         let projects = options.registry.list()?;
         let (workspace, workspace_rx) = watch::channel(WorkspaceState {
             version: 1,
@@ -451,6 +460,7 @@ impl ProjectService {
             open: HashMap::new(),
             published: published.clone(),
             workspace: Arc::new(workspace),
+            close_timeout,
         };
         tokio::spawn(service.run(receiver));
         Ok(ProjectServiceHandle {
@@ -620,7 +630,7 @@ impl ProjectService {
         }
         let open = self.open.remove(&id).ok_or(ProjectError::NotOpen)?;
         self.publish_open();
-        let notices = stop_project(open).await;
+        let notices = stop_project(open, self.close_timeout).await;
         self.workspace.send_modify(|workspace| {
             if let Some(summary) = workspace.projects.iter_mut().find(|s| s.project.id == id) {
                 summary.open = false;
@@ -634,7 +644,7 @@ impl ProjectService {
     async fn close_all(&mut self) -> Vec<String> {
         let mut stopping = tokio::task::JoinSet::new();
         for (_, open) in self.open.drain() {
-            stopping.spawn(stop_project(open));
+            stopping.spawn(stop_project(open, self.close_timeout));
         }
         self.publish_open();
         let mut notices = Vec::new();
@@ -696,12 +706,12 @@ fn busy_sessions(state: &ProjectState) -> Vec<(SessionId, SupervisorTurnState)> 
 }
 
 /// Stop a project's sessions and release its owner lock. Waits at most
-/// [`CLOSE_TIMEOUT`]. A session that has not stopped by then keeps the lock
+/// `timeout` ([`CLOSE_TIMEOUT`] outside tests). A session that has not stopped by then keeps the lock
 /// until it does: the lock is what stops a second owner writing the same
 /// session state, so it is never released under a turn that is still
 /// running. The shutdown runs to completion on its own task either way, so
 /// the lock is released the moment the last turn ends.
-async fn stop_project(open: OpenProject) -> Vec<String> {
+async fn stop_project(open: OpenProject, timeout: Duration) -> Vec<String> {
     open.forwarder.abort();
     let name = open.project.name.clone();
     // Taking it waits for readers to finish, and every later reader sees the
@@ -710,14 +720,14 @@ async fn stop_project(open: OpenProject) -> Vec<String> {
         return Vec::new();
     };
     let mut shutdown = tokio::spawn(supervisor.shutdown());
-    match tokio::time::timeout(CLOSE_TIMEOUT, &mut shutdown).await {
+    match tokio::time::timeout(timeout, &mut shutdown).await {
         Ok(Ok(Ok(()))) => Vec::new(),
         Ok(Ok(Err(error))) => vec![format!("{name}: a session did not stop cleanly: {error}")],
         Ok(Err(error)) => vec![format!("{name}: stopping its sessions failed: {error}")],
         Err(_) => vec![format!(
             "{name}: a session has not stopped after {} seconds. It is still being stopped; \
              the project can be reopened once it has",
-            CLOSE_TIMEOUT.as_secs()
+            timeout.as_secs()
         )],
     }
 }
@@ -800,7 +810,7 @@ mod tests {
     use tempfile::TempDir;
 
     struct Fixture {
-        _config: TempDir,
+        config: TempDir,
         work: TempDir,
         trust_store: PathBuf,
         handle: ProjectServiceHandle,
@@ -809,26 +819,40 @@ mod tests {
     /// A service whose projects run the mock model, with a private registry
     /// and trust store.
     fn fixture() -> Fixture {
+        fixture_with(CLOSE_TIMEOUT, |_| {})
+    }
+
+    fn mock_config(root: &Path) -> Config {
+        let mut cfg = Config {
+            resolved_workspace: root.to_path_buf(),
+            workspace_root: Some(root.display().to_string()),
+            ..Default::default()
+        };
+        cfg.model.mock = true;
+        cfg
+    }
+
+    /// As [`fixture`], with a close timeout and a hook that runs (on the
+    /// service's own task) each time a project's config is loaded.
+    fn fixture_with(
+        close_timeout: Duration,
+        on_load: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> Fixture {
         let config = TempDir::new().unwrap();
         let trust_store = config.path().join("trust.toml");
         let options = ProjectServiceOptions {
             registry: ProjectRegistry::at(config.path().join("projects.toml")),
             trust_store: Some(trust_store.clone()),
-            load_config: Arc::new(|root| {
-                let mut cfg = Config {
-                    resolved_workspace: root.to_path_buf(),
-                    workspace_root: Some(root.display().to_string()),
-                    ..Default::default()
-                };
-                cfg.model.mock = true;
-                Ok(cfg)
+            load_config: Arc::new(move |root| {
+                on_load(root);
+                Ok(mock_config(root))
             }),
         };
         Fixture {
-            _config: config,
+            config,
             work: TempDir::new().unwrap(),
             trust_store,
-            handle: ProjectService::spawn(options).unwrap(),
+            handle: ProjectService::spawn_with_close_timeout(options, close_timeout).unwrap(),
         }
     }
 
@@ -1024,6 +1048,121 @@ mod tests {
             opened.push((project.id, session));
         }
         opened
+    }
+
+    /// Open and close run inside the service's one loop. Finding a session's
+    /// project must not queue behind them, or stopping a turn in one project
+    /// waits for another project to finish opening.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_session_lookup_does_not_wait_for_another_project_to_open() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let f = fixture_with(CLOSE_TIMEOUT, move |root| {
+            if root.ends_with("slow") {
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }
+        });
+        let (_, session) = two_open_projects(&f).await[0];
+        let slow_root = folder(&f, "slow");
+        forge_config::grant_trust_at(&f.trust_store, &slow_root).unwrap();
+        let slow = f.handle.add(slow_root).await.unwrap();
+        let opening = tokio::spawn({
+            let handle = f.handle.clone();
+            async move { handle.open(slow.id).await }
+        });
+        tokio::task::spawn_blocking(move || entered_rx.recv().unwrap())
+            .await
+            .unwrap();
+
+        // The service is now parked inside the slow open.
+        let found = tokio::time::timeout(Duration::from_secs(5), f.handle.project_of(session))
+            .await
+            .expect("the lookup must not wait for the open to finish");
+        assert_eq!(found.unwrap().project.name, "api");
+
+        release_tx.send(()).unwrap();
+        opening.await.unwrap().unwrap();
+        f.handle.shutdown().await.unwrap();
+    }
+
+    /// The registry file is shared with other Forge processes. A project
+    /// one of them removes is still open here and must stay reachable.
+    #[tokio::test]
+    async fn an_open_project_stays_reachable_after_it_leaves_the_registry() {
+        let f = fixture();
+        let root = folder(&f, "api");
+        forge_test_support::init_repo_with_commit(&root);
+        forge_config::grant_trust_at(&f.trust_store, &root).unwrap();
+        let project = f.handle.add(root).await.unwrap();
+        f.handle.open(project.id).await.unwrap();
+        let session = f
+            .handle
+            .project(project.id)
+            .await
+            .unwrap()
+            .snapshots()
+            .await
+            .unwrap()[0]
+            .task
+            .session_id;
+
+        ProjectRegistry::at(f.config.path().join("projects.toml"))
+            .remove(project.id)
+            .unwrap();
+        // Opening another project republishes the open list.
+        let other_root = folder(&f, "notes");
+        forge_config::grant_trust_at(&f.trust_store, &other_root).unwrap();
+        let other = f.handle.add(other_root).await.unwrap();
+        f.handle.open(other.id).await.unwrap();
+
+        let open = f.handle.open_projects().await.unwrap();
+        assert_eq!(
+            open.iter().map(|p| p.project.id).collect::<Vec<_>>(),
+            vec![other.id, project.id],
+            "listed projects first, then the one the registry dropped"
+        );
+        assert_eq!(
+            f.handle.project_of(session).await.unwrap().project.id,
+            project.id
+        );
+        f.handle.shutdown().await.unwrap();
+    }
+
+    /// A close that gives up waiting must not strand the project: the
+    /// shutdown carries on by itself and frees the lock when it finishes.
+    #[tokio::test]
+    async fn a_close_that_times_out_still_releases_the_lock_when_shutdown_finishes() {
+        // No shutdown finishes in zero time, so every close here times out.
+        let f = fixture_with(Duration::ZERO, |_| {});
+        let root = folder(&f, "api");
+        forge_config::grant_trust_at(&f.trust_store, &root).unwrap();
+        let project = f.handle.add(root).await.unwrap();
+        f.handle.open(project.id).await.unwrap();
+
+        let notices = f.handle.close(project.id, true).await.unwrap();
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("still being stopped")),
+            "{notices:?}"
+        );
+
+        let reopened = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match f.handle.open(project.id).await {
+                    Ok(_) => break,
+                    Err(ProjectError::AlreadyOwned { .. }) => {
+                        tokio::time::sleep(Duration::from_millis(20)).await
+                    }
+                    Err(error) => panic!("unexpected open error: {error}"),
+                }
+            }
+        })
+        .await;
+        assert!(reopened.is_ok(), "the lock was never released");
+        f.handle.shutdown().await.unwrap();
     }
 
     #[tokio::test]

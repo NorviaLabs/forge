@@ -1250,28 +1250,52 @@ pub async fn choose_folder(
     else {
         return Ok(trust_view(&state));
     };
-    let project = match state.projects.resolve_launch(folder).await {
-        Ok(forge_session::LaunchResolution::Project(project)) => project,
-        // A new folder that is already trusted opens now. One that is not
-        // goes to the trust screen unregistered, as a launch from it would:
-        // registering first left a mistaken pick (the home folder, say)
-        // in the registry after the operator backed out, where it captured
-        // every later launch from beneath it.
-        Ok(forge_session::LaunchResolution::NeedsConfirmation { root }) => {
-            if !forge_config::is_trusted(&root) {
-                state.set_workspace(root.clone());
-                state.restore(Pending::Confirm(root));
-                return Ok(trust_view(&state));
-            }
-            state
-                .projects
-                .add(root)
-                .await
-                .map_err(|e| state.fail(e.to_string()))?
+    match picked_folder(&state.projects, folder, forge_config::is_trusted).await {
+        Ok(Picked::Project(project)) => open_or_ask_trust(&app, &state, project).await,
+        Ok(Picked::AskFirst(root)) => {
+            state.set_workspace(root.clone());
+            state.restore(Pending::Confirm(root));
+            Ok(trust_view(&state))
         }
-        Err(error) => return Err(state.fail(error.to_string())),
-    };
-    open_or_ask_trust(&app, &state, project).await
+        Err(error) => Err(state.fail(error)),
+    }
+}
+
+/// What a folder pick leads to.
+#[derive(Debug)]
+enum Picked {
+    /// A registered project: open it, or ask to trust it.
+    Project(forge_session::Project),
+    /// A new, untrusted folder: ask first, registering nothing yet.
+    AskFirst(std::path::PathBuf),
+}
+
+/// Resolve a picked folder. A folder inside a registered project is that
+/// project. A new folder that is already trusted is registered and opens
+/// now. A new one that is not goes to the trust screen unregistered, as a
+/// launch from it would: registering first left a mistaken pick (the home
+/// folder, say) in the registry after the operator backed out, where it
+/// captured every later launch from beneath it.
+async fn picked_folder(
+    projects: &forge_session::ProjectServiceHandle,
+    folder: std::path::PathBuf,
+    is_trusted: impl Fn(&std::path::Path) -> bool,
+) -> Result<Picked, String> {
+    match projects
+        .resolve_launch(folder)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        forge_session::LaunchResolution::Project(project) => Ok(Picked::Project(project)),
+        forge_session::LaunchResolution::NeedsConfirmation { root } if !is_trusted(&root) => {
+            Ok(Picked::AskFirst(root))
+        }
+        forge_session::LaunchResolution::NeedsConfirmation { root } => projects
+            .add(root)
+            .await
+            .map(Picked::Project)
+            .map_err(|error| error.to_string()),
+    }
 }
 
 /// Registered projects, for the folder screen before any project is open.
@@ -3604,6 +3628,44 @@ pub async fn shell_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn picker_projects(scratch: &std::path::Path) -> forge_session::ProjectServiceHandle {
+        forge_session::ProjectService::spawn(forge_session::ProjectServiceOptions {
+            registry: forge_session::ProjectRegistry::at(scratch.join("projects.toml")),
+            trust_store: Some(scratch.join("trust.toml")),
+            load_config: std::sync::Arc::new(|_root| Err("not opened in this test".into())),
+        })
+        .unwrap()
+    }
+
+    /// An untrusted pick registers nothing: backing out of the trust screen
+    /// must leave no project behind to capture later launches.
+    #[tokio::test]
+    async fn picking_an_untrusted_folder_registers_nothing_until_it_is_trusted() {
+        let scratch = std::env::temp_dir().join(format!(
+            "forge-desktop-pick-{}",
+            forge_types::SessionId::new_v4()
+        ));
+        let folder = scratch.join("picked");
+        std::fs::create_dir_all(&folder).unwrap();
+        let projects = picker_projects(&scratch);
+
+        let picked = picked_folder(&projects, folder.clone(), |_| false)
+            .await
+            .unwrap();
+        assert!(matches!(picked, Picked::AskFirst(_)), "{picked:?}");
+        assert!(projects.workspace().borrow().projects.is_empty());
+
+        // The same folder, once trusted, is registered by the pick.
+        let picked = picked_folder(&projects, folder, |_| true).await.unwrap();
+        let Picked::Project(project) = picked else {
+            panic!("a trusted new folder is registered: {picked:?}");
+        };
+        assert_eq!(project.name, "picked");
+        assert_eq!(projects.workspace().borrow().projects.len(), 1);
+        projects.shutdown().await.unwrap();
+        let _ = std::fs::remove_dir_all(scratch);
+    }
 
     #[test]
     fn a_wait_without_a_card_reaches_the_page_as_words() {

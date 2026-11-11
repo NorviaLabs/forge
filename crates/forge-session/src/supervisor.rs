@@ -3359,18 +3359,37 @@ async fn run_driver(
             .queued_prompts(session_id)
             .await
             .unwrap_or_default();
-        let has_continue = task_actor.has_pending_continuation();
-        // A stopped turn does not run what was queued behind it, but a
-        // prompt sent after the stop is a new request and does run.
-        let stopped = lifecycle == TaskLifecycle::Cancelled
-            && !task_actor.prompt_pending.load(Ordering::Acquire);
-        if !has_continue && (lifecycle == TaskLifecycle::Waiting || stopped || queued.is_empty()) {
+        if !driver_has_more_to_run(
+            lifecycle,
+            task_actor.has_pending_continuation(),
+            task_actor.prompt_pending.load(Ordering::Acquire),
+            queued.is_empty(),
+        ) {
             return;
         }
         if !task_actor.try_start_driver() {
             return;
         }
     }
+}
+
+/// Whether a driver that has just released its claim should take it again.
+///
+/// A continuation always runs. Otherwise queued prompts run unless the
+/// session waits on a request, or the last turn was stopped: a stopped turn
+/// does not run what was queued behind it, but a prompt sent after the stop
+/// (`prompt_pending`) is a new request and does run.
+fn driver_has_more_to_run(
+    lifecycle: TaskLifecycle,
+    has_continue: bool,
+    prompt_pending: bool,
+    queue_is_empty: bool,
+) -> bool {
+    if has_continue {
+        return true;
+    }
+    let stopped = lifecycle == TaskLifecycle::Cancelled && !prompt_pending;
+    !(lifecycle == TaskLifecycle::Waiting || stopped || queue_is_empty)
 }
 
 async fn start_prompt_driver(
@@ -6359,6 +6378,57 @@ mod tests {
             .await
             .unwrap();
         assert!(control.queued_prompts(owner).await.unwrap().is_empty());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    #[test]
+    fn a_driver_restarts_for_a_prompt_sent_after_stop_but_not_for_older_ones() {
+        use TaskLifecycle::*;
+        // (lifecycle, continuation, prompt sent since draining, queue empty)
+        assert!(driver_has_more_to_run(Completed, false, false, false));
+        assert!(!driver_has_more_to_run(Completed, false, false, true));
+        // Stopped: prompts queued before the stop wait for the operator.
+        assert!(!driver_has_more_to_run(Cancelled, false, false, false));
+        // Stopped, then a new prompt arrived while the driver was leaving.
+        assert!(driver_has_more_to_run(Cancelled, false, true, false));
+        // A pending request holds everything except an explicit continue.
+        assert!(!driver_has_more_to_run(Waiting, false, true, false));
+        assert!(driver_has_more_to_run(Waiting, true, false, true));
+    }
+
+    /// A prompt that arrives while a driver still holds its claim cannot
+    /// start one. It must leave the note that driver checks on its way out.
+    #[tokio::test]
+    async fn a_prompt_submitted_under_a_held_driver_claim_leaves_a_note() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        let claim = task_actor
+            .try_claim_driver()
+            .expect("no driver is running yet");
+        assert!(!task_actor.prompt_pending.load(Ordering::Acquire));
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: owner,
+                text: "sent while the driver was leaving".into(),
+            })
+            .await
+            .unwrap();
+
+        assert!(task_actor.prompt_pending.load(Ordering::Acquire));
+        assert_eq!(
+            supervisor
+                .state
+                .control
+                .queued_prompts(owner)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the held claim kept a second driver from starting"
+        );
+        drop(claim);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 

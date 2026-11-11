@@ -948,6 +948,32 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
 
+    /// Closing a project forgets its indexes, which stops their watchers.
+    #[test]
+    fn forgetting_a_root_drops_its_index_and_leaves_the_others() {
+        let closed = tempdir();
+        let kept = tempdir();
+        let indexes = Indexes::default();
+        let before = indexes.for_root(&closed).unwrap();
+        let other = indexes.for_root(&kept).unwrap();
+
+        indexes.forget(std::slice::from_ref(&closed));
+
+        assert_eq!(
+            std::sync::Arc::strong_count(&before),
+            1,
+            "the registry let go of the closed project's index"
+        );
+        assert!(std::sync::Arc::ptr_eq(
+            &other,
+            &indexes.for_root(&kept).unwrap()
+        ));
+        assert!(!std::sync::Arc::ptr_eq(
+            &before,
+            &indexes.for_root(&closed).unwrap()
+        ));
+    }
+
     fn tempdir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "forge-desktop-test-{}",
