@@ -14,6 +14,7 @@
 mod control;
 pub mod headless;
 mod launch;
+mod model_selection;
 mod project;
 mod project_state;
 mod projects;
@@ -206,18 +207,14 @@ async fn open_session_with_model(
     // resumed or forked one keeps its own).
     let (start_model, start_profile) = starting_model(cfg);
     if session.model_selection().model.is_empty() && !start_model.is_empty() {
-        session.set_active_model(start_model.clone());
-        session.set_active_profile_id(start_profile);
-        let cache = forge_connect::ModelCatalogCache::user_default();
-        session.set_image_input_supported(cache.model_accepts_image_input(&start_model));
-        // Compaction reads the model's real context window from the registry
-        // cache. An unknown id keeps `CompactionPolicy`'s conservative
-        // default rather than claiming a window Forge cannot verify.
-        if let Some(limits) = cache.model_limits(&start_model) {
-            session
-                .set_context_window(limits.context, (limits.output > 0).then_some(limits.output));
-        }
+        let mut selection = session.model_selection();
+        selection.model = start_model;
+        selection.profile_id = start_profile;
+        session.set_model_selection(selection);
     }
+    // A resumed or forked session keeps its own model; either way the
+    // capabilities are derived for the model the session ends up on.
+    model_selection::derive_capabilities(&mut session, cfg);
 
     // Requests route through the snapshot, and provider keys never reach
     // model-triggered child processes: the built-in vendor aliases are

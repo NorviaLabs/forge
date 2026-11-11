@@ -209,11 +209,6 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         on: bool,
     },
-    SetCapabilities {
-        session_id: SessionId,
-        image_input_supported: bool,
-        context_window: Option<(usize, Option<usize>)>,
-    },
     CancelQueuedPrompt {
         session_id: SessionId,
         one_based: usize,
@@ -948,7 +943,7 @@ impl RepositorySupervisor {
             // below. Reapply the persisted selection before exposing it to
             // the supervisor.
             let mut primary = primary;
-            restore_task_model(&mut primary, &primary_record);
+            restore_task_model(&mut primary, &primary_record, cfg);
             sessions.push((primary_record, primary));
         }
 
@@ -966,7 +961,7 @@ impl RepositorySupervisor {
                 open_session_with_model(&task_cfg, SessionTarget::Resume(task.session_id), model)
                     .await
                     .map(|mut opened| {
-                        restore_task_model(&mut opened.session, &task);
+                        restore_task_model(&mut opened.session, &task, &task_cfg);
                         (task, opened.session)
                     })
             });
@@ -1096,7 +1091,7 @@ impl RepositorySupervisor {
             )
             .await?;
             let mut session = opened.session;
-            restore_task_model(&mut session, &task);
+            restore_task_model(&mut session, &task, &task_cfg);
             sessions.push((task, session));
         }
         Self::spawn_with_unavailable_tasks(
@@ -2712,7 +2707,8 @@ async fn execute_command(
             selection.model = model_id;
             selection.profile_id = profile_id;
             selection.reasoning_effort = reasoning_effort;
-            session.set_model_selection(selection);
+            // The model and its capabilities change together.
+            crate::model_selection::apply(&mut session, &state.cfg, selection);
             let selection = session.model_selection();
             // Persist the selection on the task row so a restart restores it
             // instead of dropping back to a blank model.
@@ -2746,19 +2742,6 @@ async fn execute_command(
                 return Err(RepositorySupervisorError::Command(
                     "approve-all requires a trusted workspace".into(),
                 ));
-            }
-            refresh_actor(&state, &task_actor, &session).await?;
-        }
-        SupervisorCommand::SetCapabilities {
-            session_id,
-            image_input_supported,
-            context_window,
-        } => {
-            let task_actor = actor(&state, session_id).await?;
-            let mut session = try_session(&task_actor)?;
-            session.set_image_input_supported(image_input_supported);
-            if let Some((capacity, output)) = context_window {
-                session.set_context_window(capacity, output);
             }
             refresh_actor(&state, &task_actor, &session).await?;
         }
@@ -3849,15 +3832,18 @@ fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
 /// reopens the session, so the operator's selection survives instead of
 /// falling back to an empty config default. A blank stored model means the
 /// row predates model persistence; leave whatever `cfg` produced in place.
-fn restore_task_model(session: &mut AgentSession, task: &RepositorySession) {
+/// The restored model's capabilities are derived with it.
+fn restore_task_model(session: &mut AgentSession, task: &RepositorySession, cfg: &Config) {
     if task.model_id.is_empty() {
         return;
     }
-    session.set_active_model(task.model_id.clone());
+    let mut selection = session.model_selection();
+    selection.model = task.model_id.clone();
     if !task.profile_id.is_empty() {
-        session.set_active_profile_id(task.profile_id.clone());
+        selection.profile_id = task.profile_id.clone();
     }
-    session.set_reasoning_effort(task.reasoning_effort.clone());
+    selection.reasoning_effort = task.reasoning_effort.clone();
+    crate::model_selection::apply(session, cfg, selection);
 }
 
 #[cfg(test)]
@@ -6137,14 +6123,6 @@ mod tests {
             .await
             .unwrap();
         handle
-            .command(SupervisorCommand::SetCapabilities {
-                session_id: id_a,
-                image_input_supported: true,
-                context_window: Some((32_000, Some(2_000))),
-            })
-            .await
-            .unwrap();
-        handle
             .command(SupervisorCommand::SetApproveAll {
                 session_id: id_a,
                 on: false,
@@ -6312,11 +6290,6 @@ mod tests {
             SupervisorCommand::SetThinking {
                 session_id: unknown,
                 enabled: true,
-            },
-            SupervisorCommand::SetCapabilities {
-                session_id: unknown,
-                image_input_supported: true,
-                context_window: None,
             },
             SupervisorCommand::PollSession {
                 session_id: unknown,
@@ -9031,7 +9004,7 @@ mod tests {
         stored.model_id = "mock-v2".into();
         stored.profile_id = "native-v2".into();
         stored.reasoning_effort = Some("high".into());
-        restore_task_model(&mut session, &stored);
+        restore_task_model(&mut session, &stored, &cfg);
         assert_eq!(session.active_model, "mock-v2");
         assert_eq!(session.active_profile_id, "native-v2");
         assert_eq!(session.reasoning_effort(), Some("high"));
@@ -9041,12 +9014,12 @@ mod tests {
         blank.model_id = String::new();
         blank.profile_id = "native-v3".into();
         blank.reasoning_effort = Some("low".into());
-        restore_task_model(&mut session, &blank);
+        restore_task_model(&mut session, &blank, &cfg);
         assert_eq!(session.active_model, "mock-v2");
     }
 
     #[tokio::test]
-    async fn a_restart_restores_the_stored_model_of_an_open_session() {
+    async fn a_restart_and_a_switch_set_the_model_with_its_capabilities() {
         let repo = TempDir::new().unwrap();
         forge_test_support::init_repo_with_commit(repo.path());
         let scratch = TempDir::new().unwrap();
@@ -9069,6 +9042,7 @@ mod tests {
             ..Default::default()
         };
         cfg.journal.path = journal.display().to_string();
+        cfg.model.catalog_path = Some(crate::model_selection::tests::write_catalog(scratch.path()));
         let primary = scripted_session(&cfg, "primary answer").await;
         let primary_id = primary.session_id;
         let mut primary_task = task_for(primary_id, "main", repo.path());
@@ -9116,7 +9090,7 @@ mod tests {
                     branch: linked.branch.clone(),
                     ownership: WorktreeOwnership::Managed,
                     slot: None,
-                    model_id: "mock-v2".into(),
+                    model_id: "test/small".into(),
                     profile_id: "native-v2".into(),
                     reasoning_effort: Some("high".into()),
                 },
@@ -9134,9 +9108,60 @@ mod tests {
             .find(|snapshot| snapshot.task.session_id == managed_id)
             .expect("managed session reopened on restart");
         let details = reopened.details.as_ref().unwrap();
-        assert_eq!(details.active_model, "mock-v2");
+        assert_eq!(details.active_model, "test/small");
         assert_eq!(details.active_profile_id, "native-v2");
         assert_eq!(details.reasoning_effort.as_deref(), Some("high"));
+        // The restored model's capabilities come back with it.
+        assert!(details.image_input_supported);
+        let policy = |supervisor: &RepositorySupervisor| {
+            let state = supervisor.state.clone();
+            async move {
+                let task_actor = actor(&state, managed_id).await.unwrap();
+                let session = task_actor.session.lock().await;
+                *session.compaction_policy()
+            }
+        };
+        assert_eq!(
+            policy(&supervisor).await,
+            forge_core::CompactionPolicy::for_window(200_000, Some(8_000))
+        );
+
+        // A switch derives the new model's capabilities in the same command:
+        // a model the catalog does not know drops back to the default window
+        // instead of keeping the previous model's.
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: managed_id,
+                model_id: "test/unlisted".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            policy(&supervisor).await,
+            forge_core::CompactionPolicy::default()
+        );
+        let details = supervisor
+            .snapshot(managed_id)
+            .await
+            .unwrap()
+            .details
+            .unwrap();
+        assert!(!details.image_input_supported);
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: managed_id,
+                model_id: "test/small".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            policy(&supervisor).await,
+            forge_core::CompactionPolicy::for_window(200_000, Some(8_000))
+        );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -9266,11 +9291,6 @@ mod tests {
             SupervisorCommand::SetApproveAll {
                 session_id: id,
                 on: false,
-            },
-            SupervisorCommand::SetCapabilities {
-                session_id: id,
-                image_input_supported: false,
-                context_window: None,
             },
             SupervisorCommand::CancelQueuedPrompt {
                 session_id: id,

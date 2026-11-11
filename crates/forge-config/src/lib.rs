@@ -72,6 +72,11 @@ pub struct ModelConfig {
     #[cfg(feature = "fake-provider")]
     #[serde(skip)]
     pub mock_script: Option<PathBuf>,
+    /// The model catalog file a session's capabilities are derived from.
+    /// `None` is the user's catalog; tests point it at a temporary file. Set
+    /// only in code.
+    #[serde(skip)]
+    pub catalog_path: Option<PathBuf>,
 }
 
 fn default_request_timeout() -> u64 {
@@ -85,6 +90,7 @@ impl Default for ModelConfig {
             mock: false,
             #[cfg(feature = "fake-provider")]
             mock_script: None,
+            catalog_path: None,
         }
     }
 }

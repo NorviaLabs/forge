@@ -3455,11 +3455,7 @@ pub async fn set_model(
 ) -> Result<(), String> {
     let project = state.active();
     let session_id = selected_session(&state).await?;
-    let cache = forge_connect::ModelCatalogCache::user_default();
-    let image_input_supported = cache.model_accepts_image_input(&model_id);
-    let output = cache
-        .model_limits(&model_id)
-        .and_then(|limits| (limits.output > 0).then_some(limits.output));
+    // The supervisor derives the model's capabilities with the switch.
     project
         .handle
         .command(SupervisorCommand::SetModel {
@@ -3467,15 +3463,6 @@ pub async fn set_model(
             model_id,
             profile_id,
             reasoning_effort: effort,
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    project
-        .handle
-        .command(SupervisorCommand::SetCapabilities {
-            session_id,
-            image_input_supported,
-            context_window: Some((500_000, output)),
         })
         .await
         .map_err(|error| error.to_string())
