@@ -276,19 +276,19 @@ async fn resolve_target(
         LaunchTarget::New => Ok((SessionTarget::New, Vec::new())),
         LaunchTarget::Resume(session_id) => Ok((SessionTarget::Resume(session_id), Vec::new())),
         LaunchTarget::Fork(session_id) => Ok((SessionTarget::Fork(session_id), Vec::new())),
-        LaunchTarget::Latest => latest_target(cfg),
+        LaunchTarget::Latest => latest_target(cfg, bootstrap).await,
         LaunchTarget::Continue => {
             let selected = bootstrap
                 .selected()
                 .await
                 .map_err(|error| LaunchError::Repository(error.into()))?;
             let Some(session_id) = selected else {
-                return latest_target(cfg);
+                return latest_target(cfg, bootstrap).await;
             };
             if selected_is_resumable(cfg, bootstrap, session_id).await {
                 return Ok((SessionTarget::Resume(session_id), Vec::new()));
             }
-            let (target, mut notices) = latest_target(cfg)?;
+            let (target, mut notices) = latest_target(cfg, bootstrap).await?;
             notices.insert(0, SELECTED_SESSION_GONE.to_string());
             Ok((target, notices))
         }
@@ -312,22 +312,40 @@ async fn selected_is_resumable(
     journal_dir.join(format!("{session_id}.db")).is_file()
 }
 
-fn latest_target(cfg: &Config) -> Result<(SessionTarget, Vec<String>), LaunchError> {
+/// The most recently used session that can still be reopened, else a new one.
+///
+/// A journal file alone is not enough. One with no session row (written by
+/// `forge bench`, or left by a creation that failed part-way) cannot be
+/// resumed in a Git project, and choosing it made every later open fail; an
+/// archived or unavailable session must not come back as the live one either.
+async fn latest_target(
+    cfg: &Config,
+    bootstrap: &RepositoryBootstrap,
+) -> Result<(SessionTarget, Vec<String>), LaunchError> {
     let (journal_dir, _) = resolve_journal_dir(cfg);
-    let latest = most_recent_journal(&journal_dir)
+    let journals = journals_newest_first(&journal_dir)
         .map_err(|error| LaunchError::Session(anyhow::Error::new(error)))?;
-    Ok(match latest {
-        Some(session_id) => (SessionTarget::Resume(session_id), Vec::new()),
-        None => (SessionTarget::New, vec![NO_PREVIOUS_SESSION.to_string()]),
-    })
+    for session_id in journals {
+        let resumable = match bootstrap.session(session_id).await {
+            Ok(record) => record.lifecycle == SessionLifecycle::Active,
+            // A directory project's journals may predate the control
+            // database; the supervisor registers the row when it adopts one.
+            Err(RepositorySessionError::NotFound(_)) => !bootstrap.supports_git(),
+            Err(_) => false,
+        };
+        if resumable {
+            return Ok((SessionTarget::Resume(session_id), Vec::new()));
+        }
+    }
+    Ok((SessionTarget::New, vec![NO_PREVIOUS_SESSION.to_string()]))
 }
 
-/// The session whose journal (`<id>.db`) was modified most recently.
-fn most_recent_journal(dir: &Path) -> std::io::Result<Option<SessionId>> {
+/// Session journals (`<id>.db`) in `dir`, most recently modified first.
+fn journals_newest_first(dir: &Path) -> std::io::Result<Vec<SessionId>> {
     if !dir.is_dir() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    let mut latest: Option<(std::time::SystemTime, SessionId)> = None;
+    let mut journals: Vec<(std::time::SystemTime, SessionId)> = Vec::new();
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -345,11 +363,10 @@ fn most_recent_journal(dir: &Path) -> std::io::Result<Option<SessionId>> {
             .metadata()?
             .modified()
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-        if latest.is_none_or(|(time, _)| modified > time) {
-            latest = Some((modified, id));
-        }
+        journals.push((modified, id));
     }
-    Ok(latest.map(|(_, id)| id))
+    journals.sort_by_key(|(modified, _)| std::cmp::Reverse(*modified));
+    Ok(journals.into_iter().map(|(_, id)| id).collect())
 }
 
 #[cfg(test)]

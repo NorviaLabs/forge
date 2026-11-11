@@ -704,6 +704,17 @@ impl RepositoryControl {
                 .execute(&self.pool)
                 .await?;
         }
+        let state_columns: Vec<String> = sqlx::query("PRAGMA table_info(repository_state)")
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+        if !state_columns.iter().any(|name| name == "root") {
+            sqlx::query("ALTER TABLE repository_state ADD COLUMN root TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
         let session_columns: Vec<String> = sqlx::query("PRAGMA table_info(sessions)")
             .fetch_all(&self.pool)
             .await?
@@ -749,6 +760,78 @@ impl RepositoryControl {
             .execute(&self.pool)
             .await?;
         }
+        Ok(())
+    }
+
+    /// Record the project root this database belongs to and, when the
+    /// project folder has moved (or been copied) since it was last opened,
+    /// re-point every stored path from the old root to this one.
+    ///
+    /// The database travels with the folder, but it stores absolute paths. A
+    /// row still naming the old location sends resume to a journal that is no
+    /// longer there, which made a moved project impossible to open.
+    pub async fn adopt_root(&self, root: &Path) -> Result<(), RepositorySessionError> {
+        let recorded: Option<String> =
+            sqlx::query("SELECT root FROM repository_state WHERE id = 1")
+                .fetch_one(&self.pool)
+                .await?
+                .get("root");
+        // Databases from before the root was recorded: the session that runs
+        // in the project root names it.
+        let previous = match recorded {
+            Some(root) => Some(PathBuf::from(root)),
+            None => sqlx::query(
+                "SELECT workspace FROM sessions WHERE ownership IN ('primary', 'directory') \
+                 ORDER BY updated_at DESC LIMIT 1",
+            )
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| PathBuf::from(row.get::<String, _>("workspace"))),
+        };
+        let mut transaction = self.pool.begin().await?;
+        if let Some(previous) = previous.filter(|previous| !same_path(previous, root)) {
+            let rebased = |path: &str| {
+                Path::new(path)
+                    .strip_prefix(&previous)
+                    .ok()
+                    .map(|below| root.join(below).display().to_string())
+            };
+            let rows = sqlx::query("SELECT session_id, workspace FROM sessions")
+                .fetch_all(&mut *transaction)
+                .await?;
+            for row in rows {
+                if let Some(workspace) = rebased(&row.get::<String, _>("workspace")) {
+                    sqlx::query("UPDATE sessions SET workspace = ? WHERE session_id = ?")
+                        .bind(workspace)
+                        .bind(row.get::<String, _>("session_id"))
+                        .execute(&mut *transaction)
+                        .await?;
+                }
+            }
+            let rows = sqlx::query(
+                "SELECT operation_id, source_workspace, target_workspace FROM pending_operations",
+            )
+            .fetch_all(&mut *transaction)
+            .await?;
+            for row in rows {
+                let source = row.get::<String, _>("source_workspace");
+                let target = row.get::<Option<String>, _>("target_workspace");
+                sqlx::query(
+                    "UPDATE pending_operations SET source_workspace = ?, target_workspace = ? \
+                     WHERE operation_id = ?",
+                )
+                .bind(rebased(&source).unwrap_or(source))
+                .bind(target.map(|target| rebased(&target).unwrap_or(target)))
+                .bind(row.get::<i64, _>("operation_id"))
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
+        sqlx::query("UPDATE repository_state SET root = ? WHERE id = 1")
+            .bind(root.display().to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -2044,6 +2127,55 @@ mod tests {
             profile_id: String::new(),
             reasoning_effort: Some("high".into()),
         }
+    }
+
+    /// The database moves with the project folder but stores absolute
+    /// paths; adopting the new root re-points them.
+    #[tokio::test]
+    async fn adopting_a_new_root_rebases_stored_workspaces() {
+        let dir = TempDir::new().unwrap();
+        let old_root = dir.path().join("old");
+        let new_root = dir.path().join("new");
+        std::fs::create_dir_all(&new_root).unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        let control = RepositoryControl::open(&dir.path().join("control"))
+            .await
+            .unwrap();
+        let mut primary = new_session(&old_root, "primary", None);
+        primary.ownership = WorktreeOwnership::Primary;
+        let primary_id = primary.session_id;
+        let managed = new_session(&old_root.join(".forge/local/worktrees/a"), "a", Some(1));
+        let managed_id = managed.session_id;
+        let attached = new_session(&elsewhere, "attached", Some(2));
+        let attached_id = attached.session_id;
+        for session in [primary, managed, attached] {
+            control.register_session(session, None).await.unwrap();
+        }
+
+        // No root recorded yet: the primary session's workspace names it.
+        control.adopt_root(&new_root).await.unwrap();
+
+        let control = &control;
+        let workspace = |id| async move { control.session(id).await.unwrap().workspace };
+        assert_eq!(workspace(primary_id).await, new_root);
+        assert_eq!(
+            workspace(managed_id).await,
+            new_root.join(".forge/local/worktrees/a")
+        );
+        assert_eq!(
+            workspace(attached_id).await,
+            elsewhere,
+            "a workspace outside the project is left alone"
+        );
+
+        // Recorded now, so a second move is rebased from the stored root.
+        let newer_root = dir.path().join("newer");
+        std::fs::create_dir_all(&newer_root).unwrap();
+        control.adopt_root(&newer_root).await.unwrap();
+        assert_eq!(workspace(primary_id).await, newer_root);
+        // Reopening in place changes nothing.
+        control.adopt_root(&newer_root).await.unwrap();
+        assert_eq!(workspace(primary_id).await, newer_root);
     }
 
     #[tokio::test]

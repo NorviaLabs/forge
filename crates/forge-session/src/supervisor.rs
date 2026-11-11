@@ -753,6 +753,7 @@ impl RepositoryBootstrap {
             migrate_directory_runtime_files(topology.root())
         };
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
+        control.adopt_root(topology.root()).await?;
         Ok(Self {
             lease,
             control,
@@ -992,6 +993,7 @@ impl RepositorySupervisor {
         let control_dir = storage.path_for(RuntimeDataKind::Control)?;
         let lease = RepositoryLease::acquire(&control_dir, cfg.workspace_root())?;
         let control = Arc::new(RepositoryControl::open(&control_dir).await?);
+        control.adopt_root(topology.root()).await?;
         let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
         let unavailable_tasks = control
