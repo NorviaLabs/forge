@@ -20,7 +20,7 @@ from the crate root and can therefore reach them.
 - Lifecycle, queue, and background (`tasks.rs`):
   - `yield_current_turn_for_queue`, `queue`, `background`,
     `cancel_background_task`, `pending_hitl`, `enqueue_task`,
-    `cancel_queued_at`, `cancel_queued_item`, `promote_next_queued`.
+    `cancel_queued_item`.
   - Internal `transition`, `enter_waiting`, `transition_to_new_task`.
 - Approval and grants (`approval.rs`, `grant.rs`):
   - `resolve_hitl`, `resolve_hitl_with_feedback`, `prepare_approved_hitl`.

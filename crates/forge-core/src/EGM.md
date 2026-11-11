@@ -89,8 +89,8 @@ Subdirectory:
   subagents also get their own workspace worktree; `AgentMode::ReadOnly`
   subagents run in the repository root. Writer subagents are serialized per
   workspace root.
-- Queue item ids are stable and monotonic across restore; visible length counts
-  only `Queued`/`Promoting`.
+- Queue item ids are stable and monotonic across restore; only `Queued` items
+  count. The supervisor moves queued items into its prompt queue to run them.
 - Egress is empty/deny-by-default unless the personal permission file allows a
   host; starting a proxy failure leaves the network off rather than open.
 - `EgressRuntime` must outlive its grant: dropping it stops the listener and

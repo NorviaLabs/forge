@@ -2756,7 +2756,7 @@ async fn execute_command(
                 let mut session = try_session(&task_actor)?;
                 if session.cancel_queued_item(id).await?.is_none() {
                     return Err(RepositorySupervisorError::Command(
-                        "queued instruction was promoted or removed; nothing cancelled".into(),
+                        "queued instruction already ran or was removed; nothing cancelled".into(),
                     ));
                 }
                 refresh_actor(&state, &task_actor, &session).await?;
@@ -6117,7 +6117,8 @@ mod tests {
                 .lock()
                 .await
                 .queue()
-                .peek_next_queued()
+                .visible()
+                .next()
                 .unwrap()
                 .id,
             legacy.id

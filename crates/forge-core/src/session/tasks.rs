@@ -149,23 +149,6 @@ impl AgentSession {
         Ok(item)
     }
 
-    /// Cancel a still-queued item by its 1-based visible position. Returns
-    /// `None` if the
-    /// position is out of range or the item is no longer cancellable
-    /// (already promoting/promoted/removed).
-    pub async fn cancel_queued_at(
-        &mut self,
-        one_based: usize,
-    ) -> Result<Option<QueuedTask>, LoopError> {
-        let Some(id) = one_based
-            .checked_sub(1)
-            .and_then(|index| self.tasks.queue.visible().nth(index).map(|item| item.id))
-        else {
-            return Ok(None);
-        };
-        self.cancel_queued_item(id).await
-    }
-
     /// Cancel the named queued instruction. Promotion or removal never
     /// redirects a stale frontend action to the next visible item.
     pub async fn cancel_queued_item(
@@ -179,36 +162,5 @@ impl AgentSession {
             .append_queue_removed(self.session_id, item.id)
             .await?;
         Ok(Some(item))
-    }
-
-    /// Atomic promotion of the oldest queued item into a new task, started
-    /// `Working`. Returns `None` if the queue is empty. On failure to start
-    /// the new task, the item is rolled back to `Queued` (never lost) and
-    /// the error propagated.
-    pub async fn promote_next_queued(&mut self) -> Result<Option<TaskId>, LoopError> {
-        let Some(item) = self.tasks.queue.peek_next_queued().cloned() else {
-            return Ok(None);
-        };
-        if !self.tasks.queue.mark_promoting(item.id) {
-            // Lost the race to another caller — nothing to do.
-            return Ok(None);
-        }
-        self.journal
-            .append_queue_promoting(self.session_id, item.id)
-            .await?;
-
-        match self.append_user_message(&item.text).await {
-            Ok(()) => {
-                self.tasks.queue.mark_promoted(item.id);
-                self.journal
-                    .append_queue_promoted(self.session_id, item.id, self.active_task.task_id.0)
-                    .await?;
-                Ok(Some(self.active_task.task_id))
-            }
-            Err(err) => {
-                self.tasks.queue.revert_promoting(item.id);
-                Err(err)
-            }
-        }
     }
 }

@@ -2543,27 +2543,6 @@ async fn loop_text_only_completes() {
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
 }
 
-#[tokio::test]
-async fn promote_next_queued_starts_a_new_task_and_removes_the_item() {
-    let dir = tempdir().unwrap();
-    let model = Arc::new(MockModelClient::script(vec![]));
-    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
-        .await
-        .unwrap();
-    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Ready);
-
-    let item = s.enqueue_task("do the next thing").await.unwrap();
-    assert_eq!(s.queue().len(), 1);
-
-    let task_id = s.promote_next_queued().await.unwrap().unwrap();
-    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Working);
-    assert_eq!(s.active_task.task_id, task_id);
-    // Promotion removed exactly the one item from the visible queue.
-    assert_eq!(s.queue().len(), 0);
-    assert!(s.queue().visible().all(|q| q.id != item.id));
-    assert!(s.messages.iter().any(|m| m.content == "do the next thing"));
-}
-
 /// A turn that ends at a tool boundary while the future-task queue is
 /// non-empty hands off to the queue (`ApplyOutcome::YieldToQueue`). The
 /// coordinator must transition the lifecycle to `Completed` so a later
@@ -2617,44 +2596,30 @@ async fn queue_yield_leaves_the_lifecycle_completed_and_accepts_the_next_prompt(
 }
 
 #[tokio::test]
-async fn promote_next_queued_on_empty_queue_is_a_no_op() {
-    let dir = tempdir().unwrap();
-    let mut s = idle_session(dir.path()).await;
-    assert_eq!(s.promote_next_queued().await.unwrap(), None);
-    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Ready);
-}
-
-#[tokio::test]
-async fn cancel_queued_at_removes_by_visible_position() {
-    let dir = tempdir().unwrap();
-    let mut s = idle_session(dir.path()).await;
-    s.enqueue_task("a").await.unwrap();
-    let b = s.enqueue_task("b").await.unwrap();
-    s.enqueue_task("c").await.unwrap();
-
-    let removed = s.cancel_queued_at(2).await.unwrap().unwrap();
-    assert_eq!(removed.id, b.id);
-    let remaining: Vec<&str> = s.queue().visible().map(|q| q.text.as_str()).collect();
-    assert_eq!(remaining, vec!["a", "c"]);
-}
-
-#[tokio::test]
-async fn cancel_queued_item_does_not_cancel_the_successor_after_promotion() {
+async fn cancel_queued_item_removes_only_that_item_and_is_journalled() {
     let dir = tempdir().unwrap();
     let mut session = idle_session(dir.path()).await;
     let first = session.enqueue_task("first").await.unwrap();
     let next = session.enqueue_task("next").await.unwrap();
-    assert!(session.promote_next_queued().await.unwrap().is_some());
 
+    let removed = session.cancel_queued_item(first.id).await.unwrap().unwrap();
+    assert_eq!(removed.text, "first");
     assert!(session
         .cancel_queued_item(first.id)
         .await
         .unwrap()
         .is_none());
-    assert_eq!(session.queue().peek_next_queued().unwrap().id, next.id);
-    let removed = session.cancel_queued_item(next.id).await.unwrap().unwrap();
-    assert_eq!(removed.text, "next");
-    assert!(session.queue().is_empty());
+    assert_eq!(session.queue().visible().next().unwrap().id, next.id);
+
+    let state = session.journal.replay(session.session_id).await.unwrap();
+    assert_eq!(
+        state.queue_items[0].status,
+        forge_types::QueueItemStatus::Removed
+    );
+    assert_eq!(
+        state.queue_items[1].status,
+        forge_types::QueueItemStatus::Queued
+    );
 }
 
 #[tokio::test]
@@ -2680,95 +2645,6 @@ async fn queue_items_survive_resume_without_duplication() {
     assert_eq!(resumed.queue().len(), 2);
     let texts: Vec<&str> = resumed.queue().visible().map(|q| q.text.as_str()).collect();
     assert_eq!(texts, vec!["queued one", "queued two"]);
-}
-
-/// End-to-end crash-recovery test: a crash between the `QueuePromoting`
-/// journal write and the confirming `QueuePromoted` one — but *after*
-/// the task's user message already landed — must not resurrect the item
-/// as `Queued` on resume. That would let a later `promote_next_queued`
-/// create a second task from the same instruction, violating "a queue
-/// item cannot execute twice."
-#[tokio::test]
-async fn crash_after_task_created_but_before_promoted_confirmation_does_not_duplicate() {
-    let dir = tempdir().unwrap();
-    let model = Arc::new(MockModelClient::script(vec![]));
-    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
-        .await
-        .unwrap();
-    let item = s.enqueue_task("do the thing").await.unwrap();
-
-    // Simulate a crash: journal exactly what `promote_next_queued`'s
-    // first steps write (mark Promoting, then the task's user message)
-    // but never reach the confirming `QueuePromoted` event.
-    let journal = forge_durable::Journal::open(s.journal_dir(), s.session_id)
-        .await
-        .unwrap();
-    journal
-        .append_queue_promoting(s.session_id, item.id)
-        .await
-        .unwrap();
-    journal
-        .append_user_message(s.session_id, &item.text)
-        .await
-        .unwrap();
-
-    let resumed = AgentSession::resume(
-        base_cfg(dir.path()),
-        Arc::new(MockModelClient::script(vec![])),
-        ToolRegistry::new(),
-        s.session_id,
-    )
-    .await
-    .unwrap();
-
-    // Not visible in the queue again — the task was already created.
-    assert!(resumed.queue().is_empty());
-    assert!(resumed.queue().peek_next_queued().is_none());
-    // The task's user message did survive, exactly once.
-    assert_eq!(
-        resumed
-            .messages
-            .iter()
-            .filter(|m| m.content == "do the thing")
-            .count(),
-        1
-    );
-}
-
-/// Contrasting case: a crash *before* the task's user message was ever
-/// journaled must return the item to `Queued` so it isn't lost.
-#[tokio::test]
-async fn crash_before_task_created_reverts_item_to_queued() {
-    let dir = tempdir().unwrap();
-    let model = Arc::new(MockModelClient::script(vec![]));
-    let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
-        .await
-        .unwrap();
-    let queued = s.enqueue_task("not started yet").await.unwrap();
-    let journal = forge_durable::Journal::open(s.journal_dir(), s.session_id)
-        .await
-        .unwrap();
-    journal
-        .append_queue_promoting(s.session_id, queued.id)
-        .await
-        .unwrap();
-    // No `append_user_message` — the crash happened before the task
-    // itself was created.
-
-    let resumed = AgentSession::resume(
-        base_cfg(dir.path()),
-        Arc::new(MockModelClient::script(vec![])),
-        ToolRegistry::new(),
-        s.session_id,
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(resumed.queue().len(), 1);
-    assert_eq!(
-        resumed.queue().peek_next_queued().map(|q| q.text.as_str()),
-        Some("not started yet")
-    );
 }
 
 #[tokio::test]

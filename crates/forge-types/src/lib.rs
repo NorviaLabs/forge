@@ -665,8 +665,6 @@ pub enum JournalEventType {
     ContextCompacted,
     /// Unified task/queue lifecycle — future-task queue durability.
     QueueEnqueued,
-    QueuePromoting,
-    QueuePromoted,
     QueueRemoved,
     /// Background task lifecycle (shell jobs and subagents alike) — see
     /// `forge-core`'s `BackgroundTaskRegistry`.
@@ -1112,8 +1110,7 @@ impl WaitReason {
 }
 
 /// Stable identifier for one queued future-task instruction. Distinct from
-/// `TaskId`: a queue item is never itself `Working`/`Completed`/etc. — only
-/// its promoted task is.
+/// `TaskId`: a queue item is never itself `Working`/`Completed`/etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct QueueItemId(pub u64);
 
@@ -1121,8 +1118,6 @@ pub struct QueueItemId(pub u64);
 #[serde(rename_all = "snake_case")]
 pub enum QueueItemStatus {
     Queued,
-    Promoting,
-    Promoted,
     Removed,
 }
 

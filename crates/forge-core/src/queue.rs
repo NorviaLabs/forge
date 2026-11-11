@@ -1,7 +1,8 @@
-//! Explicit FIFO queue of future-task instructions. A queue item is never
-//! itself `Working`/`Completed`/etc. — only the task it gets promoted into
-//! is. Owned by `AgentSession` (not the frontend) so promotion/journaling/
-//! restoration all go through one store with direct `Journal` access.
+//! Explicit FIFO queue of future-task instructions, such as an approve-all
+//! background result waiting for the next turn. Owned by `AgentSession` so
+//! journaling and restoration go through one store with direct `Journal`
+//! access. The supervisor moves queued items into its own prompt queue,
+//! which is what runs them.
 
 use std::collections::VecDeque;
 
@@ -41,9 +42,7 @@ impl TaskQueue {
         self.revision
     }
 
-    /// Visible queue depth — `Queued` + `Promoting` only. A `Promoted`/
-    /// `Removed` item is gone from the visible count, matching "a queued
-    /// item is never simultaneously visible as queued and active."
+    /// Number of items still queued.
     pub fn len(&self) -> usize {
         self.visible().count()
     }
@@ -70,54 +69,14 @@ impl TaskQueue {
         item
     }
 
-    /// Visible items (`Queued`/`Promoting`) in FIFO order. Redraws must call
-    /// this rather than mutating the underlying deque — rendering never
-    /// recreates or removes items.
+    /// Queued items in FIFO order.
     pub fn visible(&self) -> impl Iterator<Item = &QueuedTask> {
-        self.items.iter().filter(|i| {
-            matches!(
-                i.status,
-                QueueItemStatus::Queued | QueueItemStatus::Promoting
-            )
-        })
-    }
-
-    /// The oldest still-`Queued` item, if any — the promotion candidate.
-    pub fn peek_next_queued(&self) -> Option<&QueuedTask> {
         self.items
             .iter()
-            .find(|i| i.status == QueueItemStatus::Queued)
+            .filter(|i| i.status == QueueItemStatus::Queued)
     }
 
-    /// First step of atomic promotion: `Queued -> Promoting`. Returns
-    /// `false` if the item isn't in a promotable state (already promoted,
-    /// removed, or unknown id) — a queue item can be promoted at most once.
-    pub fn mark_promoting(&mut self, id: QueueItemId) -> bool {
-        self.transition_status(id, QueueItemStatus::Queued, QueueItemStatus::Promoting)
-    }
-
-    /// Final step of atomic promotion, called only after the task/attempt
-    /// were actually created.
-    pub fn mark_promoted(&mut self, id: QueueItemId) -> bool {
-        let changed =
-            self.transition_status(id, QueueItemStatus::Promoting, QueueItemStatus::Promoted);
-        if changed {
-            self.compact_terminal();
-        }
-        changed
-    }
-
-    /// Roll a `Promoting` item back to `Queued` — used when promotion fails
-    /// partway (task creation errored) or on restore when a crash left the
-    /// item stuck mid-promotion with no matching `Promoted`/`Removed`
-    /// record. Failed promotion must never lose the item.
-    pub fn revert_promoting(&mut self, id: QueueItemId) -> bool {
-        self.transition_status(id, QueueItemStatus::Promoting, QueueItemStatus::Queued)
-    }
-
-    /// Explicit user cancellation of a still-queued item. Only legal while
-    /// `Queued` — an item already `Promoting` cannot be cancelled out from
-    /// under an in-flight promotion.
+    /// Remove a still-queued item.
     pub fn remove(&mut self, id: QueueItemId) -> Option<QueuedTask> {
         if self.transition_status(id, QueueItemStatus::Queued, QueueItemStatus::Removed) {
             let removed = self.items.iter().find(|i| i.id == id).cloned();
@@ -129,18 +88,8 @@ impl TaskQueue {
     }
 
     fn compact_terminal(&mut self) {
-        self.items.retain(|item| {
-            matches!(
-                item.status,
-                QueueItemStatus::Queued | QueueItemStatus::Promoting
-            )
-        });
-    }
-
-    /// Cancel by 1-based position in the *visible* list.
-    pub fn remove_at_visible_position(&mut self, one_based: usize) -> Option<QueuedTask> {
-        let id = self.visible().nth(one_based.checked_sub(1)?)?.id;
-        self.remove(id)
+        self.items
+            .retain(|item| item.status == QueueItemStatus::Queued);
     }
 
     fn transition_status(
@@ -162,12 +111,8 @@ impl TaskQueue {
         }
     }
 
-    /// Rebuild a queue from persisted items (session restore). Any item
-    /// left `Promoting` — no matching `Promoted`/`Removed` event followed
-    /// it — reconciles back to `Queued`, since a crash between "mark
-    /// Promoting" and "mark Promoted" must not silently drop the
-    /// instruction, and the task it may or may not have started is handled
-    /// separately by task-lifecycle restoration, not by the queue.
+    /// Rebuild a queue from persisted items (session restore). Removed items
+    /// are dropped; ids continue after the highest one seen.
     pub fn from_restored(items: Vec<QueuedTask>) -> Self {
         let next_id = items
             .iter()
@@ -175,38 +120,15 @@ impl TaskQueue {
             .max()
             .map(|m| m + 1)
             .unwrap_or(1);
-        let mut items: VecDeque<QueuedTask> = items.into_iter().collect();
-        for item in items.iter_mut() {
-            if item.status == QueueItemStatus::Promoting {
-                item.status = QueueItemStatus::Queued;
-            }
-        }
+        let items: VecDeque<QueuedTask> = items
+            .into_iter()
+            .filter(|item| item.status == QueueItemStatus::Queued)
+            .collect();
         Self {
             items,
             next_id,
             revision: 0,
         }
-    }
-
-    /// Preview lines for notices (index + truncated text) — same shape as
-    /// the queue preview UI already renders.
-    pub fn list_lines(&self) -> Vec<String> {
-        let visible: Vec<&QueuedTask> = self.visible().collect();
-        if visible.is_empty() {
-            return vec!["Message queue is empty.".into()];
-        }
-        let mut lines = vec![format!("{} message(s) queued:", visible.len())];
-        for (i, item) in visible.iter().enumerate() {
-            let preview: String = item.text.chars().take(80).collect();
-            let ellipsis = if item.text.chars().count() > 80 {
-                "…"
-            } else {
-                ""
-            };
-            lines.push(format!("  {}. {}{ellipsis}", i + 1, preview));
-        }
-        lines.push("Send next: empty Enter when idle · cancel: click a queue row".into());
-        lines
     }
 }
 
@@ -238,119 +160,35 @@ mod tests {
     }
 
     #[test]
-    fn item_remains_visible_until_promotion_or_removal() {
-        let mut q = TaskQueue::new();
-        let item = q.enqueue(sid(), "a");
-        assert_eq!(q.len(), 1);
-        assert!(q.mark_promoting(item.id));
-        // Still visible while Promoting.
-        assert_eq!(q.len(), 1);
-        assert!(q.mark_promoted(item.id));
-        // Gone from the visible list once Promoted.
-        assert_eq!(q.len(), 0);
-    }
-
-    #[test]
-    fn promotion_removes_exactly_one_item() {
+    fn remove_takes_the_item_out_and_only_once() {
         let mut q = TaskQueue::new();
         let a = q.enqueue(sid(), "a");
         q.enqueue(sid(), "b");
-        assert!(q.mark_promoting(a.id));
-        assert!(q.mark_promoted(a.id));
-        assert_eq!(q.len(), 1);
+        assert_eq!(q.remove(a.id).map(|item| item.text), Some("a".into()));
+        assert!(
+            q.remove(a.id).is_none(),
+            "a removed item cannot be removed again"
+        );
         let visible: Vec<_> = q.visible().map(|i| i.text.clone()).collect();
         assert_eq!(visible, vec!["b"]);
     }
 
     #[test]
-    fn promotion_cannot_happen_twice() {
-        let mut q = TaskQueue::new();
-        let item = q.enqueue(sid(), "a");
-        assert!(q.mark_promoting(item.id));
-        assert!(q.mark_promoted(item.id));
-        // Already Promoted — a second attempt must fail, not re-promote.
-        assert!(!q.mark_promoting(item.id));
-        assert!(!q.mark_promoted(item.id));
-    }
-
-    #[test]
-    fn failed_promotion_preserves_the_item_via_revert() {
-        let mut q = TaskQueue::new();
-        let item = q.enqueue(sid(), "a");
-        assert!(q.mark_promoting(item.id));
-        assert!(q.revert_promoting(item.id));
-        assert_eq!(q.len(), 1);
-        assert_eq!(q.peek_next_queued().map(|i| i.id), Some(item.id));
-    }
-
-    #[test]
-    fn remove_only_legal_while_queued() {
-        let mut q = TaskQueue::new();
-        let item = q.enqueue(sid(), "a");
-        assert!(q.mark_promoting(item.id));
-        // Cannot cancel an item mid-promotion.
-        assert!(q.remove(item.id).is_none());
-        assert_eq!(q.len(), 1);
-    }
-
-    #[test]
-    fn remove_at_visible_position_matches_keyboard_cancel_ux() {
-        let mut q = TaskQueue::new();
-        q.enqueue(sid(), "a");
-        let b = q.enqueue(sid(), "b");
-        q.enqueue(sid(), "c");
-        let removed = q.remove_at_visible_position(2).unwrap();
-        assert_eq!(removed.id, b.id);
-        let visible: Vec<_> = q.visible().map(|i| i.text.clone()).collect();
-        assert_eq!(visible, vec!["a", "c"]);
-    }
-
-    #[test]
-    fn remove_at_visible_position_zero_or_out_of_range_is_none() {
-        let mut q = TaskQueue::new();
-        q.enqueue(sid(), "a");
-        assert!(q.remove_at_visible_position(0).is_none());
-        assert!(q.remove_at_visible_position(2).is_none());
-        assert_eq!(q.len(), 1);
-    }
-
-    #[test]
-    fn restoration_reconciles_promoting_item_without_duplication() {
+    fn restoration_keeps_only_queued_items() {
         let session = sid();
-        let items = vec![
-            QueuedTask {
-                id: QueueItemId(1),
-                session_id: session,
-                text: "stuck-mid-promotion".into(),
-                created_at: Utc::now(),
-                status: QueueItemStatus::Promoting,
-            },
-            QueuedTask {
-                id: QueueItemId(2),
-                session_id: session,
-                text: "already-promoted".into(),
-                created_at: Utc::now(),
-                status: QueueItemStatus::Promoted,
-            },
-            QueuedTask {
-                id: QueueItemId(3),
-                session_id: session,
-                text: "still-queued".into(),
-                created_at: Utc::now(),
-                status: QueueItemStatus::Queued,
-            },
-        ];
-        let q = TaskQueue::from_restored(items);
-        // Exactly the Promoting-reconciled-to-Queued and the still-Queued
-        // item are visible; the already-Promoted one is not duplicated in.
+        let item = |id, text: &str, status| QueuedTask {
+            id: QueueItemId(id),
+            session_id: session,
+            text: text.into(),
+            created_at: Utc::now(),
+            status,
+        };
+        let q = TaskQueue::from_restored(vec![
+            item(1, "removed", QueueItemStatus::Removed),
+            item(2, "queued", QueueItemStatus::Queued),
+        ]);
         let visible: Vec<_> = q.visible().map(|i| (i.id, i.text.clone())).collect();
-        assert_eq!(
-            visible,
-            vec![
-                (QueueItemId(1), "stuck-mid-promotion".to_string()),
-                (QueueItemId(3), "still-queued".to_string()),
-            ]
-        );
+        assert_eq!(visible, vec![(QueueItemId(2), "queued".to_string())]);
     }
 
     #[test]
@@ -365,16 +203,6 @@ mod tests {
         let mut q = TaskQueue::from_restored(items);
         let next = q.enqueue(sid(), "y");
         assert_eq!(next.id, QueueItemId(6));
-    }
-
-    #[test]
-    fn list_lines_formats_correctly() {
-        let mut q = TaskQueue::new();
-        assert!(q.list_lines()[0].contains("empty"));
-        q.enqueue(sid(), "hello world");
-        let lines = q.list_lines();
-        assert!(lines[0].contains("1 message"));
-        assert!(lines[1].contains("1. hello world"));
     }
 
     #[test]
