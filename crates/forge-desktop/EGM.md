@@ -208,6 +208,18 @@ themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
     transcript scroll). Selection only changes which record renders; there
     is no park or restore step, and document loads that finish after a
     switch land in the record of the session that started them.
+    The record also holds the session's request drafts, file attachment,
+    `/clear` position, expanded messages and its workspace as last fetched
+    (`files`: tree listings, Git status, last-turn files); a workspace
+    reply lands on the record of the session it was asked for.
+  - Session snapshot: `src/session.js`. The on-screen session is one
+    `snapshot` object, replaced whole by `snapshotFrom(event, record)` and
+    set to `emptySnapshot()` by a selection, so nothing of the previous
+    session lingers. `applyEvent(page, event)` applies `session`,
+    `session_state`, `roster`, `selected`, `attention`, `error` and
+    `lagged` and returns the effects the page performs (`refresh_files`,
+    `focus_decision`, `reset_streaming`, `close_session_dialogs`,
+    `reconcile_roster`). Stream deltas bypass it for per-frame batching.
   - Model text renders through `src/markdown.js`: markdown-it with
     `html: false` and links, images and autolinks disabled, then DOMPurify.
     It reaches the DOM only in `Markdown.svelte`, the single raw-HTML site

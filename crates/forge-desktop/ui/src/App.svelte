@@ -3,6 +3,7 @@
   import { Channel } from "@tauri-apps/api/core";
   import { invoke } from "./ipc.js";
   import { failureAction } from "./failure.js";
+  import { applyEvent, emptySnapshot, snapshotFrom } from "./session.js";
   import { listen } from "@tauri-apps/api/event";
   import Conversation from "./lib/Conversation.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -23,7 +24,7 @@
   import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
   import {
     applyRefresh, attentionLabel, beginRefresh, clearShown, failRefresh, flattenTree, foldersToLoad,
-    keepDraft, projectStatus, prunable, shownMessages,
+    keepDraft, projectStatus, prunable,
   } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
@@ -70,11 +71,14 @@
     ...sessions,
     ...resumable.filter((row) => !sessions.some((session) => session.session_id === row.session_id)),
   ]);
-  let turnState = $state("idle");
+  // The on-screen session as the backend last described it (session.js),
+  // replaced whole by each snapshot and emptied by a selection.
+  let snapshot = $state(emptySnapshot());
+  const turnState = $derived(snapshot.turnState);
   let stopping = $state(false);
-  let messages = $state([]);
-  let promptHistory = $state([]);
-  let skillDescriptions = $state([]);
+  const messages = $derived(snapshot.messages);
+  const promptHistory = $derived(snapshot.promptHistory);
+  const skillDescriptions = $derived(snapshot.skillDescriptions);
   let streaming = $state("");
   // Deltas arrive once per token; the page applies them at most once per
   // frame, so a burst costs one render instead of one per token.
@@ -113,22 +117,22 @@
   let terminalButton = $state();
   let railButton = $state();
   let screenAnnouncement = $state("");
-  let approval = $state(null);
-  let question = $state(null);
-  let approveAll = $state(false);
-  let thinking = $state(false);
-  let imageInput = $state(false);
-  let plan = $state(null);
-  let tokens = $state(null);
-  let background = $state([]);
-  let queue = $state([]);
-  let interrupted = $state([]);
-  let counts = $state({ tools: 0, skills: 0, allows: 0 });
+  const approval = $derived(snapshot.approval);
+  const question = $derived(snapshot.question);
+  const approveAll = $derived(snapshot.approveAll);
+  const thinking = $derived(snapshot.thinking);
+  const imageInput = $derived(snapshot.imageInput);
+  const plan = $derived(snapshot.plan);
+  const tokens = $derived(snapshot.tokens);
+  const background = $derived(snapshot.background);
+  const queue = $derived(snapshot.queue);
+  const interrupted = $derived(snapshot.interrupted);
+  const counts = $derived(snapshot.counts);
   let attention = $state({});
   let error = $state("");
-  let info = $state({ workspace: "", branch: "", model: "", contextUsage: 0, queued: 0 });
-  let githubIssue = $state(null);
-  let githubPr = $state("");
+  const info = $derived(snapshot.info);
+  const githubIssue = $derived(snapshot.githubIssue);
+  const githubPr = $derived(snapshot.githubPr);
 
   // The Files tree, one folder at a time: folder path ("" is the root) ->
   // `{ entries, truncated }`. Open folders live in the session's view record.
@@ -500,45 +504,10 @@
     return parts[parts.length - 1] || path;
   }
 
-  function setRowState(id, state) {
-    sessions = sessions.map((session) =>
-      session.session_id === id ? { ...session, turn_state: state } : session,
-    );
-  }
-
+  // Show a snapshot of the session on screen (boot and focus resync; live
+  // updates arrive through `onEvent`).
   function applySession(event) {
-    sessionId = event.session_id;
-    turnState = event.turn_state;
-    promptHistory = event.messages.filter((message) => message.role === "user" && message.text.trim())
-      .map((message) => message.text).slice(-500);
-    skillDescriptions = event.skill_descriptions ?? [];
-    messages = shownMessages(viewFor(views, event.session_id), event.messages);
-    approval = event.pending_approval;
-    question = event.pending_question ?? null;
-    approveAll = event.approve_all;
-    thinking = event.thinking;
-    imageInput = event.image_input ?? false;
-    plan = event.plan ?? null;
-    tokens = event.tokens ?? null;
-    background = event.background ?? [];
-    queue = event.queue ?? [];
-    interrupted = event.interrupted ?? [];
-    counts = { tools: event.tools ?? 0, skills: event.skills ?? 0, allows: event.pattern_allows ?? 0 };
-    if (event.turn_state !== "waiting") {
-      const { [event.session_id]: _, ...rest } = attention;
-      if (Object.keys(rest).length !== Object.keys(attention).length) attention = rest;
-    }
-    info = {
-      workspace: event.workspace,
-      branch: event.branch,
-      model: event.model,
-      contextUsage: event.context_usage,
-      queued: event.queued,
-    };
-    githubIssue = event.github_issue_number ?? null;
-    githubPr = event.github_pr_url ?? "";
-    // Keep the live delta while the turn runs; a mid-turn snapshot would
-    // wipe it. Clear once the turn settles so the final transcript owns it.
+    snapshot = snapshotFrom(event, viewFor(views, event.session_id));
     if (!["running", "waiting"].includes(event.turn_state)) resetStreaming();
   }
 
@@ -640,6 +609,20 @@
     }));
   }
 
+  // The page state session.js reads and writes, by name.
+  const page = {
+    get sessionId() { return sessionId; }, set sessionId(value) { sessionId = value; },
+    get snapshot() { return snapshot; }, set snapshot(value) { snapshot = value; },
+    get sessions() { return sessions; }, set sessions(value) { sessions = value; },
+    get attention() { return attention; }, set attention(value) { attention = value; },
+    get error() { return error; }, set error(value) { error = value; },
+    get lastTurn() { return lastTurn; }, set lastTurn(value) { lastTurn = value; },
+    get focusDecisionFor() { return focusDecisionFor; }, set focusDecisionFor(value) { focusDecisionFor = value; },
+    get views() { return views; },
+    get projectId() { return projectId; },
+    sessionOwner,
+  };
+
   function onEvent(event) {
     if (event.type === "workspace") {
       projects = event.projects;
@@ -663,87 +646,21 @@
       if (event.session_id === sessionId) queueDelta(event.event.text);
       return;
     }
-    if (event.type === "session_state") {
-      // A session not on screen changed state; the bridge sends only this.
-      setRowState(event.session_id, event.turn_state);
-      if (event.turn_state !== "waiting" && attention[event.session_id]) {
-        const { [event.session_id]: _, ...rest } = attention;
-        attention = rest;
-      }
-      return;
-    }
-    if (event.type === "session") {
-      setRowState(event.session_id, event.turn_state);
-      if (event.turn_state !== "waiting" && attention[event.session_id]) {
-        const { [event.session_id]: _, ...rest } = attention;
-        attention = rest;
-      }
-      if (event.session_id !== sessionId) return;
-      viewFor(views, event.session_id);
-      const wasBusy = lastTurn === "running" || lastTurn === "waiting";
-      lastTurn = event.turn_state;
-      applySession(event);
-      if (focusDecisionFor === event.session_id) {
-        focusDecisionFor = null;
-        if (event.pending_question || event.pending_approval) tick().then(() => focusDecision());
-      }
-      if (wasBusy && !["running", "waiting"].includes(event.turn_state)) refreshFiles();
-      return;
-    }
-    if (event.type === "roster") {
-      for (const row of event.sessions) sessionOwner[row.session_id] = projectId;
-      sessions = event.sessions;
-      reconcileRoster(event.sessions);
-      return;
-    }
-    if (event.type === "selected") {
-      const next = event.session_id ?? "";
-      if (next !== sessionId) {
-        sessionId = next;
-        messages = [];
-        promptHistory = [];
-        skillDescriptions = [];
-        resetStreaming();
-        approval = null;
-        question = null;
-        plan = null;
-        background = [];
-        queue = [];
-        interrupted = [];
+    // Everything about sessions is decided in session.js; the page only
+    // carries out what it asks for.
+    for (const effect of applyEvent(page, event) ?? []) {
+      if (effect === "reset_streaming") resetStreaming();
+      else if (effect === "refresh_files") refreshFiles();
+      else if (effect === "focus_decision") tick().then(() => focusDecision());
+      else if (effect === "reconcile_roster") reconcileRoster(event.sessions);
+      else if (effect === "close_session_dialogs") {
         // These dialogs act on the previously selected session.
         branchesOpen = false;
         commitOpen = false;
         gitConfirm = null;
         fileAction = null;
         childView = null;
-        if (next) {
-          const { [next]: _, ...rest } = attention;
-          attention = rest;
-        }
-        // The session's record already holds its documents, draft, screen
-        // and drawer; selection only changes which record renders.
-        if (next) viewFor(views, next);
-        // The tree, status and last-turn files come from the selected
-        // session's own record, so they cannot show the previous session.
-        info = { ...info, branch: "" };
-        if (next) refreshFiles();
       }
-      return;
-    }
-    if (event.type === "attention") {
-      setRowState(event.session_id, event.turn_state);
-      if (event.session_id !== sessionId) attention = { ...attention, [event.session_id]: true };
-      // Finishing, stopping or waiting for input is normal; only a failed
-      // turn deserves the red banner.
-      if (event.session_id === sessionId && event.turn_state === "failed") error = event.message;
-      return;
-    }
-    if (event.type === "error") {
-      error = event.message;
-      return;
-    }
-    if (event.type === "lagged") {
-      error = `Missed ${event.missed} update${event.missed === 1 ? "" : "s"}; the view may be stale.`;
     }
   }
 
@@ -1041,8 +958,8 @@
       : null;
     const previousTurnState = turnState;
     if (local) {
-      messages = [...messages, local];
-      turnState = "running";
+      snapshot.messages = [...messages, local];
+      snapshot.turnState = "running";
       stopping = false;
     }
     let ok = false;
@@ -1068,8 +985,10 @@
       ok = false;
     }
     if (!ok && local) {
-      messages = messages.filter((message) => message.localId !== localId);
-      if (targetSession === sessionId && turnState === "running") turnState = previousTurnState;
+      if (targetSession === sessionId) {
+        snapshot.messages = messages.filter((message) => message.localId !== localId);
+        if (turnState === "running") snapshot.turnState = previousTurnState;
+      }
       stopping = false;
     }
     if (ok && attachment && views[targetSession]) views[targetSession].attachment = null;
@@ -1125,7 +1044,7 @@
       const full = await invoke("message_detail", { sessionId: target, index: absolute });
       record.messageDetails[absolute] = full;
       if (target === sessionId) {
-        messages = messages.map((message, at) =>
+        snapshot.messages = messages.map((message, at) =>
           at === index ? { ...message, text: full.text, thinking: full.thinking } : message);
       }
     } catch (cause) {
@@ -1136,7 +1055,7 @@
   function clearTranscript() {
     if (!sessionId) return;
     clearShown(viewFor(views, sessionId), messages.length);
-    messages = [];
+    snapshot.messages = [];
   }
 
   async function openChild(task) {
@@ -1817,6 +1736,7 @@
     for (const row of hello.sessions) sessionOwner[row.session_id] = projectId;
     rememberProject(projectId);
     loadResumable();
+    sessionId = hello.initial.session_id;
     applySession(hello.initial);
     channel.onmessage = onEvent;
     // Theme discovery needs the session state, which exists only after trust.
