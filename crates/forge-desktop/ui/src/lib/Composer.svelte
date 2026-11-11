@@ -26,8 +26,6 @@
     prompt = $bindable(""),
   } = $props();
 
-  const contextPercent = $derived(Math.round(Math.min(Math.max(contextUsage, 0), 1) * 100));
-  const contextLevel = $derived(contextPercent >= 90 ? "high" : contextPercent >= 70 ? "warm" : "");
 
   let box = $state();
   let imageDrafts = $state({});
@@ -200,11 +198,6 @@
     <button class="context model" type="button" title="Change model" onclick={onModel}>
       <span class="model-name">{model || "Choose a model"}</span>
     </button>
-    <button class="context" type="button" title="Token and cost details" onclick={onContext}>
-      Context {contextPercent}%
-      <span class="meter" aria-hidden="true"><span class="fill {contextLevel}" style="width: {contextPercent}%"></span></span>
-    </button>
-    <span class="hint"><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> newline{imageInput ? " · Paste images" : ""}</span>
     <span class="spacer"></span>
     {#if running}
       <button class="btn danger" type="button" disabled={stopping} onclick={onStop}>
@@ -344,51 +337,6 @@
   .context:hover {
     background: var(--hover);
     color: var(--text);
-  }
-
-  .meter {
-    width: 48px;
-    height: 4px;
-    overflow: hidden;
-    border-radius: var(--radius-sm);
-    background: var(--border);
-  }
-
-  .fill {
-    display: block;
-    height: 100%;
-    background: var(--muted);
-  }
-
-  /* The percentage beside the meter carries the figure; the colour only
-     repeats that it is running high. */
-  .fill.warm,
-  .fill.high {
-    background: var(--warning);
-  }
-
-  .hint {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    color: var(--muted);
-    font-size: var(--text-xs);
-    white-space: nowrap;
-  }
-
-  kbd {
-    display: inline-grid;
-    place-items: center;
-    min-width: 16px;
-    height: 16px;
-    padding: 0 4px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    color: var(--secondary);
-    font-family: var(--font-ui);
-    font-size: var(--text-xs);
-    line-height: 1;
   }
 
   .slash {

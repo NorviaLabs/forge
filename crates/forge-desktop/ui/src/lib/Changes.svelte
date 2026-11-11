@@ -42,8 +42,10 @@
     return cut < 0 ? "" : path.slice(0, cut);
   }
 
+  // A file the turn changed that Git no longer reports has been committed
+  // or undone since; say so instead of calling it changed.
   function statusWord(file) {
-    return STATUS_WORDS[file.status] ?? (activeTab === "turn" ? "changed" : "modified");
+    return STATUS_WORDS[file.status] ?? (activeTab === "turn" ? "committed or undone" : "modified");
   }
 
   // A diff line as its sign, its indentation in columns, and its code, so a
@@ -144,7 +146,7 @@
         This turn <span class="tab-count">{turnRows.length}</span>
       </button>
       <button type="button" role="tab" id="changes-tab-all" aria-selected={activeTab === "all"} aria-controls="changes-list" onclick={() => (tab = "all")}>
-        All changes <span class="tab-count">{status.files.length}</span>
+        Uncommitted <span class="tab-count">{status.files.length}</span>
       </button>
     </div>
 
@@ -160,8 +162,8 @@
           <strong>The last turn changed no files</strong>
           <p>When the agent edits files, they are listed here with their diffs.</p>
         {:else}
-          <strong>The worktree is clean</strong>
-          <p>Nothing is uncommitted on {status.branch || "this branch"}.</p>
+          <strong>Nothing is uncommitted</strong>
+          <p>The worktree on {status.branch || "this branch"} is clean. Changes that were already committed are not listed here.</p>
         {/if}
         {#if !loading}
           <button type="button" class="btn browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>

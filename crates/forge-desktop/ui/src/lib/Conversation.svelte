@@ -371,10 +371,6 @@
     white-space: pre-wrap;
   }
 
-  .message.tool pre.empty {
-    color: var(--muted);
-  }
-
   .message.tool .expand {
     margin: 4px 0;
   }

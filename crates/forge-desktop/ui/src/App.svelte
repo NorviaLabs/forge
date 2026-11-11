@@ -253,6 +253,9 @@
   const needsYou = $derived(Object.keys(attention).length);
   const terminalShown = $derived(currentView.drawerOpen && !!shells[sessionId]);
   const waitNote = $derived(waitingNote(snapshot));
+  // Context is shown only once it needs a decision: at 70% the operator can
+  // compact before the session does it for them.
+  const contextPercent = $derived(Math.round(Math.min(Math.max(info.contextUsage ?? 0, 0), 1) * 100));
   const currentProject = $derived(projects.find((project) => project.id === projectId) ?? null);
   // The word that always accompanies a state dot.
   function turnWord(state) {
@@ -1934,8 +1937,9 @@
       <button type="button" class="icon-btn head-icon" title="New session" aria-label="New session" aria-haspopup="dialog" onclick={openNewSession}>
         <Icon name="plus" size={15} />
       </button>
-      <span class="head-rule" aria-hidden="true"></span>
-      <button type="button" class="btn head-btn" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>Session…</button>
+      <button type="button" class="icon-btn head-icon" title="Session: plan, tasks, queue, usage and actions" aria-label="Session" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>
+        <Icon name="more" size={15} />
+      </button>
     {:else}
       <button type="button" class="btn head-btn" onclick={backToSession}>
         <Icon name="arrow-left" size={13} />
@@ -2042,6 +2046,14 @@
           {#if waitNote.action}
             <button type="button" class="btn" onclick={() => (sessionMenu = waitNote.action)}>{waitNote.label}</button>
           {/if}
+        </p>
+      {/if}
+
+      {#if sessionId && contextPercent >= 70}
+        <p class="wait-note context-note" role="status">
+          <span>The context window is {contextPercent}% full. Compacting summarises the earlier turns to make room.</span>
+          <button type="button" class="btn" onclick={() => (detailsOpen = true)}>Details</button>
+          <button type="button" class="btn" disabled={turnState === "running"} onclick={compactContext}>Compact</button>
         </p>
       {/if}
 
@@ -2675,7 +2687,7 @@
   .head-title { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; padding-left: 12px; }
   .head-title strong,
   .focus-head strong { font-size: var(--text-md); font-weight: 600; white-space: nowrap; }
-  .head-title strong { flex: 0 1 auto; min-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+  .head-title strong { flex: 0 1 auto; min-width: 3ch; overflow: hidden; text-overflow: ellipsis; }
   .head-title .state-dot { flex: none; }
   .head-state { flex: none; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
   .head-branch { flex: 0 10 auto; min-width: 0; max-width: 200px; white-space: nowrap; }
@@ -2684,15 +2696,11 @@
   .head-icon { position: relative; flex: none; width: var(--control-lg); height: var(--control-lg); color: var(--secondary); }
   .head-icon.on { background: var(--raised); color: var(--text); }
   .head-icon .count { position: absolute; top: 0; right: 0; min-width: 14px; padding: 0 3px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; line-height: 14px; text-align: center; }
-  .head-rule { flex: none; width: 1px; height: 16px; margin: 0 8px; background: var(--border); }
+
   .focus-head > strong { margin-left: 12px; }
   .head-session { margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-sm); }
   .head-doc { flex: none; max-width: 280px; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .head-btn { flex: none; }
-  .head-btn .count {
-    min-width: 16px; padding: 0 4px; border-radius: 8px;
-    background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; line-height: 16px; text-align: center;
-  }
   .head-btn.needs { border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); color: var(--warning); }
   .model-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
   .rail-toggle { display: none; }
@@ -2730,6 +2738,8 @@
     background: var(--surface); color: var(--secondary); font-size: var(--text-sm);
   }
   .wait-note span:nth-child(2) { flex: 1; min-width: 0; }
+  .context-note { border-color: var(--border); }
+  .context-note span:first-child { flex: 1; min-width: 0; }
   .wait-note .btn { height: 24px; padding: 0 8px; flex: none; }
   .head-btn.on { background: var(--raised); color: var(--text); }
   .new-session-name { margin-bottom: 16px; }

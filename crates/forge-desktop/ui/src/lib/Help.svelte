@@ -86,33 +86,6 @@
     overflow: auto;
   }
 
-  /* Settings rows: label at left, native control at right. */
-  label {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    min-height: var(--bar);
-    border-bottom: 1px solid var(--border);
-    font-size: var(--text-md);
-  }
-
-  select {
-    width: 200px;
-    height: var(--control);
-    flex: none;
-    padding: 0 8px;
-    font-size: var(--text-sm);
-  }
-
-  input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    flex: none;
-    margin: 0;
-    accent-color: var(--accent);
-  }
-
   /* Section labels. */
   h3 {
     margin: 16px 0 8px;

@@ -52,17 +52,11 @@
   let pane = $state();
   let fileDraft = $state(null);
   let contents = $state("");
-  // One search field, two things it can look in. Content search exists only
-  // for the whole tree, so any other scope is by name.
+  // One field per view: the file views filter by name; the Search view
+  // looks inside files across the whole tree.
   let searchMode = $state("names");
   const inContents = $derived(searchMode === "contents" && shown === "all");
-  function setSearchMode(mode) {
-    if (mode === searchMode) return;
-    // Carry the typed text across, so switching is "look there instead".
-    if (mode === "contents") { contents = query; query = ""; }
-    else { query = contents; contents = ""; }
-    searchMode = mode;
-  }
+
   let hits = $state([]);
   let searching = $state(false);
   let searchError = $state("");
@@ -246,10 +240,13 @@
     <div class="file-list">
       <div class="scope-chips" role="group" aria-label="File scope">
         {#each scopes as option (option.value)}
-          <button type="button" class="btn scope-tab" aria-pressed={shown === option.value} onclick={() => (scope = option.value)}>
+          <button type="button" class="btn scope-tab" aria-pressed={shown === option.value && !inContents} onclick={() => { searchMode = "names"; contents = ""; scope = option.value; }}>
             {option.label}{#if option.count}<span class="tab-count">{option.count}</span>{/if}
           </button>
         {/each}
+        <!-- Searching inside files is its own view of the navigator, as it
+             is in an editor, not a second box beside the name filter. -->
+        <button type="button" class="btn scope-tab" aria-pressed={inContents} onclick={() => { query = ""; scope = "all"; searchMode = "contents"; }}>Search</button>
       </div>
 
       <div class="filters">
@@ -262,12 +259,6 @@
             <input class="field" bind:value={query} placeholder="Filter by file name" aria-label="Filter files" spellcheck="false" />
           {/if}
         </div>
-        {#if shown === "all"}
-          <div class="search-mode" role="group" aria-label="Search in">
-            <button type="button" class="btn" aria-pressed={!inContents} onclick={() => setSearchMode("names")}>Names</button>
-            <button type="button" class="btn" aria-pressed={inContents} onclick={() => setSearchMode("contents")}>Contents</button>
-          </div>
-        {/if}
       </div>
 
       <div class="list-head">
@@ -310,7 +301,9 @@
         </form>
       {/if}
 
-      {#if shown === "all" && contents.trim()}
+      {#if inContents && !contents.trim()}
+        <ul class="hits"><li class="empty">Type to search inside every file in this workspace.</li></ul>
+      {:else if shown === "all" && contents.trim()}
         <ul class="hits">
           {#each hitGroups as group (group.path)}
             <li class="hit-group">
@@ -574,34 +567,6 @@
     color: var(--muted);
     font-size: var(--text-xs);
     font-weight: 400;
-  }
-
-  .search-mode {
-    display: flex;
-  }
-
-  .search-mode .btn {
-    flex: 1;
-    height: 24px;
-    border-radius: 0;
-    color: var(--muted);
-    font-weight: 400;
-  }
-
-  .search-mode .btn:first-child {
-    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-  }
-
-  .search-mode .btn:last-child {
-    margin-left: -1px;
-    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  }
-
-  .search-mode .btn[aria-pressed="true"] {
-    position: relative;
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--text);
   }
 
   .filters {

@@ -460,7 +460,13 @@ pub fn status(root: &Path) -> Result<WorkspaceStatus, String> {
     let conflicts = service
         .conflict_state()
         .map_err(|error| error.to_string())?;
-    let raw = git(root, &["status", "--porcelain=v1", "-z"])?;
+    // Every untracked file by its own path: without this a file created in
+    // a new folder is reported only as that folder, so it never matches the
+    // path the agent's diff names.
+    let raw = git(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
     Ok(WorkspaceStatus {
         branch: branch.branch.unwrap_or_default(),
         files: parse_status(&raw),
@@ -1361,6 +1367,24 @@ mod tests {
         assert!(branches(&dir).unwrap().contains(&"feature-2".to_string()));
         assert!(switch_branch(&dir, "nope").is_err());
         assert!(create_branch(&dir, "has space").is_err());
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_new_file_in_a_new_folder_is_listed_by_its_own_path() {
+        let dir = git_repo();
+        fs::write(dir.join("a.txt"), "one\n").unwrap();
+        stage(&dir, "a.txt").unwrap();
+        commit(&dir, "init").unwrap();
+        fs::create_dir_all(dir.join("notes/deep")).unwrap();
+        fs::write(dir.join("notes/deep/new.md"), "hello\n").unwrap();
+        let paths: Vec<String> = status(&dir)
+            .unwrap()
+            .files
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+        assert_eq!(paths, ["notes/deep/new.md"]);
         fs::remove_dir_all(dir).ok();
     }
 

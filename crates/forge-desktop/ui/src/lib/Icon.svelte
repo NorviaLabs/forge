@@ -57,6 +57,10 @@
     <path d="M12 10v4M12 17.2v.1" />
   {:else if name === "arrow-left"}
     <path d="M19 12H5M11 6l-6 6 6 6" />
+  {:else if name === "more"}
+    <circle cx="5" cy="12" r="1.4" />
+    <circle cx="12" cy="12" r="1.4" />
+    <circle cx="19" cy="12" r="1.4" />
   {:else if name === "arrow-up"}
     <path d="M12 19V5M6 11l6-6 6 6" />
   {:else if name === "arrow-down"}
