@@ -3,9 +3,11 @@
   import { Channel } from "@tauri-apps/api/core";
   import { invoke } from "./ipc.js";
   import { failureAction } from "./failure.js";
+  import { chord, isMac } from "./keys.js";
   import { applyEvent, emptySnapshot, snapshotFrom } from "./session.js";
   import { listen } from "@tauri-apps/api/event";
   import Conversation from "./lib/Conversation.svelte";
+  import Changes from "./lib/Changes.svelte";
   import Composer from "./lib/Composer.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import Inspector from "./lib/Inspector.svelte";
@@ -233,6 +235,14 @@
   const hasQueue = $derived(queue.length > 0);
   const hasDecision = $derived(!!(question || approval));
   const needsYou = $derived(Object.keys(attention).length);
+  const currentProject = $derived(projects.find((project) => project.id === projectId) ?? null);
+  // The word that always accompanies a state dot.
+  function turnWord(state) {
+    return {
+      idle: "idle", running: "running", streaming: "running", waiting: "waiting on you", queued: "queued",
+      completed: "done", failed: "failed", cancelled: "stopped", interrupted: "interrupted",
+    }[state] ?? state;
+  }
 
   // Document writes go to the record of the session that started them, so a
   // load or save that lands after a switch is kept, not dropped.
@@ -323,13 +333,13 @@
     const editing = currentView.screen === "files" ? activeDoc : null;
     if (editing?.kind === "file") {
       items.push(
-        { id: "editor:save", group: "Editor", label: "Save current file", detail: "⌘/Ctrl S", action: saveActive },
+        { id: "editor:save", group: "Editor", label: "Save current file", detail: chord("S"), action: saveActive },
         { id: "editor:reload", group: "Editor", label: "Reload current file from disk", action: () => requestFileAction("reload") },
       );
       if (editing.file && !editing.file.read_only) items.push(
-        { id: "editor:find", group: "Editor", label: "Find in current file", detail: "⌘/Ctrl F", action: () => filesPane?.showNavigation("find") },
+        { id: "editor:find", group: "Editor", label: "Find in current file", detail: chord("F"), action: () => filesPane?.showNavigation("find") },
         { id: "editor:replace", group: "Editor", label: "Find and replace in current file", action: () => filesPane?.showNavigation("replace") },
-        { id: "editor:line", group: "Editor", label: "Jump to line in current file", detail: "⌘/Ctrl L", action: () => filesPane?.showNavigation("line") },
+        { id: "editor:line", group: "Editor", label: "Jump to line in current file", detail: chord("L"), action: () => filesPane?.showNavigation("line") },
       );
       const attached = currentView.attachment?.path === editing.path;
       items.push({
@@ -380,7 +390,7 @@
         detail: "⌃`",
         action: toggleTerminal,
       },
-      { id: "action:files", group: "Actions", label: "Open Files", detail: "⌘/Ctrl E", action: openFiles },
+      { id: "action:files", group: "Actions", label: "Open Files", detail: chord("E"), action: openFiles },
       { id: "action:focus-terminal", group: "Actions", label: "Focus terminal", action: async () => { await openTerminal(); await focusTerminal(); } },
       { id: "menu:plan", group: "Session", label: "Plan", action: () => (sessionMenu = "plan") },
       { id: "menu:agents", group: "Session", label: "Agents & tasks", action: () => (sessionMenu = "agents") },
@@ -1850,6 +1860,69 @@
 </script>
 
 <main class="app" class:focus={currentView.screen !== "session"} data-turn-state={turnState} inert={!booted}>
+  <header class={currentView.screen === "session" ? "topbar session-head" : "topbar focus-head"} class:mac={isMac()} data-tauri-drag-region="deep">
+    <div class="brand">
+      <button bind:this={railButton} type="button" class="icon-btn rail-toggle" aria-label="Sessions" aria-expanded={railOpen} onclick={() => (railOpen = true)}>
+        <Icon name="layers" size={14} />
+      </button>
+      {#if currentProject}
+        <span class="wordmark" title={currentProject.root}>{currentProject.name}</span>
+      {:else}
+        <span class="wordmark">Forge</span>
+      {/if}
+    </div>
+    {#if currentView.screen === "session"}
+      <div class="head-title">
+        {#if activeSession}<span class="state-dot {turnState}" aria-hidden="true"></span>{/if}
+        <strong>{activeSession?.label ?? "No session"}</strong>
+        {#if activeSession}<span class="head-state">{turnWord(turnState)}</span>{/if}
+        {#if branch}<span class="chip mono" title={info.workspace}>{branch}</span>
+        {:else if info.workspace}<span class="chip mono checkout" title={info.workspace}>{basename(info.workspace)}</span>{/if}
+      </div>
+      <span class="spacer"></span>
+      {#if needsYou > 0}
+        <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
+      {/if}
+      <button bind:this={filesButton} type="button" class="btn ghost head-btn" title={`Files (${chord("E")})`} disabled={!sessionId} onclick={openFiles}>
+        <Icon name="files" size={13} />
+        Files
+        {#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
+      </button>
+      <button bind:this={terminalButton} type="button" class="btn ghost head-btn" title="Focus terminal" disabled={!sessionId} onclick={async () => { await openTerminal(); await focusTerminal(); }}>
+        <Icon name="terminal" size={13} />
+        Terminal
+      </button>
+      <button type="button" class="btn ghost head-btn model-btn" title="Change model" disabled={!sessionId} onclick={openModelPicker}>
+        <span class="model-name">{info.model || "Choose a model"}</span>
+      </button>
+      <button type="button" class="btn head-btn" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>Session…</button>
+    {:else}
+      <button type="button" class="btn head-btn" onclick={backToSession}>
+        <Icon name="arrow-left" size={13} />
+        Session
+      </button>
+      <strong>{currentView.screen === "files" ? "Files" : "Terminal"}</strong>
+      <span class="head-session">{activeSession?.label ?? ""}</span>
+      {#if currentView.screen === "files" && currentView.tabs.length === 1}
+        {@const only = currentView.tabs[0]}
+        <span class="chip mono head-doc" title={only.path}>{only.title}</span>
+        <button type="button" class="icon-btn" aria-label={`Close ${only.title}`} title={`Close document (${chord("W")})`} onclick={() => closeTab(only.id)}>
+          <Icon name="close" size={12} />
+        </button>
+      {/if}
+      <span class="spacer"></span>
+      {#if needsYou > 0}
+        <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
+      {/if}
+      {#if hasDecision}
+        <button type="button" class="btn head-btn needs" onclick={returnToDecision}>
+          <Icon name="alert" size={13} />
+          {question ? "Answer needed" : "Approval needed"}
+        </button>
+      {/if}
+    {/if}
+  </header>
+
   <Sidebar
     bind:this={sidebar}
     sessions={allSessions}
@@ -1879,55 +1952,7 @@
     onHelp={() => (helpOpen = true)}
   />
 
-  <section class="center">
-    {#if currentView.screen === "session"}
-      <header class="session-head">
-        <button bind:this={railButton} type="button" class="icon-btn rail-toggle" aria-label="Sessions" aria-expanded={railOpen} onclick={() => (railOpen = true)}>
-          <Icon name="layers" size={14} />
-        </button>
-        <div class="head-title">
-          <strong>{activeSession?.label ?? "No session"}</strong>
-          {#if info.workspace}<span class="checkout mono" title={info.workspace}>{basename(info.workspace)}</span>{/if}
-        </div>
-        <span class="spacer"></span>
-        <button bind:this={filesButton} type="button" class="btn head-btn" title="Files (⌘/Ctrl E)" disabled={!sessionId} onclick={openFiles}>
-          <Icon name="files" size={13} />
-          Files
-          {#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
-        </button>
-        {#if needsYou > 0}
-          <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
-        {/if}
-        <button bind:this={terminalButton} type="button" class="btn head-btn" title="Focus terminal" disabled={!sessionId} onclick={async () => { await openTerminal(); await focusTerminal(); }}>
-          <Icon name="terminal" size={13} />
-          Terminal
-        </button>
-        <button type="button" class="btn head-btn" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>Session…</button>
-      </header>
-    {:else}
-      <header class="focus-head">
-        <button type="button" class="icon-btn rail-toggle" aria-label="Sessions" aria-expanded={railOpen} onclick={() => (railOpen = true)}>
-          <Icon name="layers" size={14} />
-        </button>
-        <button type="button" class="btn head-btn" onclick={backToSession}>
-          <Icon name="arrow-left" size={13} />
-          Session
-        </button>
-        <strong>{currentView.screen === "files" ? "Files" : "Terminal"}</strong>
-        <span class="head-session">{activeSession?.label ?? ""}</span>
-        <span class="spacer"></span>
-        {#if needsYou > 0}
-          <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
-        {/if}
-        {#if hasDecision}
-          <button type="button" class="btn head-btn needs" onclick={returnToDecision}>
-            <Icon name="alert" size={13} />
-            {question ? "Answer needed" : "Approval needed"}
-          </button>
-        {/if}
-      </header>
-    {/if}
-
+  <section class="center" class:deciding={hasDecision}>
     {#if error}
       <div class="banner" role="alert">
         <Icon name="alert" size={14} />
@@ -2068,8 +2093,26 @@
     {/if}
   </section>
 
+  {#if currentView.screen === "session"}
+    {#key sessionId}
+      <Changes
+        {sessionId}
+        {status}
+        {lastTurnFiles}
+        {supportsGit}
+        loading={filesLoading}
+        error={filesError}
+        shellRunning={!!shells[sessionId]}
+        shellOpen={currentView.drawerOpen && !!shells[sessionId]}
+        onOpenDiff={(path, side) => { openFiles(); openDiff(path, side); }}
+        onOpenFiles={openFiles}
+        onToggleTerminal={toggleTerminal}
+      />
+    {/key}
+  {/if}
+
   {#if sessionMenu !== null}
-    <div class="modal">
+    <div class="modal popover" role="presentation" onclick={(event) => event.target === event.currentTarget && (sessionMenu = null)}>
       <Inspector
         destination={sessionMenu}
         onClose={() => (sessionMenu = null)}
@@ -2438,8 +2481,8 @@
       <Github
         onClose={() => (githubOpen = false)}
         sessionId={sessionId}
-        {githubIssue}
-        githubPr={githubPr}
+        sessionIssue={githubIssue}
+        sessionPr={githubPr}
         onCreateSession={createIssueSession}
         onChanged={refreshFiles}
       />
@@ -2505,60 +2548,91 @@
   .git-confirm { z-index: 45; }
   .child-dialog { width: min(58rem, calc(100vw - 48px)); max-height: 82vh; display: flex; flex-direction: column; }
   .child-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .child-messages { overflow: auto; min-height: 0; margin-top: 10px; }
+  .child-messages { overflow: auto; min-height: 0; margin-top: 12px; }
   .child-message { padding: 8px 0; border-top: 1px solid var(--border); }
-  .child-role { font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); }
-  .child-message pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-size: 12px; }
+  .child-role { color: var(--muted); font-size: var(--text-xs); }
+  .child-message pre { margin: 4px 0 0; white-space: pre-wrap; word-break: break-word; font-size: var(--text-sm); line-height: 20px; }
   .app {
     display: grid;
-    grid-template-columns: 258px minmax(0, 1fr);
+    grid-template-columns: 280px minmax(0, 1fr) 400px;
+    grid-template-rows: var(--bar) minmax(0, 1fr);
     height: 100vh;
     min-height: 0;
     background: var(--bg);
   }
 
-  /* A focus screen hides the rail and spans the window. */
+  /* A focus screen hides the rail and the changes column and spans the window. */
   .app.focus { grid-template-columns: minmax(0, 1fr); }
   .app.focus > :global(.sidebar:not(.open)) { display: none; }
 
-  .session-head,
-  .focus-head {
+  .topbar {
+    grid-column: 1 / -1;
     display: flex;
     align-items: center;
-    gap: 6px;
-    min-height: 46px;
-    padding: 0 14px;
+    gap: 4px;
+    min-width: 0;
+    padding: 0 12px 0 0;
     border-bottom: 1px solid var(--border);
-    background: var(--bg);
+    background: var(--surface);
   }
 
-  .head-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 280px;
+    flex: none;
+    min-width: 0;
+    padding: 0 16px;
+  }
+  .app.focus .brand { width: auto; }
+  /* macOS draws the window's close, minimise and zoom buttons over the
+     bar's left end; the brand starts clear of them. */
+  .topbar.mac .brand { padding-left: 84px; }
+  .wordmark { overflow: hidden; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
+
+  .head-title { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 12px; }
   .head-title strong,
-  .focus-head strong { font-size: 13.5px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; }
+  .focus-head strong { font-size: var(--text-md); font-weight: 600; white-space: nowrap; }
   .head-title strong { overflow: hidden; text-overflow: ellipsis; }
-  .checkout,
-  .head-session { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11.5px; }
-  .head-btn { display: inline-flex; align-items: center; gap: 5px; flex: none; }
+  .head-state { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+  .head-title .chip { flex: none; max-width: 220px; }
+  .focus-head > strong { margin-left: 12px; }
+  .head-session { margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-sm); }
+  .head-doc { flex: none; max-width: 280px; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .head-btn { flex: none; }
   .head-btn .count {
     min-width: 16px; padding: 0 4px; border-radius: 8px;
-    background: var(--accent-soft); color: var(--accent); font-size: 10.5px; font-weight: 700; text-align: center;
+    background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; line-height: 16px; text-align: center;
   }
-  .head-btn.needs { color: var(--warning); }
+  .head-btn.needs { border-color: color-mix(in srgb, var(--warning) 50%, var(--border)); color: var(--warning); }
+  .model-name { max-width: 200px; overflow: hidden; text-overflow: ellipsis; }
   .rail-toggle { display: none; }
 
+  /* The strips between the conversation and the composer share its column. */
+  .current-step,
+  .queue-strip,
+  .banner {
+    width: calc(100% - 68px);
+    max-width: 720px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
   .current-step {
-    display: flex; align-items: center; gap: 8px; margin: 0; padding: 6px 18px;
-    color: var(--muted); font-size: 12px;
+    display: flex; align-items: center; gap: 8px; margin-top: 0; margin-bottom: 8px;
+    color: var(--muted); font-size: var(--text-sm);
   }
   .current-step span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .link { padding: 0; border: 0; background: none; color: var(--accent); font-size: 12px; white-space: nowrap; }
-  .link:hover { text-decoration: underline; }
+  .link { padding: 0; border: 0; background: none; color: var(--accent); font-size: var(--text-sm); white-space: nowrap; text-decoration: underline; text-underline-offset: 3px; }
 
   .queue-strip {
-    display: flex; align-items: center; gap: 10px; margin: 0 14px 6px; padding: 5px 6px 5px 10px;
-    border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px;
+    display: flex; align-items: center; gap: 8px; margin-top: 0; margin-bottom: 8px; padding: 4px 4px 4px 12px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+    color: var(--muted); font-size: var(--text-sm);
   }
   .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .queue-strip .btn { height: 24px; padding: 0 8px; }
 
   .decision { display: contents; }
 
@@ -2567,6 +2641,15 @@
     flex-direction: column;
     min-width: 0;
     min-height: 0;
+    background: var(--bg);
+  }
+
+  /* One accent fill at a time: while a decision is docked, its first
+     button is the primary action and Send steps back. */
+  .center.deciding :global(.composer .btn.primary) {
+    border-color: var(--border);
+    background: var(--raised);
+    color: var(--text);
   }
 
   .chat-host {
@@ -2598,24 +2681,18 @@
     flex: 1;
   }
 
-  .chip {
-    max-width: 180px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
   .banner {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin: 8px 24px 0;
-    padding: 7px 10px;
+    margin-top: 12px;
+    margin-bottom: 0;
+    padding: 4px 4px 4px 12px;
     border: 1px solid color-mix(in srgb, var(--error) 45%, var(--border));
     border-radius: var(--radius-sm);
-    background: color-mix(in srgb, var(--error) 10%, var(--surface));
+    background: var(--surface);
     color: var(--error);
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   .banner span {
@@ -2623,61 +2700,71 @@
     overflow-wrap: anywhere;
   }
 
+  /* Dialogs: one shell for every confirmation the page asks. */
   .modal {
     position: fixed;
     inset: 0;
     display: grid;
     place-items: center;
-    background: rgba(5, 7, 9, 0.6);
-    backdrop-filter: blur(3px);
+    background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
     z-index: 20;
+  }
+
+  /* The Session panel hangs under its button with no scrim: it holds facts
+     and routine actions, and a click anywhere else puts it away. */
+  .modal.popover {
+    place-items: start end;
+    padding: calc(var(--bar) + 4px) 12px 12px;
+    background: transparent;
+  }
+
+  .modal.popover > :global(*) {
+    max-height: calc(100dvh - var(--bar) - 16px);
   }
 
   .dialog {
     width: min(26rem, calc(100vw - 48px));
     max-height: calc(100dvh - 48px);
     overflow: auto;
-    padding: 22px;
-    border: 1px solid var(--border-strong);
-    border-radius: 14px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     background: var(--surface);
     box-shadow: var(--shadow);
   }
 
   .dialog h2 {
-    margin: 0 0 6px;
-    font-size: 16px;
-    font-weight: 650;
-    letter-spacing: -0.015em;
+    margin: 0 0 8px;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 24px;
   }
 
   .dialog p {
     margin: 0 0 16px;
     color: var(--secondary);
-    font-size: 12.5px;
+    font-size: var(--text-md);
   }
 
   .dialog-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: wrap;
   }
 
-  .dialog-actions .btn {
-    height: 26px;
-  }
-
   .commit-message {
+    height: auto;
     min-height: 88px;
-    margin-bottom: 10px;
-    padding: 8px;
+    margin-bottom: 12px;
+    padding: 8px 12px;
     resize: vertical;
     font-family: var(--font-ui);
+    line-height: 20px;
   }
 
   .project-list {
-    margin: 0 0 14px;
+    margin: 0 0 16px;
     padding: 0;
     list-style: none;
   }
@@ -2685,8 +2772,7 @@
   .project-list li {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 2px 0;
+    gap: 8px;
   }
 
   .project-row {
@@ -2695,15 +2781,16 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
-    padding: 6px 8px;
+    height: var(--control-lg);
+    padding: 0 8px;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text);
-    font: inherit;
-    font-size: 12.5px;
+    font-size: var(--text-md);
     text-align: left;
     cursor: pointer;
+    transition: background var(--fast) var(--ease);
   }
 
   .project-row.static {
@@ -2711,7 +2798,7 @@
   }
 
   .project-row:hover:not(.static):not(:disabled) {
-    background: var(--surface-raised, rgba(255, 255, 255, 0.06));
+    background: var(--hover);
   }
 
   .project-name {
@@ -2723,17 +2810,29 @@
 
   .project-meta {
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-xs);
   }
 
   .dialog-error {
-    margin: 0 0 10px;
+    margin: 0 0 12px;
     color: var(--error);
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   .danger-line {
     color: var(--error);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .project-row { transition: none; }
+  }
+
+  /* Narrow: the changes column gives its room to the conversation; Files
+     in the header still reaches every change. */
+  @media (max-width: 1180px) {
+    .app { grid-template-columns: 280px minmax(0, 1fr); }
+    .app > :global(.changes) { display: none; }
+    .model-btn { display: none; }
   }
 
   /* Compact: the rail becomes an overlay opened from the header. */
@@ -2741,6 +2840,10 @@
     .app {
       grid-template-columns: minmax(0, 1fr);
     }
+
+    .brand { width: auto; padding: 0 8px; }
+    /* The state word outlasts the branch chip: a dot alone says nothing. */
+    .head-title .chip { display: none; }
 
     .rail-toggle { display: inline-grid; }
 

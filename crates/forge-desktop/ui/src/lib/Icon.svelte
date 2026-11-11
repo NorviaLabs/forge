@@ -57,6 +57,10 @@
     <path d="M12 10v4M12 17.2v.1" />
   {:else if name === "arrow-left"}
     <path d="M19 12H5M11 6l-6 6 6 6" />
+  {:else if name === "arrow-up"}
+    <path d="M12 19V5M6 11l6-6 6 6" />
+  {:else if name === "arrow-down"}
+    <path d="M12 5v14M6 13l6 6 6-6" />
   {:else if name === "pin"}
     <path d="M9 3h6l-1 5 3 3v2H7v-2l3-3Z" />
     <path d="M12 13v8" />

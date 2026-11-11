@@ -51,6 +51,7 @@ Most terminal coding agents optimize the prompt-to-patch loop around an agent yo
 
 - Name: Forge (published by NorviaLabs).
 - Voice: plain and factual. Copy says exactly what happens and what the user must do. No hype and no "AI-powered" puffery.
+- Visual direction (chosen 2026-11-11): the category standard, played straight. A quiet dark agent workbench held to the finish of Zed, Warp, Linear and the Conductor / Codex apps. Convention is the commitment: no novelty identity, no quirk. It must not read as an IDE or as a chat app.
 
 ## Evidence on Hand
 

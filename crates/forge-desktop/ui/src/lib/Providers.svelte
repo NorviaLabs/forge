@@ -20,6 +20,26 @@
   let custom = $state({ id: "", base_url: "", model: "", wire: "chat-completions" });
   const selected = $derived(providers.find((entry) => entry.id === profileId));
 
+  // Choosing another provider drops any half-finished confirmation or form.
+  function choose(id) {
+    if (id === profileId) return;
+    profileId = id;
+    disconnecting = false;
+    removing = false;
+    customOpen = false;
+    customEditing = false;
+    message = "";
+    error = "";
+  }
+
+  // Connection state as a dot class and a word.
+  function connection(provider) {
+    if (provider.connected) return ["completed", "connected"];
+    if (provider.needs_auth) return ["failed", "sign-in rejected"];
+    if (provider.reuse) return ["queued", "sign-in available"];
+    return ["", "not connected"];
+  }
+
   async function refresh() {
     providers = await invoke("list_providers");
     if (!profileId) profileId = providers[0]?.id ?? "";
@@ -86,14 +106,28 @@
       <h2 id="providers-title">Providers</h2>
       <button class="icon-btn" type="button" aria-label="Close providers" onclick={onClose}><Icon name="close" size={13} /></button>
     </header>
-    <label>Provider
-      <select class="field" bind:value={profileId} disabled={busy} onchange={() => { disconnecting = false; removing = false; customOpen = false; customEditing = false; message = ""; error = ""; }}>
-        {#each providers as provider (provider.id)}
-          <option value={provider.id}>{provider.title}{provider.connected ? " — connected" : provider.needs_auth ? " — sign-in rejected" : provider.reuse ? " — sign-in available" : ""}</option>
-        {/each}
-      </select>
-    </label>
+    <div class="body">
+    <ul class="list" aria-label="Provider">
+      {#each providers as provider (provider.id)}
+        {@const [dot, word] = connection(provider)}
+        <li>
+          <button
+            type="button"
+            class="provider"
+            class:current={provider.id === profileId}
+            aria-pressed={provider.id === profileId}
+            disabled={busy}
+            onclick={() => choose(provider.id)}
+          >
+            <span class="name">{provider.title}</span>
+            <span class="source mono">{provider.auth}</span>
+            <span class="connection"><span class="state-dot {dot}" aria-hidden="true"></span>{word}</span>
+          </button>
+        </li>
+      {/each}
+    </ul>
     {#if selected}
+      <h3 class="section-label">{selected.title}</h3>
       <p>{selected.auth}. API keys are read from your environment or stored credentials. If missing, macOS opens a native hidden-input prompt; keys never enter this page.</p>
       {#if selected.needs_auth}<p class="error" role="alert">The saved sign-in was rejected or has expired. Connect to enter a new key or reuse another sign-in.</p>{/if}
       {#if login}
@@ -193,24 +227,222 @@
     {/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
     {#if message}<p role="status">{message}</p>{/if}
+    </div>
   </div>
 </div>
 
 <style>
-  .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5, 7, 9, 0.6); z-index: 35; }
-  .providers { width: min(34rem, calc(100vw - 48px)); max-height: calc(100vh - 64px); overflow: auto; padding: 18px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
-  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
-  h2 { margin: 0; font-size: 15px; }
-  h3 { font-size: 13px; margin: 0 0 6px; }
-  label { display: flex; flex-direction: column; gap: 5px; color: var(--secondary); font-size: 12px; }
-  p { color: var(--secondary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
-  .actions, form { display: flex; align-items: end; gap: 6px; }
-  form { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
-  form label { flex: 1; }
-  form.custom { flex-direction: column; align-items: stretch; gap: 8px; }
-  form.custom label { width: 100%; }
-  .confirm { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
-  .add-custom { margin-top: 16px; }
-  .login { margin: 12px 0; }
-  .error { color: var(--error); }
+  .overlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
+    z-index: 35;
+  }
+
+  .providers {
+    display: flex;
+    flex-direction: column;
+    width: min(560px, calc(100vw - 48px));
+    max-height: calc(100vh - 64px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    height: var(--bar);
+    flex: none;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h2 {
+    margin: 0;
+    font-size: var(--text-lg);
+    font-weight: 600;
+  }
+
+  .body {
+    flex: 1;
+    min-height: 0;
+    padding: 16px;
+    overflow: auto;
+  }
+
+  /* Provider rows, separated by rules. */
+  .list {
+    max-height: 232px;
+    margin: 0;
+    padding: 0;
+    overflow: auto;
+    border-top: 1px solid var(--border);
+    list-style: none;
+  }
+
+  .list li {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .provider {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: var(--control-lg);
+    padding: 0 8px;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: var(--text);
+    text-align: left;
+    transition: background var(--fast) var(--ease);
+  }
+
+  .provider:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .provider.current {
+    background: var(--raised);
+  }
+
+  .provider:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .name {
+    font-size: var(--text-md);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+
+  .source {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .connection {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--secondary);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+
+  .section-label {
+    margin: 16px 0 8px;
+    color: var(--muted);
+    font-size: var(--text-xs);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  h3 {
+    margin: 0 0 8px;
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--secondary);
+    font-size: var(--text-sm);
+  }
+
+  p {
+    margin: 8px 0;
+    color: var(--secondary);
+    font-size: var(--text-sm);
+    line-height: 18px;
+    overflow-wrap: anywhere;
+  }
+
+  .actions,
+  form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 8px;
+  }
+
+  .actions {
+    margin-top: 12px;
+  }
+
+  form {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  form label {
+    flex: 1;
+  }
+
+  /* Beside a field, a button takes the field's height. */
+  form:not(.custom) .btn {
+    height: var(--control-lg);
+  }
+
+  form.custom {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  form.custom label {
+    width: 100%;
+  }
+
+  form.custom .actions {
+    margin-top: 4px;
+  }
+
+  .confirm {
+    margin-top: 16px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+  }
+
+  .add-custom {
+    margin-top: 16px;
+  }
+
+  .login {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+
+  .login p:last-child {
+    margin-bottom: 0;
+  }
+
+  .error {
+    color: var(--error);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .provider {
+      transition: none;
+    }
+  }
 </style>

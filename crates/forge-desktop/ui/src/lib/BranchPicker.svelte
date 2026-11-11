@@ -18,6 +18,11 @@
 
   let newName = $state("");
   let renameName = $state("");
+  let filter = $state("");
+
+  const shown = $derived(
+    branches.filter((branch) => branch.toLowerCase().includes(filter.trim().toLowerCase())),
+  );
 
   // Start the rename field from the branch that is current, and follow it if
   // a rename lands while the dialog is open.
@@ -39,24 +44,42 @@
     {#if loading}
       <p class="dim">Reading branches…</p>
     {:else}
+      <input class="field" bind:value={filter} placeholder="Filter branches" aria-label="Filter branches" spellcheck="false" />
       <ul class="list">
-        {#each branches as branch (branch)}
+        {#each shown as branch (branch)}
           <li>
-            <span class="name mono" class:current={branch === current}>
-              {branch}{#if branch === current}<span class="tag">current</span>{/if}
-            </span>
-            {#if branch !== current}
+            <span class="name mono" class:current={branch === current} title={branch}>{branch}</span>
+            {#if branch === current}
+              <span class="tag">current</span>
+            {:else}
               <button class="btn" type="button" disabled={busy} onclick={() => onSwitch(branch)}>Switch</button>
-              <button class="btn" type="button" disabled={busy} onclick={() => onMerge(branch)}>Merge in</button>
-              <button class="btn" type="button" disabled={busy} onclick={() => onDelete(branch)}>Delete…</button>
+              <button class="btn ghost" type="button" disabled={busy} onclick={() => onMerge(branch)}>Merge in</button>
+              <button class="btn ghost" type="button" disabled={busy} onclick={() => onDelete(branch)}>Delete…</button>
             {/if}
           </li>
         {/each}
+        {#if shown.length === 0}
+          <li class="dim">{branches.length === 0 ? "No branches yet. Create one below." : "No branches match. Clear the filter to see them all."}</li>
+        {/if}
       </ul>
     {/if}
 
+    {#if current}
+      <div class="create">
+        <input class="field" bind:value={renameName} aria-label="Rename current branch" spellcheck="false" />
+        <button
+          class="btn"
+          type="button"
+          disabled={busy || !renameName.trim() || renameName.trim() === current}
+          onclick={() => onRename(current, renameName.trim())}
+        >
+          Rename current
+        </button>
+      </div>
+    {/if}
+
     <div class="create">
-      <input class="field" bind:value={newName} placeholder="New branch name" aria-label="New branch name" />
+      <input class="field" bind:value={newName} placeholder="New branch name" aria-label="New branch name" spellcheck="false" />
       <button
         class="btn primary"
         type="button"
@@ -69,20 +92,6 @@
         Create
       </button>
     </div>
-
-    {#if current}
-      <div class="create">
-        <input class="field" bind:value={renameName} aria-label="Rename current branch" />
-        <button
-          class="btn"
-          type="button"
-          disabled={busy || !renameName.trim() || renameName.trim() === current}
-          onclick={() => onRename(current, renameName.trim())}
-        >
-          Rename current
-        </button>
-      </div>
-    {/if}
 
     <p class="dim small">
       Switching and merging run in the session's workspace. Uncommitted changes can stop a
@@ -97,17 +106,19 @@
     inset: 0;
     display: grid;
     place-items: center;
-    background: rgba(5, 7, 9, 0.6);
+    background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
     z-index: 20;
   }
 
   .dialog {
-    width: min(30rem, calc(100vw - 48px));
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    width: min(480px, calc(100vw - 48px));
     max-height: 80vh;
-    overflow: auto;
-    padding: 16px 18px;
-    border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     background: var(--surface);
     box-shadow: var(--shadow);
   }
@@ -116,80 +127,92 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 10px;
+    flex: none;
   }
 
   h2 {
     margin: 0;
-    font-size: 15px;
+    font-size: var(--text-lg);
     font-weight: 600;
   }
 
+  .field {
+    flex: none;
+    font-size: var(--text-sm);
+  }
+
   .list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    margin: 0 0 12px;
+    flex: 0 1 auto;
+    min-height: 56px;
+    margin: 0;
     padding: 0;
+    overflow: auto;
     list-style: none;
   }
 
   .list li {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     min-height: 28px;
+    font-size: var(--text-sm);
   }
 
   .name {
     flex: 1;
+    min-width: 0;
     overflow: hidden;
+    color: var(--secondary);
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--secondary);
-    font-size: 12px;
   }
 
   .name.current {
     color: var(--text);
+    font-weight: 500;
   }
 
   .tag {
-    margin-left: 6px;
-    padding: 1px 5px;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-family: var(--font-ui);
-    font-size: 9.5px;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    flex: none;
+    color: var(--muted);
+    font-size: var(--text-xs);
   }
 
   .list .btn {
-    height: 22px;
-    padding: 0 7px;
-    font-size: 11px;
+    height: 24px;
+    padding: 0 8px;
   }
 
   .create {
     display: flex;
-    gap: 6px;
-    margin-bottom: 8px;
+    gap: 8px;
+    flex: none;
+  }
+
+  .create .field {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .create .btn {
+    height: var(--control-lg);
   }
 
   .error {
-    margin: 0 0 8px;
+    margin: 0;
     color: var(--error);
-    font-size: 12px;
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
   }
 
   .dim {
+    margin: 0;
     color: var(--muted);
+    font-size: var(--text-sm);
   }
 
   .small {
-    margin: 10px 0 0;
-    font-size: 11px;
+    font-size: var(--text-xs);
+    line-height: 16px;
   }
 </style>

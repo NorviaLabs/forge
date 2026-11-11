@@ -50,6 +50,15 @@
     tick().then(() => input?.closest(".palette")?.querySelector(`#${active}`)?.scrollIntoView({ block: "nearest" }));
   });
 
+  // A detail is a keyboard hint, a path, or a plain word.
+  function isShortcut(detail) {
+    return /[⌘⌃⌥⇧]|Ctrl/.test(detail);
+  }
+
+  function isPath(item) {
+    return item.group === "Files" || item.detail.includes("/");
+  }
+
   function focusInput(node) {
     node.focus();
     return {};
@@ -105,6 +114,9 @@
     </div>
     <ul class="results" id="palette-results" role="listbox" aria-label="Commands">
       {#each filtered as item, index (item.id)}
+        {#if item.group && (index === 0 || filtered[index - 1].group !== item.group)}
+          <li class="group-label" role="presentation" aria-hidden="true">{item.group}</li>
+        {/if}
         <li role="presentation">
           <button
             type="button"
@@ -116,9 +128,15 @@
             onmouseenter={() => (cursor = index)}
             onclick={() => run(item)}
           >
-            <span class="group">{item.group ?? ""}</span>
+            <span class="group sr-only">{item.group ?? ""}</span>
             <span class="label">{item.label}</span>
-            {#if item.detail}<span class="detail">{item.detail}</span>{/if}
+            {#if item.detail}
+              {#if isShortcut(item.detail)}
+                <span class="detail hint">{item.detail}</span>
+              {:else}
+                <span class="detail" class:path={isPath(item)}>{item.detail}</span>
+              {/if}
+            {/if}
           </button>
         </li>
       {/each}
@@ -134,19 +152,20 @@
     position: fixed;
     inset: 0;
     display: flex;
+    align-items: flex-start;
     justify-content: center;
-    padding-top: 14vh;
-    background: rgba(5, 7, 9, 0.5);
+    padding-top: 12vh;
+    background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
     z-index: 40;
   }
 
   .palette {
     display: flex;
     flex-direction: column;
-    width: min(38rem, calc(100vw - 64px));
-    max-height: 26rem;
-    border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    width: min(560px, calc(100vw - 48px));
+    max-height: min(432px, calc(88vh - 24px));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     background: var(--surface);
     box-shadow: var(--shadow);
     overflow: hidden;
@@ -156,36 +175,65 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 12px;
+    height: var(--bar);
+    flex: none;
+    padding: 0 16px;
     border-bottom: 1px solid var(--border);
     color: var(--muted);
   }
 
   .search input {
     flex: 1;
+    align-self: stretch;
     min-width: 0;
+    padding: 0;
     border: 0;
     background: none;
-    font-size: 13.5px;
+    font-size: var(--text-md);
+  }
+
+  .search input::placeholder {
+    color: var(--muted);
+  }
+
+  /* Focus is shown on the palette's own edge, not as a box inside its
+     header. */
+  .search input:focus-visible {
+    outline: none;
+  }
+
+  .palette:focus-within {
+    border-color: var(--accent);
+    outline: 1px solid var(--accent);
   }
 
   kbd {
-    padding: 1px 5px;
+    flex: none;
+    padding: 0 4px;
     border: 1px solid var(--border);
     border-radius: 4px;
     color: var(--muted);
-    font-size: 10px;
+    font-size: var(--text-xs);
+    line-height: 16px;
   }
 
   .results {
-    list-style: none;
+    flex: 1;
+    min-height: 0;
     margin: 0;
-    padding: 6px;
+    padding: 0 8px 8px;
     overflow: auto;
+    list-style: none;
   }
 
   .results li {
     margin: 0;
+  }
+
+  .group-label {
+    padding: 12px 8px 4px;
+    color: var(--muted);
+    font-size: var(--text-xs);
   }
 
   .results button {
@@ -193,55 +241,64 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 30px;
+    height: var(--control-lg);
     padding: 0 8px;
     border: 0;
     border-radius: var(--radius-sm);
     background: none;
-    text-align: left;
     color: var(--secondary);
-    font-size: 12.5px;
+    font-size: var(--text-md);
+    text-align: left;
   }
 
+  /* The row the arrow keys (or the pointer) are on. */
   .results button.active {
-    background: var(--selection);
+    background: var(--hover);
     color: var(--text);
   }
 
-  .group {
-    width: 5.6rem;
-    flex: none;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--muted);
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .results button:focus-visible {
+    outline-offset: -2px;
   }
 
   .label {
-    flex: 1;
+    flex: none;
+    max-width: 70%;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .detail {
-    max-width: 40%;
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
+    color: var(--muted);
+    font-size: var(--text-sm);
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--muted);
+  }
+
+  .detail.path {
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: var(--text-xs);
+  }
+
+  /* A keyboard hint sits at the right edge of its row. */
+  .detail.hint {
+    flex: none;
+    margin-left: auto;
+    padding: 0 4px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 16px;
   }
 
   .empty {
-    padding: 12px;
+    padding: 16px 8px 8px;
     color: var(--muted);
-    font-size: 12.5px;
-    list-style: none;
+    font-size: var(--text-sm);
   }
 </style>

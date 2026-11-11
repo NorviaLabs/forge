@@ -177,22 +177,6 @@
     placeholder="Ask Forge, or describe what to change…"
     spellcheck="false"
   ></textarea>
-  {#if attachment}
-    <div class="attachments" aria-label="File attachment">
-      <button class="btn" type="button" title="Remove file context" onclick={onRemoveAttachment}>
-        Context: {attachment.path}:{attachment.line + 1} <Icon name="close" size={11} />
-      </button>
-    </div>
-  {/if}
-  {#if images.length}
-    <div class="attachments" aria-label="Image attachments">
-      {#each images as image, index (index)}
-        <button class="btn" type="button" title="Remove image" onclick={() => (imageDrafts[sessionId] = images.filter((_, i) => i !== index))}>
-          {image.name || `Image ${index + 1}`} · {Math.ceil(image.size / 1024)} KiB <Icon name="close" size={11} />
-        </button>
-      {/each}
-    </div>
-  {/if}
   {#if imageError}<p class="error" role="alert">{imageError}</p>{/if}
   <footer>
     <button
@@ -205,14 +189,30 @@
     >
       <Icon name="terminal" size={14} />
     </button>
+    {#if attachment}
+      <div class="attachments" aria-label="File attachment">
+        <button class="btn chip" type="button" title="Remove file context" onclick={onRemoveAttachment}>
+          <span class="chip-text">Context: {attachment.path}:{attachment.line + 1}</span> <Icon name="close" size={11} />
+        </button>
+      </div>
+    {/if}
+    {#if images.length}
+      <div class="attachments" aria-label="Image attachments">
+        {#each images as image, index (index)}
+          <button class="btn chip" type="button" title="Remove image" onclick={() => (imageDrafts[sessionId] = images.filter((_, i) => i !== index))}>
+            <span class="chip-text">{image.name || `Image ${index + 1}`} · {Math.ceil(image.size / 1024)} KiB</span> <Icon name="close" size={11} />
+          </button>
+        {/each}
+      </div>
+    {/if}
+    <button class="context" type="button" title="Context & usage" onclick={onContext}>
+      Context {contextPercent}%
+      <span class="meter" aria-hidden="true"><span class="fill {contextLevel}" style="width: {contextPercent}%"></span></span>
+    </button>
     <span class="hint"><kbd>↵</kbd> send · <kbd>⇧</kbd><kbd>↵</kbd> newline{imageInput ? " · Paste images" : ""}</span>
     <span class="spacer"></span>
-    <button class="context" type="button" title="Context & usage" onclick={onContext}>
-      <span class="meter" aria-hidden="true"><span class="fill {contextLevel}" style="width: {contextPercent}%"></span></span>
-      Context {contextPercent}%
-    </button>
     {#if running}
-      <button class="btn" type="button" disabled={stopping} onclick={onStop}>
+      <button class="btn danger" type="button" disabled={stopping} onclick={onStop}>
         <Icon name="stop" size={13} />
         {stopping ? "Stopping…" : "Stop"}
       </button>
@@ -226,7 +226,7 @@
 {#if drawerOpen}
   <div class="drawer-head">
     <Icon name="terminal" size={13} />
-    <span>Terminal</span>
+    <span class="drawer-title">Terminal</span>
     <span class="spacer"></span>
     <button class="icon-btn" type="button" title="Focus terminal" aria-label="Focus terminal" onclick={onFocusTerminal}>
       <Icon name="expand" size={13} />
@@ -241,115 +241,102 @@
 {/if}
 
 <style>
-  .attachments { display: flex; flex-wrap: wrap; gap: 5px; }
-  .error { margin: 0; color: var(--error); font-size: 12px; }
+  /* Aligned to the conversation's content column: at most 720px wide, with a
+     24px gutter on each side when the centre column is narrower. */
   .composer {
     position: relative;
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-width: 52rem;
-    margin: 0 auto 18px;
-    width: calc(100% - 48px);
-    padding: 11px 12px 9px;
-    border: 1px solid var(--border-strong);
-    border-radius: 14px;
-    background: var(--surface);
-    box-shadow: var(--shadow);
-    transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
-  }
-
-  .slash {
-    position: absolute;
-    right: 0;
-    bottom: calc(100% + 6px);
-    left: 0;
-    z-index: 20;
-    max-height: 15rem;
-    margin: 0;
-    padding: 4px;
-    overflow: auto;
-    list-style: none;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--radius);
-    background: var(--raised);
-    box-shadow: var(--shadow);
-  }
-
-  .slash button {
-    display: flex;
-    align-items: baseline;
-    gap: 10px;
-    width: 100%;
-    padding: 6px 8px;
-    border: 0;
-    border-radius: var(--radius-sm);
-    background: none;
-    text-align: left;
-  }
-
-  .slash button:hover,
-  .slash button.active {
-    background: var(--hover);
-  }
-
-  .slash-name {
     flex: none;
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 12px;
+    flex-direction: column;
+    gap: 8px;
+    width: calc(100% - 68px);
+    max-width: 720px;
+    margin: 0 auto 16px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    transition: border-color var(--fast) var(--ease);
   }
 
-  .slash-help {
-    overflow: hidden;
-    color: var(--muted);
-    font-size: 11.5px;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
+  /* The card carries the textarea's focus indicator. */
   .composer:focus-within {
     border-color: var(--accent);
-    box-shadow: var(--ring), var(--shadow);
+    box-shadow: var(--ring);
   }
 
   textarea {
+    display: block;
     width: 100%;
-    min-height: 38px;
+    min-height: 40px;
     max-height: 220px;
-    padding: 2px 4px;
+    padding: 0;
     border: 0;
-    background: none;
+    border-radius: 0;
+    background: transparent;
     outline: none;
     resize: none;
-    font-size: 14px;
-    line-height: 1.55;
+    font-size: var(--text-md);
+    line-height: 20px;
   }
 
   textarea::placeholder {
     color: var(--muted);
   }
 
+  .error {
+    margin: 0;
+    color: var(--error);
+    font-size: var(--text-sm);
+  }
+
   footer {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    min-width: 0;
   }
 
   .spacer {
     flex: 1;
   }
 
+  .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .attachments .chip {
+    max-width: 240px;
+    height: 22px;
+    padding: 0 8px;
+    font-size: var(--text-xs);
+    font-weight: 400;
+  }
+
+  .chip-text {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .context {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 2px 6px;
+    gap: 8px;
+    height: var(--control);
+    padding: 0 8px;
     border: 0;
     border-radius: var(--radius-sm);
-    background: none;
+    background: transparent;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
   }
 
   .context:hover {
@@ -358,51 +345,130 @@
   }
 
   .meter {
-    width: 36px;
+    width: 48px;
     height: 4px;
     overflow: hidden;
-    border-radius: 2px;
+    border-radius: var(--radius-sm);
     background: var(--border);
   }
 
   .fill {
     display: block;
     height: 100%;
-    background: var(--accent);
+    background: var(--muted);
   }
 
-  .fill.warm { background: var(--warning); }
-  .fill.high { background: var(--error); }
-
-  .drawer-head {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 10px 4px 14px;
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 11.5px;
+  /* The percentage beside the meter carries the figure; the colour only
+     repeats that it is running high. */
+  .fill.warm,
+  .fill.high {
+    background: var(--warning);
   }
 
   .hint {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 4px;
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-xs);
+    white-space: nowrap;
   }
 
   kbd {
     display: inline-grid;
     place-items: center;
-    min-width: 17px;
-    height: 17px;
+    min-width: 16px;
+    height: 16px;
     padding: 0 4px;
     border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg-deep);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
     color: var(--secondary);
     font-family: var(--font-ui);
-    font-size: 10px;
+    font-size: var(--text-xs);
+    line-height: 1;
+  }
+
+  .slash {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 20;
+    max-height: 240px;
+    margin: 0;
+    padding: 4px;
+    overflow: auto;
+    list-style: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--raised);
+    box-shadow: var(--shadow);
+  }
+
+  .slash button {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    height: var(--control);
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    text-align: left;
+    transition: background var(--fast) var(--ease);
+  }
+
+  .slash button:hover,
+  .slash button.active {
+    background: var(--hover);
+  }
+
+  .slash button:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .slash-name {
+    flex: none;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .slash-help {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--muted);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .drawer-head {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    height: var(--bar);
+    padding: 0 8px 0 16px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .drawer-title {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .composer,
+    .context,
+    .slash button {
+      transition: none;
+    }
   }
 </style>

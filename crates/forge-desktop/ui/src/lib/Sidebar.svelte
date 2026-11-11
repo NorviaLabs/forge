@@ -45,6 +45,9 @@
   const shownClosed = $derived(closed.filter(matches));
   // Roster order, never re-sorted: acting on a decision must not move rows.
   const waiting = $derived(sessions.filter((session) => attention.includes(session.session_id)));
+  // The sessions belong under the on-screen project's heading; with no such
+  // project registered they are still listed, after the headings.
+  const grouped = $derived(projects.some((project) => project.id === projectId));
 
   // At compact width the open rail is a modal overlay: it traps focus, closes
   // on Escape, and returns focus to the header control that opened it.
@@ -69,144 +72,8 @@
   }
 </script>
 
-{#if open}
-  <button type="button" class="rail-backdrop" aria-label="Close sessions" tabindex="-1" onclick={() => onCloseRail?.()}></button>
-{/if}
-<aside class="sidebar" class:open aria-label="Projects and sessions" {@attach open ? overlay : null}>
-  <header class="workspace">
-    <span class="mark" aria-hidden="true">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3 6h13.5a4.5 4.5 0 0 1-4 4.5V13H15a2 2 0 0 1 2 2v2h2v2H5v-2h2v-2a2 2 0 0 1 2-2h1.5v-2.5A4.5 4.5 0 0 1 3 6Z"/><path d="M19.5 3.5 21 5.5l-2 .8.4-2.8Z"/></svg>
-    </span>
-    <strong class="brand">Forge</strong>
-    {#if open}
-      <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
-        <Icon name="close" size={13} />
-      </button>
-    {/if}
-  </header>
-
-  <section class="panel projects" aria-label="Projects">
-    <div class="section-head">
-      <span class="label">Projects</span>
-      <button class="icon-btn" type="button" title="Add a project" aria-label="Add a project" onclick={() => onAddProject?.()}>
-        <Icon name="plus" size={14} />
-      </button>
-    </div>
-    <ul class="project-list">
-      {#each projects as project (project.id)}
-        {@const status = projectStatus(project)}
-        {@const current = project.id === projectId}
-        <li class="project {status}" class:current>
-          <div class="project-line">
-            <button
-              type="button"
-              class="project-main"
-              title={project.root}
-              aria-current={current ? "true" : undefined}
-              disabled={projectBusy && !current}
-              onclick={() => onSwitchProject?.(project)}
-            >
-              <span class="project-dot" aria-hidden="true"></span>
-              <span class="project-name">{project.name}</span>
-              {#if status === "waiting"}
-                <span class="project-badge" aria-label="{project.attention.length} waiting on you">{project.attention.length}</span>
-              {:else if status === "running"}
-                <span class="project-meta" aria-label="{project.running} of {project.limit} agents running">{project.running}/{project.limit}</span>
-              {:else if status === "closed"}
-                <span class="project-meta">closed</span>
-              {/if}
-            </button>
-            {#if !current}
-              <span class="row-actions">
-                {#if project.open}
-                  <button type="button" class="icon-btn" title="Close project (stops its agents)" aria-label={`Close ${project.name}`} onclick={() => onCloseProject?.(project)}>
-                    <Icon name="close" size={12} />
-                  </button>
-                {:else}
-                  <button type="button" class="icon-btn" title="Remove from Forge (the folder and its sessions stay)" aria-label={`Remove ${project.name}`} onclick={() => onRemoveProject?.(project)}>
-                    <Icon name="trash" size={12} />
-                  </button>
-                {/if}
-              </span>
-            {/if}
-          </div>
-          {#if !current && project.attention.length}
-            <ul class="requests" aria-label="Waiting in {project.name}">
-              {#each project.attention as item (item.session_id + item.call_id)}
-                <li>
-                  <button
-                    type="button"
-                    class="request"
-                    title="{project.name}: {item.session_label || 'Session'}"
-                    onclick={() => onElsewhere?.({ ...item, project_id: project.id, project_name: project.name })}
-                  >
-                    <span class="request-kind">{attentionLabel(item.kind)}</span>
-                    <span class="request-session">{item.session_label || "Session"}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </li>
-      {/each}
-    </ul>
-  </section>
-
-  {#if waiting.length > 0}
-    <section class="panel needs-section" aria-label="Needs you">
-      <div class="section-head">
-        <span class="label">Needs you</span>
-        <span class="count">{waiting.length}</span>
-      </div>
-      <ul class="session-list">
-        {#each waiting as session (session.session_id)}
-          <li class="needs-you">
-            <button type="button" class="session" onclick={() => onRequest(session.session_id)}>
-              <span class="state-dot {session.turn_state}"></span>
-              <span class="session-name">{session.label}</span>
-              <span class="session-state">{session.turn_state}</span>
-            </button>
-          </li>
-        {/each}
-      </ul>
-    </section>
-  {/if}
-
+{#snippet sessionGroup()}
   <section class="panel sessions">
-    <div class="section-head">
-      <span class="label">Sessions</span>
-      <span class="head-actions">
-        <button
-          class="icon-btn"
-          type="button"
-          title="Attach an existing worktree"
-          aria-label="Attach an existing worktree"
-          onclick={onAttach}
-        >
-          <Icon name="layers" size={14} />
-        </button>
-      </span>
-    </div>
-
-    <div class="filter">
-      <Icon name="search" size={12} />
-      <input bind:value={search} placeholder="Search sessions" aria-label="Search sessions" spellcheck="false" />
-    </div>
-
-    {#if composing}
-      <form class="new" onsubmit={submitNew}>
-        <input
-          class="field"
-          bind:value={newLabel}
-          placeholder="Session name"
-          aria-label="New session name"
-        />
-        <button class="btn primary" type="submit" disabled={creating || !newLabel.trim()}>
-          {creating ? "Creating…" : "Create"}
-        </button>
-      </form>
-    {/if}
-
     <ul class="session-list">
       {#if creating}
         <li class="creating">
@@ -215,9 +82,11 @@
         </li>
       {/if}
       {#each shownLive as session (session.session_id)}
+        {@const needsYou = attention.includes(session.session_id)}
         <li
+          class="row"
           class:active={session.session_id === activeId}
-          class:needs-you={attention.includes(session.session_id)}
+          class:needs-you={needsYou}
         >
           <button
             type="button"
@@ -228,8 +97,8 @@
             <span class="state-dot {session.turn_state}"></span>
             {#if session.slot}<span class="slot" title="Pinned">{session.slot}</span>{/if}
             <span class="session-name">{session.label}</span>
-            <span class="session-state">
-              {attention.includes(session.session_id) ? "needs you" : session.turn_state}
+            <span class="session-state {session.turn_state}">
+              {needsYou ? "needs you" : session.turn_state}
             </span>
           </button>
           <span class="row-actions">
@@ -284,7 +153,13 @@
         </li>
       {/each}
       {#if live.length === 0 && !creating}
-        <li class="empty">No sessions yet.</li>
+        <li class="empty">
+          <p>No sessions yet. Start one to give an agent a task.</p>
+          <button class="btn primary" type="button" onclick={() => (composing = !composing)}>
+            <Icon name="plus" size={13} />
+            New session
+          </button>
+        </li>
       {:else if needle && shownLive.length === 0 && shownClosed.length === 0}
         <li class="empty">No sessions match “{search.trim()}”.</li>
       {/if}
@@ -295,7 +170,7 @@
         <summary>{shownClosed.length} closed session{shownClosed.length === 1 ? "" : "s"}</summary>
         <ul class="session-list">
           {#each shownClosed as session (session.session_id)}
-            <li>
+            <li class="row">
               <button
                 type="button"
                 class="session closed-row"
@@ -333,14 +208,148 @@
       </details>
     {/if}
   </section>
+{/snippet}
+
+{#if open}
+  <button type="button" class="rail-backdrop" aria-label="Close sessions" tabindex="-1" onclick={() => onCloseRail?.()}></button>
+{/if}
+<aside class="sidebar" class:open aria-label="Projects and sessions" {@attach open ? overlay : null}>
+  <div class="filter">
+    {#if open}
+      <button class="icon-btn" type="button" aria-label="Close sessions" onclick={() => onCloseRail?.()}>
+        <Icon name="close" size={13} />
+      </button>
+    {/if}
+    <input class="field" bind:value={search} placeholder="Search sessions" aria-label="Search sessions" spellcheck="false" />
+  </div>
+
+  <div class="rail-scroll">
+    {#if waiting.length > 0}
+      <section class="panel needs-section" aria-label="Needs you">
+        <div class="section-head">
+          <span class="label">Needs you</span>
+          <span class="count">{waiting.length}</span>
+        </div>
+        <ul class="session-list">
+          {#each waiting as session (session.session_id)}
+            <li class="row needs-you">
+              <button type="button" class="session" onclick={() => onRequest(session.session_id)}>
+                <span class="state-dot {session.turn_state}"></span>
+                <span class="session-name">{session.label}</span>
+                <span class="session-state">{session.turn_state}</span>
+              </button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    <section class="panel projects" aria-label="Projects">
+      <div class="section-head">
+        <span class="label">Projects</span>
+        <button class="icon-btn" type="button" title="Add a project" aria-label="Add a project" onclick={() => onAddProject?.()}>
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
+      <ul class="project-list">
+        {#each projects as project (project.id)}
+          {@const status = projectStatus(project)}
+          {@const current = project.id === projectId}
+          <li class="project {status}" class:current>
+            <div class="project-line">
+              <button
+                type="button"
+                class="project-main"
+                title={project.root}
+                aria-current={current ? "true" : undefined}
+                disabled={projectBusy && !current}
+                onclick={() => onSwitchProject?.(project)}
+              >
+                <span class="project-dot" aria-hidden="true"></span>
+                <span class="project-name">{project.name}</span>
+                {#if status === "waiting"}
+                  <span class="project-badge" aria-label="{project.attention.length} waiting on you">{project.attention.length} waiting</span>
+                {:else if status === "running"}
+                  <span class="project-meta" aria-label="{project.running} of {project.limit} agents running">{project.running} of {project.limit} running</span>
+                {:else if status === "closed"}
+                  <span class="project-meta">closed</span>
+                {:else if current}
+                  <span class="project-meta">{live.length} {live.length === 1 ? "session" : "sessions"}</span>
+                {/if}
+              </button>
+              {#if !current}
+                <span class="row-actions">
+                  {#if project.open}
+                    <button type="button" class="icon-btn" title="Close project (stops its agents)" aria-label={`Close ${project.name}`} onclick={() => onCloseProject?.(project)}>
+                      <Icon name="close" size={12} />
+                    </button>
+                  {:else}
+                    <button type="button" class="icon-btn" title="Remove from Forge (the folder and its sessions stay)" aria-label={`Remove ${project.name}`} onclick={() => onRemoveProject?.(project)}>
+                      <Icon name="trash" size={12} />
+                    </button>
+                  {/if}
+                </span>
+              {/if}
+            </div>
+            {#if current}
+              {@render sessionGroup()}
+            {:else if project.attention.length}
+              <ul class="requests" aria-label="Waiting in {project.name}">
+                {#each project.attention as item (item.session_id + item.call_id)}
+                  <li>
+                    <button
+                      type="button"
+                      class="request"
+                      title="{project.name}: {item.session_label || 'Session'}"
+                      onclick={() => onElsewhere?.({ ...item, project_id: project.id, project_name: project.name })}
+                    >
+                      <span class="request-kind">{attentionLabel(item.kind)}</span>
+                      <span class="request-session">{item.session_label || "Session"}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
+
+    {#if !grouped}
+      {@render sessionGroup()}
+    {/if}
+  </div>
+
+  {#if composing}
+    <form class="new" onsubmit={submitNew}>
+      <input
+        class="field"
+        bind:value={newLabel}
+        placeholder="Session name"
+        aria-label="New session name"
+      />
+      <button class="btn primary" type="submit" disabled={creating || !newLabel.trim()}>
+        {creating ? "Creating…" : "Create"}
+      </button>
+    </form>
+  {/if}
 
   <footer class="rail-foot">
     <button class="btn" type="button" onclick={() => (composing = !composing)}>
       <Icon name="plus" size={13} />
       New session
     </button>
+    <button
+      class="icon-btn"
+      type="button"
+      title="Attach an existing worktree"
+      aria-label="Attach an existing worktree"
+      onclick={onAttach}
+    >
+      <Icon name="layers" size={14} />
+    </button>
     <span class="spacer"></span>
-    <button class="btn" type="button" onclick={onHelp}>Help</button>
+    <button class="btn ghost" type="button" onclick={onHelp}>Help</button>
   </footer>
 </aside>
 
@@ -348,282 +357,93 @@
   .sidebar {
     display: flex;
     flex-direction: column;
+    min-width: 0;
     min-height: 0;
-    background: var(--bg-deep);
+    padding: 12px 12px 0;
     border-right: 1px solid var(--border);
+    background: var(--surface);
   }
 
-  .workspace {
+  /* Search, with the overlay's close control beside it at compact width. The
+     close control stays first in the document so it takes the overlay's
+     initial focus. */
+  .filter {
     display: flex;
     align-items: center;
-    gap: 9px;
-    padding: 12px 12px 10px;
-    border-bottom: 1px solid var(--border);
+    gap: 8px;
+    flex: none;
+    margin-bottom: 12px;
   }
 
-  .mark {
-    display: grid;
-    place-items: center;
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    background: var(--accent);
-    color: var(--accent-text);
-    font-weight: 700;
-    box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset, 0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  .filter .field {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .filter .icon-btn {
+    order: 1;
+    flex: none;
+  }
+
+  /* One scroll for every list in the rail; the footer stays put. */
+  .rail-scroll {
+    flex: 1;
+    min-height: 0;
+    margin: 0 -12px;
+    padding: 0 12px 12px;
+    overflow-y: auto;
   }
 
   .panel {
     display: flex;
     flex-direction: column;
-    min-height: 0;
-    padding: 10px 8px 6px;
+    min-width: 0;
   }
 
   .section-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 4px 6px;
-  }
-
-  .head-actions {
-    display: flex;
-    align-items: center;
-    gap: 2px;
+    gap: 8px;
+    height: var(--control);
+    padding-left: 8px;
   }
 
   .label {
     color: var(--muted);
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-size: var(--text-xs);
   }
 
-  .mini {
-    display: inline-flex;
-    color: var(--muted);
-  }
-
-  .new {
-    display: flex;
-    gap: 6px;
-    padding: 0 4px 8px;
-  }
-
-  .new .field {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .session-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    overflow: auto;
-    min-height: 0;
-  }
-
-  .session-list li {
-    position: relative;
-    display: flex;
-    align-items: center;
-    border-radius: var(--radius-sm);
-  }
-
-  .session-list li {
-    margin-bottom: 1px;
-  }
-
-  .session-list li.active {
-    background: var(--selection);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
-  }
-
-  .session {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-    min-width: 0;
-    height: 34px;
-    padding: 0 10px;
-    border: 0;
-    background: none;
-    text-align: left;
-    transition: background 120ms var(--ease);
-  }
-
-  .session:hover {
-    background: var(--hover);
-    border-radius: var(--radius-sm);
-  }
-
-  .session-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .session-state {
-    color: var(--muted);
-    font-size: 10px;
-    letter-spacing: 0.03em;
-  }
-
-  .row-actions {
-    display: flex;
-    align-items: center;
-    gap: 1px;
-    margin-right: 3px;
-    visibility: hidden;
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  .session-list li.active:hover .row-actions,
-  .session-list li.active:focus-within .row-actions {
-    visibility: visible;
-    opacity: 1;
-  }
-
-  .row-actions button {
-    pointer-events: auto;
-  }
-
-  /* Only the selected row exposes overlaid actions: a running row's extra
-     Stop button would otherwise steal the click intended to select it. */
-  .session-list .row-actions {
-    position: absolute;
-    top: 50%;
-    right: 3px;
-    translate: 0 -50%;
-    display: flex;
-    align-items: center;
-    gap: 1px;
-    padding-left: 14px;
-    background: linear-gradient(90deg, transparent, var(--hover) 14px);
-    opacity: 0;
-  }
-
-  .session-list li.active .row-actions {
-    background: linear-gradient(90deg, transparent, var(--selection) 14px);
-  }
-
-  .session-list li.active:hover .row-actions,
-  .session-list li.active:focus-within .row-actions {
-    opacity: 1;
-  }
-
-  li.needs-you .session-state {
+  .count {
+    padding-right: 8px;
     color: var(--warning);
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
-  .closed {
-    margin: 4px 4px 0;
-  }
-
-  .closed summary {
-    padding: 3px 4px;
-    color: var(--muted);
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .closed-row {
-    gap: 6px;
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .slot {
-    display: inline-grid;
-    place-items: center;
-    min-width: 14px;
-    height: 14px;
-    border-radius: 4px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: 9.5px;
-    font-weight: 700;
-  }
-
-  .creating {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    height: 32px;
-    padding: 0 8px;
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-  .filter {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0 4px 6px;
-    padding: 0 8px;
-    height: 26px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg);
-    color: var(--muted);
-  }
-
-  .filter input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
-    font-size: 12px;
-  }
-
-  .empty {
-    padding: 6px 8px;
-    color: var(--muted);
-    font-size: 12px;
-  }
-
-
-  .brand {
-    font-size: 13.5px;
-    font-weight: 650;
-    letter-spacing: -0.01em;
-  }
-
-  /* Projects: always visible, so a background project's requests and running
-     agents are seen without opening anything. Capped so sessions keep room. */
-  .projects {
-    flex: none;
-    max-height: 40%;
+  .needs-section {
+    margin-bottom: 12px;
+    padding-bottom: 12px;
     border-bottom: 1px solid var(--border);
   }
 
-  .projects .section-head {
-    padding-bottom: 4px;
-  }
-
   .project-list,
-  .requests {
-    list-style: none;
+  .requests,
+  /* Sessions sit one step in from their project, so the group is
+     structural and not a matter of weight. */
+  .session-list {
     margin: 0;
     padding: 0;
+    list-style: none;
   }
 
-  .project-list {
-    overflow: auto;
-    min-height: 0;
+  .project .session-list {
+    padding-left: 12px;
   }
 
-  .project {
-    border-radius: var(--radius-sm);
-  }
-
-  .project.current {
-    background: var(--selection);
+  /* Project group headings */
+  .project + .project {
+    margin-top: 8px;
   }
 
   .project-line {
@@ -638,18 +458,24 @@
     gap: 8px;
     flex: 1;
     min-width: 0;
-    height: 28px;
+    height: var(--control);
     padding: 0 8px;
     border: 0;
     border-radius: var(--radius-sm);
     background: none;
-    color: var(--secondary);
+    color: var(--muted);
+    font-size: var(--text-xs);
     text-align: left;
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
   }
 
   .project-main:hover:not(:disabled) {
     background: var(--hover);
     color: var(--text);
+  }
+
+  .project-main:focus-visible {
+    outline-offset: -2px;
   }
 
   .project-main:disabled {
@@ -662,17 +488,19 @@
   }
 
   .project-name {
+    font-weight: 600;
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* Filled while open, a ring once closed; color follows what it needs. */
+  /* Filled while open, a ring once closed; the word beside it says the rest. */
   .project-dot {
     flex: none;
-    width: 7px;
-    height: 7px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     background: var(--muted);
   }
@@ -682,7 +510,7 @@
   }
 
   .project.waiting .project-dot {
-    background: var(--warning);
+    background: var(--dot-waiting);
   }
 
   .project.closed .project-dot {
@@ -690,68 +518,50 @@
     box-shadow: inset 0 0 0 1.5px var(--muted);
   }
 
-  .project.closed .project-main {
-    color: var(--muted);
+  .project-meta,
+  .project-badge {
+    flex: none;
+    font-size: var(--text-xs);
   }
 
   .project-meta {
     color: var(--muted);
-    font-size: 10.5px;
-    font-variant-numeric: tabular-nums;
+    font-weight: 400;
   }
 
   .project-badge {
-    min-width: 17px;
-    height: 17px;
-    padding: 0 5px;
-    border-radius: 9px;
-    background: var(--warning);
-    color: var(--accent-text);
-    font-size: 10.5px;
-    font-weight: 700;
-    line-height: 17px;
-    text-align: center;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .project-line .row-actions {
-    position: absolute;
-    top: 50%;
-    right: 3px;
-    translate: 0 -50%;
-    padding-left: 14px;
-    background: linear-gradient(90deg, transparent, var(--bg-deep) 14px);
-  }
-
-  .project-line:hover .row-actions,
-  .project-line:focus-within .row-actions {
-    visibility: visible;
-    opacity: 1;
+    color: var(--warning);
+    font-weight: 600;
   }
 
   /* A background project's waiting requests sit under its name: each one
      opens that project at the session's decision. */
   .requests {
-    padding: 0 0 4px 23px;
+    padding-left: 16px;
   }
 
   .request {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
+    align-items: center;
+    gap: 8px;
     width: 100%;
     min-width: 0;
-    height: 24px;
+    height: var(--control);
     padding: 0 8px;
     border: 0;
     border-radius: var(--radius-sm);
     background: none;
-    font-size: 11.5px;
+    font-size: var(--text-xs);
     text-align: left;
+    transition: background var(--fast) var(--ease);
   }
 
   .request:hover {
     background: var(--hover);
+  }
+
+  .request:focus-visible {
+    outline-offset: -2px;
   }
 
   .request-kind {
@@ -761,43 +571,217 @@
   }
 
   .request-session {
+    min-width: 0;
     overflow: hidden;
     color: var(--secondary);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .needs-section {
-    border-bottom: 1px solid var(--border);
+  /* Session rows */
+  .session-list li.row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: var(--control-lg);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
   }
 
-  .needs-section .session-state,
-  .count {
+  .session-list li.row:hover {
+    background: var(--hover);
+  }
+
+  .session-list li.active {
+    border-color: var(--border);
+    background: var(--raised);
+  }
+
+  .session-list li.active:hover {
+    background: var(--raised);
+  }
+
+  .session {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: none;
+    font-size: var(--text-md);
+    text-align: left;
+  }
+
+  .session:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .session-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-list li.active .session-name {
+    font-weight: 500;
+  }
+
+  .session-state {
+    flex: none;
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  .session-state.running {
+    color: var(--accent);
+  }
+
+  .session-state.waiting,
+  li.needs-you .session-state,
+  .needs-section .session-state {
     color: var(--warning);
   }
 
-  .count {
-    font-size: 11px;
+  .session-state.failed {
+    color: var(--error);
+  }
+
+  .slot {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
-  .sessions {
+  /* Needs you: compact rows, always a warning dot beside the words. */
+  .needs-section li.row {
+    height: var(--control);
+  }
+
+  .needs-section .state-dot {
+    background: var(--dot-waiting);
+  }
+
+  /* Row actions lie over the row's right edge, so showing them moves nothing.
+     Only the selected session row exposes them: a running row's Stop button
+     would otherwise take the click meant to select it. */
+  .row-actions {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    visibility: hidden;
+  }
+
+  .session-list li.active .row-actions {
+    background: var(--raised);
+  }
+
+  .project-line:hover .row-actions,
+  .project-line:focus-within .row-actions,
+  .session-list li.active:hover .row-actions,
+  .session-list li.active:focus-within .row-actions {
+    visibility: visible;
+  }
+
+  /* Closed and resumable sessions */
+  .closed {
+    margin-top: 8px;
+  }
+
+  .closed summary {
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    color: var(--muted);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    transition: color var(--fast) var(--ease);
+  }
+
+  .closed summary:hover {
+    color: var(--text);
+  }
+
+  .closed summary:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .closed-row {
+    color: var(--muted);
+  }
+
+  .mini {
+    display: inline-flex;
+    color: var(--muted);
+  }
+
+  .creating {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--control-lg);
+    padding: 0 8px;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .empty p {
+    margin: 0;
+  }
+
+  /* The name form opens directly above the control that asked for it. */
+  .new {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    margin: 0 -12px;
+    padding: 12px;
+    border-top: 1px solid var(--border);
+  }
+
+  .new .field {
     flex: 1;
+    min-width: 0;
   }
 
   .rail-foot {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin-top: auto;
-    padding: 8px 10px;
+    gap: 8px;
+    height: var(--bar);
+    flex: none;
+    margin: 0 -12px;
+    padding: 0 12px;
     border-top: 1px solid var(--border);
-  }
-
-  .rail-foot .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
   }
 
   .spacer {
@@ -818,7 +802,7 @@
       display: flex;
       position: fixed;
       inset: 0 auto 0 0;
-      width: min(310px, 90vw);
+      width: min(320px, 90vw);
       z-index: 16;
       box-shadow: var(--shadow);
     }
@@ -829,7 +813,17 @@
       inset: 0;
       z-index: 15;
       border: 0;
-      background: rgba(5, 7, 9, 0.5);
+      border-radius: 0;
+      background: color-mix(in srgb, var(--bg-deep) 60%, transparent);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .project-main,
+    .request,
+    .session-list li.row,
+    .closed summary {
+      transition: none;
     }
   }
 </style>

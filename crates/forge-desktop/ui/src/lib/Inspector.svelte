@@ -48,6 +48,18 @@
   let confirmChild = $state("");
   let panel = $state();
 
+  // State is a dot plus a word: the dot class and the word for each status.
+  const PLAN_DOTS = { in_progress: "running", completed: "completed" };
+  const PLAN_WORDS = { in_progress: "in progress", completed: "done", pending: "pending" };
+  const TASK_DOTS = {
+    queued: "queued",
+    running: "running",
+    waiting_for_approval: "waiting",
+    succeeded: "completed",
+    failed: "failed",
+    cancelled: "cancelled",
+  };
+
   // Opening at a destination puts that section at the top of the panel.
   onMount(async () => {
     await tick();
@@ -117,13 +129,13 @@
       {/if}
       <button type="button" class="btn" onclick={onCompact}>Compact</button>
       <button type="button" class="btn" onclick={onFork}>Fork</button>
-    </div>
-    <div class="row">
       <button type="button" class="btn" onclick={onRename}>Rename</button>
       <button type="button" class="btn" onclick={onPin}>Pin</button>
-      <button type="button" class="btn" onclick={onCloseSession}>Close</button>
-      <button type="button" class="btn" onclick={onArchive}>Archive…</button>
-      {#if counts.allows > 0}<button type="button" class="btn" onclick={onClearApprovals}>Clear approvals</button>{/if}
+      <button type="button" class="btn" onclick={onCloseSession}>Close session</button>
+    </div>
+    <div class="row apart">
+      <button type="button" class="btn danger" onclick={onArchive}>Archive…</button>
+      {#if counts.allows > 0}<button type="button" class="btn danger" onclick={onClearApprovals}>Clear approvals</button>{/if}
     </div>
   </section>
 
@@ -135,10 +147,9 @@
       <ul class="plan">
         {#each plan.items as item, index (index)}
           <li class={item.status}>
-            <span class="mark" aria-hidden="true">
-              {item.status === "completed" ? "✓" : item.status === "in_progress" ? "▸" : "·"}
-            </span>
-            <span>{item.step}</span>
+            <span class="mark state-dot {PLAN_DOTS[item.status] ?? "queued"}" aria-hidden="true"></span>
+            <span class="step">{item.step}</span>
+            <span class="plan-status">{PLAN_WORDS[item.status] ?? String(item.status).replaceAll("_", " ")}</span>
           </li>
         {/each}
       </ul>
@@ -150,13 +161,14 @@
       <h2>Agents &amp; tasks <span class="count">{background.length}</span></h2>
       <ul class="tasks">
         {#each background as task (task.id)}
-          <li class={task.status}>
+          <li class={task.status} class:needs={task.awaiting_approval && task.approval}>
             <div class="task-head">
               <span class="task-label">{task.label}</span>
-              <span class="task-status">{task.status.replaceAll("_", " ")}</span>
+              <span class="task-id mono">#{task.id}</span>
+              <span class="task-status"><span class="state-dot {TASK_DOTS[task.status] ?? ""}" aria-hidden="true"></span>{task.status.replaceAll("_", " ")}</span>
             </div>
             {#if task.detail}<p class="task-detail mono">{task.detail}</p>{/if}
-            {#if task.approval}<pre class="task-detail mono">{task.approval.tool}\n{task.approval.arguments}</pre>{/if}
+            {#if task.approval}<pre class="task-detail mono">{`${task.approval.tool}\n${task.approval.arguments}`}</pre>{/if}
             <div class="row">
               {#if task.awaiting_approval && task.approval}
                 {#if confirmChild === `${task.id}:${task.approval.call_id}`}
@@ -198,6 +210,7 @@
       <ul class="queue">
         {#each queue as item, index (`${item.source}:${item.id}`)}
           <li>
+            <span class="queue-n mono" aria-hidden="true">{index + 1}</span>
             <span class="queued-text">{item.text}</span>
             <button
               type="button"
@@ -206,7 +219,7 @@
               aria-label="Edit queued prompt"
               onclick={() => onEditQueued(item, index + 1)}
             >
-              <Icon name="pencil" size={11} />
+              <Icon name="pencil" size={13} />
             </button>
             <button
               type="button"
@@ -215,7 +228,7 @@
               aria-label="Remove queued prompt"
               onclick={() => onCancelQueued(sessionId, item.id, index + 1, item.source)}
             >
-              <Icon name="close" size={11} />
+              <Icon name="close" size={13} />
             </button>
           </li>
         {/each}
@@ -234,7 +247,7 @@
               aria-label="Restore interrupted prompt"
               onclick={() => onRestoreInterrupted(item.text)}
             >
-              <Icon name="pencil" size={11} />
+              <Icon name="pencil" size={13} />
             </button>
           </li>
         {/each}
@@ -245,7 +258,6 @@
 
   <section id="menu-context">
     <h2>Context &amp; usage</h2>
-    <button class="btn" type="button" onclick={onDetails}>Status details…</button>
     <div class="meter" aria-label="Context window used">
       <div class="fill {level}" style="width: {percent}%"></div>
     </div>
@@ -270,22 +282,26 @@
         {/if}
       </dl>
     {/if}
+    <div class="row">
+      <button class="btn" type="button" onclick={onDetails}>Status details…</button>
+    </div>
   </section>
 </div>
 
 <style>
+  /* The dialog scrolls as a whole under a pinned header: opening at a
+     destination sets this element's scrollTop. */
   .inspector {
     position: relative;
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    width: min(26rem, calc(100vw - 32px));
-    max-height: calc(100dvh - 64px);
-    padding: 0 16px 18px;
+    width: min(36rem, calc(100vw - 48px));
+    max-height: 82vh;
+    padding: 0 0 16px;
     overflow: auto;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--bg-deep);
+    background: var(--surface);
     box-shadow: var(--shadow);
   }
 
@@ -296,48 +312,56 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 0 8px;
-    background: var(--bg-deep);
+    gap: 8px;
+    height: var(--bar);
+    flex: none;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
   }
 
   h2.menu-title {
+    margin: 0;
     color: var(--text);
-    font-size: 13px;
-    letter-spacing: 0;
-    text-transform: none;
-  }
-
-  h3 {
-    margin: 4px 0 0;
-    color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-lg);
     font-weight: 600;
   }
 
   section {
     display: flex;
+    flex: none;
     flex-direction: column;
-    gap: 8px;
+    padding: 0 16px;
   }
 
-  h2 {
+  #menu-actions {
+    padding-top: 16px;
+  }
+
+  /* Section labels. */
+  h2,
+  h3 {
     display: flex;
     align-items: center;
-    gap: 6px;
-    margin: 0;
+    gap: 8px;
+    margin: 16px 0 8px;
     color: var(--muted);
-    font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: var(--text-xs);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  .count {
+    font-family: var(--font-mono);
   }
 
   dl {
     display: grid;
-    grid-template-columns: 4.2rem minmax(0, 1fr);
-    gap: 6px 8px;
+    grid-template-columns: 96px minmax(0, 1fr);
+    align-items: center;
+    gap: 4px 16px;
     margin: 0;
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   dt {
@@ -345,43 +369,53 @@
   }
 
   dd {
+    min-height: 24px;
     margin: 0;
     overflow: hidden;
+    color: var(--secondary);
+    line-height: 24px;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--secondary);
   }
 
-  dd.state {
-    display: inline-flex;
+  dd.state,
+  dd.branch {
+    display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
   }
 
   dd.model {
     padding: 0;
+    overflow: visible;
   }
 
   .model-button {
     display: flex;
     align-items: center;
-    gap: 6px;
-    width: 100%;
+    gap: 8px;
+    width: calc(100% + 8px);
     min-width: 0;
-    padding: 2px 5px;
-    margin-left: -5px;
+    height: 24px;
+    padding: 0 8px;
+    margin-left: -8px;
     border: 0;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     background: none;
     color: var(--secondary);
-    text-align: left;
     font-family: var(--font-mono);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
+    text-align: left;
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
   }
 
   .model-button:hover {
     background: var(--hover);
     color: var(--text);
+  }
+
+  .model-button:focus-visible {
+    outline-offset: -2px;
   }
 
   .model-button span:first-child {
@@ -394,18 +428,7 @@
     margin-left: auto;
     color: var(--muted);
     font-family: var(--font-ui);
-    font-size: 10px;
-    opacity: 0;
-  }
-
-  .model-button:hover .change-hint {
-    opacity: 1;
-  }
-
-  dd.branch {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+    font-size: var(--text-xs);
   }
 
   dd.dim,
@@ -413,79 +436,62 @@
     color: var(--muted);
   }
 
-  .meter {
-    height: 5px;
-    border-radius: 999px;
-    background: var(--surface);
-    overflow: hidden;
-  }
-
-  .fill {
-    height: 100%;
-    border-radius: inherit;
-    background: var(--success);
-    transition: width 200ms ease;
-  }
-
-  .fill.warm {
-    background: var(--warning);
-  }
-
-  .fill.high {
-    background: var(--error);
-  }
-
-  .meter-label {
-    margin: 0;
-    color: var(--muted);
-    font-size: 11px;
-  }
-
-  .count {
-    color: var(--secondary);
-    font-weight: 500;
-  }
-
-  .small {
-    margin: 0;
-    font-size: 12px;
-  }
-
-  dl.tight {
-    margin-top: 2px;
-    font-size: 11.5px;
-  }
-
-  .row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-
-  .row .btn {
+  .toggle {
     height: 24px;
     padding: 0 8px;
-    font-size: 11.5px;
-  }
-
-  .toggle {
-    padding: 1px 7px;
     border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--bg);
+    border-radius: var(--radius-sm);
+    background: var(--raised);
     color: var(--secondary);
-    font-size: 11px;
+    font-size: var(--text-sm);
+    line-height: 1;
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease);
   }
 
   .toggle:hover {
-    border-color: var(--border-strong);
+    background: var(--hover);
     color: var(--text);
   }
 
   .toggle.on {
     border-color: var(--accent);
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--text);
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #menu-actions > .row {
+    margin-top: 16px;
+  }
+
+  /* Destructive actions sit apart from the routine ones. */
+  #menu-actions > .row.apart {
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  #menu-context > .row {
+    margin-top: 12px;
+  }
+
+  .small {
+    margin: 0;
+    font-size: var(--text-sm);
+  }
+
+  p.small.dim {
+    margin-bottom: 8px;
+  }
+
+  .row .small {
+    flex-basis: 100%;
+    color: var(--secondary);
   }
 
   .plan,
@@ -493,92 +499,171 @@
   .queue {
     display: flex;
     flex-direction: column;
-    gap: 4px;
     margin: 0;
     padding: 0;
     list-style: none;
   }
 
   .plan li {
-    display: flex;
-    gap: 6px;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 8px;
+    min-height: 28px;
+    padding: 4px 0;
     color: var(--secondary);
-    font-size: 11.5px;
-    line-height: 1.4;
+    font-size: var(--text-sm);
+    line-height: 20px;
   }
 
+  /* Centres the dot on the first line of the step. */
   .plan .mark {
-    width: 10px;
+    margin-top: 6px;
+  }
+
+  .plan .step {
+    overflow-wrap: anywhere;
+  }
+
+  .plan-status {
     color: var(--muted);
+    font-size: var(--text-xs);
+    white-space: nowrap;
   }
 
   .plan li.completed {
     color: var(--muted);
-    text-decoration: line-through;
-  }
-
-  .plan li.completed .mark {
-    color: var(--success);
   }
 
   .plan li.in_progress {
     color: var(--text);
   }
 
-  .plan li.in_progress .mark {
-    color: var(--accent);
+  .tasks {
+    gap: 8px;
+  }
+
+  .tasks li {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+
+  .tasks li.needs {
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
   }
 
   .task-head {
     display: flex;
-    align-items: baseline;
-    gap: 6px;
-    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    min-height: 20px;
   }
 
   .task-label {
+    min-width: 0;
     overflow: hidden;
+    font-size: var(--text-sm);
+    font-weight: 500;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 11.5px;
+  }
+
+  .task-id {
+    flex: none;
+    color: var(--muted);
+    font-size: var(--text-xs);
   }
 
   .task-status {
+    display: inline-flex;
     flex: none;
+    align-items: center;
+    gap: 8px;
+    margin-left: auto;
     color: var(--muted);
-    font-size: 10px;
-    letter-spacing: 0.03em;
-  }
-
-  .tasks li.waiting_for_approval .task-status {
-    color: var(--warning);
-  }
-
-  .tasks li.failed .task-status {
-    color: var(--error);
+    font-size: var(--text-xs);
   }
 
   .task-detail {
-    white-space: pre-wrap;
-    margin: 2px 0 4px;
-    overflow-wrap: anywhere;
+    max-height: 120px;
+    margin: 0;
+    overflow: auto;
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: var(--text-xs);
+    line-height: 16px;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
   }
 
   .queue li {
     display: flex;
-    align-items: center;
-    gap: 4px;
+    align-items: flex-start;
+    gap: 8px;
+    min-height: 28px;
+  }
+
+  .queue-n {
+    flex: none;
+    min-width: 16px;
+    color: var(--muted);
+    font-size: var(--text-xs);
+    line-height: 28px;
   }
 
   .queued-text {
+    display: -webkit-box;
     flex: 1;
+    min-width: 0;
+    padding: 4px 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     color: var(--secondary);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
+    line-height: 20px;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
   }
 
+  .meter {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--border);
+    overflow: hidden;
+  }
+
+  .fill {
+    height: 100%;
+    border-radius: inherit;
+    background: var(--muted);
+  }
+
+  .fill.high {
+    background: var(--warning);
+  }
+
+  .meter-label {
+    margin: 8px 0 0;
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  dl.tight {
+    margin-top: 8px;
+  }
+
+  dl.tight dd {
+    font-family: var(--font-mono);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .model-button,
+    .toggle {
+      transition: none;
+    }
+  }
 </style>

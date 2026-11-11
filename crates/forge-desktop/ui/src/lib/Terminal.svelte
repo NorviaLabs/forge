@@ -121,8 +121,8 @@
   .terminal {
     flex: 1;
     min-height: 0;
-    padding: 8px 0 10px 12px;
-    background: var(--bg-deep);
+    padding: 8px;
+    background: var(--bg);
   }
 
   .terminal :global(.xterm) {

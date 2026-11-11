@@ -54,6 +54,16 @@
     return match ? { runId: Number(match[1]), jobId: match[2] ? Number(match[2]) : null } : null;
   }
 
+  // A check's state as a dot class and a word, from gh's bucket.
+  function checkState(check) {
+    if (check.bucket === "pass") return ["completed", "passed"];
+    if (check.bucket === "fail") return ["failed", "failed"];
+    if (check.bucket === "cancel") return ["cancelled", "cancelled"];
+    if (check.bucket === "skipping") return ["", "skipped"];
+    if (String(check.state).toUpperCase() === "IN_PROGRESS") return ["running", "running"];
+    return ["queued", "pending"];
+  }
+
   onMount(() => { load("github_issues"); });
 </script>
 
@@ -64,6 +74,7 @@
       <button class="btn" type="button" disabled={busy} onclick={() => load("github_issues")}>Refresh issues</button>
       <button class="icon-btn" type="button" aria-label="Close GitHub" onclick={onClose}><Icon name="close" size={13} /></button>
     </header>
+    <div class="top">
     <p class="hint">
       Issues, pull requests and CI from this workspace's remote. Requires <code>gh auth login</code>.
       {#if sessionIssue}
@@ -79,18 +90,21 @@
     </form>
     {#if busy}<p role="status">Loading GitHub…</p>{/if}
     {#if error}<p class="error" role="alert">{error}</p>{/if}
+    </div>
     <div class="columns">
       <nav aria-label="GitHub issues">
         {#each visible as issue (issue.number)}
           <button class="issue" type="button" disabled={busy} onclick={() => load("github_details", { issueNumber: issue.number, prNumber: null })}>
-            <span class="mono">#{issue.number}</span> {issue.title}
+            <span class="mono">#{issue.number}</span>
+            <span class="issue-title">{issue.title}</span>
+            {#if issue.state}<span class="issue-state">{issue.state.toLowerCase()}</span>{/if}
           </button>
         {/each}
         {#if !busy && visible.length === 0}<p>No matching open issues.</p>{/if}
       </nav>
       <section class="detail" aria-label="GitHub details">
         {#if details?.issue}
-          <h3>#{details.issue.number} {details.issue.title}</h3>
+          <h3 class="item-title"><span class="mono">#{details.issue.number}</span> {details.issue.title}</h3>
           <p>{details.issue.state}</p>
           <div class="actions">
             <button class="btn" type="button" disabled={busy} onclick={() => startSession(details.issue)}>
@@ -111,13 +125,16 @@
           <Markdown text={details.issue.body} />
         {/if}
         {#if details?.pr}
-          <h3>PR #{details.pr.number}: {details.pr.title}</h3>
+          <h3 class="item-title">PR <span class="mono">#{details.pr.number}</span>: {details.pr.title}</h3>
           <p>{details.pr.state}{details.pr.draft ? " · Draft" : ""} · {details.pr.review || "No review decision"}</p>
           <p class="mono">{details.pr.head} → {details.pr.base}</p>
           <h3>CI checks</h3>
           {#each details.checks as check, index (index)}
+            {@const [dot, word] = checkState(check)}
             <div class="check">
-              <span>{check.name} — {check.state} ({check.bucket})</span>
+              <span class="check-state"><span class="state-dot {dot}" aria-hidden="true"></span>{word}</span>
+              <span class="check-name">{check.name}</span>
+              <span class="check-raw mono">{check.state}</span>
               {#if runReference(check.link)}
                 <button class="btn" type="button" disabled={busy} onclick={() => load("github_logs", runReference(check.link))}>Logs</button>
               {/if}
@@ -138,23 +155,246 @@
 </div>
 
 <style>
-  .overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(5, 7, 9, 0.6); z-index: 30; }
-  .github { display: flex; flex-direction: column; width: min(960px, calc(100vw - 48px)); height: min(740px, calc(100vh - 64px)); padding: 16px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); }
-  header { display: flex; gap: 10px; align-items: center; }
-  h2 { flex: 1; margin: 0; font-size: 15px; }
-  h3 { margin: 16px 0 6px; font-size: 13px; }
-  p { font-size: 12px; color: var(--secondary); line-height: 1.5; }
-  form { display: flex; gap: 6px; margin-bottom: 12px; }
-  .pr-number { width: 110px; }
-  .columns { flex: 1; display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 2fr); min-height: 0; }
-  nav { overflow: auto; border-right: 1px solid var(--border); padding-right: 12px; }
-  .detail { overflow: auto; padding: 0 14px; }
-  .issue { display: block; width: 100%; border: 0; padding: 8px; border-radius: var(--radius-sm); background: transparent; color: var(--text); text-align: left; font-size: 12px; }
-  .issue:hover { background: var(--hover); }
-  .issue span { color: var(--accent); }
-  .actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
-  .check { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; }
-  .check span { flex: 1; }
-  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.5 var(--font-mono); }
-  .error { color: var(--error); }
+  .overlay {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
+    z-index: 30;
+  }
+
+  .github {
+    display: flex;
+    flex-direction: column;
+    width: min(960px, calc(100vw - 48px));
+    height: min(740px, calc(100vh - 64px));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: var(--bar);
+    flex: none;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  h2 {
+    flex: 1;
+    margin: 0;
+    font-size: var(--text-lg);
+    font-weight: 600;
+  }
+
+  .top {
+    flex: none;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .top p {
+    margin: 0 0 12px;
+  }
+
+  .top p:last-child {
+    margin: 12px 0 0;
+  }
+
+  /* Section labels. */
+  h3 {
+    margin: 16px 0 8px;
+    color: var(--muted);
+    font-size: var(--text-xs);
+    font-weight: 400;
+    letter-spacing: 0;
+  }
+
+  h3.item-title {
+    margin: 16px 0 4px;
+    color: var(--text);
+    font-size: var(--text-md);
+    font-weight: 600;
+    line-height: 20px;
+    overflow-wrap: anywhere;
+  }
+
+  .item-title .mono {
+    color: var(--muted);
+    font-size: inherit;
+    font-weight: 400;
+  }
+
+  p {
+    margin: 8px 0;
+    color: var(--secondary);
+    font-size: var(--text-sm);
+    line-height: 18px;
+    overflow-wrap: anywhere;
+  }
+
+  code {
+    font-size: var(--text-sm);
+  }
+
+  form {
+    display: flex;
+    gap: 8px;
+  }
+
+  form .btn {
+    height: var(--control-lg);
+  }
+
+  .pr-number {
+    width: 112px;
+    flex: none;
+  }
+
+  .columns {
+    display: grid;
+    flex: 1;
+    grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr);
+    min-height: 0;
+  }
+
+  nav {
+    min-width: 0;
+    padding: 8px;
+    overflow: auto;
+    border-right: 1px solid var(--border);
+  }
+
+  nav p {
+    margin: 4px 8px;
+    color: var(--muted);
+  }
+
+  .issue {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: var(--control-lg);
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    font-size: var(--text-sm);
+    text-align: left;
+    transition: background var(--fast) var(--ease);
+  }
+
+  .issue:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  .issue:focus-visible {
+    outline-offset: -2px;
+  }
+
+  .issue .mono {
+    color: var(--muted);
+  }
+
+  .issue-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .issue-state {
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  .detail {
+    min-width: 0;
+    padding: 0 16px 16px;
+    overflow: auto;
+  }
+
+  .detail > p:first-child {
+    margin-top: 16px;
+  }
+
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 8px 0 16px;
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: var(--control-lg);
+    border-bottom: 1px solid var(--border);
+    font-size: var(--text-sm);
+  }
+
+  .check-state {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    width: 80px;
+    color: var(--secondary);
+    font-size: var(--text-xs);
+  }
+
+  .check-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .check-raw {
+    flex: none;
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  .check .btn {
+    flex: none;
+    height: 24px;
+    padding: 0 8px;
+  }
+
+  /* The log well. */
+  pre {
+    max-height: 320px;
+    margin: 0;
+    padding: 12px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    color: var(--secondary);
+    font-size: var(--text-sm);
+    line-height: 18px;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .error {
+    color: var(--error);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .issue {
+      transition: none;
+    }
+  }
 </style>

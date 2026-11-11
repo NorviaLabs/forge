@@ -72,6 +72,12 @@
     scroll = scroller.scrollTop;
   }
 
+  // A short single-line result sits on the tool's own row.
+  function oneLine(message) {
+    const text = message.text.trim();
+    return !text.includes("\n") && text.length <= 96 && !message.text.endsWith("…");
+  }
+
   function toolName(message) {
     return message.name || "tool";
   }
@@ -98,12 +104,11 @@
   {/if}
   {#if messages.length === 0 && !streaming}
     <div class="intro">
-      <div class="intro-mark"><Icon name="chat" size={20} /></div>
       <h2>Ask Forge to work the repository</h2>
       <p>It can inspect files, change code, run commands, and review diffs. Every risky step waits for your approval.</p>
       <div class="suggestions">
         {#each suggestions as suggestion}
-          <button type="button" class="suggestion" onclick={() => onSuggest(suggestion)}>
+          <button type="button" class="btn suggestion" onclick={() => onSuggest(suggestion)}>
             {suggestion}
           </button>
         {/each}
@@ -112,17 +117,19 @@
   {/if}
 
   {#each visible as message, index (start + index)}
-    <div class="turn {message.role}">
+    <div class="turn {message.role}" class:multi={message.role === "tool" && !oneLine(message)}>
       <div class="who">
-        {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}Tool{/if}
-        {#if message.role === "tool"}<span class="tool-name">{toolName(message)}</span>{/if}
+        {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}<span class="sr-only">Tool</span>
+          <span class="tool-name">{toolName(message)}</span>
+          {#if oneLine(message)}<span class="tool-result" class:empty={!message.text.trim()}>{message.text.trim() || "No output."}</span>{/if}
+        {/if}
       </div>
       {#if message.thinking}
         <details class="thinking">
           <summary>Reasoning</summary>
           <pre>{message.thinking}</pre>
           {#if onExpand && message.thinking.endsWith("…")}
-            <button class="expand" type="button" onclick={() => onExpand(start + index)}>Show full reasoning</button>
+            <button class="btn expand" type="button" onclick={() => onExpand(start + index)}>Show full reasoning</button>
           {/if}
         </details>
       {/if}
@@ -132,9 +139,9 @@
         data-optimistic={message.optimistic ? "true" : undefined}
       >
         {#if message.role === "tool"}
-          <pre class:empty={!message.text.trim()}>{message.text.trim() ? message.text : "No output."}</pre>
+          {#if !oneLine(message)}<pre>{message.text}</pre>{/if}
           {#if onExpand && message.text.endsWith("…")}
-            <button class="expand" type="button" onclick={() => onExpand(start + index)}>Show full output</button>
+            <button class="btn expand" type="button" onclick={() => onExpand(start + index)}>Show full output</button>
           {/if}
         {:else}
           <Markdown text={message.text} />
@@ -175,256 +182,207 @@
 </div>
 
 <style>
-  .history { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 16px; color: var(--muted); font-size: 12px; }
+  /* The scroller fills the column; everything in it sits in one centred
+     720px column. */
   .transcript {
     flex: 1;
     min-height: 0;
     overflow: auto;
-    padding: 28px 28px 12px;
+    padding: 24px 24px 16px;
+    /* Reserved on both sides, so the column stays centred over the cards
+       below whether or not the transcript scrolls. */
+    scrollbar-gutter: stable both-edges;
     scroll-behavior: smooth;
   }
 
-  .intro {
-    max-width: 34rem;
-    margin: 14vh auto 0;
-    text-align: center;
-    color: var(--secondary);
+  .history,
+  .intro,
+  .turn {
+    max-width: 720px;
+    margin-right: auto;
+    margin-left: auto;
   }
 
-  .intro-mark {
-    display: grid;
-    place-items: center;
-    width: 44px;
-    height: 44px;
-    margin: 0 auto 14px;
-    border: 1px solid var(--border-strong);
-    border-radius: 12px;
-    background: var(--surface);
-    color: var(--accent);
+  .history {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .intro {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+    color: var(--muted);
+    text-align: center;
   }
 
   .intro h2 {
-    margin: 0 0 6px;
+    margin: 0 0 4px;
     color: var(--text);
-    font-size: 20px;
-    font-weight: 650;
-    letter-spacing: -0.02em;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    line-height: 24px;
   }
 
   .intro p {
-    margin: 0 auto;
-    max-width: 30rem;
-    font-size: 13px;
+    max-width: 480px;
+    margin: 0;
+    font-size: var(--text-md);
   }
 
   .suggestions {
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 6px;
-    margin-top: 18px;
+    gap: 8px;
+    max-width: 100%;
+    margin-top: 16px;
   }
 
   .suggestion {
-    height: 30px;
-    padding: 0 11px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    color: var(--secondary);
-    font-size: 12px;
-    transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease);
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    line-height: 24px;
+    text-overflow: ellipsis;
   }
 
-  .suggestion:hover {
-    background: var(--hover);
-    border-color: var(--border-strong);
-    color: var(--text);
-  }
-
-  .turn {
-    max-width: 52rem;
-    margin: 0 auto 26px;
+  /* A work log: every message is a block under a one-line header. */
+  .turn + .turn {
+    margin-top: 20px;
   }
 
   .who {
     display: flex;
     align-items: baseline;
-    gap: 7px;
-    margin-bottom: 6px;
-    color: var(--muted);
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.01em;
-  }
-
-  .tool-name {
-    color: var(--secondary);
-    font-family: var(--font-mono);
-    font-size: 11px;
-    letter-spacing: 0;
-    text-transform: none;
-  }
-
-  .attachments {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 8px;
-  }
-
-  .attachment {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 28px;
-    max-width: 100%;
-    padding: 0 10px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    color: var(--secondary);
-    font-size: 12px;
-  }
-
-  .attachment:hover {
-    background: var(--hover);
-    border-color: var(--border-strong);
+    gap: 8px;
+    height: 16px;
+    margin-bottom: 8px;
     color: var(--text);
-  }
-
-  .attachment .size {
-    color: var(--muted);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    line-height: 16px;
   }
 
   .message {
-    font-size: 14px;
-    line-height: 1.65;
+    font-size: var(--text-md);
+    line-height: 20px;
     overflow-wrap: anywhere;
   }
 
   .message.user {
-    padding: 11px 15px;
+    padding: 12px 16px;
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: var(--radius);
     background: var(--surface);
   }
 
-  .message.assistant :global(p) {
-    margin: 0 0 0.85em;
-    text-wrap: pretty;
-  }
-
-  .message.assistant :global(p:last-child) {
-    margin-bottom: 0;
-  }
-
-  .message.assistant :global(strong) {
-    color: var(--strong);
-    font-weight: 600;
-  }
-
-  .message.assistant :global(em) {
-    color: var(--strong);
-  }
-
-  .message.assistant :global(a) {
-    color: var(--link);
-    text-decoration: underline;
-    text-decoration-color: color-mix(in srgb, var(--link) 45%, transparent);
-    text-underline-offset: 3px;
-  }
-
-  .message.assistant :global(code),
-  .message.assistant :global(pre) {
-    font-family: var(--font-mono);
-    font-size: 12.5px;
-  }
-
-  .message.assistant :global(code) {
-    padding: 1px 5px;
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    background: var(--bg-deep);
-  }
-
-  .message.assistant :global(pre) {
-    margin: 0.6em 0;
-    padding: 12px 14px;
+  /* Tool calls: one 24px row each. Neighbouring tool blocks join into a
+     single container, with the radius and padding only at its two ends. */
+  .turn.tool {
+    padding: 4px 0;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: var(--bg-deep);
-    overflow: auto;
-    line-height: 1.6;
+    background: var(--surface);
   }
 
-  .message.assistant :global(pre code) {
-    padding: 0;
-    border: 0;
-    background: none;
+  .turn.tool + .turn.tool {
+    margin-top: 0;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
   }
 
-  .message.assistant :global(ul),
-  .message.assistant :global(ol) {
-    margin: 0.4em 0 0.7em;
-    padding-left: 1.3em;
+  .turn.tool:has(+ .turn.tool) {
+    border-bottom: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-left-radius: 0;
   }
 
-  .message.assistant :global(blockquote) {
-    margin: 0.6em 0;
-    padding-left: 10px;
-    border-left: 2px solid var(--border-strong);
-    color: var(--secondary);
+  .turn.tool .who {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    height: 24px;
+    margin: 0;
+    padding: 0 12px;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-weight: 400;
+    line-height: 24px;
   }
 
-  .message.assistant :global(h1),
-  .message.assistant :global(h2),
-  .message.assistant :global(h3) {
-    margin: 1em 0 0.4em;
-    font-size: 14px;
-    font-weight: 600;
+  .tool-name {
+    overflow: hidden;
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
+  /* The output sits under the tool's name, in the same column: no box
+     inside the box. */
+  .tool-result {
+    overflow: hidden;
+    color: var(--muted);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Padding, not margin: a margin would collapse through the card's edge. */
   .message.tool {
-    padding: 0;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-deep);
+    margin: 0 12px 0 116px;
     overflow: hidden;
   }
 
   .message.tool pre {
+    margin-bottom: 4px;
+  }
+
+  /* Longer output starts on the tool's own row, beside its name. */
+  .turn.tool.multi .message.tool {
+    margin-top: -22px;
+  }
+
+  .message.tool pre {
+    max-height: 160px;
     margin: 0;
-    padding: 10px 12px;
-    max-height: 260px;
+    padding: 0;
     overflow: auto;
-    color: var(--secondary);
+    color: var(--muted);
     font-family: var(--font-mono);
-    font-size: 11.5px;
-    line-height: 1.5;
+    font-size: var(--text-sm);
+    line-height: 20px;
     white-space: pre-wrap;
   }
 
   .message.tool pre.empty {
     color: var(--muted);
-    font-style: italic;
   }
 
   .message.tool .expand {
-    margin: 0 12px 10px;
-    padding: 2px 8px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface);
-    color: var(--secondary);
-    font-size: 11px;
-    cursor: pointer;
+    margin: 4px 0;
+  }
+
+  .turn.tool .thinking,
+  .turn.tool .attachments {
+    margin: 4px 12px 8px;
   }
 
   .thinking {
-    margin: 2px 0 4px;
+    margin: 0 0 8px;
     color: var(--muted);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
+    line-height: 16px;
   }
 
   .thinking summary {
@@ -432,35 +390,76 @@
   }
 
   .thinking pre {
-    margin: 6px 0 0;
-    padding: 8px 10px;
-    max-height: 220px;
+    max-height: 240px;
+    margin: 8px 0 0;
+    padding: 0 0 0 12px;
     overflow: auto;
-    border-left: 2px solid var(--border-strong);
-    color: var(--secondary);
+    border-left: 1px solid var(--border);
+    color: var(--muted);
     font-family: var(--font-ui);
+    font-size: var(--text-sm);
+    line-height: 20px;
     white-space: pre-wrap;
   }
 
   .thinking .expand {
-    margin: 6px 0 0 10px;
-    padding: 2px 8px;
+    margin: 8px 0 0 12px;
+  }
+
+  .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+  }
+
+  .attachment {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: 100%;
+    height: var(--control);
+    padding: 0 8px;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    background: var(--surface);
+    background: var(--raised);
     color: var(--secondary);
-    font-size: 11px;
-    cursor: pointer;
+    font-size: var(--text-sm);
+    white-space: nowrap;
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease);
+  }
+
+  .attachment span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .attachment:hover {
+    background: var(--hover);
+    color: var(--text);
+  }
+
+  .attachment .size {
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  /* The streaming mark hangs below the text, out of flow, so the answer
+     does not move when it settles. */
+  .message.streaming {
+    position: relative;
   }
 
   .message.streaming::after {
     content: "";
-    display: inline-block;
-    width: 7px;
-    height: 14px;
-    margin-left: 2px;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 8px;
+    height: 8px;
+    margin-top: 4px;
     background: var(--accent);
-    vertical-align: -2px;
     animation: blink 1s steps(2, start) infinite;
   }
 
@@ -471,7 +470,16 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .transcript { scroll-behavior: auto; }
-    .message.streaming::after { animation: none; }
+    .transcript {
+      scroll-behavior: auto;
+    }
+
+    .attachment {
+      transition: none;
+    }
+
+    .message.streaming::after {
+      animation: none;
+    }
   }
 </style>

@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { findText, highlight, lineOffset, replaceAllText } from "../editor.js";
+  import { chord } from "../keys.js";
 
   let {
     tab,
@@ -26,6 +27,9 @@
   let line = $state("");
   let navigationError = $state("");
   const colored = $derived(highlight(draft, tab.path));
+  // Line numbers for the editor, drawn inside the syntax layer so they scroll
+  // with it.
+  const gutter = $derived(draft.split("\n").map((_, index) => index + 1).join("\n"));
 
   const readOnly = $derived(file?.read_only ?? "");
   const editable = $derived(tab.kind === "file" && !!file && !file.read_only);
@@ -163,21 +167,21 @@
 </script>
 
 <section class="file-pane" aria-label={tab.title}>
-  <header>
-    <Icon name={tab.kind === "diff" ? "diff" : "file"} size={14} />
-    <span class="path mono">{tab.path}</span>
+  <header class:bare={tab.kind !== "diff" && !file?.read_only && !dirty && !loading && !tab.path.includes("/")}>
+    <Icon name={tab.kind === "diff" ? "diff" : "file"} size={12} />
+    <span class="path mono" title={tab.path}>{tab.path}</span>
     {#if tab.kind === "diff"}<span class="chip">{tab.side === "staged" ? "staged" : tab.side === "unstaged" ? "working tree" : tab.side === "last_turn" ? "last turn" : "staged + working tree"}</span>{/if}
     {#if file?.read_only}<span class="chip">read-only</span>{/if}
     {#if dirty}<span class="chip dirty">Unsaved</span>{/if}
-    {#if loading}<span class="mini spin"><Icon name="refresh" size={13} /></span>{/if}
+    {#if loading}<span class="mini spin"><Icon name="refresh" size={12} /></span>{/if}
   </header>
 
   {#if error}
     <div class="banner" role="alert">
-      <Icon name="alert" size={14} />
+      <Icon name="alert" size={12} />
       <span>{error}</span>
       {#if tab.kind === "file"}
-        <span>Use “Reload current file from disk” in the command palette (⌘/Ctrl K).</span>
+        <span>Use “Reload current file from disk” in the command palette ({chord("K")}).</span>
       {/if}
     </div>
   {/if}
@@ -208,7 +212,7 @@
     </figure>
   {:else if editable}
     <div class="editor-wrap">
-      <pre class="syntax" aria-hidden="true" bind:this={syntax}>{#each colored as token, index (index)}<span class={token.kind}>{token.text}</span>{/each}{"\n"}</pre>
+      <pre class="syntax" aria-hidden="true" bind:this={syntax}><span class="gutter">{gutter}</span>{#each colored as token, index (index)}<span class={token.kind}>{token.text}</span>{/each}{"\n"}</pre>
     <textarea
       class="editor"
       bind:this={editor}
@@ -239,25 +243,39 @@
   .file-pane {
     display: flex;
     flex-direction: column;
-    min-height: 0;
     flex: 1;
+    min-width: 0;
+    min-height: 0;
+    background: var(--bg);
   }
 
+  /* Document toolbar */
   header {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 16px;
+    flex: none;
+    height: 32px;
+    padding: 0 16px;
     border-bottom: 1px solid var(--border);
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--text-sm);
+  }
+
+  header :global(svg) {
+    flex: none;
   }
 
   .path {
+    min-width: 0;
     overflow: hidden;
+    color: var(--secondary);
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--secondary);
+  }
+
+  header .chip {
+    flex: none;
   }
 
   .mini {
@@ -268,32 +286,108 @@
     color: var(--warning);
   }
 
-  .editor-wrap { position: relative; flex: 1; min-height: 0; background: var(--bg-deep); }
-  .image-preview { display: grid; place-items: center; gap: 10px; flex: 1; min-height: 0; margin: 0; padding: 24px; overflow: auto; }
-  .image-preview img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: var(--radius-sm); background: var(--bg-deep); }
-  .image-preview figcaption { color: var(--muted); font-size: 12px; }
-  .navigation { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--border); }
-  .navigation .field { width: 160px; }
-  .navigation .line-number { width: 64px; }
-  .navigation span { color: var(--muted); font-size: 12px; }
-  .navigation [role="status"] { color: var(--warning); }
-  .editor, .syntax {
+  /* Banners */
+  .banner,
+  .notice {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+    min-height: var(--control);
+    margin: 8px 16px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    line-height: 16px;
+  }
+
+  .banner {
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+    background: var(--surface);
+    color: var(--error);
+  }
+
+  .banner :global(svg) {
+    flex: none;
+  }
+
+  .banner span {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .banner span + span {
+    color: var(--muted);
+  }
+
+  .notice {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+    background: var(--accent-soft);
+    color: var(--text);
+    overflow-wrap: anywhere;
+  }
+
+  /* Find, replace and go to line */
+  .navigation {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    flex: none;
+    min-height: 36px;
+    padding: 4px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .navigation .field {
+    width: 160px;
+    height: var(--control);
+    font-size: var(--text-sm);
+  }
+
+  .navigation .line-number {
+    width: 64px;
+  }
+
+  .navigation span {
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  .navigation [role="status"] {
+    color: var(--text);
+    font-size: var(--text-sm);
+  }
+
+  /* Editor: a transparent textarea over the highlighted copy of its text.
+     Both layers share every metric, so the caret sits on the glyphs. */
+  .editor-wrap {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    background: var(--bg);
+  }
+
+  .editor,
+  .syntax {
     position: absolute;
     inset: 0;
     flex: 1;
     min-height: 0;
     width: 100%;
-    padding: 12px 16px;
-    border: 0;
     height: 100%;
     margin: 0;
+    padding: 8px 16px 8px 60px;
+    border: 0;
     box-sizing: border-box;
     background: transparent;
     color: transparent;
-    caret-color: var(--text);
+    caret-color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1.6;
+    font-size: var(--text-sm);
+    line-height: 20px;
     resize: none;
     outline: none;
     tab-size: 2;
@@ -302,72 +396,104 @@
     overflow-wrap: normal;
     letter-spacing: normal;
     font-variant-ligatures: none;
-  }
-  .syntax { color: var(--secondary); pointer-events: none; scrollbar-width: none; }
-  .editor:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .syntax::-webkit-scrollbar { display: none; }
-  .syntax .keyword { color: var(--accent); }
-  .syntax .string { color: var(--success); }
-  .syntax .number { color: var(--warning); }
-  .syntax .comment { color: var(--muted); }
-  .editor::selection { background: var(--accent-soft); color: transparent; }
-  @media (forced-colors: active) { .syntax { display: none; } .editor { color: CanvasText; } }
-
-  .banner {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 16px;
-    border-bottom: 1px solid color-mix(in srgb, var(--error) 45%, var(--border));
-    background: color-mix(in srgb, var(--error) 9%, var(--surface));
-    color: var(--error);
-    font-size: 11.5px;
+    font-feature-settings: normal;
   }
 
-  .banner span {
-    flex: 1;
-    overflow-wrap: anywhere;
+  .syntax {
+    color: var(--text);
+    pointer-events: none;
+    scrollbar-width: none;
   }
 
-  .notice {
-    margin: 0;
-    padding: 7px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
+  .syntax::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* The gutter is out of the text flow, so the two layers still line up. */
+  .gutter {
+    position: absolute;
+    top: 8px;
+    left: 0;
+    width: 48px;
+    padding-right: 8px;
+    border-right: 1px solid var(--border);
+    color: var(--muted);
+    text-align: right;
+    user-select: none;
+  }
+
+  .editor:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    border-radius: 0;
+  }
+
+  .syntax .keyword {
+    color: var(--accent);
+  }
+
+  .syntax .string {
+    color: var(--success);
+  }
+
+  .syntax .number {
     color: var(--warning);
-    font-size: 11.5px;
   }
 
+  .syntax .comment {
+    color: var(--muted);
+  }
+
+  .editor::selection {
+    background: var(--selection);
+    color: transparent;
+  }
+
+  @media (forced-colors: active) {
+    .syntax {
+      display: none;
+    }
+
+    .editor {
+      color: CanvasText;
+    }
+  }
+
+  /* Read-only viewer and diffs */
   .code {
     flex: 1;
     min-height: 0;
     margin: 0;
-    padding: 10px 0 18px;
+    padding: 8px 0;
     overflow: auto;
-    background: var(--bg-deep);
+    background: var(--bg);
     font-family: var(--font-mono);
-    font-size: 12px;
-    line-height: 1.6;
+    font-size: var(--text-sm);
+    line-height: 20px;
+    tab-size: 4;
   }
 
   .line {
     display: block;
+    min-width: max-content;
+    min-height: 20px;
     padding: 0 16px 0 0;
-    min-height: 1.6em;
     white-space: pre;
   }
 
   .ln {
     display: inline-block;
-    width: 3.6rem;
-    padding-right: 12px;
+    width: 48px;
+    margin-right: 12px;
+    padding-right: 8px;
+    border-right: 1px solid var(--border);
     color: var(--muted);
     text-align: right;
     user-select: none;
   }
 
   .src {
-    color: var(--secondary);
+    color: var(--text);
   }
 
   .diff .line {
@@ -376,44 +502,70 @@
 
   .diff .add {
     background: var(--add);
-    color: var(--success);
   }
 
   .diff .del {
     background: var(--remove);
-    color: var(--error);
   }
 
   .diff .hunk {
-    color: var(--accent);
-    background: var(--accent-soft);
+    margin: 4px 0;
+    background: var(--surface);
+    color: var(--muted);
   }
 
   .diff .meta {
     color: var(--muted);
   }
 
-  .state {
+  /* Image preview */
+  .image-preview {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 8px;
     flex: 1;
+    min-height: 0;
+    margin: 0;
+    padding: 24px;
+    overflow: auto;
+    background: var(--bg);
+  }
+
+  .image-preview img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    border: 1px solid var(--border);
+  }
+
+  .image-preview figcaption {
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .state {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    flex: 1;
     margin: 0;
     padding: 24px;
     color: var(--muted);
-    font-size: 13px;
-  }
-
-  .state.error {
-    color: var(--error);
+    font-size: var(--text-sm);
   }
 
   .clipped {
+    flex: none;
     margin: 0;
-    padding: 6px 16px;
+    padding: 8px 16px;
     border-top: 1px solid var(--border);
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-xs);
+  }
+
+  /* A top-level file with nothing to report: its tab already names it. */
+  header.bare {
+    display: none;
   }
 </style>

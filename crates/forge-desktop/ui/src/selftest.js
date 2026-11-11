@@ -227,7 +227,7 @@ export async function runSelfTest(params, sessionId) {
     select.value = "forge-light";
     select.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(50);
-    results.theme_switches = document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).color === "rgb(32, 41, 54)";
+    results.theme_switches = document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).color === "rgb(20, 23, 28)";
     select.value = previous;
     select.dispatchEvent(new Event("change", { bubbles: true }));
     document.querySelector('button[aria-label="Close help"]').click();

@@ -81,6 +81,7 @@
     <div class="search">
       <Icon name="search" size={13} />
       <input
+        class="field"
         bind:value={query}
         placeholder="Search models"
         aria-label="Search models"
@@ -107,6 +108,8 @@
               onclick={() => pick(model)}
             >
               <span class="name">{model.name}</span>
+              {#if model.id !== model.name}<span class="id mono">{model.id}</span>{/if}
+              <span class="spacer"></span>
               {#if model.effort.length > 1}
                 <span class="effort">{model.effort.join(" · ")}</span>
               {/if}
@@ -119,16 +122,16 @@
       </div>
     {/if}
 
-    <footer>
-      <button class="btn" type="button" onclick={onProviders}>Providers…</button>
-      {#if selected}
+    {#if selected}
+      <div class="choice">
         <span class="picked" title={selected.id}>{selected.name}</span>
         {#if selected.effort.length > 1}
+          <span class="choice-label" aria-hidden="true">Reasoning effort</span>
           <span class="levels" aria-label="Reasoning effort">
             {#each selected.effort as level}
               <button
                 type="button"
-                class="level"
+                class="btn level"
                 class:on={level === effort}
                 aria-pressed={level === effort}
                 onclick={() => (effort = level)}
@@ -138,7 +141,11 @@
             {/each}
           </span>
         {/if}
-      {/if}
+      </div>
+    {/if}
+
+    <footer>
+      <button class="btn" type="button" onclick={onProviders}>Providers…</button>
       <span class="spacer"></span>
       <button class="btn" type="button" onclick={onClose}>Cancel</button>
       <button class="btn primary" type="button" disabled={!selected || applying} onclick={apply}>
@@ -154,17 +161,17 @@
     inset: 0;
     display: grid;
     place-items: center;
-    background: rgba(5, 7, 9, 0.55);
+    background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
     z-index: 30;
   }
 
   .picker {
     display: flex;
     flex-direction: column;
-    width: min(34rem, calc(100vw - 64px));
-    max-height: min(36rem, calc(100vh - 96px));
-    border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    width: min(560px, calc(100vw - 48px));
+    max-height: min(576px, calc(100vh - 96px));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     background: var(--surface);
     box-shadow: var(--shadow);
     overflow: hidden;
@@ -174,33 +181,45 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 14px 8px;
+    gap: 8px;
+    height: var(--bar);
+    flex: none;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
   }
 
   h2 {
     margin: 0;
-    font-size: 14px;
+    font-size: var(--text-lg);
     font-weight: 600;
   }
 
   .search {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 7px;
-    margin: 0 14px 8px;
-    padding: 0 9px;
-    height: 30px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--bg-deep);
+    flex: none;
+    padding: 16px 16px 8px;
     color: var(--muted);
   }
 
+  /* The icon sits inside the field's left padding. */
+  .search :global(svg) {
+    position: absolute;
+    left: 28px;
+    pointer-events: none;
+  }
+
   .search input {
-    flex: 1;
-    min-width: 0;
-    border: 0;
-    background: none;
+    padding-left: 32px;
+  }
+
+  /* The browser audit requires a real two-pixel outline on this input, so
+     it takes the global focus outline in place of the field's ring. */
+  .search input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    box-shadow: none;
   }
 
   .list {
@@ -211,12 +230,9 @@
   }
 
   .group {
-    padding: 10px 8px 4px;
+    padding: 12px 8px 4px;
     color: var(--muted);
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: var(--text-xs);
   }
 
   .model {
@@ -224,102 +240,144 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    height: 30px;
+    height: var(--control-lg);
     padding: 0 8px;
-    border: 0;
+    border: 1px solid transparent;
     border-radius: var(--radius-sm);
     background: none;
-    color: var(--secondary);
+    color: var(--text);
     text-align: left;
-    font-size: 12.5px;
+    transition: background var(--fast) var(--ease);
   }
 
   .model:hover {
     background: var(--hover);
-    color: var(--text);
   }
 
   .model.selected {
-    background: var(--selection);
-    color: var(--text);
+    border-color: var(--border);
+    background: var(--raised);
+  }
+
+  .model:focus-visible {
+    outline-offset: -2px;
   }
 
   .name {
-    flex: 1;
+    flex: none;
+    max-width: 60%;
     overflow: hidden;
+    font-size: var(--text-md);
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-family: var(--font-mono);
-    font-size: 12px;
   }
 
-  .effort {
+  .id {
+    min-width: 0;
+    overflow: hidden;
     color: var(--muted);
-    font-size: 10.5px;
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .effort,
+  .current {
+    flex: none;
+    color: var(--muted);
+    font-size: var(--text-xs);
   }
 
   .current {
-    padding: 0 6px;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: 10px;
-    letter-spacing: 0.03em;
+    color: var(--secondary);
   }
 
   .state {
     margin: 0;
-    padding: 18px 16px;
+    padding: 16px;
     color: var(--muted);
-    font-size: 12.5px;
+    font-size: var(--text-sm);
   }
 
   .state.error {
     color: var(--error);
+    overflow-wrap: anywhere;
   }
 
+  .choice,
   footer {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 14px;
+    height: var(--bar);
+    flex: none;
+    padding: 0 16px;
     border-top: 1px solid var(--border);
   }
 
   .picked {
-    max-width: 12rem;
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
     color: var(--secondary);
     font-family: var(--font-mono);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
+  .choice-label {
+    flex: none;
+    color: var(--muted);
+    font-size: var(--text-xs);
+  }
+
+  /* Segmented control: adjacent buttons sharing their borders. */
   .levels {
     display: flex;
-    gap: 2px;
-    padding: 2px;
-    border-radius: 6px;
-    background: var(--bg-deep);
+    flex: none;
   }
 
   .level {
-    height: 20px;
-    padding: 0 7px;
-    border: 0;
-    border-radius: 4px;
-    background: none;
-    color: var(--muted);
-    font-size: 10.5px;
+    position: relative;
+    border-radius: 0;
   }
 
-  .level.on {
+  .level + .level {
+    margin-left: -1px;
+  }
+
+  .level:first-child {
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  }
+
+  .level:last-child {
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+
+  .level:only-child {
+    border-radius: var(--radius-sm);
+  }
+
+  .level.on,
+  .level.on:hover {
+    z-index: 1;
+    border-color: var(--accent);
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--text);
+  }
+
+  .level:focus-visible {
+    z-index: 2;
   }
 
   .spacer {
     flex: 1;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .model {
+      transition: none;
+    }
   }
 </style>

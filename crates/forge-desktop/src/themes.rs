@@ -159,9 +159,9 @@ mod tests {
             .find(|theme| theme.id == "forge-dark")
             .expect("forge-dark");
         assert!(dark.dark);
-        assert_eq!(dark.colors["bg"], "#14171B");
-        assert_eq!(dark.colors["border"], "#2A333E");
-        assert_eq!(dark.colors["border-strong"], "#65778C");
+        assert_eq!(dark.colors["bg"], "#0F1115");
+        assert_eq!(dark.colors["border"], "#2A2F38");
+        assert_eq!(dark.colors["border-strong"], "#6C7686");
 
         let light = themes
             .iter()

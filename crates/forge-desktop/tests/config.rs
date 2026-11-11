@@ -31,6 +31,10 @@ fn expected_permissions() -> BTreeSet<String> {
         .collect();
     permissions.insert("core:event:allow-listen".into());
     permissions.insert("core:event:allow-unlisten".into());
+    // The top bar is the window's title bar: it may start a drag and
+    // toggle maximise, and nothing else about the window.
+    permissions.insert("core:window:allow-start-dragging".into());
+    permissions.insert("core:window:allow-internal-toggle-maximize".into());
     permissions
 }
 
@@ -203,6 +207,8 @@ fn isolation_hook_allows_exactly_the_granted_commands() {
     let mut expected: BTreeSet<String> = DESKTOP_COMMANDS.iter().map(|c| c.to_string()).collect();
     expected.insert("plugin:event|listen".into());
     expected.insert("plugin:event|unlisten".into());
+    expected.insert("plugin:window|start_dragging".into());
+    expected.insert("plugin:window|internal_toggle_maximize".into());
     expected.insert("plugin:__TAURI_CHANNEL__|fetch".into());
     assert_eq!(allowed, expected);
     assert!(html.contains("ALLOWED.has(payload.cmd) ? payload : null"));

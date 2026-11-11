@@ -1,63 +1,77 @@
-/* Forge desktop: tokens and base layer. Layered, low-chroma surfaces with one
-   clear accent; depth comes from soft shadows and hairline borders. */
+/* Forge desktop: tokens and base layer.
+   Cool graphite neutrals, one blue for action, selection and focus. Surfaces
+   are flat and separated by 1px rules; only overlays cast a shadow. State is
+   always a dot plus a word. Type moves in four steps: 11, 12, 13, 16.
+   The built-in themes (themes/*.toml) set the colour tokens at runtime; the
+   values here are the same palette, shown until the theme list loads. */
 :root {
   color-scheme: dark;
-  --bg: #161412;
-  --bg-deep: #0f0e0c;
-  --surface: #1d1b18;
-  --raised: #262320;
-  --hover: #2e2a26;
-  --border: #2c2824;
-  --border-strong: #7a7168;
-  --text: #f2eee8;
-  --secondary: #c4bcb1;
-  --muted: #aaa196;
-  --accent: #ff8a3d;
-  --accent-text: #1a0e05;
-  --accent-soft: #3a2515;
-  --success: #9ccf9a;
-  --warning: #f0c35e;
-  --error: #f08a86;
-  --add: #1b3523;
-  --remove: #4a2426;
-  --selection: #3d2f24;
-  --strong: #ffd2a8;
+  --bg: #0f1115;
+  --bg-deep: #0b0d10;
+  --surface: #181b21;
+  --raised: #1f232b;
+  --hover: #272c36;
+  --border: #2a2f38;
+  --border-strong: #6c7686;
+  --text: #e6e8eb;
+  --secondary: #b6bcc7;
+  --muted: #9aa2af;
+  --accent: #6e9bff;
+  --accent-text: #000000;
+  --accent-soft: #1c2740;
+  --success: #7fd69a;
+  --warning: #e8b04a;
+  --error: #f47c76;
+  --add: #14301f;
+  --remove: #3a1a1d;
+  --selection: #27344f;
+  --strong: #f5f6f8;
   --link: #7cc4d6;
 
   --font-ui: "Geist Variable", "Geist", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Geist Mono Variable", "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --radius: 10px;
-  --radius-sm: 7px;
-  --shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 16px 40px -8px rgba(8, 6, 4, 0.6);
-  --ring: 0 0 0 3px rgba(255, 138, 61, 0.3);
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 16px;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --control: 28px;
+  --control-lg: 32px;
+  --bar: 44px;
+  --shadow: 0 12px 32px -8px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.3);
+  --ring: 0 0 0 3px color-mix(in srgb, var(--accent) 32%, transparent);
   --ease: cubic-bezier(0.2, 0, 0, 1);
+  --fast: 120ms;
+  /* State dots have their own amber: a mark needs 3:1, not text contrast. */
+  --dot-waiting: #e8b04a;
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #faf7f2;
-  --bg-deep: #ece6dc;
-  --surface: #f2ede4;
+  --bg: #f7f8fa;
+  --bg-deep: #eceef2;
+  --surface: #f0f2f5;
   --raised: #ffffff;
-  --hover: #e6dfd3;
-  --border: #ddd5c7;
-  --border-strong: #8a7f6f;
-  --text: #221d17;
-  --secondary: #51483c;
-  --muted: #62594c;
-  --accent: #b94a0b;
+  --hover: #e3e6ec;
+  --border: #dcdfe5;
+  --border-strong: #757f8f;
+  --text: #14171c;
+  --secondary: #434a56;
+  --muted: #565e6c;
+  --accent: #2a57c8;
   --accent-text: #ffffff;
-  --accent-soft: #f8e1d1;
-  --success: #2b6a3c;
-  --warning: #7a5200;
-  --error: #a52d43;
-  --add: #d3eedf;
-  --remove: #f1dae2;
-  --selection: #efd9c4;
-  --strong: #8a3a05;
-  --link: #1d6a7c;
-  --shadow: 0 1px 2px rgba(29, 36, 49, 0.06), 0 16px 40px -8px rgba(29, 36, 49, 0.2);
-  --ring: 0 0 0 3px rgba(185, 74, 11, 0.22);
+  --accent-soft: #e3eafc;
+  --success: #1d6636;
+  --warning: #754e00;
+  --error: #b0251d;
+  --add: #d9f2e0;
+  --remove: #f8dcdc;
+  --selection: #d3defa;
+  --strong: #0b0d10;
+  --link: #0f5f70;
+  --shadow: 0 12px 32px -8px rgba(20, 23, 28, 0.22), 0 2px 6px rgba(20, 23, 28, 0.08);
+  --dot-waiting: #ad7200;
 }
 
 * {
@@ -74,8 +88,8 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font: 13px/1.55 var(--font-ui);
-    letter-spacing: -0.003em;
+  font: 400 var(--text-md)/20px var(--font-ui);
+  font-variant-numeric: tabular-nums;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   caret-color: var(--accent);
@@ -84,15 +98,18 @@ body {
 
 button,
 input,
-textarea {
+textarea,
+select {
   font: inherit;
   color: inherit;
 }
 
-select { font: inherit; color: inherit; }
-
 button {
   cursor: pointer;
+}
+
+button:disabled {
+  cursor: default;
 }
 
 :focus-visible {
@@ -101,12 +118,14 @@ button {
   border-radius: var(--radius-sm);
 }
 
-button:disabled {
-  cursor: default;
-}
-
 ::selection {
   background: var(--selection);
+  color: var(--text);
+}
+
+a {
+  color: var(--link);
+  text-underline-offset: 3px;
 }
 
 ::-webkit-scrollbar {
@@ -115,8 +134,8 @@ button:disabled {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--border-strong) 70%, transparent);
-  border: 2px solid transparent;
+  background: color-mix(in srgb, var(--border-strong) 55%, transparent);
+  border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 999px;
 }
@@ -126,10 +145,7 @@ button:disabled {
   background-clip: padding-box;
 }
 
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
+::-webkit-scrollbar-corner,
 ::-webkit-scrollbar-track {
   background: transparent;
 }
@@ -138,29 +154,32 @@ button:disabled {
 .btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  height: 28px;
-  padding: 0 10px;
+  height: var(--control);
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--secondary);
+  background: var(--raised);
+  color: var(--text);
+  font-size: var(--text-sm);
+  font-weight: 500;
   white-space: nowrap;
-  transition: background 140ms var(--ease), border-color 140ms var(--ease), color 140ms var(--ease),
-    box-shadow 140ms var(--ease), transform 90ms var(--ease);
-}
-
-.btn:active:not(:disabled) {
-  transform: translateY(0.5px);
+  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 
 .btn:hover:not(:disabled) {
   background: var(--hover);
-  color: var(--text);
+  border-color: color-mix(in srgb, var(--border-strong) 50%, var(--border));
+}
+
+.btn:active:not(:disabled) {
+  background: var(--border);
 }
 
 .btn:disabled {
-  opacity: 0.45;
+  color: var(--muted);
+  opacity: 0.6;
 }
 
 .btn.primary {
@@ -168,24 +187,24 @@ button:disabled {
   border-color: var(--accent);
   color: var(--accent-text);
   font-weight: 600;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.18) inset, 0 1px 2px rgba(0, 0, 0, 0.25);
 }
 
 .btn.primary:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 86%, var(--text));
+  border-color: color-mix(in srgb, var(--accent) 86%, var(--text));
   color: var(--accent-text);
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 
 .btn.ghost {
   background: transparent;
   border-color: transparent;
+  color: var(--secondary);
 }
 
 .btn.ghost:hover:not(:disabled) {
   background: var(--hover);
+  border-color: transparent;
+  color: var(--text);
 }
 
 .btn.danger {
@@ -196,14 +215,14 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: var(--control);
+  height: var(--control);
   padding: 0;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--muted);
-  transition: background 140ms var(--ease), color 140ms var(--ease);
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 
 .icon-btn:hover:not(:disabled) {
@@ -211,24 +230,26 @@ button:disabled {
   color: var(--text);
 }
 
+.icon-btn:disabled {
+  opacity: 0.5;
+}
+
 .field {
   width: 100%;
-  height: 30px;
-  padding: 0 9px;
+  height: var(--control-lg);
+  padding: 0 10px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--bg-deep);
+  background: var(--bg);
   color: var(--text);
-  outline: none;
+  transition: border-color var(--fast) var(--ease);
 }
 
-.field:focus {
+/* A real outline, not only a glow: it survives forced-colours modes. */
+.field:focus-visible {
   border-color: var(--accent);
-  box-shadow: var(--ring);
-}
-
-.field {
-  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
 
 .field::placeholder {
@@ -237,38 +258,48 @@ button:disabled {
 
 .mono {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: var(--text-sm);
   font-feature-settings: "calt", "ss01";
   letter-spacing: 0;
 }
 
-code, pre, kbd, samp {
+code,
+pre,
+kbd,
+samp {
+  font-family: var(--font-mono);
   font-feature-settings: "calt", "ss01";
 }
 
-h1, h2, h3 {
+h1,
+h2,
+h3 {
   text-wrap: balance;
-  letter-spacing: -0.012em;
+  letter-spacing: -0.01em;
 }
 
-input, textarea { caret-color: var(--accent); }
+input,
+textarea {
+  caret-color: var(--accent);
+}
 
 .chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 22px;
   padding: 0 8px;
-  border-radius: 999px;
-  background: var(--surface);
-  color: var(--secondary);
-  font-size: 11px;
-  letter-spacing: 0.02em;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--muted);
+  font-size: var(--text-xs);
 }
 
+/* State is a dot plus a word, never the dot alone. */
 .state-dot {
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--muted);
   flex: none;
@@ -280,11 +311,16 @@ input, textarea { caret-color: var(--accent); }
 }
 
 .state-dot.waiting {
-  background: var(--warning);
+  background: var(--dot-waiting);
 }
 
 .state-dot.completed {
   background: var(--success);
+}
+
+.state-dot.queued {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--muted);
 }
 
 .state-dot.failed,
@@ -312,10 +348,6 @@ input, textarea { caret-color: var(--accent); }
   .icon-btn,
   .field {
     transition: none;
-  }
-
-  .btn:active:not(:disabled) {
-    transform: none;
   }
 }
 

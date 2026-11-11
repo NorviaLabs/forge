@@ -1,13 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The only capability: the main window may listen for events and call Forge's own commands. No core:default (it grants event emit and more), no plugins.",
+  "description": "The only capability: the main window may listen for events, be dragged and maximised by its own top bar, and call Forge's own commands. No core:default (it grants event emit and more), no plugins.",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
     "allow-trust-status",
     "allow-trust-workspace",
     "allow-choose-folder",

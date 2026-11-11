@@ -87,7 +87,9 @@
 
 <section class="question" aria-label="The agent is asking" data-call-id={question.call_id}>
   <header>
-    <span class="badge"><Icon name="chat" size={13} /> Needs your answer</span>
+    <span class="state-dot waiting" aria-hidden="true"></span>
+    <span class="badge">Needs your answer</span>
+    <span class="spacer"></span>
     {#if question.questions.length > 1}
       <span class="count">{question.questions.length} questions</span>
     {/if}
@@ -109,6 +111,9 @@
               aria-pressed={draftFor(item.id)?.selected.includes(option.value)}
               onclick={() => choose(item, option.value)}
             >
+              <span class="mark" class:multi={item.multi_select} aria-hidden="true">
+                {#if item.multi_select && draftFor(item.id)?.selected.includes(option.value)}<Icon name="check" size={10} />{/if}
+              </span>
               <span class="option-label">{option.label}</span>
               {#if option.description}<span class="option-detail">{option.description}</span>{/if}
             </button>
@@ -131,100 +136,162 @@
 
   <div class="actions">
     <button type="button" class="btn primary" onclick={send}>Send answer</button>
-    <button type="button" class="btn" onclick={() => { onDrafts?.(null); onAnswer(question.call_id, [], true); }}>
+    <button type="button" class="btn ghost" onclick={() => { onDrafts?.(null); onAnswer(question.call_id, [], true); }}>
       Skip
     </button>
   </div>
 </section>
 
 <style>
+  /* Aligned to the conversation's content column, like the composer below.
+     A long set of questions scrolls inside the card instead of pushing the
+     conversation out of the column. */
   .question {
-    margin: 0 24px 10px;
-    padding: 11px 12px;
-    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+    display: flex;
+    flex: none;
+    flex-direction: column;
+    gap: 12px;
+    width: calc(100% - 68px);
+    max-width: 720px;
+    max-height: 60%;
+    margin: 0 auto 8px;
+    padding: 16px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
     border-radius: var(--radius);
-    background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+    background: var(--surface);
   }
 
   header {
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 8px;
   }
 
   .badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    color: var(--accent);
-    font-size: 11px;
+    color: var(--text);
+    font-size: var(--text-md);
     font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
+  }
+
+  .spacer {
+    flex: 1;
   }
 
   .count {
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--text-xs);
+  }
+
+  .item {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 
   .item + .item {
-    margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid var(--border);
   }
 
   h3 {
-    margin: 0 0 4px;
-    font-size: 12.5px;
-    font-weight: 600;
+    margin: 0;
+    font-size: var(--text-md);
+    font-weight: 500;
+    line-height: 20px;
   }
 
   .text {
-    margin: 0 0 8px;
+    margin: 0;
     color: var(--secondary);
-    font-size: 12.5px;
+    font-size: var(--text-sm);
+    line-height: 20px;
   }
 
   .options {
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    margin-bottom: 6px;
   }
 
   .option {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: 7px 9px;
-    border: 1px solid var(--border);
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 8px;
+    min-height: var(--control-lg);
+    padding: 4px 8px;
+    border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    background: var(--bg);
-    color: var(--secondary);
+    background: none;
+    color: var(--text);
+    font-size: var(--text-md);
+    line-height: 20px;
     text-align: left;
-    font-size: 12.5px;
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
   }
 
   .option:hover {
-    border-color: var(--border-strong);
-    color: var(--text);
+    background: var(--hover);
   }
 
   .option.chosen {
+    border-color: var(--border);
+    background: var(--raised);
+  }
+
+  .option:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /* The choice mark: a ring for one answer, a box for several. The pressed
+     state is also announced through aria-pressed. */
+  .mark {
+    display: inline-grid;
+    flex: none;
+    place-items: center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--border-strong);
+    border-radius: 50%;
+    background: var(--bg);
+    color: var(--accent-text);
+    transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+  }
+
+  .mark.multi {
+    border-radius: 4px;
+  }
+
+  .mark::after {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .option.chosen .mark {
     border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--text);
+  }
+
+  .option.chosen .mark:not(.multi)::after {
+    content: "";
+  }
+
+  .option.chosen .mark.multi {
+    background: var(--accent);
   }
 
   .option-label {
-    font-weight: 500;
+    flex: none;
+    max-width: 100%;
   }
 
   .option-detail {
+    flex: 1;
+    min-width: 0;
     color: var(--muted);
-    font-size: 11.5px;
+    font-size: var(--text-sm);
   }
 
   .custom {
@@ -232,14 +299,21 @@
   }
 
   .error {
-    margin: 8px 0 0;
+    margin: 0;
     color: var(--error);
-    font-size: 12px;
+    font-size: var(--text-sm);
   }
 
   .actions {
     display: flex;
-    gap: 6px;
-    margin-top: 10px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .option,
+    .mark {
+      transition: none;
+    }
   }
 </style>
