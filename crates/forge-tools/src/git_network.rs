@@ -611,6 +611,48 @@ pub(crate) async fn host_ssh_command(
     )
 }
 
+/// How the user signs commits made in `repo`: the format, program and key
+/// from their own git settings.
+///
+/// Read in the repository so the user's `includeIf "gitdir:..."` sections
+/// apply, but the repository's own config is skipped: a confined process can
+/// write it, and `gpg.program` there would otherwise choose a program that
+/// runs outside the sandbox.
+pub(crate) async fn host_signer(repo: &Path) -> Result<crate::sign_broker::Signer, String> {
+    use crate::sign_broker::{Format, Signer};
+    let user = LocalRepo {
+        root: repo,
+        credential_env_names: &[],
+    };
+    let get = |key: &'static str| {
+        let user = &user;
+        async move {
+            user.config_all_scoped(key, false)
+                .await
+                .map(|mut values| values.pop().filter(|value| !value.is_empty()))
+                .map_err(|error| error.to_string())
+        }
+    };
+    let format = match get("gpg.format").await? {
+        None => Format::Openpgp,
+        Some(name) => Format::parse(&name)
+            .ok_or_else(|| format!("unknown `gpg.format` {name:?} in your git config"))?,
+    };
+    let mut program = match format {
+        Format::Openpgp => get("gpg.openpgp.program").await?,
+        Format::X509 => get("gpg.x509.program").await?,
+        Format::Ssh => get("gpg.ssh.program").await?,
+    };
+    if program.is_none() && format == Format::Openpgp {
+        program = get("gpg.program").await?;
+    }
+    Ok(Signer {
+        format,
+        program: program.unwrap_or_else(|| format.default_program().to_string()),
+        key: get("user.signingkey").await?,
+    })
+}
+
 /// The executable that provides `__egress-connect`, when it is not the
 /// running one. Only [`set_egress_connect_exe`] sets it.
 static EGRESS_CONNECT_EXE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();

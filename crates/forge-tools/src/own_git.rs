@@ -106,6 +106,13 @@ async fn open_network(grant: &EgressGrant, repo: &Path) -> Option<forge_sandbox:
         env.push(("GIT_SSH_VARIANT".into(), "ssh".into()));
         invocation.hold(broker);
     }
+    // Signing: the key stays on the host, and the broker signs with what
+    // the user's own settings name.
+    if let Some((broker, config)) = start_sign_broker(repo, scratch.path()).await {
+        loopback_ports.push(broker.addr().port());
+        push_git_config(&mut env, config);
+        invocation.hold(broker);
+    }
     Some(forge_sandbox::git::Network {
         proxy_port: invocation.tcp_addr().port(),
         loopback_ports,
@@ -113,6 +120,36 @@ async fn open_network(grant: &EgressGrant, repo: &Path) -> Option<forge_sandbox:
         scratch: Some(scratch.path().to_path_buf()),
         keep: Box::new((invocation, scratch)),
     })
+}
+
+async fn start_sign_broker(
+    repo: &Path,
+    scratch: &Path,
+) -> Option<(crate::sign_broker::SignBroker, Vec<(String, String)>)> {
+    let exe = crate::git_network::helper_exe().ok()?;
+    let repo = repo.to_path_buf();
+    let resolve: crate::sign_broker::Resolve = Arc::new(move || {
+        let repo = repo.clone();
+        Box::pin(async move { crate::git_network::host_signer(&repo).await })
+    });
+    let broker = crate::sign_broker::SignBroker::start(resolve).await.ok()?;
+    let config = broker.git_config(&exe, scratch).ok()?;
+    Some((broker, config))
+}
+
+/// Add settings to the `GIT_CONFIG_COUNT`/`KEY`/`VALUE` variables in `env`,
+/// after the ones already there.
+fn push_git_config(env: &mut Vec<(String, String)>, config: Vec<(String, String)>) {
+    let mut count = match env.iter().position(|(name, _)| name == "GIT_CONFIG_COUNT") {
+        Some(at) => env.remove(at).1.parse().unwrap_or(0),
+        None => 0usize,
+    };
+    for (key, value) in config {
+        env.push((format!("GIT_CONFIG_KEY_{count}"), key));
+        env.push((format!("GIT_CONFIG_VALUE_{count}"), value));
+        count += 1;
+    }
+    env.push(("GIT_CONFIG_COUNT".into(), count.to_string()));
 }
 
 /// Give git that Forge runs its network through the gateway. Call once from
@@ -134,6 +171,28 @@ mod tests {
             socket_path: PathBuf::new(),
             control: None,
         })
+    }
+
+    #[test]
+    fn git_config_is_appended_after_the_settings_already_in_the_environment() {
+        let mut env = vec![
+            (
+                "GIT_CONFIG_KEY_0".to_string(),
+                "credential.helper".to_string(),
+            ),
+            ("GIT_CONFIG_VALUE_0".to_string(), String::new()),
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+        ];
+        push_git_config(&mut env, vec![("gpg.program".into(), "/w".into())]);
+        let value = |name: &str| {
+            let found: Vec<_> = env.iter().filter(|(key, _)| key == name).collect();
+            assert_eq!(found.len(), 1, "{name}");
+            found[0].1.clone()
+        };
+        assert_eq!(value("GIT_CONFIG_COUNT"), "2");
+        assert_eq!(value("GIT_CONFIG_KEY_0"), "credential.helper");
+        assert_eq!(value("GIT_CONFIG_KEY_1"), "gpg.program");
+        assert_eq!(value("GIT_CONFIG_VALUE_1"), "/w");
     }
 
     #[test]

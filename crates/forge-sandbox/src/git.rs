@@ -91,8 +91,8 @@ impl Networked {
 }
 
 /// Whether commits made in `repo` are signed (`commit.gpgsign`). A signing
-/// key is out of a confined git's reach, so such a commit has to be created
-/// on the host until signing has a broker of its own.
+/// key is out of a confined git's reach, so such a commit needs
+/// [`command_networked`], whose provider supplies a signing broker.
 pub fn signing_configured(repo: &Path) -> bool {
     command(repo)
         .args(["config", "--type=bool", "--get", "commit.gpgsign"])

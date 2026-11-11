@@ -191,6 +191,16 @@ Subdirectories:
   path) and composes the ssh command from the environment and global git
   config only (`git_network::host_ssh_command`), never the repository's.
   Both binaries dispatch `__ssh-broker` before argument parsing.
+- Signing for confined git (`sign_broker.rs`): Forge's own git
+  (`own_git.rs`) gets `gpg.program`, `gpg.<format>.program` set through
+  `GIT_CONFIG_*` to wrapper scripts in its scratch directory that run
+  `<forge exe> __sign-broker <addr> <token> <format> "$@"`. The client sends
+  the payload to a `SignBroker` in the Forge process, which runs the user's
+  signing program on the host. The broker signs only a commit, a tag or a
+  push certificate (`is_git_payload`), takes format, program and key from
+  the user's git config with the repository's scopes skipped
+  (`git_network::host_signer`), and does not verify. Confined shells do not
+  get it yet: they run with an empty global git config.
 - Hold-and-ask: a host no rule decides (`EgressPolicy::undecided`) is not
   refused when an asker is set (`EgressShared::set_asker`). The gateway holds
   the connection (`admit`/`admission`, up to `EGRESS_HOLD_TIMEOUT`) and sends a

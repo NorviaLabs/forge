@@ -95,6 +95,14 @@ fn main() {
     {
         std::process::exit(forge_tools::ssh_broker::run(&rest()));
     }
+    // A confined git's signing program: the broker in the running Forge
+    // signs with the user's key, which stays outside the sandbox.
+    if helper
+        .as_ref()
+        .is_some_and(|arg| arg == forge_tools::sign_broker::SUBCOMMAND)
+    {
+        std::process::exit(forge_tools::sign_broker::run(&rest()));
+    }
 
     let cli = Cli::parse();
     let Some(Command::Bench(args)) = cli.command else {

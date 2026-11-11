@@ -40,15 +40,15 @@ const USAGE: &str = "usage: forge __ssh-broker <broker-host:port> <token> <ssh a
 /// Largest request header the broker reads.
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 /// Largest single frame either side sends.
-const MAX_FRAME_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 // Frame kinds. Client to broker:
 const STDIN_DATA: u8 = 0;
 const STDIN_EOF: u8 = 1;
 // Broker to client:
-const STDOUT_DATA: u8 = 1;
-const STDERR_DATA: u8 = 2;
-const EXIT: u8 = 3;
+pub(crate) const STDOUT_DATA: u8 = 1;
+pub(crate) const STDERR_DATA: u8 = 2;
+pub(crate) const EXIT: u8 = 3;
 
 /// The git services a remote is asked to run.
 const GIT_SERVICES: &[&str] = &["git-upload-pack", "git-receive-pack", "git-upload-archive"];
@@ -274,7 +274,7 @@ impl SshBroker {
     }
 }
 
-fn uuid_like_token() -> String {
+pub(crate) fn uuid_like_token() -> String {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     // Two independently keyed SipHash states: 128 bits no other local
@@ -292,11 +292,11 @@ fn uuid_like_token() -> String {
     token
 }
 
-fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
-fn constant_time_eq(a: &str, b: &str) -> bool {
+pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
     a.len() == b.len()
         && a.bytes()
             .zip(b.bytes())
@@ -304,7 +304,7 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
             == 0
 }
 
-async fn write_frame<W>(writer: &mut W, kind: u8, payload: &[u8]) -> io::Result<()>
+pub(crate) async fn write_frame<W>(writer: &mut W, kind: u8, payload: &[u8]) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {

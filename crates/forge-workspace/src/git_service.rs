@@ -59,14 +59,14 @@ mod tests {
             assert_eq!(route(args, unsigned), expected, "{args:?}");
         }
         // A signing key is out of the sandbox's reach, so anything that
-        // creates a commit stays on the host when commits are signed.
+        // creates a signed commit needs the workspace's signing broker.
         let signed = || true;
         for args in [
             &["commit", "-m", "x"][..],
             &["merge", "--no-edit", "--", "refs/heads/b"],
             &["pull", "--no-rebase", "--no-edit"],
         ] {
-            assert_eq!(route(args, signed), Route::Host, "{args:?}");
+            assert_eq!(route(args, signed), Route::Networked, "{args:?}");
         }
         assert_eq!(route(&["push"], signed), Route::Networked);
         assert_eq!(route(&["merge", "--abort"], signed), Route::Confined);
@@ -1094,15 +1094,17 @@ fn valid_branch_name(name: &str) -> Result<(), GitServiceError> {
 enum Route {
     /// Confined to the repository, no network.
     Confined,
-    /// Confined, with the workspace's gateway and SSH broker.
+    /// Confined, with the workspace's gateway, SSH broker and signing
+    /// broker.
     Networked,
     /// On the host: it needs something the sandbox cannot supply yet.
     Host,
 }
 
 /// `signing` is whether commits here are signed: a signing key is out of a
-/// confined git's reach. Checking another branch's files out may download
-/// LFS objects, which is not routed yet.
+/// confined git's reach, so a signed commit goes through the workspace's
+/// signing broker. Checking another branch's files out may download LFS
+/// objects, which is not routed yet.
 fn route(args: &[&str], signing: impl FnOnce() -> bool) -> Route {
     let creates_commit = match args.first().copied() {
         Some("commit" | "pull") => true,
@@ -1111,8 +1113,8 @@ fn route(args: &[&str], signing: impl FnOnce() -> bool) -> Route {
     };
     match args.first().copied() {
         Some("switch") if !args.contains(&"-c") => Route::Host,
-        _ if creates_commit && signing() => Route::Host,
         Some("pull" | "push" | "fetch") => Route::Networked,
+        _ if creates_commit && signing() => Route::Networked,
         _ => Route::Confined,
     }
 }
