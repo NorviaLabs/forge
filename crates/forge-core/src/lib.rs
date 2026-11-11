@@ -4,6 +4,7 @@ mod agent_coordinator;
 mod audit;
 mod background;
 mod completion;
+mod host_questions;
 mod lifecycle;
 mod model_selection;
 mod permission;
@@ -42,6 +43,7 @@ pub use forge_context::compaction::{
     Checkpoint, CompactionError, CompactionPolicy, CompactionRecord, CompactionTelemetry,
     CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
 };
+pub use host_questions::{HostAnswered, HostDecision, HostQuestion, HostQuestions};
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use model_selection::ModelExecutionSelection;
 pub use permission::{egress_policy_for_workspace, EgressRuntime};
@@ -150,7 +152,10 @@ pub struct AgentSession {
     /// session rather than only in the frontend.
     workspace_trusted: bool,
     /// Durable audit rows waiting for the next journal write.
-    audit: audit::SessionAudit,
+    audit: Arc<audit::SessionAudit>,
+    /// Hosts the gateway is holding connections for; `Some` once the owner
+    /// asked for them (see `AgentSession::host_questions`).
+    host_questions: Option<host_questions::HostQuestions>,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the

@@ -27,6 +27,7 @@
     "allow-submit-images",
     "allow-decide-approval",
     "allow-answer-question",
+    "allow-answer-host-question",
     "allow-set-approve-all",
     "allow-clear-approvals",
     "allow-continue-turn",

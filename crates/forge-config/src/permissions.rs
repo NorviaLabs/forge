@@ -66,6 +66,15 @@ pub fn load_permissions(workspace: &Path) -> (PermissionsFile, Vec<String>) {
         }
     }
 
+    // Hosts the user allowed "always" for this project. They live in the
+    // user's config directory, not the workspace, so the agent cannot add to
+    // them, and they apply to this project only.
+    merged.allow.extend(
+        project_hosts(workspace)
+            .into_iter()
+            .map(|host| format!("host({host})")),
+    );
+
     let repo_path = workspace_permissions_path(workspace);
     if let Ok(content) = std::fs::read_to_string(&repo_path) {
         match parse_permissions_toml(&content) {
@@ -89,6 +98,110 @@ pub fn load_permissions(workspace: &Path) -> (PermissionsFile, Vec<String>) {
     }
 
     (merged, diagnostics)
+}
+
+/// `<user config dir>/forge/project-hosts.toml`: hosts allowed per project.
+pub fn project_hosts_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("forge").join("project-hosts.toml"))
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct ProjectHostsFile {
+    #[serde(default, rename = "project")]
+    projects: Vec<ProjectHosts>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ProjectHosts {
+    path: PathBuf,
+    #[serde(default)]
+    hosts: Vec<String>,
+}
+
+/// The project a workspace belongs to, for host grants: the workspace
+/// itself, or, for a managed session worktree
+/// (`<project>/.forge/local/worktrees/<name>`), the project it was made
+/// from, so a host allowed in one session holds in the next.
+fn project_key(workspace: &Path) -> PathBuf {
+    let workspace = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
+    let mut project = None;
+    for ancestor in workspace.ancestors().skip(1) {
+        if ancestor.ends_with(".forge/local/worktrees") {
+            project = ancestor
+                .parent()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .map(Path::to_path_buf);
+        }
+    }
+    project.unwrap_or(workspace)
+}
+
+fn read_project_hosts(path: &Path) -> std::io::Result<ProjectHostsFile> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => toml::from_str(&content).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not valid; not changed: {error}", path.display()),
+            )
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Hosts allowed "always" for the project `workspace` belongs to.
+pub fn project_hosts(workspace: &Path) -> Vec<String> {
+    let Some(path) = project_hosts_path() else {
+        return Vec::new();
+    };
+    let key = project_key(workspace);
+    read_project_hosts(&path)
+        .map(|file| {
+            file.projects
+                .into_iter()
+                .filter(|project| project.path == key)
+                .flat_map(|project| project.hosts)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Allow `host` for the project `workspace` belongs to, from now on. A
+/// no-op when it is already there.
+pub fn append_project_host(workspace: &Path, host: &str) -> std::io::Result<()> {
+    let path = project_hosts_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no platform config directory available",
+        )
+    })?;
+    let key = project_key(workspace);
+    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    let mut file = read_project_hosts(&path)?;
+    let index = match file.projects.iter().position(|project| project.path == key) {
+        Some(index) => index,
+        None => {
+            file.projects.push(ProjectHosts {
+                path: key,
+                hosts: Vec::new(),
+            });
+            file.projects.len() - 1
+        }
+    };
+    let entry = &mut file.projects[index];
+    if entry.hosts.contains(&host) {
+        return Ok(());
+    }
+    entry.hosts.push(host);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let serialized =
+        toml::to_string_pretty(&file).map_err(|e| std::io::Error::other(e.to_string()))?;
+    std::fs::write(path, serialized)
 }
 
 /// Append an `allow` pattern to the personal permissions file, creating it
@@ -180,6 +293,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A host allowed for a project is loaded as a `host(...)` allow for
+    /// that project, from any of its managed session worktrees too, and for
+    /// no other project.
+    #[test]
+    fn a_project_host_applies_to_that_project_and_its_worktrees_only() {
+        let _user = IsolatedUserConfig::new();
+        let project = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        let worktree = project.path().join(".forge/local/worktrees/session-1");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        append_project_host(&worktree, "Example.COM.").unwrap();
+        append_project_host(project.path(), "example.com").unwrap();
+        append_project_host(project.path(), "api.example.com").unwrap();
+
+        for workspace in [project.path(), worktree.as_path()] {
+            let (merged, _) = load_permissions(workspace);
+            assert_eq!(
+                merged.allow,
+                ["host(example.com)", "host(api.example.com)"],
+                "{}",
+                workspace.display()
+            );
+        }
+        assert!(load_permissions(other.path()).0.allow.is_empty());
     }
 
     #[test]

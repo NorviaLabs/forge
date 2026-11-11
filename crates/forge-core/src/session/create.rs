@@ -225,7 +225,8 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             approve_all: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_trusted: false,
-            audit: crate::audit::SessionAudit::default(),
+            audit: Default::default(),
+            host_questions: None,
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage: SessionTokenUsage::default(),
@@ -324,7 +325,8 @@ impl AgentSession {
             enable_gov: loop_cfg.enable_governance,
             approve_all: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_trusted: false,
-            audit: crate::audit::SessionAudit::default(),
+            audit: Default::default(),
+            host_questions: None,
             cancel_token: None,
             turn_cancel_token: CancellationToken::new(),
             token_usage,
@@ -478,6 +480,31 @@ impl AgentSession {
         let runtime = crate::permission::start_egress(self.session_id, policy).await;
         self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
         self.egress = runtime;
+        self.reattach_host_questions();
+    }
+
+    /// The hosts this session's gateway is holding connections for, to show
+    /// and answer while a command runs. Calling this is what turns holding
+    /// on: until an owner asks for the handle there is nobody to answer, and
+    /// an undecided host is refused at once. `None` when the session has no
+    /// gateway.
+    pub fn host_questions(&mut self) -> Option<crate::HostQuestions> {
+        if self.host_questions.is_none() {
+            let shared = self.egress.as_ref()?.shared().clone();
+            self.host_questions = Some(crate::HostQuestions::start(
+                shared,
+                Arc::clone(&self.approve_all),
+                Arc::clone(&self.audit),
+                self.tool_ctx.workspace_root.clone(),
+            ));
+        }
+        self.host_questions.clone()
+    }
+
+    fn reattach_host_questions(&self) {
+        if let (Some(questions), Some(runtime)) = (&self.host_questions, &self.egress) {
+            questions.attach(runtime.shared().clone());
+        }
     }
 
     /// Serve `shared` — live egress state built before the session, which
@@ -495,6 +522,7 @@ impl AgentSession {
         let runtime = crate::permission::start_egress_with_shared(self.session_id, shared).await;
         self.tool_ctx.egress = runtime.as_ref().map(|r| r.grant());
         self.egress = runtime;
+        self.reattach_host_questions();
     }
 
     /// Permit `pattern` on the live proxy without replacing the socket.

@@ -213,7 +213,11 @@ pub(crate) async fn check_git_network(
             ))
         })?;
         if let RemoteLocation::Host(host) = location {
-            if !egress.permits_host(&host) {
+            let asked_at_the_gateway = egress
+                .control
+                .as_ref()
+                .is_some_and(|control| control.asks_about(&host));
+            if !egress.permits_host(&host) && !asked_at_the_gateway {
                 return Err(ToolError::SandboxDenied {
                     content: format!(
                         "git {subcommand}: network access to {host} ({}) is not allowed",

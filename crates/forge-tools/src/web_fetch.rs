@@ -154,7 +154,7 @@ fn check_host_permitted(
         return Ok(());
     };
     let host = policy_host(url).unwrap_or_default();
-    if policy.permits_host(&host) {
+    if policy.permits_host(&host) || policy.asks_about(&host) {
         return Ok(());
     }
     let content = match redirected_from {
@@ -827,6 +827,36 @@ mod tests {
         assert!(out.is_error);
         assert!(out.content.contains("non-public"), "{}", out.content);
         assert!(out.content.contains("`localhost`"), "{}", out.content);
+    }
+
+    /// With someone to ask, a host no rule decides is not refused up front:
+    /// the fetch goes to the gateway, which holds it and asks. A refusal
+    /// there is still reported as a host denial naming the host.
+    #[tokio::test]
+    async fn an_undecided_host_is_asked_about_at_the_gateway() {
+        let tool = WebFetchTool::new();
+        let ctx = ctx_with_policy(&[]);
+        let control = ctx.egress.as_ref().unwrap().control.clone().unwrap();
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel();
+        control.set_asker(Some(asker));
+        let refuse = tokio::spawn(async move {
+            let ask: crate::egress::HostAsk = asks.recv().await.unwrap();
+            let host = ask.host.clone();
+            ask.reply.send(crate::egress::HostAnswer::Deny).unwrap();
+            host
+        });
+
+        let error = tool
+            .call(&ctx, json!({"url": "http://asked.invalid/"}))
+            .await
+            .unwrap_err();
+        assert_eq!(refuse.await.unwrap(), "asked.invalid");
+        match error {
+            ToolError::SandboxDenied { denied_host, .. } => {
+                assert_eq!(denied_host.as_deref(), Some("asked.invalid"));
+            }
+            other => panic!("expected a host denial, got {other:?}"),
+        }
     }
 
     /// A grant with no live proxy behind it is no gateway: the direct path,

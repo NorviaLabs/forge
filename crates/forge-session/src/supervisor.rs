@@ -38,6 +38,9 @@ pub struct SessionRuntimeSnapshot {
     /// durable terminal result. These require explicit operator review and
     /// are never fed back into the runnable queue automatically.
     pub interrupted_prompts: Vec<(u64, String)>,
+    /// Hosts a running command is waiting to reach: the gateway is holding
+    /// its connection until [`SupervisorCommand::AnswerHostQuestion`].
+    pub host_questions: Vec<forge_core::HostQuestion>,
 }
 
 #[derive(Debug, Clone)]
@@ -182,6 +185,14 @@ pub enum SupervisorCommand {
         expected_call_id: Option<String>,
         decision: GrantDecision,
         actor: String,
+    },
+    /// Decide a host the gateway is holding a connection for. Unlike an
+    /// approval, this is answered while the command that asked is running,
+    /// and releases it; it does not need the session to be idle.
+    AnswerHostQuestion {
+        session_id: SessionId,
+        host: String,
+        decision: forge_core::HostDecision,
     },
     ResolveQuestion {
         session_id: SessionId,
@@ -397,6 +408,10 @@ struct SessionActor {
     /// foreground turn cannot make them wait.
     background_control: Arc<forge_core::BackgroundControl>,
     tools: Arc<forge_tools::ToolRegistry>,
+    /// The hosts this session's gateway is holding connections for. Kept
+    /// outside the session lock: they are asked and answered while a turn
+    /// holds it. `None` when the session has no gateway.
+    host_questions: Option<forge_core::HostQuestions>,
 }
 
 /// Whether `workspace` is trusted, using the injected store when present and
@@ -426,6 +441,10 @@ impl SessionActor {
         let model = session.model_client();
         let background_control = session.background_control();
         let tools = session.tool_registry();
+        // Asking for the handle is what makes the gateway hold a connection
+        // to an undecided host instead of refusing it: a supervised session
+        // has someone to answer.
+        let host_questions = session.host_questions();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
@@ -433,6 +452,7 @@ impl SessionActor {
             details: Some(SessionDetailsSnapshot::capture(&session)),
             queued_prompts,
             interrupted_prompts,
+            host_questions: Vec::new(),
         };
         Self {
             session_id,
@@ -446,7 +466,35 @@ impl SessionActor {
             model,
             background_control,
             tools,
+            host_questions,
         }
+    }
+
+    fn pending_host_questions(&self) -> Vec<forge_core::HostQuestion> {
+        self.host_questions
+            .as_ref()
+            .map(forge_core::HostQuestions::pending)
+            .unwrap_or_default()
+    }
+
+    /// Republish this session whenever its held hosts change, so the card
+    /// appears while the command is still running. Ends with the actor.
+    fn watch_host_questions(self: &Arc<Self>, events: broadcast::Sender<SupervisorEvent>) {
+        let Some(questions) = self.host_questions.clone() else {
+            return;
+        };
+        let actor = Arc::downgrade(self);
+        tokio::spawn(async move {
+            let mut changed = questions.subscribe();
+            while changed.changed().await.is_ok() {
+                let Some(actor) = actor.upgrade() else {
+                    return;
+                };
+                let mut snapshot = actor.snapshot.write().await;
+                snapshot.host_questions = questions.pending();
+                let _ = events.send(SupervisorEvent::SessionUpdated(Box::new(snapshot.clone())));
+            }
+        });
     }
 
     async fn request_cancel(&self) -> bool {
@@ -1186,8 +1234,15 @@ impl RepositorySupervisor {
             let interrupted = control.interrupted_prompts(task.session_id).await?;
             let queued = control.queued_prompts(task.session_id).await?;
             let trusted = workspace_is_trusted(trust_store.as_deref(), &task.workspace);
-            let task_actor = SessionActor::new(task.clone(), session, queued, interrupted, trusted);
-            actors.insert(task.session_id, Arc::new(task_actor));
+            let task_actor = Arc::new(SessionActor::new(
+                task.clone(),
+                session,
+                queued,
+                interrupted,
+                trusted,
+            ));
+            task_actor.watch_host_questions(events.clone());
+            actors.insert(task.session_id, task_actor);
         }
         let state = Arc::new(SupervisorState {
             cfg,
@@ -2206,6 +2261,7 @@ async fn execute_command(
                 Vec::new(),
                 workspace_is_trusted(state.trust_store.as_deref(), &task.workspace),
             ));
+            actor.watch_host_questions(state.events.clone());
             state.actors.write().await.insert(task.session_id, actor);
             drop(_git_mutation);
             // Select the new session before the trust branch below, not after,
@@ -2324,16 +2380,15 @@ async fn execute_command(
             state.control.register_session(task.clone(), None).await?;
             let actor_task = state.control.session(task.session_id).await?;
             let trusted = workspace_is_trusted(state.trust_store.as_deref(), &actor_task.workspace);
-            state.actors.write().await.insert(
-                task.session_id,
-                Arc::new(SessionActor::new(
-                    actor_task,
-                    opened.session,
-                    Vec::new(),
-                    Vec::new(),
-                    trusted,
-                )),
-            );
+            let actor = Arc::new(SessionActor::new(
+                actor_task,
+                opened.session,
+                Vec::new(),
+                Vec::new(),
+                trusted,
+            ));
+            actor.watch_host_questions(state.events.clone());
+            state.actors.write().await.insert(task.session_id, actor);
             drop(_git_mutation);
             let _ = state
                 .events
@@ -2832,6 +2887,29 @@ async fn execute_command(
                 decision_actor,
             )
             .await?;
+        }
+        SupervisorCommand::AnswerHostQuestion {
+            session_id,
+            host,
+            decision,
+        } => {
+            // No session lock: the turn that is waiting on this holds it.
+            let task_actor = actor(&state, session_id).await?;
+            let questions = task_actor
+                .host_questions
+                .as_ref()
+                .ok_or_else(|| LoopError::Other("this session has no network gateway".into()))?;
+            let answered = questions
+                .answer(&host, decision)
+                .map_err(LoopError::Other)?;
+            if let Some(error) = answered.persist_error {
+                let _ = state.events.send(SupervisorEvent::Error {
+                    session_id: Some(session_id),
+                    message: format!(
+                        "{host} is allowed for this session, but could not be saved for the project: {error}"
+                    ),
+                });
+            }
         }
         SupervisorCommand::ResolveQuestion {
             session_id,
@@ -3379,18 +3457,17 @@ async fn replace_conversation(
     restore_task_model(&mut replacement, &record, &state.cfg);
     let trusted = workspace_is_trusted(state.trust_store.as_deref(), &record.workspace);
     drop(session);
+    let replacement = Arc::new(SessionActor::new(
+        record,
+        replacement,
+        Vec::new(),
+        Vec::new(),
+        trusted,
+    ));
+    replacement.watch_host_questions(state.events.clone());
     let mut actors = state.actors.write().await;
     actors.remove(&previous);
-    actors.insert(
-        next,
-        Arc::new(SessionActor::new(
-            record,
-            replacement,
-            Vec::new(),
-            Vec::new(),
-            trusted,
-        )),
-    );
+    actors.insert(next, replacement);
     drop(actors);
     let mut archived = state.unavailable_tasks.write().await;
     archived.retain(|task| task.session_id != next && task.session_id != previous);
@@ -4069,6 +4146,7 @@ async fn refresh_actor(
             .control
             .interrupted_prompts(session.session_id)
             .await?,
+        host_questions: task_actor.pending_host_questions(),
     };
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
@@ -4178,6 +4256,7 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
                 .interrupted_prompts(task.session_id)
                 .await
                 .unwrap_or_default(),
+            host_questions: Vec::new(),
             task,
         });
     }
@@ -4335,6 +4414,170 @@ mod tests {
     }
 
     /// Counts how many times it actually ran.
+    /// A tool that tries to reach a host through the session's gateway, the
+    /// way a confined command's connection does, and reports the outcome.
+    struct ReachTool;
+
+    impl Tool for ReachTool {
+        fn name(&self) -> &str {
+            "reach"
+        }
+
+        fn description(&self) -> &str {
+            "Reach a host"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+
+        fn side_effect_class(&self) -> forge_types::SideEffectClass {
+            forge_types::SideEffectClass::Read
+        }
+
+        fn call<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            ctx: &'life1 ToolContext,
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ToolOutput, ToolError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move {
+                let control = ctx
+                    .egress
+                    .as_ref()
+                    .and_then(|grant| grant.control.clone())
+                    .expect("the session has a gateway");
+                let admitted = control.admit("held.invalid", 443).await;
+                Ok(ToolOutput::success(format!("admitted={admitted}")))
+            })
+        }
+    }
+
+    /// A command that reaches an undecided host is not failed: the session
+    /// shows the host while the turn is still running, and allowing it lets
+    /// the same call finish. Nothing is run twice and no approval is raised.
+    #[tokio::test]
+    async fn a_held_host_is_shown_mid_turn_and_allowing_it_releases_the_call() {
+        use forge_model::scripted::ScriptedModelClient;
+
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let scripted = Arc::new(
+            ScriptedModelClient::from_json(
+                r#"{"steps": [
+                    {"tool_calls": {"calls": [{"id": "reach-1", "name": "reach", "arguments": {}}]}},
+                    {"text": {"text": "reached"}}
+                ]}"#,
+            )
+            .unwrap(),
+        );
+        let model: Arc<dyn ModelClient> = scripted.clone();
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(ReachTool));
+        let session = AgentSession::create(loop_cfg, model.clone(), tools)
+            .await
+            .unwrap();
+        let Some(grant) = session.egress_grant() else {
+            return; // this host cannot start a gateway
+        };
+        let session_id = session.session_id;
+        let task = task_for(session_id, "held", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "go".into(),
+            })
+            .await
+            .unwrap();
+        let held = wait_for_task_state(&handle, session_id, |snapshot| {
+            !snapshot.host_questions.is_empty()
+        })
+        .await;
+        assert_eq!(held.host_questions[0].host, "held.invalid");
+        assert_eq!(held.task.turn_state, SupervisorTurnState::Running);
+        assert!(held.session.pending_hitl.is_none(), "no approval is raised");
+
+        handle
+            .command(SupervisorCommand::AnswerHostQuestion {
+                session_id,
+                host: "held.invalid".into(),
+                decision: forge_core::HostDecision::AllowForSession,
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        assert!(done.host_questions.is_empty());
+        assert!(
+            done.transcript
+                .messages()
+                .iter()
+                .any(|message| message.content.contains("admitted=true")),
+            "the same call finished once the host was allowed"
+        );
+        assert!(grant.permits_host("held.invalid"));
+
+        // Answering again finds nothing waiting.
+        let again = handle
+            .command(SupervisorCommand::AnswerHostQuestion {
+                session_id,
+                host: "held.invalid".into(),
+                decision: forge_core::HostDecision::Deny,
+            })
+            .await;
+        assert!(again.is_err());
+        drop(supervisor);
+    }
+
     struct CountingTool {
         runs: Arc<AtomicUsize>,
     }

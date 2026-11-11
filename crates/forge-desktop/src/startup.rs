@@ -256,6 +256,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::submit_images,
         bridge::decide_approval,
         bridge::answer_question,
+        bridge::answer_host_question,
         bridge::set_approve_all,
         bridge::clear_approvals,
         bridge::continue_turn,

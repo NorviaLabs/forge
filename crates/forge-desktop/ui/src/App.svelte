@@ -14,6 +14,7 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Inspector from "./lib/Inspector.svelte";
   import ApprovalCard from "./lib/ApprovalCard.svelte";
+  import HostCard from "./lib/HostCard.svelte";
   import QuestionCard from "./lib/QuestionCard.svelte";
   import Files from "./lib/Files.svelte";
   import ModelPicker from "./lib/ModelPicker.svelte";
@@ -122,6 +123,7 @@
   let railButton = $state();
   let screenAnnouncement = $state("");
   const approval = $derived(snapshot.approval);
+  const hostQuestions = $derived(snapshot.hostQuestions);
   const question = $derived(snapshot.question);
   const approveAll = $derived(snapshot.approveAll);
   const thinking = $derived(snapshot.thinking);
@@ -1066,6 +1068,10 @@
 
   async function decide(callId, decision, note, confirmed) {
     await command("decide_approval", { sessionId, callId, decision, note, confirmed });
+  }
+
+  async function answerHost(host, decision) {
+    await command("answer_host_question", { sessionId, host, decision });
   }
 
   async function answerQuestion(callId, answers, skip) {
@@ -2100,6 +2106,10 @@
       {/if}
 
       <div class="decision">
+        {#each hostQuestions as hostQuestion (hostQuestion.host)}
+          <HostCard question={hostQuestion} onAnswer={answerHost} />
+        {/each}
+
         {#if question}
           <QuestionCard
             {question}

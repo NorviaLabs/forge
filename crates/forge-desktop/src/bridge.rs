@@ -54,6 +54,9 @@ pub enum DesktopEvent {
         /// Per-session approve-all: review prompts auto-approved, the sandbox
         /// still enforced.
         approve_all: bool,
+        /// Hosts a running command is waiting to reach. Answered with
+        /// `answer_host_question` while the turn is still running.
+        host_questions: Vec<HostQuestionView>,
         thinking: bool,
         /// The last `update_plan` checklist the agent published.
         plan: Option<PlanView>,
@@ -887,6 +890,15 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .map(question_view),
         waiting_on: snapshot.session.waiting_on.as_ref().map(waiting_view),
         approve_all: snapshot.session.approve_all,
+        host_questions: snapshot
+            .host_questions
+            .iter()
+            .map(|question| HostQuestionView {
+                host: question.host.clone(),
+                port: question.port,
+                call_id: question.call_id.clone(),
+            })
+            .collect(),
         thinking: snapshot
             .details
             .as_ref()
@@ -2372,6 +2384,44 @@ pub async fn decide_approval(
             expected_call_id: Some(call_id),
             decision,
             actor: "desktop".into(),
+        })
+        .map(drop)
+        .map_err(SessionFailure::from)
+}
+
+/// A host the network gateway is holding a connection for.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct HostQuestionView {
+    pub host: String,
+    pub port: u16,
+    /// The tool call that is waiting on it, when known.
+    pub call_id: Option<String>,
+}
+
+/// Decide a host a running command is waiting to reach: `allow_once`,
+/// `allow_for_session`, `allow_always` (this project, from now on) or
+/// `deny`. The command carries on, or sees the connection refused.
+#[tauri::command]
+pub async fn answer_host_question(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    host: String,
+    decision: String,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    let decision = match decision.as_str() {
+        "allow_once" => forge_core::HostDecision::AllowOnce,
+        "allow_for_session" => forge_core::HostDecision::AllowForSession,
+        "allow_always" => forge_core::HostDecision::AllowAlways,
+        "deny" => forge_core::HostDecision::Deny,
+        other => return Err(format!("unknown decision `{other}`").into()),
+    };
+    project
+        .handle
+        .submit(SupervisorCommand::AnswerHostQuestion {
+            session_id,
+            host,
+            decision,
         })
         .map(drop)
         .map_err(SessionFailure::from)
@@ -3923,6 +3973,7 @@ mod tests {
             details: None,
             queued_prompts: Vec::new(),
             interrupted_prompts: Vec::new(),
+            host_questions: Vec::new(),
         }
     }
 

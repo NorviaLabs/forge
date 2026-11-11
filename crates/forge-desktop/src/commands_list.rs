@@ -22,6 +22,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "submit_images",
     "decide_approval",
     "answer_question",
+    "answer_host_question",
     "set_approve_all",
     "clear_approvals",
     "continue_turn",

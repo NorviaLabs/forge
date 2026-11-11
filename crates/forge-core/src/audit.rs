@@ -33,6 +33,22 @@ impl SessionAudit {
             .push(entry);
     }
 
+    /// A host permitted for the session (`persistent` is `None`) or saved.
+    pub(crate) fn queue_host_grant(
+        &self,
+        call_id: Option<&str>,
+        pattern: &str,
+        persistent: Option<(&str, Option<&str>)>,
+        source: &str,
+    ) {
+        self.queue(entry(
+            AuditKind::HostGrant,
+            call_id,
+            None,
+            grant_detail(pattern, persistent, source),
+        ));
+    }
+
     fn take(&self) -> Vec<AuditEntry> {
         std::mem::take(
             &mut *self
@@ -148,12 +164,8 @@ impl AgentSession {
         persistent: Option<(&str, Option<&str>)>,
         source: &str,
     ) {
-        self.audit.queue(entry(
-            AuditKind::HostGrant,
-            call_id,
-            None,
-            grant_detail(pattern, persistent, source),
-        ));
+        self.audit
+            .queue_host_grant(call_id, pattern, persistent, source);
     }
 
     pub(crate) fn audit_pattern_grant(

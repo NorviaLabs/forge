@@ -88,6 +88,9 @@ pub struct EgressOptions {
     /// pattern does not name the host exactly. Off in production; exists for
     /// hermetic tests whose upstream is a loopback listener behind a name.
     pub allow_private_destinations: bool,
+    /// How long a connection to a host nobody has decided on is held while
+    /// the user is asked. Past it the connection is refused as before.
+    pub hold_timeout: Duration,
 }
 
 impl Default for EgressOptions {
@@ -96,9 +99,39 @@ impl Default for EgressOptions {
             connect_timeout: EGRESS_CONNECT_TIMEOUT,
             idle_timeout: EGRESS_IDLE_TIMEOUT,
             allow_private_destinations: false,
+            hold_timeout: EGRESS_HOLD_TIMEOUT,
         }
     }
 }
+
+/// How long a held connection waits for the user. Long enough to read a
+/// card and click; clients that give up sooner (cargo after 30 seconds, pip
+/// after 15) retry, and a host granted in the meantime is then let through.
+pub const EGRESS_HOLD_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A connection to a host the policy has no rule for, held while someone
+/// decides. Whoever receives it answers on `reply`; dropping `reply`
+/// refuses.
+#[derive(Debug)]
+pub struct HostAsk {
+    pub host: String,
+    pub port: u16,
+    /// The tool call (or MCP server) the connection belongs to.
+    pub label: Option<String>,
+    pub reply: tokio::sync::oneshot::Sender<HostAnswer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostAnswer {
+    /// Let this command reach the host; decide nothing for the next one.
+    AllowOnce,
+    /// The host was added to the policy; let the connection through.
+    Allow,
+    Deny,
+}
+
+/// Where held connections are sent to be decided.
+pub type HostAsker = tokio::sync::mpsc::UnboundedSender<HostAsk>;
 
 /// What the gateway did with one CONNECT.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,6 +341,18 @@ impl EgressPolicy {
         }
         self.allow.iter().any(|p| matches_pattern(p, &host))
     }
+
+    /// Whether `host` is a well-formed name no rule has decided: not
+    /// permitted, and not denied either. Only such a host is worth asking
+    /// the user about.
+    pub fn undecided(&self, host: &str) -> bool {
+        let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        if host.is_empty() || host.starts_with('.') || host.contains("..") {
+            return false;
+        }
+        !self.deny.iter().any(|p| matches_pattern(p, &host))
+            && !self.allow.iter().any(|p| matches_pattern(p, &host))
+    }
 }
 
 fn host_rule(raw: &str) -> Option<&str> {
@@ -352,6 +397,11 @@ pub struct EgressShared {
     /// endpoint (an MCP server's) names the tool call in flight, so its
     /// connections correlate with that call rather than only the server.
     call_label: Arc<Mutex<Option<Arc<str>>>>,
+    /// Who decides a host the policy has no rule for. Shared by every
+    /// endpoint on this state; `None` (headless runs, tests) refuses at once.
+    asker: Arc<RwLock<Option<HostAsker>>>,
+    /// Hosts let through for this invocation only (`HostAnswer::AllowOnce`).
+    once: Arc<Mutex<Vec<String>>>,
 }
 
 impl EgressShared {
@@ -368,6 +418,82 @@ impl EgressShared {
             options,
             label: None,
             call_label: Arc::new(Mutex::new(None)),
+            asker: Arc::new(RwLock::new(None)),
+            once: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Send hosts the policy has no rule for to `asker` instead of refusing
+    /// them outright; `None` restores the immediate refusal. Applies to
+    /// every endpoint sharing this state, including ones already running.
+    pub fn set_asker(&self, asker: Option<HostAsker>) {
+        *self
+            .asker
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = asker;
+    }
+
+    /// Whether a connection to `host` would be held and put to the user
+    /// (no rule decides it and someone is there to ask). A caller that
+    /// checks the policy before connecting lets such a host through to the
+    /// gateway, which is where the question is asked.
+    pub fn asks_about(&self, host: &str) -> bool {
+        self.asker
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+            && self
+                .policy
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .undecided(host)
+    }
+
+    /// Whether `host` may be reached, asking when no rule decides it.
+    ///
+    /// A permitted host passes and a denied one is refused, both at once.
+    /// Anything else is put to the asker, and the caller waits: the
+    /// connection it is about to make is held rather than failed, so the
+    /// command that opened it carries on when the user allows the host and
+    /// nothing has to be run twice. With no asker, or no answer within
+    /// `hold_timeout`, the host is refused as before.
+    pub async fn admit(&self, host: &str, port: u16) -> bool {
+        if self.permits(host) {
+            return true;
+        }
+        let undecided = self
+            .policy
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .undecided(host);
+        let asker = self
+            .asker
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let (true, Some(asker)) = (undecided, asker) else {
+            return false;
+        };
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let ask = HostAsk {
+            host: host.trim().trim_end_matches('.').to_ascii_lowercase(),
+            port,
+            label: self.attribution(),
+            reply,
+        };
+        if asker.send(ask).is_err() {
+            return false;
+        }
+        match tokio::time::timeout(self.options.hold_timeout, answer).await {
+            Ok(Ok(HostAnswer::Allow)) => self.permits(host),
+            Ok(Ok(HostAnswer::AllowOnce)) => {
+                self.once
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(host.trim().trim_end_matches('.').to_ascii_lowercase());
+                true
+            }
+            _ => false,
         }
     }
 
@@ -384,6 +510,8 @@ impl EgressShared {
             options: self.options,
             label: label.map(Arc::from),
             call_label: Arc::new(Mutex::new(None)),
+            asker: Arc::clone(&self.asker),
+            once: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -551,10 +679,21 @@ impl EgressShared {
     }
 
     fn permits(&self, host: &str) -> bool {
-        self.policy
+        let policy = self
+            .policy
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .permits(host)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if policy.permits(host) {
+            return true;
+        }
+        // Allowed for this invocation only, unless a deny rule arrived since.
+        let name = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        policy.undecided(host)
+            && self
+                .once
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&name)
     }
 }
 
@@ -1088,7 +1227,7 @@ impl Attempt<'_> {
         W: AsyncWrite + Unpin,
     {
         let (shared, host, port) = (self.shared, self.host, self.port);
-        if !shared.permits(host) {
+        if !shared.admit(host, port).await {
             shared.record_denied(host.to_string());
             self.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
             let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
@@ -2402,6 +2541,131 @@ mod tests {
             !status.contains("403"),
             "a granted family must not 403, got {status:?}"
         );
+    }
+
+    /// Send one CONNECT and return the status line.
+    async fn connect_line(port: u16, target: &str) -> String {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        stream
+            .write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).await.unwrap();
+        line
+    }
+
+    /// A host no rule decides is held and put to the asker. Allowing it lets
+    /// the same connection through: the client sees no refusal, and nothing
+    /// is recorded as denied, so the command is not treated as blocked.
+    #[tokio::test]
+    async fn an_undecided_host_is_held_until_the_asker_allows_it() {
+        let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+            return;
+        };
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel();
+        proxy.shared().set_asker(Some(asker));
+        let shared = proxy.shared().clone();
+        let decide = tokio::spawn(async move {
+            let ask: HostAsk = asks.recv().await.unwrap();
+            assert_eq!((ask.host.as_str(), ask.port), ("held.invalid", 443));
+            shared.grant_host(&ask.host);
+            ask.reply.send(HostAnswer::Allow).unwrap();
+        });
+
+        let status = connect_line(proxy.addr().port(), "Held.invalid:443").await;
+        decide.await.unwrap();
+        assert!(!status.contains("403"), "{status}");
+        assert_eq!(proxy.shared().take_denied_host(), None);
+        // Granted now: the next connection is not asked about.
+        let status = connect_line(proxy.addr().port(), "held.invalid:443").await;
+        assert!(!status.contains("403"), "{status}");
+    }
+
+    /// "Once" covers the invocation that asked and nothing after it.
+    #[tokio::test]
+    async fn allowing_once_does_not_change_the_policy() {
+        let Some(proxy) = started_proxy(EgressPolicy::new()).await else {
+            return;
+        };
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
+        proxy.shared().set_asker(Some(asker));
+        let answers = tokio::spawn(async move {
+            let mut seen = 0;
+            while let Some(ask) = asks.recv().await {
+                seen += 1;
+                let _ = ask.reply.send(HostAnswer::AllowOnce);
+            }
+            seen
+        });
+
+        let first = proxy.shared().for_invocation(Some("call-1"));
+        assert!(first.admit("once.invalid", 443).await);
+        assert!(
+            first.admit("once.invalid", 443).await,
+            "same invocation, no second ask"
+        );
+        let second = proxy.shared().for_invocation(Some("call-2"));
+        assert!(second.admit("once.invalid", 443).await);
+        assert!(!proxy.shared().permits_host("once.invalid"));
+
+        proxy.shared().set_asker(None);
+        assert_eq!(answers.await.unwrap(), 2, "one ask per invocation");
+    }
+
+    /// A refusal, an unanswered ask and a missing asker all end the same way
+    /// as before: 403, with the host recorded for the approval that follows.
+    #[tokio::test]
+    async fn a_host_that_is_not_allowed_in_time_is_refused_and_recorded() {
+        let options = EgressOptions {
+            hold_timeout: Duration::from_millis(50),
+            ..Default::default()
+        };
+        let shared = EgressShared::new(EgressPolicy::new(), options);
+        let Ok(proxy) = EgressProxy::start_with_shared(shared).await else {
+            return;
+        };
+        let port = proxy.addr().port();
+
+        // Nobody to ask.
+        assert!(connect_line(port, "a.invalid:443").await.contains("403"));
+        assert_eq!(
+            proxy.shared().take_denied_host().as_deref(),
+            Some("a.invalid")
+        );
+
+        // Asked, refused.
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
+        proxy.shared().set_asker(Some(asker));
+        let refuse = tokio::spawn(async move {
+            let ask = asks.recv().await.unwrap();
+            ask.reply.send(HostAnswer::Deny).unwrap();
+            // The next ask is left unanswered until it times out.
+            let ask = asks.recv().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(ask);
+        });
+        assert!(connect_line(port, "b.invalid:443").await.contains("403"));
+        assert!(connect_line(port, "c.invalid:443").await.contains("403"));
+        assert_eq!(proxy.shared().denied_hosts(), ["b.invalid", "c.invalid"]);
+        refuse.await.unwrap();
+    }
+
+    /// A deny rule is a decision already made; it is not put to the user.
+    #[tokio::test]
+    async fn a_denied_host_is_refused_without_asking() {
+        let mut policy = EgressPolicy::new();
+        policy.deny("blocked.invalid");
+        let shared = EgressShared::new(policy, EgressOptions::default());
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
+        shared.set_asker(Some(asker));
+        assert!(!shared.admit("blocked.invalid", 443).await);
+        assert!(
+            !shared.admit("..", 443).await,
+            "a malformed name is not asked about"
+        );
+        assert!(asks.try_recv().is_err());
     }
 
     #[tokio::test]

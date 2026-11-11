@@ -48,6 +48,11 @@ test("a snapshot is projected whole, through the session's view record", () => {
   }), record);
   assert.deepEqual(Object.keys(shown).sort(), Object.keys(emptySnapshot()).sort(), "same fields as the empty value");
   assert.equal(shown.approval.call_id, "c1");
+  assert.deepEqual(shown.hostQuestions, [], "no held hosts unless the event names some");
+  assert.deepEqual(
+    snapshotFrom(session("a", { host_questions: [{ host: "crates.io", port: 443, call_id: "c9" }] }), defaultView()).hostQuestions,
+    [{ host: "crates.io", port: 443, call_id: "c9" }],
+  );
   assert.equal(shown.question, null);
   assert.deepEqual(shown.counts, { tools: 3, skills: 1, allows: 2 });
   assert.deepEqual(shown.promptHistory, ["first"], "blank prompts are not history");
