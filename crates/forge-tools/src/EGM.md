@@ -235,6 +235,12 @@ Subdirectories:
   the project's permissions plus the built-in hosts and no asker.
   The SSH broker also accepts `git-lfs-authenticate <path> download|upload`;
   an upload is gated like a push.
+- The git dir is open to confined shells (`shell_spawn.rs`:
+  `with_git_open`), hooks and config included (D3): no git outside the
+  sandbox runs on the repository. `forge-core` compares
+  `forge_sandbox::git::execution_settings` before and after each
+  command-running call and appends a notice naming changed config files and
+  hooks to that call's output. `.forge` stays read-only.
 - Built-in allow-list (`EgressPolicy::with_builtin_hosts`, applied by
   `forge_core::egress_policy_for_workspace`): `BUILTIN_CODE_HOSTS`
   (github.com, gitlab.com, bitbucket.org, with subdomains) and

@@ -149,13 +149,30 @@ impl PendingToolExecution {
         let unconfined = tool_ctx.unconfined_shell;
         let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
         let pre_git = git_pre_state(&tool_ctx, &call).await;
-        let result = if let Some(prepared) = prepared {
+        // Hooks and config are writable from the sandbox; a call that
+        // changes them says so, to the user and the model alike.
+        let runs_commands = matches!(
+            call.name.as_str(),
+            "bash" | "exec_command" | "write_stdin" | "background_run" | "git"
+        );
+        let settings_before = runs_commands
+            .then(|| forge_tools::sandbox::git::execution_settings(&tool_ctx.workspace_root));
+        let mut result = if let Some(prepared) = prepared {
             tools.call_prepared(&tool_ctx, prepared).await
         } else {
             tools
                 .call(&tool_ctx, &call.name, call.arguments.clone(), &mut budget)
                 .await
         };
+        if let (Some(before), Ok(output)) = (settings_before, result.as_mut()) {
+            let after = forge_tools::sandbox::git::execution_settings(&tool_ctx.workspace_root);
+            let changed = forge_tools::sandbox::git::changed_settings(&before, &after);
+            if !changed.is_empty() {
+                output
+                    .content
+                    .push_str(&git_settings_notice(&tool_ctx.workspace_root, &changed));
+            }
+        }
 
         let duration_ms = started.elapsed().as_millis() as u64;
         tracing::debug!(tool = %tool_name, duration_ms, "tool call completed");
@@ -169,6 +186,26 @@ impl PendingToolExecution {
             result,
         }
     }
+}
+
+/// What is appended to a call's output when it changed the repository's
+/// hooks or git config.
+fn git_settings_notice(root: &std::path::Path, changed: &[std::path::PathBuf]) -> String {
+    let names: Vec<String> = changed
+        .iter()
+        .map(|path| {
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
+        .collect();
+    format!(
+        "\n\n[Forge] This call changed the repository's git settings: {}. Hooks and programs \
+         named in git config run inside Forge's sandbox; review them before running git on this \
+         repository outside Forge.",
+        names.join(", ")
+    )
 }
 
 impl PendingToolApplication {

@@ -489,6 +489,98 @@ async fn denied_hitl_tool_publishes_one_result_and_message() {
 
 struct SandboxDeniedTool;
 
+/// A "bash" that writes a hook into the workspace's repository, as a
+/// sandboxed command now may.
+struct HookWritingTool;
+
+#[async_trait]
+impl forge_tools::Tool for HookWritingTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Write a pre-commit hook"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+            "additionalProperties": false
+        })
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        std::fs::write(
+            ctx.workspace_root.join(".git/hooks/pre-commit"),
+            "#!/bin/sh\n",
+        )
+        .unwrap();
+        Ok(ToolOutput::success("done"))
+    }
+}
+
+/// A call that changes the repository's hooks or git config says so in its
+/// result, which both the user and the model read.
+#[tokio::test]
+async fn a_call_that_changes_git_hooks_reports_it() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    assert!(std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(root)
+        .status()
+        .unwrap()
+        .success());
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(HookWritingTool));
+    let mut session = AgentSession::create(no_gov_cfg(root), model, tools)
+        .await
+        .unwrap();
+    session.append_user_message("add a hook").await.unwrap();
+    let application = session
+        .begin_model_response_application(ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "call-hook".into(),
+                name: "bash".into(),
+                arguments: json!({"command": "install the hook"}),
+            }],
+            usage: None,
+            thinking: None,
+        })
+        .await
+        .unwrap();
+    let ModelResponseApplication::Execute(pending) = application else {
+        panic!("the call should run");
+    };
+    let completed = pending.execute().await;
+    session.finish_tool_application(completed).await.unwrap();
+    let result = session
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-hook"))
+        .expect("the result is recorded");
+    assert!(
+        result
+            .content
+            .contains("changed the repository's git settings: .git/hooks/pre-commit"),
+        "{}",
+        result.content
+    );
+}
+
 struct FailedBashTool;
 
 #[async_trait]

@@ -249,6 +249,65 @@ fn is_scp_like(url: &str) -> bool {
     }
 }
 
+/// The files in `root`'s repository that decide what git runs: its config
+/// files and hooks, each with a hash of its content. Two calls compare
+/// equal when none of them changed. Read from the file system directly, so
+/// it is cheap enough to take around every command.
+pub fn execution_settings(root: &Path) -> Vec<(PathBuf, u64)> {
+    use std::hash::{Hash, Hasher};
+    let dot_git = root.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        match std::fs::read_to_string(&dot_git).ok().and_then(|text| {
+            text.strip_prefix("gitdir:")
+                .map(|dir| dir.trim().to_string())
+        }) {
+            Some(dir) => root.join(dir),
+            None => return Vec::new(),
+        }
+    };
+    let common = std::fs::read_to_string(git_dir.join("commondir"))
+        .map(|dir| git_dir.join(dir.trim()))
+        .unwrap_or_else(|_| git_dir.clone());
+    let mut files = vec![
+        git_dir.join("config"),
+        git_dir.join("config.worktree"),
+        common.join("config"),
+    ];
+    if let Ok(entries) = std::fs::read_dir(common.join("hooks")) {
+        files.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    files.sort();
+    files.dedup();
+    files
+        .into_iter()
+        .filter_map(|path| {
+            let content = std::fs::read(&path).ok()?;
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            content.hash(&mut hasher);
+            Some((path, hasher.finish()))
+        })
+        .collect()
+}
+
+/// The files that differ between two [`execution_settings`] snapshots:
+/// added, removed or changed.
+pub fn changed_settings(before: &[(PathBuf, u64)], after: &[(PathBuf, u64)]) -> Vec<PathBuf> {
+    let mut changed: Vec<PathBuf> = after
+        .iter()
+        .filter(|entry| !before.contains(entry))
+        .map(|(path, _)| path.clone())
+        .collect();
+    for (path, _) in before {
+        if !after.iter().any(|(other, _)| other == path) && !changed.contains(path) {
+            changed.push(path.clone());
+        }
+    }
+    changed.sort();
+    changed
+}
+
 /// `git -C <repo>` on the host, not confined.
 ///
 /// Only for a host that cannot confine at all. A hook or a program named by
@@ -291,6 +350,33 @@ mod tests {
             assert!(out.status.success(), "{args:?}: {out:?}");
         }
         dir
+    }
+
+    #[test]
+    fn a_change_to_config_or_hooks_is_seen_and_nothing_else_is() {
+        let repo = repository();
+        let before = execution_settings(repo.path());
+        assert!(before.iter().any(|(path, _)| path.ends_with(".git/config")));
+        std::fs::write(repo.path().join("file.txt"), "x").unwrap();
+        assert!(changed_settings(&before, &execution_settings(repo.path())).is_empty());
+
+        assert!(git(repo.path(), &["config", "core.fsmonitor", "true"])
+            .status
+            .success());
+        let hook = repo.path().join(".git/hooks/pre-commit");
+        std::fs::write(&hook, "#!/bin/sh\n").unwrap();
+        let changed = changed_settings(&before, &execution_settings(repo.path()));
+        let names: Vec<_> = changed
+            .iter()
+            .map(|path| path.strip_prefix(repo.path()).unwrap().to_path_buf())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                PathBuf::from(".git/config"),
+                PathBuf::from(".git/hooks/pre-commit")
+            ]
+        );
     }
 
     /// Only remotes that are repositories on this disk are opened; a URL

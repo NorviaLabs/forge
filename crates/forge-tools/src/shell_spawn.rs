@@ -172,12 +172,14 @@ impl ShellSpawnSpec {
             .and_then(EgressInvocation::grant)
             .or(egress);
         use crate::sandbox::WithEgress as _;
+        // The whole git dir is writable, hooks and config included: no git
+        // outside the sandbox runs on this repository, so whatever a
+        // command puts there runs confined too. A change is reported with
+        // the call that made it.
         let mut policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root)
             .with_command_access(command)
-            .with_egress(command_egress);
-        if crate::credentials::needs_git_writes(command) {
-            policy = policy.with_git_writable();
-        }
+            .with_egress(command_egress)
+            .with_git_open();
         if let Some(session_tmp) = session_tmp {
             policy = policy.with_session_tmp(session_tmp);
         }

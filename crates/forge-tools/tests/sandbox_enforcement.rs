@@ -1116,20 +1116,23 @@ async fn bash_tool_still_works_inside_the_workspace() {
     assert!(out.content.contains("hello"));
 }
 
+/// `.forge` holds Forge's own state and stays read-only to the shell (the
+/// git dir no longer does: see
+/// `a_confined_shell_may_change_hooks_and_config_and_they_stay_confined`).
 #[tokio::test]
-async fn bash_tool_cannot_write_git() {
+async fn bash_tool_cannot_write_forge_state() {
     require_sandbox!();
     let ws = workspace();
-    let error = run_shell_command("echo clobbered > .git/HEAD", ws.path())
+    let error = run_shell_command("echo clobbered > .forge/permissions.toml", ws.path())
         .await
-        .expect_err("the recovery mechanism must stay read-only");
+        .expect_err("Forge's state must stay read-only");
     assert!(
         matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
-        "writing .git must report a sandbox denial: {error}"
+        "writing .forge must report a sandbox denial: {error}"
     );
     assert_eq!(
-        std::fs::read_to_string(ws.path().join(".git/HEAD")).unwrap(),
-        "ref: refs/heads/main\n"
+        std::fs::read_to_string(ws.path().join(".forge/permissions.toml")).unwrap(),
+        "allow = []\n"
     );
 }
 
@@ -1821,16 +1824,16 @@ async fn bash_tool_cannot_read_outside_the_workspace() {
 }
 
 #[tokio::test]
-async fn exec_command_cannot_write_git() {
+async fn exec_command_cannot_write_forge_state() {
     require_sandbox!();
     let ws = workspace();
-    let error = exec_command(ws.path(), "echo clobbered > .git/HEAD")
+    let error = exec_command(ws.path(), "echo clobbered > .forge/permissions.toml")
         .await
         .expect_err("the sandbox denial must reach the tool layer");
     assert_eq!(
-        std::fs::read_to_string(ws.path().join(".git/HEAD")).unwrap(),
-        "ref: refs/heads/main\n",
-        "exec_command wrote .git: {error}"
+        std::fs::read_to_string(ws.path().join(".forge/permissions.toml")).unwrap(),
+        "allow = []\n",
+        "exec_command wrote .forge: {error}"
     );
     assert!(
         matches!(error, forge_tools::ToolError::SandboxDenied { .. }),
@@ -2312,4 +2315,35 @@ async fn egress_fails_closed_when_the_proxy_is_gone() {
         "a dead proxy must not leave a route to the network: {:?}",
         out.content
     );
+}
+
+/// The agent's shell may write the repository's hooks and config (D3):
+/// nothing outside the sandbox runs git on it, so they run confined too.
+#[tokio::test]
+async fn a_confined_shell_may_change_hooks_and_config_and_they_stay_confined() {
+    require_sandbox!();
+    let ws = workspace();
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(ws.path())
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let exe = std::env::current_exe().unwrap();
+    let outside = tempfile::tempdir_in(exe.parent().unwrap()).unwrap();
+    let escaped = outside.path().join("escaped");
+    let command = format!(
+        "git config user.name T && git config user.email t@example.test && \
+         printf '#!/bin/sh\\ntouch {} || true\\ntouch ran\\n' > .git/hooks/pre-commit && \
+         chmod +x .git/hooks/pre-commit && git commit -q --allow-empty -m x",
+        escaped.display()
+    );
+    // The hook's write outside is refused, and reported as the boundary.
+    let result = forge_tools::run_shell_command(&command, ws.path()).await;
+    assert!(
+        matches!(&result, Err(forge_tools::ToolError::SandboxDenied { .. })),
+        "{result:?}"
+    );
+    assert!(ws.path().join("ran").exists(), "the hook ran");
+    assert!(!escaped.exists(), "the hook wrote outside the sandbox");
 }

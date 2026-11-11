@@ -761,8 +761,8 @@ need to poll an interactive session. Never use `ps` or `pgrep` to find a \
 Forge-managed command. \
 A host(...) grant projects HTTPS identity for that host into the confined \
 spawn. Git over SSH and commit signing work through the user's own keys, \
-which stay outside the sandbox (git-dir writes stay limited to git itself, \
-never to git hooks)."
+which stay outside the sandbox. The repository's .git, hooks and config \
+included, is writable; Forge reports a call that changes hooks or config."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()

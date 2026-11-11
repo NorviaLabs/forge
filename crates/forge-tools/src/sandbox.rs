@@ -117,8 +117,9 @@ fn filesystem_explanation(line: &str) -> String {
         (None, None) => {}
     }
     explanation.push_str(
-        "filesystem access is confined to the workspace and the session temp directory, \
-         and .git/.forge are read-only inside the workspace. ",
+        "writes are confined to the workspace, the session temp directory and the tool \
+         cache, and .forge is read-only inside the workspace; files holding credentials \
+         (such as ~/.ssh) cannot be read. ",
     );
     if missing {
         explanation.push_str(

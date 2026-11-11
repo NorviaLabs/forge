@@ -224,42 +224,6 @@ pub fn isolated_config_env(config_dir: &Path) -> Vec<(String, String)> {
     env
 }
 
-/// `.git` is read-only by default so a confined spawn cannot rewrite
-/// history. A spawn opts in when any segment of the command line runs git
-/// itself.
-///
-/// Every segment is checked, not just the leading one: `make release && git
-/// push` writes refs from the second segment, and keying off the leading
-/// executable denied it.
-///
-/// Frontends that shell out to git (`gh`, `glab`, ...) are deliberately
-/// **not** enumerated. Tracking providers here would be an architecture
-/// smell, and it buys nothing: such a tool needs `.git` writes only to push
-/// a branch on the caller's behalf, which it cannot do without a TTY to
-/// prompt on anyway. The working shape is an explicit `git push` — which
-/// this rule already covers, including when the two are chained in one
-/// command line.
-pub fn needs_git_writes(command: &str) -> bool {
-    command_segments(command).any(|segment| {
-        let exe = leading_executable(segment);
-        exe == "git" || exe.starts_with("git-")
-    })
-}
-
-/// Split a command line on the shell operators that start a new command.
-///
-/// This is a policy *widening* heuristic, not a security boundary: the
-/// sandbox is what enforces the result, and over-splitting can only ever
-/// propose git writability for a spawn, never grant it filesystem reach.
-/// Quoting is not honoured, so `echo "git push"` also proposes the
-/// carve-out — accepted, because the alternative is denying real pushes.
-fn command_segments(command: &str) -> impl Iterator<Item = &str> {
-    command
-        .split([';', '\n', '|', '&', '(', ')'])
-        .map(str::trim)
-        .filter(|segment| !segment.is_empty())
-}
-
 fn credentials_for_grant(grant: &EgressGrant, workspace_root: &Path) -> Vec<HostCredential> {
     let mut out = Vec::new();
     for pattern in grant.allow_patterns() {
@@ -491,17 +455,6 @@ done < "$file"
     std::fs::write(path, SCRIPT)
 }
 
-fn leading_executable(command: &str) -> &str {
-    let token = command
-        .split_whitespace()
-        .find(|token| !token.contains('='))
-        .unwrap_or("");
-    std::path::Path::new(token)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(token)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,17 +467,6 @@ mod tests {
         assert_eq!(apex_host("*"), None);
         assert_eq!(apex_host("127.0.0.1"), None);
         assert_eq!(apex_host("localhost"), None);
-    }
-
-    #[test]
-    fn only_git_itself_needs_git_dir_writes() {
-        assert!(needs_git_writes("git push origin HEAD"));
-        assert!(needs_git_writes("git status"));
-        assert!(needs_git_writes("git-lfs push origin main"));
-        assert!(!needs_git_writes("gh pr create"));
-        assert!(!needs_git_writes("glab mr create"));
-        assert!(!needs_git_writes("cargo test"));
-        assert!(!needs_git_writes("curl -I https://example.com"));
     }
 
     #[test]
@@ -584,19 +526,6 @@ mod tests {
         assert!(HOST_CREDENTIAL_ENV.contains(&"GH_TOKEN"));
         assert!(HOST_CREDENTIAL_ENV.contains(&"CARGO_REGISTRY_TOKEN"));
         assert!(!HOST_CREDENTIAL_ENV.contains(&"OPENAI_API_KEY"));
-    }
-
-    /// A git write can sit in any segment of a compound command. Checking
-    /// only the leading executable denied all of these.
-    #[test]
-    fn git_writes_are_detected_in_any_command_segment() {
-        assert!(needs_git_writes("make release && git push"));
-        assert!(needs_git_writes("cargo build; git tag -a v1 -m v1"));
-        assert!(needs_git_writes(
-            "gh pr create --head x && git update-ref HEAD x"
-        ));
-        assert!(needs_git_writes("ls | grep -q x || git commit -am wip"));
-        assert!(!needs_git_writes("cargo build && cargo test"));
     }
 
     #[test]
