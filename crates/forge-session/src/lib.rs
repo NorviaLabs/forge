@@ -35,7 +35,7 @@ pub use project::{LaunchResolution, Project, ProjectId, ProjectRegistry, Registr
 pub use project_state::{AttentionItem, AttentionKind, ProjectState, SessionSummary};
 pub use projects::{
     new_attention, ConfigLoader, OpenProjectRef, ProjectError, ProjectNotice, ProjectService,
-    ProjectServiceHandle, ProjectServiceOptions, ProjectSummary, SharedSupervisor, WorkspaceState,
+    ProjectServiceHandle, ProjectServiceOptions, ProjectSummary, TargetError, WorkspaceState,
 };
 pub use snapshot::{
     replayed_transcript, BackgroundTaskSnapshot, SessionDetailsSnapshot, SessionSnapshot,

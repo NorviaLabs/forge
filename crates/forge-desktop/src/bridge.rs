@@ -1014,20 +1014,16 @@ impl DesktopState {
         self.active.borrow().clone()
     }
 
-    /// The open project that owns `session_id`. Falls back to the project on
-    /// screen for a session no project lists yet (just created) or no longer
-    /// lists live (archived, being resumed).
-    pub async fn project_for(&self, session_id: SessionId) -> forge_session::OpenProjectRef {
-        let active = self.active();
-        if owns(&active, session_id) {
-            return active;
-        }
-        if let Ok(open) = self.projects.open_projects().await {
-            if let Some(project) = open.into_iter().find(|project| owns(project, session_id)) {
-                return project;
-            }
-        }
-        active
+    /// The open project that owns `session_id`, live or closed. A session no
+    /// open project knows is an error, never the project on screen.
+    pub async fn project_for(
+        &self,
+        session_id: SessionId,
+    ) -> Result<forge_session::OpenProjectRef, String> {
+        self.projects
+            .project_of(session_id)
+            .await
+            .map_err(|error| error.to_string())
     }
 
     /// Put another open project on screen.
@@ -1052,16 +1048,6 @@ impl DesktopState {
         }
         Ok(())
     }
-}
-
-fn owns(project: &forge_session::OpenProjectRef, session_id: SessionId) -> bool {
-    project
-        .handle
-        .project_state()
-        .borrow()
-        .sessions
-        .iter()
-        .any(|session| session.session_id == session_id)
 }
 
 /// What the trust screen is waiting for the operator to accept.
@@ -1357,10 +1343,11 @@ pub struct Hello {
 async fn project_view_parts(
     project: &forge_session::OpenProjectRef,
 ) -> Result<(SessionId, DesktopEvent, Vec<SessionRow>), String> {
-    let guard = project.supervisor.read().await;
-    let supervisor = guard.as_ref().ok_or("the project has closed")?;
-    let snapshots = supervisor.snapshots().await;
-    let selected = supervisor.selected_session_id().await.ok().flatten();
+    let snapshots = project
+        .snapshots()
+        .await
+        .map_err(|_| "the project has closed")?;
+    let selected = project.selected_session_id().await.ok().flatten();
     let snapshot = match selected.and_then(|id| snapshots.iter().find(|s| s.task.session_id == id))
     {
         Some(snapshot) => snapshot,
@@ -1456,10 +1443,7 @@ async fn forward_active_project(
         }
         switched = true;
         // The session on screen: only its tokens and snapshots are sent.
-        let mut on_screen = match project.supervisor.read().await.as_ref() {
-            Some(supervisor) => supervisor.selected_session_id().await.ok().flatten(),
-            None => None,
-        };
+        let mut on_screen = project.selected_session_id().await.ok().flatten();
         // An event read while coalescing deltas, handled next.
         let mut held: Option<Result<SupervisorEvent, tokio::sync::broadcast::error::RecvError>> =
             None;
@@ -1547,7 +1531,7 @@ async fn forward_active_project(
             // Selecting emits only the id, but the page needs that session's
             // transcript. Send it right after the selection.
             if let Some(session_id) = selected {
-                if let Some(snapshot) = selected_snapshot(&project.supervisor, session_id).await {
+                if let Some(snapshot) = selected_snapshot(&project, session_id).await {
                     #[cfg(feature = "self-test")]
                     if let Some(probe) = &probe {
                         probe.delivering(&snapshot);
@@ -1567,11 +1551,9 @@ async fn resend_view(
     channel: &Channel<DesktopEvent>,
     project: &forge_session::OpenProjectRef,
 ) -> bool {
-    let guard = project.supervisor.read().await;
-    let Some(supervisor) = guard.as_ref() else {
+    let Ok(snapshots) = project.snapshots().await else {
         return true;
     };
-    let snapshots = supervisor.snapshots().await;
     if channel
         .send(DesktopEvent::Roster {
             sessions: session_rows(&snapshots),
@@ -1580,7 +1562,7 @@ async fn resend_view(
     {
         return false;
     }
-    if let Ok(Some(session_id)) = supervisor.selected_session_id().await {
+    if let Ok(Some(session_id)) = project.selected_session_id().await {
         if channel
             .send(DesktopEvent::Selected {
                 session_id: Some(session_id),
@@ -1589,7 +1571,7 @@ async fn resend_view(
         {
             return false;
         }
-        if let Some(snapshot) = supervisor.snapshot(session_id).await {
+        if let Ok(Some(snapshot)) = project.snapshot(session_id).await {
             if channel.send(session_event(&snapshot)).is_err() {
                 return false;
             }
@@ -1630,10 +1612,7 @@ async fn forward_workspace(
                 .as_ref()
                 .and_then(|window| window.is_focused().ok())
                 .unwrap_or(false);
-            let on_screen = match project.supervisor.read().await.as_ref() {
-                Some(supervisor) => supervisor.selected_session_id().await.ok().flatten(),
-                None => None,
-            };
+            let on_screen = project.selected_session_id().await.ok().flatten();
             let sound = fresh.iter().any(|(project_id, item)| {
                 !(focused
                     && *project_id == project.project.id
@@ -1871,24 +1850,18 @@ pub async fn project_relocate(
 
 /// The snapshot behind a selection, read from the supervisor's live actors.
 async fn selected_snapshot(
-    supervisor: &std::sync::Arc<tokio::sync::RwLock<Option<forge_session::RepositorySupervisor>>>,
+    project: &forge_session::OpenProjectRef,
     session_id: Option<SessionId>,
 ) -> Option<DesktopEvent> {
-    let session_id = session_id?;
-    let supervisor = supervisor.read().await;
-    let snapshot = supervisor.as_ref()?.snapshot(session_id).await?;
+    let snapshot = project.snapshot(session_id?).await.ok()??;
     Some(session_event(&snapshot))
 }
 
 /// The session the operator currently has selected; the prompt, stop and
 /// approval commands target it.
 async fn selected_session(state: &DesktopState) -> Result<SessionId, String> {
-    let project = state.active();
-    let supervisor = project.supervisor.read().await;
-    let Some(supervisor) = supervisor.as_ref() else {
-        return Err("Forge is shutting down".into());
-    };
-    supervisor
+    state
+        .active()
         .selected_session_id()
         .await
         .map_err(|error| error.to_string())?
@@ -1902,7 +1875,7 @@ pub async fn submit_prompt(
     text: String,
     attachment: Option<crate::workspace::PromptAttachment>,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     if text.trim().is_empty() {
         return Err("prompt is empty".into());
     }
@@ -1948,17 +1921,15 @@ pub async fn submit_images(
     images: Vec<String>,
     attachment: Option<crate::workspace::PromptAttachment>,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     if selected_session(&state).await? != session_id {
         return Err("Session changed; paste the image again in the intended session".into());
     }
     let root = {
-        let supervisor = project.supervisor.read().await;
-        let snapshot = supervisor
-            .as_ref()
-            .ok_or("Forge is shutting down")?
+        let snapshot = project
             .snapshot(session_id)
             .await
+            .map_err(|error| error.to_string())?
             .ok_or("Session is gone")?;
         if !snapshot
             .details
@@ -2031,7 +2002,7 @@ pub async fn select_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<DesktopEvent, String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::SelectSession {
@@ -2039,7 +2010,7 @@ pub async fn select_session(
         })
         .await
         .map_err(|error| error.to_string())?;
-    selected_snapshot(&project.supervisor, Some(session_id))
+    selected_snapshot(&project, Some(session_id))
         .await
         .ok_or_else(|| "the selected session is gone".into())
 }
@@ -2051,7 +2022,7 @@ pub async fn archive_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::ArchiveSession { session_id })
@@ -2114,11 +2085,9 @@ pub async fn remove_worktree(
     session_id: SessionId,
     discard_dirty: bool,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     let record = {
-        let supervisor = project.supervisor.read().await;
-        let supervisor = supervisor.as_ref().ok_or("Forge is shutting down")?;
-        supervisor
+        project
             .session_records()
             .await
             .map_err(|error| error.to_string())?
@@ -2152,11 +2121,7 @@ pub async fn remove_worktree(
     // A dirty worktree leaves the session retained instead of removed: say so
     // rather than reporting a cleanup that never happened.
     let lifecycle = {
-        let supervisor = project.supervisor.read().await;
-        let Some(supervisor) = supervisor.as_ref() else {
-            return Err("Forge is shutting down".into());
-        };
-        supervisor
+        project
             .session_records()
             .await
             .map_err(|error| error.to_string())?
@@ -2181,13 +2146,10 @@ async fn resolve(
     let project = state.active();
     let session_id = selected_session(state).await?;
     let pending = {
-        let supervisor = project.supervisor.read().await;
-        let Some(supervisor) = supervisor.as_ref() else {
-            return Err("Forge is shutting down".into());
-        };
-        supervisor
+        project
             .snapshot(session_id)
             .await
+            .map_err(|error| error.to_string())?
             .and_then(|snapshot| snapshot.session.pending_hitl)
     };
     check_decision(pending.as_ref(), &call_id, &decision).map_err(|refusal| refusal.to_string())?;
@@ -2225,14 +2187,11 @@ async fn pending_hitl(
     session_id: SessionId,
     call_id: &str,
 ) -> Result<HitlPayload, String> {
-    let project = state.project_for(session_id).await;
-    let supervisor = project.supervisor.read().await;
-    let supervisor = supervisor
-        .as_ref()
-        .ok_or_else(|| "Forge is shutting down".to_string())?;
-    let snapshot = supervisor
+    let project = state.project_for(session_id).await?;
+    let snapshot = project
         .snapshot(session_id)
         .await
+        .map_err(|error| error.to_string())?
         .ok_or_else(|| "the session is gone".to_string())?;
     snapshot
         .session
@@ -2399,13 +2358,10 @@ pub async fn answer_question(
     let project = state.active();
     let session_id = selected_session(&state).await?;
     let pending = {
-        let supervisor = project.supervisor.read().await;
-        let supervisor = supervisor
-            .as_ref()
-            .ok_or_else(|| "Forge is shutting down".to_string())?;
-        supervisor
+        project
             .snapshot(session_id)
             .await
+            .map_err(|error| error.to_string())?
             .and_then(|snapshot| snapshot.session.pending_question)
     };
     let pending = pending
@@ -2437,7 +2393,7 @@ pub async fn current_session(
 ) -> Result<Option<DesktopEvent>, String> {
     let project = state.active();
     let session_id = selected_session(&state).await?;
-    Ok(selected_snapshot(&project.supervisor, Some(session_id)).await)
+    Ok(selected_snapshot(&project, Some(session_id)).await)
 }
 
 /// Resume the selected session's stopped or interrupted turn.
@@ -2458,13 +2414,13 @@ pub async fn stop_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<DesktopEvent, String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::StopTurn { session_id })
         .await
         .map_err(|error| error.to_string())?;
-    selected_snapshot(&project.supervisor, Some(session_id))
+    selected_snapshot(&project, Some(session_id))
         .await
         .ok_or_else(|| "the stopped session is gone".into())
 }
@@ -2475,16 +2431,14 @@ pub async fn close_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     // The window always needs a selected session to resume from; closing the
     // last one would strand the durable row with no conversation to replace.
     let active = {
-        let supervisor = project.supervisor.read().await;
-        supervisor
-            .as_ref()
-            .ok_or("Forge is shutting down")?
+        project
             .snapshots()
             .await
+            .map_err(|error| error.to_string())?
             .into_iter()
             .filter(|snapshot| snapshot.task.lifecycle == forge_session::SessionLifecycle::Active)
             .count()
@@ -2508,18 +2462,17 @@ pub async fn list_resumable_sessions(
     state: State<'_, DesktopState>,
 ) -> Result<Vec<SessionRow>, String> {
     let project = state.active();
-    let supervisor = project.supervisor.read().await;
-    let Some(supervisor) = supervisor.as_ref() else {
-        return Err("Forge is shutting down".into());
-    };
-    let Some(selected) = supervisor
+    let Some(selected) = project
         .selected_session_id()
         .await
         .map_err(|error| error.to_string())?
     else {
         return Ok(Vec::new());
     };
-    let snapshots = supervisor.snapshots().await;
+    let snapshots = project
+        .snapshots()
+        .await
+        .map_err(|error| error.to_string())?;
     let Some(active) = snapshots
         .iter()
         .find(|snapshot| snapshot.task.session_id == selected)
@@ -2531,7 +2484,7 @@ pub async fn list_resumable_sessions(
         .iter()
         .map(|snapshot| snapshot.task.session_id)
         .collect();
-    Ok(supervisor
+    Ok(project
         .session_records()
         .await
         .map_err(|error| error.to_string())?
@@ -2577,7 +2530,7 @@ pub async fn resume_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     let current = selected_session(&state).await?;
     project
         .handle
@@ -2595,7 +2548,7 @@ pub async fn rename_session(
     session_id: SessionId,
     label: String,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     let label = label.trim().to_string();
     if label.is_empty() {
         return Err("session name is empty".into());
@@ -2614,7 +2567,7 @@ pub async fn pin_session(
     session_id: SessionId,
     slot: Option<u8>,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::PinSession {
@@ -2635,7 +2588,7 @@ pub async fn cancel_queued(
     source: QueueSource,
     position: usize,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .submit(SupervisorCommand::CancelQueuedPrompt {
@@ -2688,7 +2641,7 @@ pub async fn cancel_background(
     task_id: u64,
     run_id: String,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     let run_id: forge_core::BackgroundRunId = run_id
         .trim()
         .parse()
@@ -2715,14 +2668,12 @@ pub async fn resolve_child_approval(
     request_id: String,
     confirmed: bool,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     let request = {
-        let supervisor = project.supervisor.read().await;
-        supervisor
-            .as_ref()
-            .ok_or("Forge is shutting down")?
+        project
             .snapshot(session_id)
             .await
+            .map_err(|error| error.to_string())?
             .and_then(|snapshot| snapshot.details)
             .and_then(|details| {
                 details
@@ -2763,13 +2714,12 @@ pub async fn child_transcript(
     task_id: u64,
     child_session_id: SessionId,
 ) -> Result<Vec<MessageView>, String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     let journal = {
-        let supervisor = project.supervisor.read().await;
-        let supervisor = supervisor.as_ref().ok_or("Forge is shutting down")?;
-        let child = supervisor
+        let child = project
             .snapshot(session_id)
             .await
+            .map_err(|error| error.to_string())?
             .and_then(|snapshot| snapshot.details)
             .and_then(|details| {
                 details
@@ -2782,7 +2732,10 @@ pub async fn child_transcript(
         if child != child_session_id {
             return Err("That child session changed; reopen the task".into());
         }
-        supervisor.journal_dir()
+        project
+            .journal_dir()
+            .await
+            .map_err(|error| error.to_string())?
     };
     let transcript = forge_session::replayed_transcript(&journal, child_session_id, 1)
         .await
@@ -2802,13 +2755,11 @@ pub async fn message_detail(
     session_id: SessionId,
     index: usize,
 ) -> Result<MessageView, String> {
-    let project = state.project_for(session_id).await;
-    let supervisor = project.supervisor.read().await;
-    let snapshot = supervisor
-        .as_ref()
-        .ok_or("Forge is shutting down")?
+    let project = state.project_for(session_id).await?;
+    let snapshot = project
         .snapshot(session_id)
         .await
+        .map_err(|error| error.to_string())?
         .ok_or("That session is no longer live")?;
     snapshot
         .transcript
@@ -2824,14 +2775,11 @@ async fn workspace_of(
     state: &DesktopState,
     session_id: SessionId,
 ) -> Result<std::path::PathBuf, String> {
-    let project = state.project_for(session_id).await;
-    let supervisor = project.supervisor.read().await;
-    let Some(supervisor) = supervisor.as_ref() else {
-        return Err("Forge is shutting down".into());
-    };
-    supervisor
+    let project = state.project_for(session_id).await?;
+    project
         .snapshot(session_id)
         .await
+        .map_err(|error| error.to_string())?
         .map(|snapshot| snapshot.session.workspace_root)
         .ok_or_else(|| "the session is gone".to_string())
 }
@@ -2947,13 +2895,11 @@ async fn last_turn_cards(
     state: &DesktopState,
     session_id: SessionId,
 ) -> Result<Vec<(String, Vec<String>)>, String> {
-    let project = state.project_for(session_id).await;
-    let supervisor = project.supervisor.read().await;
-    let snapshot = supervisor
-        .as_ref()
-        .ok_or("Forge is shutting down")?
+    let project = state.project_for(session_id).await?;
+    let snapshot = project
         .snapshot(session_id)
         .await
+        .map_err(|error| error.to_string())?
         .ok_or("No live session to review")?;
     let model = forge_transcript::ConversationModel::from_messages(
         snapshot.transcript.messages(),
@@ -3241,12 +3187,10 @@ pub async fn session_details(state: State<'_, DesktopState>) -> Result<serde_jso
     let project = state.active();
     let id = selected_session(&state).await?;
     let details = {
-        let supervisor = project.supervisor.read().await;
-        supervisor
-            .as_ref()
-            .ok_or("Forge is shutting down")?
+        project
             .snapshot(id)
             .await
+            .map_err(|error| error.to_string())?
             .and_then(|snapshot| snapshot.details)
             .ok_or("Session details unavailable")?
     };
@@ -3341,7 +3285,7 @@ pub async fn github_create_pr(
     session_id: SessionId,
     issue_number: u64,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::CreateIssuePullRequest {
@@ -3359,7 +3303,7 @@ pub async fn github_refresh_pr(
     session_id: SessionId,
     issue_number: u64,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::RefreshIssuePullRequest {
@@ -3377,7 +3321,7 @@ pub async fn github_apply_feedback(
     session_id: SessionId,
     issue_number: u64,
 ) -> Result<(), String> {
-    let project = state.project_for(session_id).await;
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::ApplyIssuePullRequestFeedback {

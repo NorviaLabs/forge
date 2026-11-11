@@ -19,8 +19,9 @@ use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     AttentionItem, LaunchError, LaunchPlan, LaunchTarget, LeaseOwner, Project, ProjectId,
-    ProjectRegistry, ProjectState, RegistryError, RepositorySessionError, RepositorySupervisor,
-    RepositorySupervisorError, SupervisorCommand, SupervisorHandle, SupervisorTurnState,
+    ProjectRegistry, ProjectState, RegistryError, RepositorySession, RepositorySessionError,
+    RepositorySupervisor, RepositorySupervisorError, SessionRuntimeSnapshot, SupervisorCommand,
+    SupervisorHandle, SupervisorTurnState,
 };
 use forge_types::SessionId;
 
@@ -144,17 +145,83 @@ fn already_owned(owner: &Option<LeaseOwner>) -> String {
     }
 }
 
-/// An open project's supervisor, shared with frontends for reads
-/// (`snapshot`, `snapshots`, `session_records`). `None` once the project has
-/// closed; a reader holding an old clone then sees it gone.
-pub type SharedSupervisor = Arc<tokio::sync::RwLock<Option<RepositorySupervisor>>>;
+/// An open project's supervisor. `None` once the project has closed; a
+/// reader holding an old [`OpenProjectRef`] then gets
+/// [`TargetError::ShuttingDown`].
+type SharedSupervisor = Arc<tokio::sync::RwLock<Option<RepositorySupervisor>>>;
 
-/// What a frontend needs to work with one open project.
+/// Why a session, or the project that owns it, could not be reached.
+#[derive(Debug, thiserror::Error)]
+pub enum TargetError {
+    /// No open project knows the session, live or closed.
+    #[error("that session no longer exists")]
+    UnknownSession(SessionId),
+    /// The project closed while the caller still held it.
+    #[error("Forge is shutting down")]
+    ShuttingDown,
+    #[error(transparent)]
+    Supervisor(#[from] RepositorySupervisorError),
+    #[error(transparent)]
+    Project(#[from] ProjectError),
+}
+
+/// What a frontend needs to work with one open project: commands and events
+/// through `handle`, reads through the methods here.
 #[derive(Clone)]
 pub struct OpenProjectRef {
     pub project: Project,
     pub handle: SupervisorHandle,
-    pub supervisor: SharedSupervisor,
+    supervisor: SharedSupervisor,
+}
+
+impl OpenProjectRef {
+    /// Every live session.
+    pub async fn snapshots(&self) -> Result<Vec<SessionRuntimeSnapshot>, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.snapshots().await)
+    }
+
+    /// One live session; `None` for a session this process has closed.
+    pub async fn snapshot(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<SessionRuntimeSnapshot>, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.snapshot(session_id).await)
+    }
+
+    /// Durable session rows, including sessions this process has closed.
+    pub async fn session_records(&self) -> Result<Vec<RepositorySession>, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.session_records().await?)
+    }
+
+    /// The session the operator last selected in this project.
+    pub async fn selected_session_id(&self) -> Result<Option<SessionId>, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.selected_session_id().await?)
+    }
+
+    /// Where this project's session journals live.
+    pub async fn journal_dir(&self) -> Result<PathBuf, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.journal_dir())
+    }
+
+    /// Whether the session is live in this project.
+    fn lists(&self, session_id: SessionId) -> bool {
+        self.handle
+            .project_state()
+            .borrow()
+            .sessions
+            .iter()
+            .any(|session| session.session_id == session_id)
+    }
 }
 
 /// Loads a project's config from its root.
@@ -273,6 +340,31 @@ impl ProjectServiceHandle {
     /// Every open project, in registry order.
     pub async fn open_projects(&self) -> Result<Vec<OpenProjectRef>, ProjectError> {
         self.ask(Request::OpenProjects).await
+    }
+
+    /// Session targeting: the open project that owns `session_id`, whether
+    /// the session is live or closed. A session no open project knows is
+    /// [`TargetError::UnknownSession`]; there is no fallback project.
+    pub async fn project_of(&self, session_id: SessionId) -> Result<OpenProjectRef, TargetError> {
+        let open = self.open_projects().await?;
+        if let Some(project) = open.iter().find(|project| project.lists(session_id)) {
+            return Ok(project.clone());
+        }
+        // Not live anywhere: a closed session, or one created so recently
+        // that its project has not published it yet. The durable rows know.
+        for project in open {
+            match project.session_records().await {
+                Ok(records) => {
+                    if records.iter().any(|record| record.session_id == session_id) {
+                        return Ok(project);
+                    }
+                }
+                // A project closing under us owns nothing reachable.
+                Err(TargetError::ShuttingDown) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(TargetError::UnknownSession(session_id))
     }
 
     /// The supervisor handle of an open project.
@@ -754,22 +846,12 @@ mod tests {
 
         let open = f.handle.open_projects().await.unwrap();
         assert_eq!(open.iter().map(|p| p.project.id).collect::<Vec<_>>(), ids);
-        let shared = open[0].supervisor.clone();
-        assert_eq!(
-            shared
-                .read()
-                .await
-                .as_ref()
-                .unwrap()
-                .snapshots()
-                .await
-                .len(),
-            1
-        );
+        let held = open[0].clone();
+        assert_eq!(held.snapshots().await.unwrap().len(), 1);
 
         f.handle.close(ids[0], false).await.unwrap();
         assert!(
-            shared.read().await.is_none(),
+            matches!(held.snapshots().await, Err(TargetError::ShuttingDown)),
             "readers see the project closed"
         );
         let after = f.handle.workspace().borrow().clone();
@@ -892,6 +974,122 @@ mod tests {
         ));
         f.handle.remove(project.id).await.unwrap();
         assert!(f.handle.workspace().borrow().projects.is_empty());
+    }
+
+    /// Two trusted Git projects, open, each with its first session live.
+    async fn two_open_projects(f: &Fixture) -> Vec<(ProjectId, SessionId)> {
+        let mut opened = Vec::new();
+        for name in ["api", "notes"] {
+            let root = folder(f, name);
+            forge_test_support::init_repo_with_commit(&root);
+            forge_config::grant_trust_at(&f.trust_store, &root).unwrap();
+            let project = f.handle.add(root).await.unwrap();
+            f.handle.open(project.id).await.unwrap();
+            let reference = f.handle.project(project.id).await.unwrap();
+            let session = reference.snapshots().await.unwrap()[0].task.session_id;
+            let mut state = reference.handle.project_state();
+            state
+                .wait_for(|state| state.sessions.len() == 1)
+                .await
+                .unwrap();
+            opened.push((project.id, session));
+        }
+        opened
+    }
+
+    #[tokio::test]
+    async fn a_live_session_resolves_to_the_project_that_owns_it() {
+        let f = fixture();
+        let opened = two_open_projects(&f).await;
+        for (project, session) in &opened {
+            let owner = f.handle.project_of(*session).await.unwrap();
+            assert_eq!(owner.project.id, *project);
+            assert!(owner.snapshot(*session).await.unwrap().is_some());
+        }
+        // The other project does not have it, live or closed.
+        let other = f.handle.project(opened[1].0).await.unwrap();
+        assert!(other.snapshot(opened[0].1).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_session_no_open_project_knows_is_unknown_not_a_fallback() {
+        let f = fixture();
+        let opened = two_open_projects(&f).await;
+        let stranger = SessionId::from_u128(0x5eed);
+        assert!(matches!(
+            f.handle.project_of(stranger).await,
+            Err(TargetError::UnknownSession(id)) if id == stranger
+        ));
+
+        // A closed project's sessions are unreachable, and a reference held
+        // from before the close says so instead of answering.
+        let (project, session) = opened[0];
+        let held = f.handle.project(project).await.unwrap();
+        f.handle.close(project, false).await.unwrap();
+        assert!(matches!(
+            f.handle.project_of(session).await,
+            Err(TargetError::UnknownSession(_))
+        ));
+        assert!(matches!(
+            held.snapshot(session).await,
+            Err(TargetError::ShuttingDown)
+        ));
+        assert!(matches!(
+            held.session_records().await,
+            Err(TargetError::ShuttingDown)
+        ));
+        assert!(matches!(
+            held.selected_session_id().await,
+            Err(TargetError::ShuttingDown)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_closed_session_resolves_through_its_durable_record() {
+        let f = fixture();
+        let opened = two_open_projects(&f).await;
+        let (project, first) = opened[1];
+        let reference = f.handle.project(project).await.unwrap();
+        reference
+            .handle
+            .command(SupervisorCommand::CreateSession {
+                label: "second".into(),
+                first_prompt: None,
+                github_issue_number: None,
+            })
+            .await
+            .unwrap();
+        let mut state = reference.handle.project_state();
+        let second = tokio::time::timeout(
+            Duration::from_secs(20),
+            state.wait_for(|state| state.sessions.len() == 2),
+        )
+        .await
+        .expect("the second session appears")
+        .unwrap()
+        .sessions
+        .iter()
+        .map(|session| session.session_id)
+        .find(|id| *id != first)
+        .unwrap();
+        reference
+            .handle
+            .command(SupervisorCommand::CloseSession { session_id: second })
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(20),
+            state.wait_for(|state| state.sessions.len() == 1),
+        )
+        .await
+        .expect("the session closes")
+        .unwrap();
+
+        // No project lists it live any more; its durable row still names
+        // the owner, which is not the first project asked.
+        assert!(reference.snapshot(second).await.unwrap().is_none());
+        let owner = f.handle.project_of(second).await.unwrap();
+        assert_eq!(owner.project.id, project);
     }
 
     fn session(turn_state: SupervisorTurnState) -> SessionSummary {

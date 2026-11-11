@@ -50,9 +50,13 @@ themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
   - It is permanent (no versioned protocol replaces it). Projects: one
     `ProjectService` holds every open project. `DesktopState.projects` is its
     handle and `active` the project on screen. A command with `session_id`
-    resolves its project with `project_for` (the open project whose state
-    lists the session, else the one on screen); every other command uses
-    `active()`. Provider changes reload every open project. `subscribe`
+    resolves its project with `project_for`, which is
+    `ProjectServiceHandle::project_of` (session targeting: the open project
+    that lists the session live or holds its durable row; a session no open
+    project knows is an error, never the project on screen); every other
+    command uses `active()`. Reads go through `OpenProjectRef`'s methods
+    (`snapshot`, `snapshots`, `session_records`, `selected_session_id`,
+    `journal_dir`); the supervisor lock is private to `forge-session`. Provider changes reload every open project. `subscribe`
     follows the on-screen project (a switch sends `ProjectSwitched`, then the
     roster, selection and session) and forwards `Workspace` (every project's
     sessions, pending requests and run slots) and `AttentionNew { count,
