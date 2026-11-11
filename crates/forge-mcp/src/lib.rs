@@ -22,7 +22,18 @@ use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 use tracing::warn;
 
+/// Writing a notification, which only has to reach the pipe.
 const MCP_IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// The handshake of a freshly started server. A cold `npx -y ...` or
+/// `uvx ...` fetches and builds before it can answer, which 10 seconds
+/// routinely did not allow, and the server was then dropped for the session.
+const MCP_STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
+/// `tools/list`.
+const MCP_LIST_TIMEOUT: Duration = Duration::from_secs(30);
+/// One `tools/call`. Tools do real work (builds, searches, API calls); a
+/// 10 second bound failed calls the server was still carrying out, and a
+/// retry then repeated their side effects.
+const MCP_CALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -82,24 +93,45 @@ pub fn mcp_tool_name(server_id: &str, tool: &str) -> String {
 
 /// Minimal stdio JSON-RPC MCP client (tools/list + tools/call).
 pub struct McpStdioClient {
+    cfg: McpServerConfig,
+    /// Where a sandboxed server is confined and every server runs; kept so a
+    /// server that died can be started again the same way.
+    workspace: Option<PathBuf>,
+    shared_egress: EgressShared,
+    server_id: String,
+    /// The running server. Also the request lock: one request is on the wire
+    /// at a time, and a dead server is replaced under it.
+    live: Mutex<Live>,
+}
+
+/// One running server process and its pipes.
+struct Live {
     /// Kills the server's whole process group — the server and anything it
-    /// forked — when the client is dropped. Declared first so it runs before
-    /// the temp directory below is removed.
+    /// forked — when dropped. Declared first so it runs before the temp
+    /// directory below is removed.
     _process_group: ProcessGroupGuard,
-    #[allow(dead_code)]
     child: Child,
     /// The sandboxed server's only route out, kept alive as long as the
     /// server is. `None` for an unsandboxed server, or a sandboxed one whose
     /// endpoint could not start (it then has no network at all).
     egress: Option<EgressInvocation>,
     /// A sandboxed server's private writable temp directory (its `TMPDIR`),
-    /// removed when the client is dropped. `None` for an unsandboxed server.
+    /// removed when dropped. `None` for an unsandboxed server.
     _tmp: Option<tempfile::TempDir>,
-    stdin: Mutex<ChildStdin>,
-    stdout: Mutex<BufReader<ChildStdout>>,
-    next_id: Mutex<u64>,
-    request_lock: Mutex<()>,
-    server_id: String,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+    /// Bytes of a reply line read so far. A request that times out or is
+    /// cancelled mid-line leaves its partial line here for the next read to
+    /// finish, so the stream never loses its place.
+    partial: String,
+    next_id: u64,
+    /// The server's pipes failed (it closed its output, or the pipe broke):
+    /// it is replaced before the next request.
+    dead: bool,
+    /// The last request failed while being written, before any of it reached
+    /// the server, so sending it again to a restarted server cannot repeat
+    /// anything the server did.
+    unsent: bool,
 }
 
 /// `fork()` in a multi-threaded process can race another thread's
@@ -318,6 +350,22 @@ impl McpStdioClient {
         workspace: Option<&Path>,
         egress: &EgressShared,
     ) -> Result<Self, McpError> {
+        let live = Self::start_server(cfg, workspace, egress).await?;
+        Ok(Self {
+            cfg: cfg.clone(),
+            workspace: workspace.map(Path::to_path_buf),
+            shared_egress: egress.clone(),
+            server_id: cfg.id.clone(),
+            live: Mutex::new(live),
+        })
+    }
+
+    /// Start the server process and complete the MCP handshake.
+    async fn start_server(
+        cfg: &McpServerConfig,
+        workspace: Option<&Path>,
+        egress: &EgressShared,
+    ) -> Result<Live, McpError> {
         if cfg.transport != "stdio" {
             return Err(McpError::Protocol(format!(
                 "unsupported transport {}",
@@ -363,42 +411,60 @@ impl McpStdioClient {
             .stdout
             .take()
             .ok_or_else(|| McpError::Protocol("missing stdout".into()))?;
-        let client = Self {
+        let mut live = Live {
             _process_group: ProcessGroupGuard::new(child.id().map(|pid| pid as i32)),
             child,
             egress,
             _tmp: tmp,
-            stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::new(stdout)),
-            next_id: Mutex::new(1),
-            request_lock: Mutex::new(()),
-            server_id: cfg.id.clone(),
+            stdin,
+            stdout: BufReader::new(stdout),
+            partial: String::new(),
+            next_id: 1,
+            dead: false,
+            unsent: false,
         };
-        // initialize
-        client
-            .request(
-                "initialize",
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "forge", "version": "0.1.0" }
-                }),
-            )
-            .await?;
-        client
-            .notify("notifications/initialized", json!({}))
-            .await?;
-        Ok(client)
+        // A cold `npx -y ...` or `uvx ...` can take well over the ordinary
+        // I/O bound to fetch and start, so the handshake gets its own.
+        Self::request_on(
+            &mut live,
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "forge", "version": "0.1.0" }
+            }),
+            MCP_STARTUP_TIMEOUT,
+        )
+        .await?;
+        Self::notify_on(&mut live, "notifications/initialized", json!({})).await?;
+        Ok(live)
     }
 
-    async fn notify(&self, method: &str, params: Value) -> Result<(), McpError> {
-        let _request_guard = self.request_lock.lock().await;
-        timeout(MCP_IO_TIMEOUT, self.notify_inner(method, params))
-            .await
-            .map_err(|_| McpError::Timeout("notification"))?
+    /// Make sure the server is running before a request goes out. A server
+    /// that exited (crashed, was killed, ran out of memory) is started again
+    /// the way it was first: its tools stay registered, and without this
+    /// every later call would fail on a closed pipe.
+    async fn ensure_running(&self, live: &mut Live) -> Result<(), McpError> {
+        match live.child.try_wait() {
+            Ok(None) if !live.dead => return Ok(()),
+            Ok(None) => {
+                warn!(server = %self.server_id, "MCP server's pipes failed; restarting it");
+            }
+            Ok(Some(status)) => {
+                warn!(server = %self.server_id, %status, "MCP server exited; restarting it");
+            }
+            Err(error) => {
+                warn!(server = %self.server_id, %error, "MCP server state unknown; restarting it");
+            }
+        }
+        let replacement =
+            Self::start_server(&self.cfg, self.workspace.as_deref(), &self.shared_egress).await?;
+        // The old process group is killed as the old value drops.
+        *live = replacement;
+        Ok(())
     }
 
-    async fn notify_inner(&self, method: &str, params: Value) -> Result<(), McpError> {
+    async fn notify_on(live: &mut Live, method: &str, params: Value) -> Result<(), McpError> {
         let msg = json!({
             "jsonrpc": "2.0",
             "method": method,
@@ -406,26 +472,61 @@ impl McpStdioClient {
         });
         let mut line = serde_json::to_string(&msg)?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
+        timeout(MCP_IO_TIMEOUT, async {
+            live.stdin.write_all(line.as_bytes()).await?;
+            live.stdin.flush().await?;
+            Ok::<(), McpError>(())
+        })
+        .await
+        .map_err(|_| McpError::Timeout("notification"))?
     }
 
-    async fn request(&self, method: &str, params: Value) -> Result<Value, McpError> {
-        let _request_guard = self.request_lock.lock().await;
-        timeout(MCP_IO_TIMEOUT, self.request_inner(method, params))
+    /// One request on the wire and its reply, within `limit`.
+    async fn request_on(
+        live: &mut Live,
+        method: &str,
+        params: Value,
+        limit: Duration,
+    ) -> Result<Value, McpError> {
+        let result = timeout(limit, Self::request_inner(live, method, params))
             .await
-            .map_err(|_| McpError::Timeout("request"))?
+            .map_err(|_| McpError::Timeout("request"))?;
+        if matches!(&result, Err(McpError::Io(_)))
+            || matches!(&result, Err(McpError::Protocol(message)) if message == "eof from mcp server")
+        {
+            live.dead = true;
+        }
+        result
     }
 
-    async fn request_inner(&self, method: &str, params: Value) -> Result<Value, McpError> {
-        let id = {
-            let mut n = self.next_id.lock().await;
-            let id = *n;
-            *n += 1;
-            id
-        };
+    /// As [`Self::request_on`], and when the request could not even be
+    /// written (the server was already gone), start the server again and send
+    /// it once more. Nothing reached the old process, so nothing repeats. A
+    /// request that was sent is never resent: it may have run.
+    async fn request_with_restart(
+        &self,
+        live: &mut Live,
+        method: &str,
+        params: Value,
+        limit: Duration,
+    ) -> Result<Value, McpError> {
+        self.ensure_running(live).await?;
+        let first = Self::request_on(live, method, params.clone(), limit).await;
+        if first.is_err() && live.unsent {
+            self.ensure_running(live).await?;
+            return Self::request_on(live, method, params, limit).await;
+        }
+        first
+    }
+
+    async fn request_inner(
+        live: &mut Live,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, McpError> {
+        live.unsent = false;
+        let id = live.next_id;
+        live.next_id += 1;
         let msg = json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -434,31 +535,59 @@ impl McpStdioClient {
         });
         let mut line = serde_json::to_string(&msg)?;
         line.push('\n');
-        {
-            let mut stdin = self.stdin.lock().await;
-            stdin.write_all(line.as_bytes()).await?;
-            stdin.flush().await?;
+        if let Err(error) = async {
+            live.stdin.write_all(line.as_bytes()).await?;
+            live.stdin.flush().await
         }
-        let mut stdout = self.stdout.lock().await;
-        let mut buf = String::new();
+        .await
+        {
+            live.unsent = true;
+            return Err(error.into());
+        }
         loop {
-            buf.clear();
-            let n = stdout.read_line(&mut buf).await?;
-            if n == 0 {
+            // `read_line` appends to `partial`; if this future is dropped
+            // mid-line, what was read stays there for the next request.
+            let n = live.stdout.read_line(&mut live.partial).await?;
+            if n == 0 && live.partial.is_empty() {
                 return Err(McpError::Protocol("eof from mcp server".into()));
             }
-            let v: Value = serde_json::from_str(buf.trim())?;
+            let line = std::mem::take(&mut live.partial);
+            if line.trim().is_empty() {
+                continue;
+            }
+            // A server may print a banner or a log line to stdout. That is
+            // not a reply to anything: skip it rather than fail the request.
+            let Ok(v) = serde_json::from_str::<Value>(line.trim()) else {
+                tracing::debug!(line = %line.trim(), "ignoring a non-JSON line from an MCP server");
+                continue;
+            };
             if v.get("id").and_then(|i| i.as_u64()) == Some(id) {
                 if let Some(err) = v.get("error") {
                     return Err(McpError::Protocol(err.to_string()));
                 }
                 return Ok(v.get("result").cloned().unwrap_or(Value::Null));
             }
+            if n == 0 {
+                return Err(McpError::Protocol("eof from mcp server".into()));
+            }
         }
     }
 
+    async fn request(
+        &self,
+        method: &str,
+        params: Value,
+        limit: Duration,
+    ) -> Result<Value, McpError> {
+        let mut live = self.live.lock().await;
+        self.request_with_restart(&mut live, method, params, limit)
+            .await
+    }
+
     pub async fn list_tools(&self) -> Result<Vec<McpToolInfo>, McpError> {
-        let result = self.request("tools/list", json!({})).await?;
+        let result = self
+            .request("tools/list", json!({}), MCP_LIST_TIMEOUT)
+            .await?;
         let tools = result
             .get("tools")
             .and_then(|t| t.as_array())
@@ -516,23 +645,29 @@ impl McpStdioClient {
         args: Value,
         call_id: Option<&str>,
     ) -> McpCallOutcome {
-        let _request_guard = self.request_lock.lock().await;
-        if let Some(egress) = &self.egress {
+        let mut live = self.live.lock().await;
+        if let Err(error) = self.ensure_running(&mut live).await {
+            return McpCallOutcome {
+                result: Err(error),
+                denied_hosts: Vec::new(),
+            };
+        }
+        if let Some(egress) = &live.egress {
             // Refusals from before this call (startup, a previous call's
             // stragglers) are not this call's to report.
             let _ = egress.take_denied_host();
             egress.set_call_label(call_id);
         }
-        let result = match timeout(
-            MCP_IO_TIMEOUT,
-            self.request_inner("tools/call", json!({ "name": name, "arguments": args })),
-        )
-        .await
-        {
-            Ok(result) => result.map(call_output),
-            Err(_) => Err(McpError::Timeout("request")),
-        };
-        let denied_hosts = match &self.egress {
+        let result = self
+            .request_with_restart(
+                &mut live,
+                "tools/call",
+                json!({ "name": name, "arguments": args }),
+                MCP_CALL_TIMEOUT,
+            )
+            .await
+            .map(call_output);
+        let denied_hosts = match &live.egress {
             Some(egress) => {
                 egress.set_call_label(None);
                 let denied = egress.denied_hosts();
@@ -1324,6 +1459,130 @@ done
             .unwrap();
         assert!(output.is_error);
         assert!(output.content.contains("hello"));
+    }
+
+    /// A chatty server: a banner and a blank line on stdout before and
+    /// between replies. Neither is a reply, and neither may fail a request.
+    /// It also exits after its first tool call (a crash), and a marker file
+    /// records each start, so a restart is visible.
+    #[cfg(unix)]
+    fn fixture_server_banner_then_crash() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+echo started >> "$(dirname "$0")/starts"
+printf '%s\n' 'my-server v1.2 listening'
+printf '\n'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}"
+      ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' 'working on it...'
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}"
+      exit 1
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// A server that dies in the middle of the first call, without replying.
+    #[cfg(unix)]
+    fn fixture_server_dies_mid_call_once() -> tempfile::TempDir {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/bash
+echo started >> "$(dirname "$0")/starts"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"capabilities\":{}}}"
+      ;;
+    *'"method":"tools/call"'*)
+      if [ ! -e "$(dirname "$0")/crashed" ]; then
+        : > "$(dirname "$0")/crashed"
+        exit 1
+      fi
+      printf '%s\n' "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(script, permissions).unwrap();
+        directory
+    }
+
+    /// A call the server died during may have run, so it is reported as
+    /// failed and not sent again. The next call gets a fresh server.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_server_that_dies_mid_call_fails_that_call_and_serves_the_next() {
+        let directory = fixture_server_dies_mid_call_once();
+        let client = McpStdioClient::spawn(&fixture_cfg(&directory))
+            .await
+            .unwrap();
+
+        let first = client.call_tool_attributed("run", json!({}), None).await;
+        assert!(first.result.is_err(), "the call that lost its server fails");
+        let starts = || {
+            std::fs::read_to_string(directory.path().join("starts"))
+                .unwrap()
+                .lines()
+                .count()
+        };
+        assert_eq!(starts(), 1, "the failed call was not sent again");
+
+        let second = client.call_tool_attributed("run", json!({}), None).await;
+        assert!(second.result.unwrap().content.contains("done"));
+        assert_eq!(starts(), 2);
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_chatty_server_still_answers_and_a_crashed_one_is_started_again() {
+        let directory = fixture_server_banner_then_crash();
+        let client = McpStdioClient::spawn(&fixture_cfg(&directory))
+            .await
+            .expect("the banner before the first reply does not fail the handshake");
+        let starts = || {
+            std::fs::read_to_string(directory.path().join("starts"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        assert_eq!(starts(), 1);
+
+        let first = client.call_tool_attributed("run", json!({}), None).await;
+        assert!(first.result.unwrap().content.contains("done"));
+
+        // The server exited after that call. The next one finds it gone,
+        // starts it again, and goes through.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let second = client.call_tool_attributed("run", json!({}), None).await;
+        assert!(second.result.unwrap().content.contains("done"));
+        assert_eq!(starts(), 2, "the server was started again");
     }
 
     #[tokio::test]

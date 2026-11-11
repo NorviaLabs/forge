@@ -34,7 +34,12 @@ All code lives in `src/lib.rs`.
 - A sandboxed server gets network only through the session egress endpoint; if
   that endpoint cannot start, the server runs with no network.
 - Requests to one server are strictly sequential (one request on the wire at a
-  time) and bounded by a 10-second I/O timeout.
+  time) and bounded per request type (see the child EGM). A reply line that is
+  not JSON (a banner, a log line) is skipped, and a partly read line survives a
+  timeout or cancel. A server that exited, or whose pipes failed, is started
+  again before the next request; a request that could not even be written is
+  sent once more to the new process, but one that was sent is never resent (it
+  may have run), and the call that lost its server fails.
 - Tool side-effect class comes from the server's configured class, never
   assumed `Read`; unknown config falls back to `Exec`.
 - Servers inherit the full parent environment by design (servers commonly

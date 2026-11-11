@@ -44,7 +44,8 @@ file use a scripted fixture server; they are not part of the contract surface.
   `error` as `Protocol`.
 - `tools/list` entries without a name are skipped; tools whose `inputSchema` is
   not a JSON object are skipped (fail closed).
-- Each `tools/call` is bounded by a 10-second timeout and reports refused hosts
+- Each `tools/call` is bounded by a 120-second timeout (`initialize` 60 s,
+  `tools/list` 30 s, notifications 10 s) and reports refused hosts
   recorded during its window; the label is cleared afterwards and stale
   refusals are drained before the call.
 - When a call fails *and* a host was refused, `into_tool_result` converts it to
