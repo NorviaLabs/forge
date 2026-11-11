@@ -380,7 +380,8 @@ struct SessionActor {
     /// driver drains them before it stops, so a `ContinueTurn` that lands in
     /// the hand-off window is never dropped.
     continue_pending: AtomicUsize,
-    /// A prompt was queued since the driver last began draining the queue.
+    /// A prompt was queued since the driver last began draining the queue,
+    /// or since it recorded a stopped turn, whichever is later.
     prompt_pending: AtomicBool,
     retiring: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
@@ -3548,6 +3549,10 @@ async fn run_one_inner(
         Err(LoopError::AwaitingHitl) => SupervisorTurnState::Waiting,
         Err(LoopError::Cancelled) => {
             session.mark_cancelled().await?;
+            // Stop also holds back what was queued behind the turn, including
+            // follow-ups sent while it ran. Only a prompt sent from here on
+            // is a new request that restarts the driver.
+            task_actor.prompt_pending.store(false, Ordering::Release);
             SupervisorTurnState::Cancelled
         }
         Err(error) => {
@@ -6394,6 +6399,73 @@ mod tests {
         // A pending request holds everything except an explicit continue.
         assert!(!driver_has_more_to_run(Waiting, false, true, false));
         assert!(driver_has_more_to_run(Waiting, true, false, true));
+    }
+
+    /// Stop holds back a follow-up that was queued while the turn ran; the
+    /// next prompt the operator sends then runs both, oldest first.
+    #[tokio::test]
+    async fn stop_holds_back_a_queued_follow_up_until_the_next_prompt() {
+        use forge_model::scripted::ScriptedModelClient;
+
+        let scripted: Arc<dyn ModelClient> = Arc::new(
+            ScriptedModelClient::from_json(
+                r#"{"steps": [
+                    {"hold": {"id": "held", "before": "working", "then": {"text": {"text": "never"}}}},
+                    {"text": {"text": "answer to the follow-up"}},
+                    {"text": {"text": "answer to the new prompt"}}
+                ]}"#,
+            )
+            .unwrap(),
+        );
+        let (_temp, supervisor, handle, owner, _sibling) = two_session_supervisor(scripted).await;
+        let control = &supervisor.state.control;
+        let submit = |text: &str| SupervisorCommand::SubmitPrompt {
+            session_id: owner,
+            text: text.into(),
+        };
+        let answered = |text: &'static str| {
+            move |snapshot: &SessionRuntimeSnapshot| {
+                snapshot
+                    .transcript
+                    .messages()
+                    .iter()
+                    .any(|message| message.content == text)
+            }
+        };
+
+        handle.command(submit("first")).await.unwrap();
+        wait_for_task_state(&handle, owner, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Running
+        })
+        .await;
+        handle.command(submit("follow-up")).await.unwrap();
+        let running = wait_for_task_state(&handle, owner, |_| true).await;
+        assert_eq!(
+            running.task.turn_state,
+            SupervisorTurnState::Running,
+            "queueing a follow-up must not hide the running turn"
+        );
+
+        handle
+            .command(SupervisorCommand::StopTurn { session_id: owner })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, owner, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Cancelled
+        })
+        .await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        let stopped = wait_for_task_state(&handle, owner, |_| true).await;
+        assert!(
+            !answered("answer to the follow-up")(&stopped),
+            "a stopped turn must not run what was queued behind it"
+        );
+        assert_eq!(control.queued_prompts(owner).await.unwrap().len(), 1);
+
+        handle.command(submit("new prompt")).await.unwrap();
+        let done = wait_for_task_state(&handle, owner, answered("answer to the new prompt")).await;
+        assert!(answered("answer to the follow-up")(&done));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
     /// A prompt that arrives while a driver still holds its claim cannot
