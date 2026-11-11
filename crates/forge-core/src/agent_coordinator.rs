@@ -199,6 +199,32 @@ impl AgentCoordinator {
         self.state.lock().unwrap().records.contains_key(&id)
     }
 
+    #[cfg(test)]
+    pub fn register_child(
+        &self,
+        parent_id: SessionId,
+        child_id: SessionId,
+        task_name: String,
+    ) -> Result<CancellationToken, AgentCoordinatorError> {
+        let cancel = CancellationToken::new();
+        self.register_child_with_cancel(parent_id, child_id, task_name, cancel.clone())?;
+        Ok(cancel)
+    }
+
+    #[cfg(test)]
+    pub fn cancellation_token(
+        &self,
+        id: SessionId,
+    ) -> Result<CancellationToken, AgentCoordinatorError> {
+        self.state
+            .lock()
+            .unwrap()
+            .records
+            .get(&id)
+            .map(|record| record.cancel.clone())
+            .ok_or(AgentCoordinatorError::NotFound(id))
+    }
+
     pub fn restore_child(
         &self,
         parent_id: SessionId,
@@ -210,17 +236,6 @@ impl AgentCoordinator {
         let cancel = CancellationToken::new();
         self.register_child_with_cancel(parent_id, child_id, task_name, cancel)?;
         self.update(child_id, status, summary)
-    }
-
-    pub fn register_child(
-        &self,
-        parent_id: SessionId,
-        child_id: SessionId,
-        task_name: String,
-    ) -> Result<CancellationToken, AgentCoordinatorError> {
-        let cancel = CancellationToken::new();
-        self.register_child_with_cancel(parent_id, child_id, task_name, cancel.clone())?;
-        Ok(cancel)
     }
 
     pub fn register_child_with_cancel(
@@ -422,23 +437,6 @@ impl AgentCoordinator {
         Ok(record.mailbox.drain(..).collect())
     }
 
-    pub fn restore_mailbox(
-        &self,
-        id: SessionId,
-        messages: impl IntoIterator<Item = String>,
-    ) -> Result<(), AgentCoordinatorError> {
-        let mut state = self.state.lock().unwrap();
-        let record = state
-            .records
-            .get_mut(&id)
-            .ok_or(AgentCoordinatorError::NotFound(id))?;
-        record.mailbox.extend(messages);
-        state.revision = state.revision.saturating_add(1);
-        drop(state);
-        self.publish_revision();
-        Ok(())
-    }
-
     pub fn interrupt(
         &self,
         requester: SessionId,
@@ -490,19 +488,6 @@ impl AgentCoordinator {
         state.revision = state.revision.saturating_add(1);
         drop(state);
         self.publish_revision();
-    }
-
-    pub fn cancellation_token(
-        &self,
-        id: SessionId,
-    ) -> Result<CancellationToken, AgentCoordinatorError> {
-        self.state
-            .lock()
-            .unwrap()
-            .records
-            .get(&id)
-            .map(|record| record.cancel.clone())
-            .ok_or(AgentCoordinatorError::NotFound(id))
     }
 
     pub async fn wait_for_change(
@@ -659,10 +644,6 @@ mod tests {
         );
         assert_eq!(
             coordinator.take_mailbox(missing),
-            Err(AgentCoordinatorError::NotFound(missing))
-        );
-        assert_eq!(
-            coordinator.restore_mailbox(missing, ["message".into()]),
             Err(AgentCoordinatorError::NotFound(missing))
         );
         assert!(matches!(

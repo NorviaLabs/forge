@@ -155,7 +155,6 @@ pub struct RepositorySession {
     pub archived_at: Option<DateTime<Utc>>,
     pub github_issue_number: Option<u64>,
     pub github_pr_url: Option<String>,
-    pub github_auto_pr: bool,
     pub github_retry_attempts: u32,
     pub github_tests_passed: bool,
 }
@@ -446,20 +445,6 @@ impl RepositoryControl {
         Ok(())
     }
 
-    pub async fn set_github_auto_pr(
-        &self,
-        session_id: SessionId,
-        enabled: bool,
-    ) -> Result<(), RepositorySessionError> {
-        sqlx::query("UPDATE sessions SET github_auto_pr = ?, updated_at = ? WHERE session_id = ?")
-            .bind(i64::from(enabled))
-            .bind(Utc::now().to_rfc3339())
-            .bind(session_id.to_string())
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
     pub async fn begin_managed_creation_for_issue(
         &self,
         label: &str,
@@ -520,7 +505,6 @@ impl RepositoryControl {
                 archived_at TEXT,
                 github_issue_number INTEGER,
                 github_pr_url TEXT,
-                github_auto_pr INTEGER NOT NULL DEFAULT 0,
                 github_retry_attempts INTEGER NOT NULL DEFAULT 0,
                 github_tests_passed INTEGER NOT NULL DEFAULT 0
             );
@@ -744,13 +728,6 @@ impl RepositoryControl {
             sqlx::query("ALTER TABLE sessions ADD COLUMN github_pr_url TEXT")
                 .execute(&self.pool)
                 .await?;
-        }
-        if !session_columns.iter().any(|name| name == "github_auto_pr") {
-            sqlx::query(
-                "ALTER TABLE sessions ADD COLUMN github_auto_pr INTEGER NOT NULL DEFAULT 0",
-            )
-            .execute(&self.pool)
-            .await?;
         }
         if !session_columns
             .iter()
@@ -1846,7 +1823,6 @@ fn parse_session(
             .get::<Option<i64>, _>("github_issue_number")
             .and_then(|n| u64::try_from(n).ok()),
         github_pr_url: row.get("github_pr_url"),
-        github_auto_pr: row.get::<i64, _>("github_auto_pr") != 0,
         github_retry_attempts: row.get::<i64, _>("github_retry_attempts").max(0) as u32,
         github_tests_passed: row.get::<i64, _>("github_tests_passed") != 0,
     })

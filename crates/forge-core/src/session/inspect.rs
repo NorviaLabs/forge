@@ -204,13 +204,6 @@ impl AgentSession {
         &self.tool_ctx.workspace_root
     }
 
-    /// Cancel the currently running root turn. The token is replaced when a
-    /// later turn starts, so cancellation is scoped to one execution episode
-    /// rather than poisoning the session permanently.
-    pub fn request_turn_cancel(&self) {
-        self.turn_cancel_token.cancel();
-    }
-
     pub(crate) fn reset_turn_cancel(&mut self) {
         if self.turn_cancel_token.is_cancelled() {
             self.turn_cancel_token = tokio_util::sync::CancellationToken::new();

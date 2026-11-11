@@ -2059,7 +2059,6 @@ async fn execute_command(
                 archived_at: None,
                 github_issue_number,
                 github_pr_url: None,
-                github_auto_pr: false,
                 github_retry_attempts: 0,
                 github_tests_passed: false,
             };
@@ -4454,7 +4453,6 @@ mod tests {
             archived_at: None,
             github_issue_number: None,
             github_pr_url: None,
-            github_auto_pr: false,
             github_retry_attempts: 0,
             github_tests_passed: false,
         }
@@ -4502,7 +4500,6 @@ mod tests {
             .find(|task| task.label == "issue-test")
             .unwrap();
         assert_eq!(task.github_issue_number, Some(12));
-        assert!(!task.github_auto_pr);
         for command in [
             SupervisorCommand::CreateIssuePullRequest {
                 session_id: task.session_id,

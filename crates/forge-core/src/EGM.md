@@ -36,7 +36,7 @@ concern they drive (listed below).
   `BackgroundApprovalRequest`, `DescendantWorktree` (re-exported).
   `BackgroundTaskOutcome` is `pub` in the private module but not re-exported.
   `AgentSession` methods: `spawn_background_shell`, `poll_background_tasks`,
-  `descendant_worktrees`, `retire_resources`, `resolve_subagent_hitl`.
+  `descendant_worktrees`, `retire_resources`.
 - Subagents (`subagent.rs`): `SubagentSpec`, `SubagentOutcome`;
   `AgentSession::spawn_subagent`.
 - Agent coordination (`agent_coordinator.rs`): `AgentCoordinator`,

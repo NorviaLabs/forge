@@ -3697,7 +3697,6 @@ mod tests {
                 archived_at: None,
                 github_issue_number: None,
                 github_pr_url: None,
-                github_auto_pr: false,
                 github_retry_attempts: 0,
                 github_tests_passed: false,
             },

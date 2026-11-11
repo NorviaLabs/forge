@@ -56,7 +56,7 @@ from the crate root and can therefore reach them.
     `loaded_skills_count`, `loaded_skill_names`, `loaded_skills`, `list_tools`,
     `tool_count`, `context_usage_ratio`, `token_usage_report`, `model_client`,
     `tool_registry`, `background_control`, `workspace_root`,
-    `request_turn_cancel`, `begin_turn_cancellation_scope`,
+    `begin_turn_cancellation_scope`,
     `set_active_model`, `set_active_profile_id`, `set_image_input_supported`,
     `image_input_supported`, `set_reasoning_effort`, `reasoning_effort`,
     `set_thinking_enabled`, `thinking_enabled`, `set_approve_all`,

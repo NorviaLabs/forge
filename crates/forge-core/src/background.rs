@@ -1025,18 +1025,6 @@ impl AgentSession {
         }
     }
 
-    /// Route an approve/deny decision to the specific subagent waiting on
-    /// it. Returns `false` if `id` isn't a subagent currently waiting (e.g.
-    /// it already finished, or was never a subagent) — a stale UI selection
-    /// must not silently no-op without the caller knowing.
-    pub fn resolve_subagent_hitl(
-        &self,
-        id: BackgroundTaskId,
-        decision: forge_types::HitlDecision,
-    ) -> bool {
-        self.tasks.background.control().resolve_hitl(id, decision)
-    }
-
     pub(crate) fn background_id_for_child(
         &self,
         child_session_id: SessionId,

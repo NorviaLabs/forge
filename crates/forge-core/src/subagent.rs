@@ -1399,7 +1399,11 @@ mod tests {
             }
         );
 
-        assert!(s.resolve_subagent_hitl(id, forge_types::HitlDecision::Approve));
+        assert!(s
+            .tasks
+            .background
+            .control()
+            .resolve_hitl(id, forge_types::HitlDecision::Approve));
         let status = wait_terminal(&mut s, id).await;
         match status {
             BackgroundTaskStatus::Succeeded { summary } => {
@@ -1414,7 +1418,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path()).await;
         let s = session_with_script(dir.path(), vec![]).await;
-        assert!(!s.resolve_subagent_hitl(BackgroundTaskId(999), forge_types::HitlDecision::Approve));
+        assert!(!s
+            .tasks
+            .background
+            .control()
+            .resolve_hitl(BackgroundTaskId(999), forge_types::HitlDecision::Approve));
     }
 
     /// A denied tool call is evidence of a failed turn — same evaluator
@@ -1459,7 +1467,11 @@ mod tests {
             .unwrap();
 
         wait_for_waiting(&mut s, id).await;
-        assert!(s.resolve_subagent_hitl(id, forge_types::HitlDecision::Deny));
+        assert!(s
+            .tasks
+            .background
+            .control()
+            .resolve_hitl(id, forge_types::HitlDecision::Deny));
 
         let status = wait_terminal(&mut s, id).await;
         match status {
