@@ -470,6 +470,105 @@ pub struct SandboxPolicy {
     /// a long-lived MCP server can opt into a read-only workspace through
     /// [`Self::with_read_only_workspace`].
     workspace_writable: bool,
+    /// The user's home directory, which the read deny-list is built from.
+    /// `None` (no `HOME`) leaves no home-relative rule to write.
+    home: Option<PathBuf>,
+    /// A Forge-owned directory for package-manager caches, writable and kept
+    /// across sessions. See [`Self::with_tool_cache`].
+    tool_cache: Option<PathBuf>,
+}
+
+/// Locations under the home directory that hold credentials or shell
+/// history. A confined process can never read them, whatever it was asked to
+/// run: reading one and sending it out is the attack the sandbox exists to
+/// stop, and no build needs them.
+const HOME_SECRETS: &[&str] = &[
+    ".ssh",
+    ".aws",
+    ".azure",
+    ".gnupg",
+    ".kube",
+    ".oci",
+    ".fly",
+    ".wrangler",
+    ".1password",
+    ".password-store",
+    ".age",
+    ".docker/config.json",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    ".pgpass",
+    ".my.cnf",
+    ".mylogin.cnf",
+    ".boto",
+    ".s3cfg",
+    ".vault-token",
+    ".git-credentials",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".gem/credentials",
+    ".m2/settings-security.xml",
+    ".terraform.d/credentials.tfrc.json",
+    ".config/git/credentials",
+    ".config/gh",
+    ".config/gcloud",
+    ".config/op",
+    ".config/hub",
+    ".config/sops",
+    ".config/age",
+    ".config/doctl",
+    ".config/stripe",
+    ".config/configstore",
+    ".local/share/keyrings",
+    ".zsh_history",
+    ".zsh_sessions",
+    ".bash_history",
+    ".python_history",
+    ".node_repl_history",
+    ".psql_history",
+    ".mysql_history",
+    ".lesshst",
+];
+
+/// The user's own files. Nothing a toolchain needs lives here, and a
+/// workspace inside one of them is reopened by the workspace rule.
+const HOME_PERSONAL: &[&str] = &[
+    "Documents",
+    "Desktop",
+    "Downloads",
+    "Pictures",
+    "Movies",
+    "Music",
+];
+
+/// `~/Library` is application state: keychains, browser profiles, mail,
+/// messages, cloud storage, and Forge's own credential store. It is denied
+/// as a whole, except the parts toolchains install into or cache under.
+const LIBRARY_READABLE: &[&str] = &[
+    "Caches",
+    "Developer",
+    "Android",
+    "Java",
+    "Python",
+    "pnpm",
+    "org.swift.swiftpm",
+    "Fonts",
+];
+
+/// One entry of the read deny-list: `path` and everything below it, except
+/// the `except` subtrees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReadDeny {
+    path: PathBuf,
+    except: Vec<PathBuf>,
+}
+
+/// `path` as the kernel will see it: resolved when it exists (Seatbelt
+/// matches the resolved path, so a rule on an unresolved one never applies),
+/// as written when it does not.
+fn resolved(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 impl SandboxPolicy {
@@ -488,7 +587,86 @@ impl SandboxPolicy {
             toolchain_executable_paths: Vec::new(),
             rustup_home: None,
             workspace_writable: true,
+            home: env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_absolute()),
+            tool_cache: None,
         }
+    }
+
+    /// Build the read deny-list against `home` instead of `$HOME`.
+    pub fn with_home(mut self, home: impl AsRef<Path>) -> Self {
+        self.home = Some(home.as_ref().to_path_buf());
+        self
+    }
+
+    /// Make `dir` writable and point package managers' caches at it (see
+    /// [`Self::toolchain_env`]).
+    ///
+    /// The user's own caches (`~/.cargo/registry`, `~/.npm`) stay read-only:
+    /// what is unpacked there is compiled and run later, outside the
+    /// sandbox, so a confined process that could write them could plant code
+    /// that runs unconfined. A cache only confined processes use has no such
+    /// reader, and keeping it across sessions means a dependency is fetched
+    /// once, not once per session.
+    pub fn with_tool_cache(mut self, dir: impl AsRef<Path>) -> Self {
+        self.tool_cache = Some(dir.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn tool_cache(&self) -> Option<&Path> {
+        self.tool_cache.as_deref()
+    }
+
+    /// What a confined process may not read: credentials, the user's own
+    /// files, application state, other processes' temp files, mounted
+    /// volumes. Everything else on the disk is readable, so any installed
+    /// toolchain works without being named.
+    fn read_denies(&self) -> Vec<ReadDeny> {
+        let mut denies = Vec::new();
+        let mut push = |path: PathBuf, except: Vec<PathBuf>| {
+            let entry = ReadDeny {
+                path: resolved(&path),
+                except: except.iter().map(|path| resolved(path)).collect(),
+            };
+            if !denies.contains(&entry) {
+                denies.push(entry);
+            }
+        };
+        if let Some(home) = &self.home {
+            for name in HOME_SECRETS.iter().chain(HOME_PERSONAL) {
+                push(home.join(name), Vec::new());
+            }
+            let library = home.join("Library");
+            push(
+                library.clone(),
+                LIBRARY_READABLE
+                    .iter()
+                    .map(|name| library.join(name))
+                    .collect(),
+            );
+        }
+        // The per-user temp tree is shared by every process the user runs.
+        // Only the session's own scratch directory inside it is reopened.
+        let temp = env::temp_dir();
+        if temp.is_absolute() && !is_unscoped_runtime_root(&resolved(&temp)) {
+            push(temp, Vec::new());
+        }
+        push(PathBuf::from("/Volumes"), Vec::new());
+        denies
+    }
+
+    /// The default location of the shared tool cache:
+    /// `~/Library/Caches/forge/sandbox`. `None` without a home directory or
+    /// when it cannot be created.
+    pub fn default_tool_cache() -> Option<PathBuf> {
+        let home = env::var_os("HOME").map(PathBuf::from)?;
+        if !home.is_absolute() {
+            return None;
+        }
+        let dir = home.join("Library/Caches/forge/sandbox");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
     }
 
     /// Mount the workspace read-only: the process can read it but cannot
@@ -517,19 +695,55 @@ impl SandboxPolicy {
         }
     }
 
-    /// Set child environment for mutable tool state without exposing the
-    /// host's Cargo home. No environment is changed for an unconfined retry,
-    /// which should use the user's normal configuration.
+    /// Child environment that sends package managers' writes to the tool
+    /// cache (or, without one, to the session scratch directory). No
+    /// environment is changed for an unconfined retry, which should use the
+    /// user's normal configuration.
     pub fn toolchain_env(&self) -> Vec<(String, String)> {
-        let Some(session_tmp) = &self.session_tmp else {
-            return Vec::new();
+        let mut env = Vec::new();
+        let Some(base) = self
+            .tool_cache
+            .clone()
+            .or_else(|| self.session_tmp.as_ref().map(|tmp| tmp.join("tool-cache")))
+        else {
+            return env;
         };
-        let cargo_home = session_tmp.join("cargo-home");
-        let _ = std::fs::create_dir_all(&cargo_home);
-        let mut env = vec![(
-            "CARGO_HOME".to_string(),
-            cargo_home.to_string_lossy().into_owned(),
-        )];
+        for (name, relative) in [
+            ("CARGO_HOME", "cargo"),
+            ("npm_config_cache", "npm"),
+            ("npm_config_store_dir", "pnpm-store"),
+            ("YARN_CACHE_FOLDER", "yarn"),
+            ("BUN_INSTALL_CACHE_DIR", "bun"),
+            ("PIP_CACHE_DIR", "pip"),
+            ("UV_CACHE_DIR", "uv"),
+            ("UV_TOOL_DIR", "uv-tools"),
+            ("UV_PYTHON_INSTALL_DIR", "uv-python"),
+            ("GOMODCACHE", "go/mod"),
+            ("GOCACHE", "go/build"),
+            ("XDG_CACHE_HOME", "xdg"),
+        ] {
+            let dir = base.join(relative);
+            let _ = std::fs::create_dir_all(&dir);
+            env.push((name.to_string(), dir.to_string_lossy().into_owned()));
+        }
+        // Cargo reads its user configuration from `CARGO_HOME`, which no
+        // longer is `~/.cargo`. Link the user's config in so registries,
+        // aliases and build settings still apply. Credentials are separate
+        // files and stay behind.
+        if let Some(home) = &self.home {
+            let link = base.join("cargo/config.toml");
+            let config = home.join(".cargo/config.toml");
+            if config.is_file() && std::fs::symlink_metadata(&link).is_err() {
+                #[cfg(unix)]
+                let _ = std::os::unix::fs::symlink(&config, &link);
+            }
+        }
+        if let Some(npmrc) = self.sanitized_npmrc() {
+            env.push((
+                "NPM_CONFIG_USERCONFIG".to_string(),
+                npmrc.to_string_lossy().into_owned(),
+            ));
+        }
         if let Some(rustup_home) = &self.rustup_home {
             env.push((
                 "RUSTUP_HOME".to_string(),
@@ -537,6 +751,27 @@ impl SandboxPolicy {
             ));
         }
         env
+    }
+
+    /// `~/.npmrc` usually holds a registry token, so it is on the deny-list,
+    /// and npm fails outright when it cannot read its user config. Give npm a
+    /// copy in the session scratch directory with the credential lines
+    /// removed: registry and proxy settings survive, tokens do not enter the
+    /// sandbox.
+    fn sanitized_npmrc(&self) -> Option<PathBuf> {
+        let source = self.home.as_ref()?.join(".npmrc");
+        let body = std::fs::read_to_string(source).ok()?;
+        let kept: String = body
+            .lines()
+            .filter(|line| {
+                let key = line.split('=').next().unwrap_or("").to_ascii_lowercase();
+                !(key.contains("auth") || key.contains("token") || key.contains("password"))
+            })
+            .flat_map(|line| [line, "\n"])
+            .collect();
+        let target = self.session_tmp.as_ref()?.join("npmrc");
+        std::fs::write(&target, kept).ok()?;
+        Some(target)
     }
 
     /// Permit reading (and mapping executables from) the directory tree at
@@ -808,6 +1043,21 @@ fn xcrun_cache_regex() -> Option<String> {
     sbpl_literal(Path::new(&pattern))
 }
 
+/// One `(deny file-read* ...)` rule for a deny-list entry.
+fn deny_read_rule(deny: &ReadDeny) -> Option<String> {
+    let path = sbpl_literal(&deny.path)?;
+    if deny.except.is_empty() {
+        return Some(format!("(deny file-read* (subpath \"{path}\"))\n"));
+    }
+    let mut rule = format!("(deny file-read* (require-all (subpath \"{path}\")");
+    for except in &deny.except {
+        let except = sbpl_literal(except)?;
+        rule.push_str(&format!(" (require-not (subpath \"{except}\"))"));
+    }
+    rule.push_str("))\n");
+    Some(rule)
+}
+
 /// Build the Seatbelt profile for `policy`.
 ///
 /// `deny default` first, so anything this function forgets to mention is
@@ -848,83 +1098,68 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
          (allow file-ioctl (literal \"/dev/tty\") (literal \"/dev/dtracehelper\"))\n",
     );
 
-    // Reads. `(deny default)` closed the filesystem above; this block is the
-    // complete list of what a confined process may read, and it is the same
-    // boundary `read_file`/`write_file` enforce path by path: the workspace
-    // and the granted session scratch directory, plus the OS-owned paths a
-    // process needs merely to start.
+    // Reads. The whole disk is readable except the deny-list: credentials,
+    // the user's own files, application state, the shared temp tree, mounted
+    // volumes. A toolchain installed anywhere therefore works without being
+    // named, and nothing about the command being run decides what is
+    // readable. Seatbelt matches the resolved path, so a symlink or a case
+    // variant that leads into a denied tree is denied with it.
     //
-    // The system paths below are deliberately a list of *system-owned* trees,
-    // not a sampling of convenient ones: binaries and dylibs (/bin, /sbin,
-    // /usr, Launch Services' frameworks, the macOS SDK), standard configuration and
-    // user-lookup databases (/private/etc, /Library/Preferences, the
-    // DarwinDirectory record store and timezone data), the root cert store
-    // needed to speak TLS through an egress grant (/Library/Keychains — user
-    // keychains live under $HOME and stay denied), and the standard device
-    // nodes. None of these are user-writable, so none of them can hold a
-    // user secret.
-    //
-    // Everything user-writable is outside: $HOME (/Users/...), per-user temp
-    // (/private/var/folders/... — only the granted scratch dir below reaches
-    // it), mounted volumes, /Network, and /opt except the root-owned
-    // Apple-Silicon toolchain prefix. The selected user runtime paths and
-    // resolved executables are added below; a path omitted here is denied by
-    // the default.
-    profile.push_str(&format!(
-        "(allow file-read* file-test-existence\n  (subpath \"{root}\")"
-    ));
-    if let Some(tmp) = &policy.session_tmp {
-        let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
-        profile.push_str(&format!("\n  (subpath \"{tmp}\")"));
+    // In SBPL the last matching rule wins, so the order below is the policy:
+    // allow everything, deny the list, reopen what this session owns, then
+    // deny again whatever on the list sits inside a reopened tree.
+    profile.push_str("(allow file-read* file-test-existence file-map-executable)\n");
+    let denies = policy.read_denies();
+    for deny in &denies {
+        profile.push_str(&deny_read_rule(deny)?);
     }
-    // The shared `/tmp` (`/private/tmp`) is readable, never writable, so a
-    // command can inspect logs and build output other tools left there.
-    // Unix sockets under it stay unreachable: connecting is `network*`,
-    // which is denied below.
-    if let Some(shared) = crate::registry::shared_tmp_root() {
-        let shared = sbpl_literal(&shared)?;
-        profile.push_str(&format!("\n  (literal \"/tmp\")\n  (subpath \"{shared}\")"));
+    // Other projects' Forge state (session journals) is not this session's
+    // to read; its own is reopened with the workspace below.
+    profile.push_str("(deny file-read* (regex #\"/\\.forge/\"))\n");
+
+    let mut reopened = vec![canonical_root.clone()];
+    if let Some(tmp) = &policy.session_tmp {
+        reopened.push(tmp.canonicalize().ok()?);
+    }
+    if let Some(cache) = &policy.tool_cache {
+        reopened.push(cache.canonicalize().ok()?);
     }
     for path in &policy.toolchain_read_paths {
-        let path = sbpl_literal(&path.canonicalize().ok()?)?;
-        profile.push_str(&format!("\n  (subpath \"{path}\")"));
+        reopened.push(path.canonicalize().ok()?);
     }
-    for path in &policy.toolchain_executable_paths {
-        let path = sbpl_literal(&path.canonicalize().ok()?)?;
+    reopened.extend(policy.linked_git_dirs.iter().cloned());
+
+    // A reopened tree inside a denied one (a workspace under `~/Documents`,
+    // the scratch directory under the temp tree) is reached through denied
+    // parents. Resolving a path stats each component, so the parents'
+    // metadata, and only that, has to be visible.
+    let mut ancestors: Vec<PathBuf> = Vec::new();
+    for path in reopened
+        .iter()
+        .chain(denies.iter().flat_map(|deny| deny.except.iter()))
+    {
+        let mut parent = path.parent();
+        while let Some(path) = parent {
+            if ancestors.iter().any(|existing| existing == path) {
+                break;
+            }
+            ancestors.push(path.to_path_buf());
+            parent = path.parent();
+        }
+    }
+    profile.push_str("(allow file-read-metadata");
+    for path in &ancestors {
+        let path = sbpl_literal(path)?;
         profile.push_str(&format!("\n  (literal \"{path}\")"));
     }
-    for path in &policy.linked_git_dirs {
+    profile.push_str(")\n");
+
+    profile.push_str("(allow file-read* file-test-existence file-map-executable");
+    for path in &reopened {
         let path = sbpl_literal(path)?;
         profile.push_str(&format!("\n  (subpath \"{path}\")"));
     }
-    profile.push_str(
-        "\n  (literal \"/\")\n\
-         \n  (subpath \"/System\")\n\
-         \n  (subpath \"/usr\")\n\
-         \n  (subpath \"/bin\")\n\
-         \n  (subpath \"/sbin\")\n\
-         \n  (subpath \"/Library/Apple\")\n\
-         \n  (subpath \"/Library/Developer\")\n\
-         \n  (subpath \"/Library/Keychains\")\n\
-         \n  (subpath \"/Library/Preferences\")\n\
-         \n  (subpath \"/private/etc\")\n\
-         \n  (subpath \"/etc\")\n\
-         \n  (subpath \"/opt/homebrew\")\n\
-         \n  (subpath \"/private/var/db/timezone\")\n\
-         \n  (subpath \"/private/var/db/DarwinDirectory/local/recordStore.data\"))\n\
-         \n\
-         (allow file-map-executable\n  (subpath \"/System\")\n  (subpath \"/usr\")\n  (subpath \"/bin\")\n  (subpath \"/sbin\"))\n\
-         \n\
-         (allow file-read-metadata (subpath \"/var\") (subpath \"/private/var\"))\n\
-         \n\
-         (allow file-read* file-test-existence\n\
-         (literal \"/dev/null\") (literal \"/dev/zero\")\n\
-         (literal \"/dev/random\") (literal \"/dev/urandom\")\n\
-         (literal \"/dev/tty\") (literal \"/dev/ptmx\")\n\
-         (literal \"/dev/dtracehelper\")\n\
-         (literal \"/dev/stdin\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n\
-         (allow file-read-metadata (literal \"/dev\"))\n",
-    );
+    profile.push_str(")\n");
 
     #[cfg(target_os = "macos")]
     if policy.session_tmp.is_some() {
@@ -935,71 +1170,15 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         }
     }
 
-    // Some runtimes canonicalize their output and cache paths before opening
-    // them. Allow metadata on the parent chain needed to walk to each scoped
-    // root, without allowing file contents in any additional directory.
-    let mut metadata_paths = Vec::new();
-    for path in std::iter::once(canonical_root.as_path())
-        .chain(policy.session_tmp.iter().map(|path| path.as_path()))
-        .chain(
-            policy
-                .toolchain_read_paths
-                .iter()
-                .map(|path| path.as_path()),
-        )
-        .chain(
-            policy
-                .toolchain_executable_paths
-                .iter()
-                .map(|path| path.as_path()),
-        )
-        .chain(
-            (!policy.git_writable)
-                .then_some(policy.linked_git_dirs.iter().map(|path| path.as_path()))
-                .into_iter()
-                .flatten(),
-        )
-    {
-        let mut parent = path.parent();
-        while let Some(path) = parent {
-            if metadata_paths.iter().any(|existing| existing == path) {
-                break;
-            }
-            metadata_paths.push(path.to_path_buf());
-            parent = path.parent();
+    // A workspace that contains a denied location (the home directory opened
+    // as a project) must not reopen it.
+    for deny in &denies {
+        if reopened
+            .iter()
+            .any(|root| deny.path != *root && deny.path.starts_with(root))
+        {
+            profile.push_str(&deny_read_rule(deny)?);
         }
-    }
-    profile.push_str("(allow file-read-metadata");
-    for path in metadata_paths {
-        let path = sbpl_literal(&path)?;
-        profile.push_str(&format!("\n  (subpath \"{path}\")"));
-    }
-    profile.push_str(")\n");
-
-    // Executables in a read allowlist still need to be mapped with execute
-    // permission. The parent metadata rule lets the shell traverse a
-    // user-writable PATH directory without making sibling binaries readable.
-    if !policy.toolchain_read_paths.is_empty() || !policy.toolchain_executable_paths.is_empty() {
-        profile.push_str("(allow file-map-executable");
-        for path in &policy.toolchain_read_paths {
-            let path = sbpl_literal(&path.canonicalize().ok()?)?;
-            profile.push_str(&format!("\n  (subpath \"{path}\")"));
-        }
-        for path in &policy.toolchain_executable_paths {
-            let path = sbpl_literal(&path.canonicalize().ok()?)?;
-            profile.push_str(&format!("\n  (literal \"{path}\")"));
-        }
-        profile.push_str(")\n");
-    }
-
-    if !policy.toolchain_executable_paths.is_empty() {
-        profile.push_str("(allow file-read-metadata");
-        for path in &policy.toolchain_executable_paths {
-            let parent = path.parent()?.canonicalize().ok()?;
-            let parent = sbpl_literal(&parent)?;
-            profile.push_str(&format!("\n  (subpath \"{parent}\")"));
-        }
-        profile.push_str(")\n");
     }
 
     // Network. `deny network*` first so anything not named below is denied,
@@ -1022,6 +1201,10 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     if let Some(tmp) = &policy.session_tmp {
         let tmp = sbpl_literal(&tmp.canonicalize().ok()?)?;
         writable.push(format!(" (subpath \"{tmp}\")"));
+    }
+    if let Some(cache) = &policy.tool_cache {
+        let cache = sbpl_literal(&cache.canonicalize().ok()?)?;
+        writable.push(format!(" (subpath \"{cache}\")"));
     }
     // Linked-worktree metadata is always readable for repository discovery,
     // but only writable for commands that explicitly opt into Git writes.
@@ -1079,8 +1262,8 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
 #[cfg(test)]
 fn primary_file_read_rule(profile: &str) -> &str {
     let (_, rule) = profile
-        .split_once("(allow file-read* file-test-existence")
-        .expect("profile must contain a primary file-read rule");
+        .split_once("(allow file-read* file-test-existence file-map-executable\n")
+        .expect("profile must contain a rule reopening the session's own trees");
     match rule.find("))") {
         Some(idx) => &rule[..idx + 1],
         None => rule,
@@ -1765,70 +1948,130 @@ mod tests {
         assert!(!plain.contains(&write_rule));
     }
 
+    /// A home directory with the usual secret and personal locations, and a
+    /// policy whose deny-list is built from it.
+    fn home_fixture() -> (tempfile::TempDir, PathBuf) {
+        let home = workspace();
+        for dir in [
+            ".ssh",
+            ".aws",
+            "Documents/proj",
+            "Library/Caches",
+            "Library/Keychains",
+            ".cargo",
+        ] {
+            std::fs::create_dir_all(home.path().join(dir)).unwrap();
+        }
+        let canonical = home.path().canonicalize().unwrap();
+        (home, canonical)
+    }
+
+    /// The whole disk is readable except the deny-list, so no toolchain has
+    /// to be named. Credentials, the user's own files and application state
+    /// are on the list; the parts of `~/Library` toolchains use are not.
     #[test]
-    fn toolchain_allowlist_exposes_cargo_rustup_and_only_the_resolved_gh() {
+    fn everything_is_readable_except_the_deny_list() {
         let ws = workspace();
-        let toolchain = workspace();
-        let cargo_bin = toolchain.path().join(".cargo/bin");
-        let rustup_home = toolchain.path().join(".rustup");
-        let gh = toolchain.path().join(".local/bin/gh");
-        let unrelated = toolchain.path().join(".local/bin/unrelated");
-        std::fs::create_dir_all(&cargo_bin).unwrap();
-        std::fs::create_dir_all(&rustup_home).unwrap();
-        std::fs::create_dir_all(gh.parent().unwrap()).unwrap();
-        std::fs::write(cargo_bin.join("cargo"), b"").unwrap();
-        std::fs::write(&gh, b"").unwrap();
-        std::fs::write(&unrelated, b"").unwrap();
-
-        let mut policy = SandboxPolicy::for_workspace(ws.path());
-        policy.toolchain_read_paths = vec![cargo_bin.clone(), rustup_home.clone()];
-        policy.toolchain_executable_paths = vec![gh.clone()];
+        let (_home, home) = home_fixture();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_home(&home);
         let profile = seatbelt_profile(&policy).unwrap();
-        let read_rule = primary_file_read_rule(&profile);
 
-        for path in [&cargo_bin, &rustup_home] {
-            let path = path.canonicalize().unwrap();
+        assert!(profile.contains("(allow file-read* file-test-existence file-map-executable)\n"));
+        for denied in [
+            ".ssh",
+            ".aws",
+            ".netrc",
+            ".npmrc",
+            ".zsh_history",
+            "Documents",
+            "Desktop",
+        ] {
             assert!(
-                profile.contains(&format!("(subpath \"{}\")", path.display())),
-                "toolchain path must be readable: {}",
-                path.display()
+                profile.contains(&format!(
+                    "(deny file-read* (subpath \"{}\"))",
+                    home.join(denied).display()
+                )),
+                "{denied} must be unreadable: {profile}"
             );
         }
-        let gh = gh.canonicalize().unwrap();
+        let library = home.join("Library");
         assert!(
-            profile.contains(&format!("(literal \"{}\")", gh.display())),
-            "gh must be allowed as an exact executable"
+            profile.contains(&format!(
+                "(deny file-read* (require-all (subpath \"{}\") (require-not (subpath \"{}\"))",
+                library.display(),
+                library.join("Caches").display()
+            )),
+            "~/Library is denied apart from the toolchain parts: {profile}"
         );
         assert!(
-            !profile.contains(&format!("(literal \"{}\")", unrelated.display())),
-            "an unrelated binary must not be added to the executable allowlist"
+            !profile.contains(&format!("(subpath \"{}\")", home.join(".cargo").display())),
+            "a toolchain directory is neither denied nor named"
+        );
+        assert!(profile.contains("(deny file-read* (subpath \"/Volumes\"))"));
+    }
+
+    /// A workspace inside a denied tree is readable; its denied parent is
+    /// not, beyond the metadata needed to walk to it.
+    #[test]
+    fn a_workspace_inside_a_denied_tree_is_reopened() {
+        let (_home, home) = home_fixture();
+        let project = home.join("Documents/proj");
+        let profile =
+            seatbelt_profile(&SandboxPolicy::for_workspace(&project).with_home(&home)).unwrap();
+
+        let deny = profile
+            .find(&format!(
+                "(deny file-read* (subpath \"{}\"))",
+                home.join("Documents").display()
+            ))
+            .expect("Documents is denied");
+        let reopen = profile
+            .find(&format!("(subpath \"{}\")", project.display()))
+            .expect("the workspace is reopened");
+        assert!(reopen > deny, "the reopening rule must follow the deny");
+        assert!(profile.contains(&format!(
+            "(literal \"{}\")",
+            home.join("Documents").display()
+        )));
+    }
+
+    /// Opening the home directory as a project must not reopen what is on
+    /// the deny-list inside it.
+    #[test]
+    fn a_workspace_containing_denied_locations_does_not_reopen_them() {
+        let (_home, home) = home_fixture();
+        let profile =
+            seatbelt_profile(&SandboxPolicy::for_workspace(&home).with_home(&home)).unwrap();
+        let reopen = profile
+            .find("(allow file-read* file-test-existence file-map-executable\n")
+            .unwrap();
+        let ssh = format!(
+            "(deny file-read* (subpath \"{}\"))",
+            home.join(".ssh").display()
         );
         assert!(
-            !read_rule.contains(&format!("(subpath \"{}\")", toolchain.path().display())),
-            "the user's home/toolchain parent must not be allowed wholesale"
+            profile[reopen..].contains(&ssh),
+            "~/.ssh must be denied again after the workspace allow: {profile}"
         );
     }
 
+    /// What a command names decides nothing about what is readable. Naming
+    /// a file as the "program" (`/path/secret; cat /path/secret`) used to
+    /// add it to the read allow-list.
     #[test]
-    fn command_access_resolves_an_arbitrary_named_executable() {
+    fn a_file_named_by_the_command_is_not_added_to_the_profile() {
         let ws = workspace();
-        let commands = workspace();
-        let selected = commands.path().join("custom-cli");
-        let unrelated = commands.path().join("unrelated-cli");
-        std::fs::write(&selected, b"#!/bin/sh\n").unwrap();
-        std::fs::write(&unrelated, b"#!/bin/sh\n").unwrap();
+        let (_home, home) = home_fixture();
+        let secret = home.join(".ssh/id_ed25519");
+        std::fs::write(&secret, b"key").unwrap();
 
-        let policy = SandboxPolicy::for_workspace(ws.path())
-            .with_command_access(&format!("{} --version", selected.display()));
-        let profile = seatbelt_profile(&policy).unwrap();
-        let selected = selected.canonicalize().unwrap();
-        assert!(
-            profile.contains(&format!("(literal \"{}\")", selected.display())),
-            "the executable named by the command must be reachable"
-        );
-        assert!(
-            !profile.contains(&format!("(literal \"{}\")", unrelated.display())),
-            "an unrelated executable in the same directory must stay outside"
+        let plain = SandboxPolicy::for_workspace(ws.path()).with_home(&home);
+        let named = plain
+            .clone()
+            .with_command_access(&format!("{0}; cat {0}", secret.display()));
+        assert_eq!(
+            seatbelt_profile(&named).unwrap(),
+            seatbelt_profile(&plain).unwrap()
         );
     }
 
@@ -1879,28 +2122,61 @@ mod tests {
     }
 
     #[test]
-    fn cargo_home_is_session_local_and_rustup_home_is_read_only_host_state() {
+    fn package_caches_go_to_the_tool_cache_and_rustup_home_stays_host_state() {
         let ws = workspace();
         let scratch = workspace();
+        let cache = workspace();
         let rustup_home = workspace();
-        let mut policy = SandboxPolicy::for_workspace(ws.path()).with_session_tmp(scratch.path());
+        let (_home, home) = home_fixture();
+        std::fs::write(home.join(".cargo/config.toml"), "[net]\n").unwrap();
+        std::fs::write(
+            home.join(".npmrc"),
+            "registry=https://npm.example.test/\n//npm.example.test/:_authToken=secret\n_auth=abc\n",
+        )
+        .unwrap();
+        let mut policy = SandboxPolicy::for_workspace(ws.path())
+            .with_home(&home)
+            .with_session_tmp(scratch.path())
+            .with_tool_cache(cache.path());
         policy.rustup_home = Some(rustup_home.path().to_path_buf());
-        let cargo_home = scratch.path().join("cargo-home");
 
         let env = policy.toolchain_env();
-        assert_eq!(
+        let value = |name: &str| {
             env.iter()
-                .find(|(name, _)| name == "CARGO_HOME")
-                .map(|(_, value)| value.as_str()),
-            cargo_home.to_str()
-        );
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| PathBuf::from(value))
+        };
+        assert_eq!(value("CARGO_HOME"), Some(cache.path().join("cargo")));
+        assert_eq!(value("npm_config_cache"), Some(cache.path().join("npm")));
+        assert_eq!(value("RUSTUP_HOME"), Some(rustup_home.path().to_path_buf()));
+        assert!(cache.path().join("cargo").is_dir());
         assert_eq!(
-            env.iter()
-                .find(|(name, _)| name == "RUSTUP_HOME")
-                .map(|(_, value)| value.as_str()),
-            rustup_home.path().to_str()
+            std::fs::read_to_string(cache.path().join("cargo/config.toml")).unwrap(),
+            "[net]\n",
+            "the user's cargo config is linked into the new CARGO_HOME"
         );
-        assert!(cargo_home.is_dir());
+
+        let npmrc = std::fs::read_to_string(value("NPM_CONFIG_USERCONFIG").unwrap()).unwrap();
+        assert_eq!(npmrc, "registry=https://npm.example.test/\n");
+
+        // The cache is writable and readable; the user's own is not named.
+        let profile = seatbelt_profile(&policy).unwrap();
+        let cache = cache.path().canonicalize().unwrap();
+        assert!(primary_file_write_rule(&profile)
+            .contains(&format!("(subpath \"{}\")", cache.display())));
+
+        // Without a tool cache the session scratch directory is used.
+        let fallback = SandboxPolicy::for_workspace(ws.path())
+            .with_home(&home)
+            .with_session_tmp(scratch.path());
+        assert!(fallback.toolchain_env().contains(&(
+            "CARGO_HOME".to_string(),
+            scratch
+                .path()
+                .join("tool-cache/cargo")
+                .to_string_lossy()
+                .into_owned()
+        )));
     }
 
     #[test]
@@ -2213,58 +2489,27 @@ mod bubblewrap_tests {
     }
 
     /// The read boundary, pinned at the profile level (the kernel-level
-    /// counterpart lives in `tests/sandbox_enforcement.rs`). The old blanket
-    /// `(allow file-read*)` granted every path on the host — the exact hole
-    /// that let `cat ~/.ssh/...` beat the `read_file` boundary. Reads must now
-    /// be the workspace/session-temp boundary plus OS-owned runtime paths.
+    /// counterpart lives in `tests/sandbox_enforcement.rs`): the per-user
+    /// temp tree and mounted volumes are denied, and the session's own trees
+    /// are reopened after the denies.
     #[test]
-    fn reads_are_confined_to_workspace_session_temp_and_system_paths() {
+    fn shared_temp_and_volumes_are_denied_and_the_workspace_reopened() {
         let ws = workspace();
         let profile = seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).unwrap();
-        let read_rule = primary_file_read_rule(&profile);
-
-        assert!(
-            !profile.contains("(allow file-read*)\n"),
-            "a blanket file-read rule would re-open ~/.ssh and ~/.aws"
-        );
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        let deny = profile
+            .find(&format!(
+                "(deny file-read* (subpath \"{}\"))",
+                temp.display()
+            ))
+            .expect("the shared temp tree is denied");
+        assert!(profile.contains("(deny file-read* (subpath \"/Volumes\"))"));
 
         let canonical = ws.path().canonicalize().unwrap();
-        let canonical = canonical.to_str().unwrap();
-        assert!(
-            profile.contains(&format!("(subpath \"{canonical}\")")),
-            "the workspace must be readable"
-        );
-
-        // User-writable trees are not in the read allowlist, in any spelling.
-        for tree in [
-            "\"/Users\"",
-            "\"/private/var/folders\"",
-            "\"/Volumes\"",
-            "\"/Network\"",
-            "\"/home\"",
-            "\"/root\"",
-        ] {
-            assert!(
-                !read_rule.contains(&format!("(subpath {tree})")),
-                "the read allowlist must not include {tree}"
-            );
-        }
-
-        // The runtime paths a process needs to start stay readable.
-        for runtime in [
-            "(subpath \"/System\")",
-            "(subpath \"/usr\")",
-            "(subpath \"/bin\")",
-            "(subpath \"/sbin\")",
-            "(subpath \"/private/etc\")",
-            "(literal \"/dev/null\")",
-            "(literal \"/dev/urandom\")",
-        ] {
-            assert!(
-                profile.contains(runtime),
-                "a process needs to read {runtime}"
-            );
-        }
+        let reopen = profile
+            .rfind(&format!("(subpath \"{}\")", canonical.display()))
+            .expect("the workspace must be readable");
+        assert!(reopen > deny);
     }
 
     /// `bwrap` is resolved by absolute path, never through `PATH`: this call

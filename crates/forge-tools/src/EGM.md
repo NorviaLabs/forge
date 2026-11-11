@@ -70,6 +70,7 @@ Subdirectories:
 - Sandbox (`sandbox.rs`): `SandboxPolicy` (`for_workspace`,
   `with_read_only_workspace`, `workspace_writable`, `with_command_access`,
   `toolchain_env`, `with_read_path`, `with_git_writable`, `with_session_tmp`,
+  `with_home`, `with_tool_cache`, `tool_cache`, `default_tool_cache`,
   `with_egress_proxy`, `egress_proxy_port`, `with_egress_socket`,
   `egress_socket`, `workspace_root`, `with_egress`),
   `Unavailable`
@@ -117,6 +118,23 @@ Subdirectories:
   The other unconfined path is `run_shell_command_unconfined` (no sandbox, no
   egress gateway), which the approve-all session mode uses for background
   shells.
+- Seatbelt read policy: the whole disk is readable except a deny-list
+  (`HOME_SECRETS`, `HOME_PERSONAL`, `~/Library` apart from
+  `LIBRARY_READABLE`, the per-user temp tree, `/Volumes`, other projects'
+  `.forge/`). The workspace, session temp directory, tool cache, explicit
+  read paths and linked git dirs are reopened after the denies; deny-list
+  entries inside a reopened tree are denied again. Nothing derived from the
+  command text changes what is readable. Matching is on resolved paths, so
+  symlinks and case variants do not bypass it.
+- Writes outside the workspace and session temp directory go only to the
+  tool cache (`~/Library/Caches/forge/sandbox`, shared across sessions and
+  projects, used by confined processes only). `toolchain_env` points
+  `CARGO_HOME`, the npm/pnpm/yarn/bun/pip/uv/Go caches and `XDG_CACHE_HOME`
+  there, links the user's `~/.cargo/config.toml` in, and gives npm a copy of
+  `~/.npmrc` with credential lines removed. The user's own caches are
+  read-only.
+- `set_process_group` calls `setsid`: a spawned child is its own process
+  group leader and has no controlling terminal.
 - The OS sandbox mounts the workspace's `.git` and `.forge` read-only
   (private `readonly_subpaths_of`). `with_git_writable` opens `.git` for git mutation
   commands but always keeps `hooks` and `config` read-only (in `.git` and in

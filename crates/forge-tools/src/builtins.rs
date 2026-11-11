@@ -26,9 +26,24 @@ pub(crate) fn schema_for<T: JsonSchema>() -> Value {
 /// its side effects after cancellation. A dedicated group makes every
 /// descendant reachable. No-op off unix, where `kill_on_drop` stays the
 /// fallback.
+///
+/// The child also leaves Forge's session (`setsid`), which makes its pid its
+/// process group id as `process_group(0)` would, and detaches it from Forge's
+/// controlling terminal: a child that kept the terminal could type into it
+/// (`TIOCSTI`) or read what the user types.
 #[cfg(unix)]
 pub fn set_process_group(command: &mut Command) {
-    command.process_group(0);
+    extern "C" {
+        fn setsid() -> i32;
+    }
+    // SAFETY: `setsid` is async-signal-safe and touches no memory; it is the
+    // only call made between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            let _ = setsid();
+            Ok(())
+        });
+    }
 }
 
 #[cfg(not(unix))]

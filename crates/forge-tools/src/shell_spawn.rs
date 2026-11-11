@@ -112,6 +112,11 @@ impl ShellSpawnSpec {
         if let Some(session_tmp) = session_tmp {
             policy = policy.with_session_tmp(session_tmp);
         }
+        if requested_confined {
+            if let Some(cache) = crate::sandbox::SandboxPolicy::default_tool_cache() {
+                policy = policy.with_tool_cache(cache);
+            }
+        }
         let wrapped = requested_confined
             .then(|| crate::sandbox::wrap_shell_command(shell, command, &policy))
             .flatten();

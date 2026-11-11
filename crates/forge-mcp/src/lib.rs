@@ -255,6 +255,11 @@ async fn sandboxed_launch(
     if cfg.sandbox_workspace == McpSandboxWorkspace::ReadOnly {
         policy = policy.with_read_only_workspace();
     }
+    // `npx -y ...` and `uvx ...` servers fetch and unpack themselves on
+    // start; without a writable package cache they cannot start confined.
+    if let Some(cache) = SandboxPolicy::default_tool_cache() {
+        policy = policy.with_tool_cache(cache);
+    }
     // The server's own install directory: a command given as a path, and a
     // first argument naming a script file (`node /opt/srv/index.js`). Skipped
     // (not fatal) when it would expose the whole home directory.
@@ -292,6 +297,7 @@ async fn sandboxed_launch(
             .into_iter()
             .map(|(name, path)| (name.to_string(), path.to_string_lossy().into_owned())),
     );
+    env.extend(policy.toolchain_env());
     Ok(SandboxedLaunch {
         program,
         args,

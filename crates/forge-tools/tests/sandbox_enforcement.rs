@@ -34,9 +34,12 @@ macro_rules! require_sandbox {
 
 /// Run `command` confined to `root`, returning (exit_ok, stdout+stderr).
 fn run_confined(root: &Path, command: &str) -> (bool, String) {
-    let policy = SandboxPolicy::for_workspace(root);
+    run_with_policy(root, command, &SandboxPolicy::for_workspace(root))
+}
+
+fn run_with_policy(root: &Path, command: &str, policy: &SandboxPolicy) -> (bool, String) {
     let (program, args) =
-        wrap_shell_command("sh", command, &policy).expect("sandbox should be available");
+        wrap_shell_command("sh", command, policy).expect("sandbox should be available");
     let out = Command::new(program)
         .args(args)
         .current_dir(root)
@@ -45,6 +48,167 @@ fn run_confined(root: &Path, command: &str) -> (bool, String) {
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.success(), text)
+}
+
+/// A stand-in home directory with secret, personal, application and
+/// toolchain locations. It lives under the build's own temp directory, not
+/// the per-user temp tree: that tree is denied as a whole, which would make
+/// every "this is readable" assertion below fail for the wrong reason and
+/// every "this is denied" one pass for it.
+#[cfg(target_os = "macos")]
+fn fake_home() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let write = |relative: &str, body: &str| {
+        let path = home.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, body).unwrap();
+        path
+    };
+    write(".ssh/id_ed25519", "PRIVATE-KEY\n");
+    write(".aws/credentials", "AKIA-SECRET\n");
+    write(".zsh_history", "export TOKEN=HISTORY-SECRET\n");
+    write("Documents/notes.txt", "PERSONAL-NOTES\n");
+    write("Library/Keychains/login.keychain-db", "KEYCHAIN\n");
+    write(
+        "Library/Application Support/forge/credentials.json",
+        "FORGE-CREDENTIAL\n",
+    );
+    write("Library/Caches/pip/wheel.txt", "CACHED-WHEEL\n");
+    write(".cargo/registry/src/crate/lib.rs", "CRATE-SOURCE\n");
+    let tool = write(".toolchain/bin/tool", "#!/bin/sh\necho TOOL-RAN\n");
+    std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::create_dir_all(home.path().join("code/ws")).unwrap();
+    home
+}
+
+/// The read boundary: everything on the disk except the deny-list. A
+/// toolchain under the home directory reads and runs without being named;
+/// credentials, the user's files and application state do not, by any route
+/// (direct path, a symlink inside the workspace, a different-case spelling).
+#[test]
+#[cfg(target_os = "macos")]
+fn the_deny_list_is_unreadable_and_the_rest_of_home_is_usable() {
+    require_sandbox!();
+    let home = fake_home();
+    let home = home.path().canonicalize().unwrap();
+    let ws = home.join("code/ws");
+    std::os::unix::fs::symlink(home.join(".ssh"), ws.join("alias")).unwrap();
+    let policy = SandboxPolicy::for_workspace(&ws).with_home(&home);
+    let h = home.display();
+
+    for (command, leaked) in [
+        (format!("cat {h}/.ssh/id_ed25519"), "PRIVATE-KEY"),
+        ("cat alias/id_ed25519".to_string(), "PRIVATE-KEY"),
+        (format!("cat {h}/.SSH/id_ed25519"), "PRIVATE-KEY"),
+        (format!("cat {h}/.aws/credentials"), "AKIA-SECRET"),
+        (format!("cat {h}/.zsh_history"), "HISTORY-SECRET"),
+        (format!("cat {h}/Documents/notes.txt"), "PERSONAL-NOTES"),
+        (format!("ls {h}/Documents"), "notes.txt"),
+        (
+            format!("cat {h}/Library/Keychains/login.keychain-db"),
+            "KEYCHAIN",
+        ),
+        (
+            format!("cat '{h}/Library/Application Support/forge/credentials.json'"),
+            "FORGE-CREDENTIAL",
+        ),
+    ] {
+        let (ok, out) = run_with_policy(&ws, &command, &policy);
+        assert!(!ok, "`{command}` must be refused: {out}");
+        assert!(!out.contains(leaked), "`{command}` leaked: {out}");
+    }
+
+    for (command, expected) in [
+        (format!("{h}/.toolchain/bin/tool"), "TOOL-RAN"),
+        (
+            format!("cat {h}/.cargo/registry/src/crate/lib.rs"),
+            "CRATE-SOURCE",
+        ),
+        (
+            format!("cat {h}/Library/Caches/pip/wheel.txt"),
+            "CACHED-WHEEL",
+        ),
+    ] {
+        let (ok, out) = run_with_policy(&ws, &command, &policy);
+        assert!(ok && out.contains(expected), "`{command}` must work: {out}");
+    }
+}
+
+/// A project kept in `~/Documents` works; the rest of `~/Documents` stays
+/// closed to it.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_workspace_under_a_denied_folder_is_usable_and_its_siblings_are_not() {
+    require_sandbox!();
+    let home = fake_home();
+    let home = home.path().canonicalize().unwrap();
+    let ws = home.join("Documents/proj");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(ws.join("main.rs"), "fn main() {}\n").unwrap();
+    let policy = SandboxPolicy::for_workspace(&ws).with_home(&home);
+
+    let (ok, out) = run_with_policy(&ws, "cat main.rs && echo x > out.txt && pwd -P", &policy);
+    assert!(ok && out.contains("fn main"), "{out}");
+
+    let (ok, out) = run_with_policy(&ws, "cat ../notes.txt", &policy);
+    assert!(!ok && !out.contains("PERSONAL-NOTES"), "{out}");
+}
+
+/// Opening the home directory itself as a project does not reopen what is
+/// on the deny-list inside it.
+#[test]
+#[cfg(target_os = "macos")]
+fn the_home_directory_as_a_workspace_keeps_its_secrets_closed() {
+    require_sandbox!();
+    let home = fake_home();
+    let home = home.path().canonicalize().unwrap();
+    let policy = SandboxPolicy::for_workspace(&home).with_home(&home);
+
+    let (ok, out) = run_with_policy(&home, "cat .ssh/id_ed25519", &policy);
+    assert!(!ok && !out.contains("PRIVATE-KEY"), "{out}");
+    let (ok, out) = run_with_policy(&home, "cat .toolchain/bin/tool", &policy);
+    assert!(ok && out.contains("TOOL-RAN"), "{out}");
+}
+
+/// The tool cache is the one place outside the workspace a confined command
+/// may write. The user's own caches are readable and never writable: what is
+/// unpacked there runs later, outside the sandbox.
+#[test]
+#[cfg(target_os = "macos")]
+fn the_tool_cache_is_writable_and_the_users_own_caches_are_not() {
+    require_sandbox!();
+    let home = fake_home();
+    let home = home.path().canonicalize().unwrap();
+    let ws = home.join("code/ws");
+    let cache = home.join("Library/Caches/forge/sandbox");
+    std::fs::create_dir_all(&cache).unwrap();
+    let policy = SandboxPolicy::for_workspace(&ws)
+        .with_home(&home)
+        .with_tool_cache(&cache);
+    let h = home.display();
+
+    let (ok, out) = run_with_policy(
+        &ws,
+        &format!(
+            "mkdir -p {0}/cargo && echo x > {0}/cargo/probe",
+            cache.display()
+        ),
+        &policy,
+    );
+    assert!(ok, "the tool cache must be writable: {out}");
+
+    let (ok, out) = run_with_policy(
+        &ws,
+        &format!("echo planted >> {h}/.cargo/registry/src/crate/lib.rs"),
+        &policy,
+    );
+    assert!(!ok, "the user's own registry must not be writable: {out}");
+    assert_eq!(
+        std::fs::read_to_string(home.join(".cargo/registry/src/crate/lib.rs")).unwrap(),
+        "CRATE-SOURCE\n"
+    );
 }
 
 fn workspace() -> tempfile::TempDir {
@@ -678,7 +842,7 @@ fn system_paths_needed_to_start_a_process_stay_readable() {
 /// this host-dependent test useful on minimal CI images by skipping a tool
 /// that is not installed.
 #[tokio::test]
-async fn installed_cargo_and_gh_can_start_without_opening_the_home_tree() {
+async fn installed_toolchains_start_confined_without_being_named() {
     require_sandbox!();
     let ws = workspace();
     let scratch = tempfile::tempdir().unwrap();
@@ -689,7 +853,18 @@ async fn installed_cargo_and_gh_can_start_without_opening_the_home_tree() {
             .any(|candidate| candidate.is_file())
     };
 
-    for (name, command) in [("cargo", "cargo --version"), ("gh", "gh --version")] {
+    for (name, command) in [
+        ("cargo", "cargo --version"),
+        ("rustc", "rustc --version"),
+        ("gh", "gh --version"),
+        ("git", "git --version"),
+        ("node", "node --version"),
+        ("npm", "npm --version && npm config get registry"),
+        ("python3", "python3 --version"),
+        ("go", "go version"),
+        ("uv", "uv --version"),
+        ("brew", "brew --version"),
+    ] {
         if !has(name) {
             continue;
         }
@@ -784,7 +959,7 @@ async fn installed_cargo_can_use_the_session_toolchain_surface() {
 }
 
 #[tokio::test]
-async fn a_nested_shell_cannot_start_an_unselected_user_binary() {
+async fn a_nested_shell_cannot_start_a_binary_in_the_shared_temp_tree() {
     require_sandbox!();
     let ws = workspace();
     let scratch = tempfile::tempdir().unwrap();

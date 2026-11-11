@@ -62,7 +62,9 @@ file use a scripted fixture server; they are not part of the contract surface.
 - The client's `ProcessGroupGuard` field is declared before the temp directory
   so the server's whole process group is killed before the directory is
   removed.
-- Sandboxed launches use the workspace read profile, command/script install
+- Sandboxed launches use the shell tool's read profile (whole disk minus the
+  deny-list), the shared tool cache as a writable package cache (so
+  `npx -y`/`uvx` servers can unpack themselves), command/script install
   directories when resolvable, an explicit read-only workspace when
   configured, and fail the spawn (not silently narrow) on an ungrantable
   `sandbox_read_paths` entry.
