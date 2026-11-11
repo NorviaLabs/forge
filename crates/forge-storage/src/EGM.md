@@ -18,7 +18,7 @@ the platform application-data directory. Project-owned `.forge/` content
 - `LocalRuntimeStorage::directory_local(root)` — storage for a directory project (a folder that isn't a Git repository): always `DirectoryLocal`, data under `<root>/.forge/local/`, no Git exclude edits and no fallback. This deliberately overrides the default policy of sending non-repositories to application data, so a directory project's state travels with the folder.
 - `RuntimeDataKind` (`#[non_exhaustive]`): `Control`, `Session`, `Lifecycle`, `Queue`, `UiState`, `Cache`, `Log`, `Index`, `Checkpoint`, `Attachment`, `Worktree`.
 - `RuntimeStorage` trait: `repository_root`, `storage_mode`, `identity`, `fallback_reason`, `ensure_ready`, `root`, `path_for(kind)`, `path_for_read(kind)`.
-- `LocalRuntimeStorage::new(workspace)` — one worktree; also `workspace()`, `migration_report()` (empty until setup has run), and `tracked_migration_conflicts()` (sources left in place because Git tracks them).
+- `LocalRuntimeStorage::new(workspace)` — one worktree; also `workspace()` and `migration_report()` (empty until setup has run).
 - `RepositoryRuntimeStorage::new(workspace)` + `main_worktree()` — resolves Git's main worktree and delegates, so every linked worktree shares one roster and journal root.
 - `RuntimeIdentity` (`as_str()`), `StorageError` (`NoRoot`, `PathEscapesRoot`, `ExcludeSetupFailed`, `Io`, `NoAppDataDir`, `RepositoryTopology`).
 

@@ -28,14 +28,6 @@ struct PreferencesFile {
     last_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_effort: Option<String>,
-    /// The selection active immediately before `last_*`, for Quick Switch —
-    /// toggling between the two most recently, deliberately chosen combos.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_profile_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    previous_effort: Option<String>,
 }
 
 /// File-backed store for the operator's last interactive selections.
@@ -48,8 +40,6 @@ pub struct PreferenceStore {
 pub struct ForgetOutcome {
     /// The default selection (`last_*`).
     pub cleared_last: bool,
-    /// The Quick Switch target (`previous_*`).
-    pub cleared_previous: bool,
 }
 
 /// True when the saved `(profile id, model)` pair belongs to a provider.
@@ -172,17 +162,11 @@ impl PreferenceStore {
         let file = self.load();
         ForgetOutcome {
             cleared_last: group_matches(matches, &file.last_profile_id, &file.last_model),
-            cleared_previous: group_matches(
-                matches,
-                &file.previous_profile_id,
-                &file.previous_model,
-            ),
         }
     }
 
-    /// Clear every selection group (`last_*` and `previous_*`) that points at
-    /// a removed provider. Unlike `clear_last_selection`, this also clears the
-    /// Quick Switch target. The file is saved only when something matched.
+    /// Clear the saved selection when it points at a removed provider. The
+    /// file is saved only when something matched.
     pub fn forget_provider(
         &self,
         matches: SelectionMatch<'_>,
@@ -196,11 +180,6 @@ impl PreferenceStore {
             file.last_profile_id = None;
             file.last_model = None;
             file.last_effort = None;
-        }
-        if outcome.cleared_previous {
-            file.previous_profile_id = None;
-            file.previous_model = None;
-            file.previous_effort = None;
         }
         self.save(&file)?;
         Ok(outcome)
@@ -216,105 +195,6 @@ impl PreferenceStore {
         }
         Ok(())
     }
-
-    /// The selection active immediately before the current `last_*` (Quick
-    /// Switch's toggle target), if one was recorded.
-    pub fn previous_selection(&self) -> Result<Option<(String, String)>, StoreError> {
-        let file = self.load();
-        Ok(
-            match (
-                file.previous_profile_id.as_deref(),
-                file.previous_model.as_deref(),
-            ) {
-                (Some(profile_id), Some(model))
-                    if !profile_id.trim().is_empty() && !model.trim().is_empty() =>
-                {
-                    Some((
-                        profile_id.to_string(),
-                        crate::normalize::normalize_saved_model_id(model),
-                    ))
-                }
-                _ => None,
-            },
-        )
-    }
-
-    /// The effort paired with [`Self::previous_selection`], if any.
-    pub fn previous_effort(&self) -> Result<Option<String>, StoreError> {
-        Ok(self
-            .load()
-            .previous_effort
-            .filter(|effort| !effort.trim().is_empty()))
-    }
-
-    /// Record a deliberate provider/model/effort switch, for Quick Switch.
-    ///
-    /// If `new` differs from the current `last_*`, the current `last_*` is
-    /// rotated into `previous_*` before `new` becomes the new `last_*`. A
-    /// no-op when `new` already matches `last_*` (e.g. reselecting the
-    /// active model), so an accidental reselect can't clobber real history.
-    /// Callers must only invoke this for user-driven selections, never for
-    /// automatic fallbacks — see `set_last_selection`/`set_last_effort` for
-    /// the non-rotating equivalent used elsewhere (e.g. on shell exit).
-    pub fn record_switch(&self, new: (&str, &str, &str)) -> Result<(), StoreError> {
-        let mut file = self.load();
-        let new_profile_id = new.0.trim().to_string();
-        let new_model = new.1.trim().to_string();
-        let new_effort = new.2.trim().to_string();
-        let unchanged = file.last_profile_id.as_deref() == Some(new_profile_id.as_str())
-            && file.last_model.as_deref() == Some(new_model.as_str())
-            && file.last_effort.as_deref() == Some(new_effort.as_str());
-        if unchanged {
-            return Ok(());
-        }
-        let had_complete_last = file
-            .last_profile_id
-            .as_deref()
-            .is_some_and(|p| !p.trim().is_empty())
-            && file
-                .last_model
-                .as_deref()
-                .is_some_and(|m| !m.trim().is_empty());
-        if had_complete_last {
-            file.previous_profile_id = file.last_profile_id.take();
-            file.previous_model = file.last_model.take();
-            file.previous_effort = file.last_effort.take();
-        }
-        file.last_profile_id = Some(new_profile_id);
-        file.last_model = Some(new_model);
-        file.last_effort = Some(new_effort);
-        self.save(&file)
-    }
-
-    /// Apply Quick Switch: swap `last_*` and `previous_*` in place, so a
-    /// second call toggles back. Returns the combo to apply now (the new
-    /// `last_*`), or `None` if there is nothing to switch to.
-    pub fn quick_switch(&self) -> Result<Option<(String, String, String)>, StoreError> {
-        let mut file = self.load();
-        let (Some(profile_id), Some(model)) = (
-            file.previous_profile_id.clone(),
-            file.previous_model.clone(),
-        ) else {
-            return Ok(None);
-        };
-        if profile_id.trim().is_empty() || model.trim().is_empty() {
-            return Ok(None);
-        }
-        let effort = file.previous_effort.clone().unwrap_or_default();
-        let old_last = (
-            file.last_profile_id.take(),
-            file.last_model.take(),
-            file.last_effort.take(),
-        );
-        file.last_profile_id = Some(profile_id.clone());
-        file.last_model = Some(model.clone());
-        file.last_effort = Some(effort.clone());
-        file.previous_profile_id = old_last.0;
-        file.previous_model = old_last.1;
-        file.previous_effort = old_last.2;
-        self.save(&file)?;
-        Ok(Some((profile_id, model, effort)))
-    }
 }
 
 #[cfg(test)]
@@ -329,25 +209,19 @@ mod tests {
     }
 
     #[test]
-    fn forgetting_a_provider_clears_only_the_groups_that_point_at_it() {
+    fn forgetting_a_provider_clears_the_selection_that_points_at_it() {
         let (_dir, prefs) = prefs();
-        let text = "last_profile_id = \"anthropic\"\nlast_model = \"anthropic/m\"\nprevious_profile_id = \"labbox\"\nprevious_model = \"labbox/m\"\nprevious_effort = \"high\"\n";
+        let text =
+            "last_profile_id = \"labbox\"\nlast_model = \"labbox/m\"\nlast_effort = \"high\"\n";
         std::fs::write(prefs.path(), text).unwrap();
         let matches =
             |profile: &str, model: &str| profile == "labbox" || model.starts_with("labbox/");
-        let expected = ForgetOutcome {
-            cleared_last: false,
-            cleared_previous: true,
-        };
+        let expected = ForgetOutcome { cleared_last: true };
         assert_eq!(prefs.would_forget(&matches), expected);
         assert_eq!(std::fs::read_to_string(prefs.path()).unwrap(), text);
         assert_eq!(prefs.forget_provider(&matches).unwrap(), expected);
-        assert!(prefs.previous_selection().unwrap().is_none());
-        assert!(prefs.previous_effort().unwrap().is_none());
-        assert_eq!(
-            prefs.last_selection().unwrap(),
-            Some(("anthropic".into(), "anthropic/m".into()))
-        );
+        assert!(prefs.last_selection().unwrap().is_none());
+        assert!(prefs.last_effort().unwrap().is_none());
     }
 
     #[test]
@@ -368,7 +242,6 @@ mod tests {
         let (_dir, prefs) = prefs();
         assert!(prefs.last_selection().unwrap().is_none());
         assert!(prefs.last_effort().unwrap().is_none());
-        assert!(prefs.quick_switch().unwrap().is_none());
     }
 
     /// A preference is a convenience. Failing to parse one must never be able
@@ -482,116 +355,6 @@ mod tests {
                 effort: "high".into(),
             })
         );
-    }
-
-    #[test]
-    fn record_switch_rotates_last_into_previous_when_the_combo_changes() {
-        let dir = tempdir().unwrap();
-        let prefs = PreferenceStore::new(dir.path().join("p.toml"));
-        assert_eq!(prefs.previous_selection().unwrap(), None);
-
-        prefs
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        assert_eq!(
-            prefs.last_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-        // First switch ever: nothing to rotate into previous yet.
-        assert_eq!(prefs.previous_selection().unwrap(), None);
-
-        prefs
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        assert_eq!(
-            prefs.last_selection().unwrap(),
-            Some(("anthropic".into(), "anthropic/claude-sonnet".into()))
-        );
-        assert_eq!(prefs.last_effort().unwrap().as_deref(), Some("high"));
-        assert_eq!(
-            prefs.previous_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-        assert_eq!(prefs.previous_effort().unwrap().as_deref(), Some("medium"));
-    }
-
-    #[test]
-    fn record_switch_reselecting_the_active_combo_does_not_rotate() {
-        let dir = tempdir().unwrap();
-        let prefs = PreferenceStore::new(dir.path().join("p.toml"));
-        prefs
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        prefs
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        // Reselecting the same model+effort that's already active must not
-        // clobber the real previous combo with a duplicate of itself.
-        prefs
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        assert_eq!(
-            prefs.previous_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-    }
-
-    #[test]
-    fn quick_switch_swaps_last_and_previous_and_toggles_back() {
-        let dir = tempdir().unwrap();
-        let prefs = PreferenceStore::new(dir.path().join("p.toml"));
-
-        // Nothing to switch to yet.
-        assert_eq!(prefs.quick_switch().unwrap(), None);
-
-        prefs
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        prefs
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-
-        let switched = prefs.quick_switch().unwrap();
-        assert_eq!(
-            switched,
-            Some(("openai".into(), "openai/gpt-5.6".into(), "medium".into()))
-        );
-        assert_eq!(
-            prefs.last_selection().unwrap(),
-            Some(("openai".into(), "openai/gpt-5.6".into()))
-        );
-        assert_eq!(
-            prefs.previous_selection().unwrap(),
-            Some(("anthropic".into(), "anthropic/claude-sonnet".into()))
-        );
-
-        // A second Quick Switch toggles back to where we started.
-        let switched_back = prefs.quick_switch().unwrap();
-        assert_eq!(
-            switched_back,
-            Some((
-                "anthropic".into(),
-                "anthropic/claude-sonnet".into(),
-                "high".into()
-            ))
-        );
-    }
-
-    #[test]
-    fn clearing_the_selection_leaves_the_quick_switch_target() {
-        let dir = tempdir().unwrap();
-        let prefs = PreferenceStore::new(dir.path().join("p.toml"));
-        prefs
-            .record_switch(("openai", "openai/gpt-5.6", "medium"))
-            .unwrap();
-        prefs
-            .record_switch(("anthropic", "anthropic/claude-sonnet", "high"))
-            .unwrap();
-        prefs.clear_last_selection(None).unwrap();
-        // Clearing the current selection leaves the Quick Switch target
-        // intact — it is a separate slot, and the operator did not ask for it
-        // to go.
-        assert!(prefs.previous_selection().unwrap().is_some());
     }
 
     #[test]

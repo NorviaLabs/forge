@@ -67,17 +67,6 @@ pub enum RemovalError {
 }
 
 impl<'a> ConnectService<'a> {
-    /// Check that `id` can be removed and describe what removal would do.
-    /// Writes nothing.
-    pub fn preview_removal(
-        &self,
-        providers_path: &Path,
-        id: &str,
-    ) -> Result<RemovalReport, RemovalError> {
-        self.checked_removal(providers_path, id)
-            .map(|(_, report)| report)
-    }
-
     /// Remove custom provider `id`: its `providers.toml` entry, override
     /// section and manual models in one checked write, then its API key,
     /// cached models and saved selections. Only the pre-checks and the
@@ -333,20 +322,15 @@ mod tests {
             .unwrap();
         std::fs::write(
             fixture.preferences.path(),
-            "last_profile_id = \"other\"\nlast_model = \"labbox/a\"\nprevious_profile_id = \"labbox\"\nprevious_model = \"labbox/b\"\n",
+            "last_profile_id = \"other\"\nlast_model = \"labbox/a\"\n",
         )
         .unwrap();
         let preview = fixture
             .service()
-            .preview_removal(&fixture.providers_path(), "labbox")
+            .checked_removal(&fixture.providers_path(), "labbox")
+            .map(|(_, report)| report)
             .unwrap();
-        assert_eq!(
-            preview.forget,
-            ForgetOutcome {
-                cleared_last: true,
-                cleared_previous: true
-            }
-        );
+        assert_eq!(preview.forget, ForgetOutcome { cleared_last: true });
         let report = fixture.remove("labbox").unwrap();
         assert_eq!(report.forget, preview.forget);
         assert!(
@@ -357,7 +341,6 @@ mod tests {
         assert!(fixture.catalog.get_cached("labbox").is_empty());
         assert_eq!(fixture.catalog.get_cached("other"), vec!["other/x"]);
         assert!(fixture.preferences.last_selection().unwrap().is_none());
-        assert!(fixture.preferences.previous_selection().unwrap().is_none());
     }
 
     #[test]
@@ -388,7 +371,8 @@ mod tests {
         let preview = |fixture: &Fixture| {
             fixture
                 .service()
-                .preview_removal(&fixture.providers_path(), "labbox")
+                .checked_removal(&fixture.providers_path(), "labbox")
+                .map(|(_, report)| report)
                 .unwrap()
                 .env_still_set
         };
@@ -404,7 +388,8 @@ mod tests {
         let fixture = Fixture::new(LABBOX);
         let preview = fixture
             .service()
-            .preview_removal(&fixture.providers_path(), "labbox")
+            .checked_removal(&fixture.providers_path(), "labbox")
+            .map(|(_, report)| report)
             .unwrap();
         assert!(preview.unrecoverable_fields.is_empty(), "{preview:?}");
         let fixture = Fixture::new(&LABBOX.replace(
@@ -413,7 +398,8 @@ mod tests {
         ));
         let preview = fixture
             .service()
-            .preview_removal(&fixture.providers_path(), "labbox")
+            .checked_removal(&fixture.providers_path(), "labbox")
+            .map(|(_, report)| report)
             .unwrap();
         assert_eq!(preview.unrecoverable_fields, vec!["auth", "description"]);
     }

@@ -3,7 +3,7 @@
 //! Providers emit [`ModelStreamEvent`]s while a completion is in flight. The
 //! agent core accumulates them here so token usage and thinking text survive on
 //! the final [`ModelResponse`], and so tool-call streaming can surface as turn
-//! events without duplicating provider-specific parsing in the TUI.
+//! events without duplicating provider-specific parsing in the frontend.
 
 use forge_model::StreamEventTx;
 use forge_types::{ModelResponse, ModelStreamEvent, Usage};
@@ -220,9 +220,9 @@ impl AgentSession {
                     .ok_or(LoopError::Cancelled)?
                     .map_err(|error| LoopError::Other(error.to_string()))?;
             }
-            // Only ever `Some` for a subagent session (see `AgentSession::cancel_token`'s
-            // doc comment) — the foreground session is cancelled via the TUI's own
-            // `cancel_requested` bool instead, checked in `app/turn.rs`.
+            // `cancel_token` is only ever `Some` for a subagent session (see
+            // `AgentSession::cancel_token`'s doc comment); a root turn is
+            // cancelled through `turn_cancel_token` instead.
             tokio::select! {
                 event = rx.recv(), if stream_open => {
                     if let Some(event) = event {

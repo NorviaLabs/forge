@@ -2,8 +2,9 @@
 //!
 //! Runs the repository supervisor in-process and bridges it to the webview
 //! over Tauri IPC: one `Channel` of events per window, a small command
-//! allowlist, no network listener. Startup goes through the same UI-free
-//! `forge_session::LaunchPlan` the TUI uses.
+//! allowlist, no network listener. Startup goes through
+//! `forge_session::ProjectService`, which opens projects with the UI-free
+//! `forge_session::LaunchPlan`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

@@ -216,11 +216,6 @@ impl ValidationBudget {
         Self::new(3)
     }
 
-    /// Record a validation failure. Returns Ok(retry_number) or Err if budget exhausted.
-    pub fn record_failure(&mut self, tool: &str) -> Result<u32, String> {
-        self.record_failure_with_signature(tool, None)
-    }
-
     /// Record failure with optional canonical signature for repeated-error detection.
     pub fn record_failure_with_signature(
         &mut self,
@@ -247,11 +242,6 @@ impl ValidationBudget {
         } else {
             Ok(*c)
         }
-    }
-
-    pub fn reset_turn(&mut self) {
-        self.counts.clear();
-        self.signatures.clear();
     }
 }
 
@@ -387,10 +377,10 @@ mod tests {
     #[test]
     fn budget_exhausts() {
         let mut b = ValidationBudget::new(3);
-        assert!(b.record_failure("t").is_ok());
-        assert!(b.record_failure("t").is_ok());
-        assert!(b.record_failure("t").is_ok());
-        assert!(b.record_failure("t").is_err());
+        assert!(b.record_failure_with_signature("t", None).is_ok());
+        assert!(b.record_failure_with_signature("t", None).is_ok());
+        assert!(b.record_failure_with_signature("t", None).is_ok());
+        assert!(b.record_failure_with_signature("t", None).is_err());
     }
 
     #[test]
@@ -578,28 +568,18 @@ mod tests {
 
         // Both should accept exactly 3 failures and reject the 4th.
         for _ in 0..3 {
-            assert!(default_budget.record_failure("t").is_ok());
-            assert!(explicit_budget.record_failure("t").is_ok());
+            assert!(default_budget
+                .record_failure_with_signature("t", None)
+                .is_ok());
+            assert!(explicit_budget
+                .record_failure_with_signature("t", None)
+                .is_ok());
         }
-        assert!(default_budget.record_failure("t").is_err());
-        assert!(explicit_budget.record_failure("t").is_err());
-    }
-
-    #[test]
-    fn reset_turn_clears_counts_and_signatures() {
-        let mut b = ValidationBudget::new(1);
-        assert!(b.record_failure("t").is_ok());
-        assert!(b.record_failure("t").is_err(), "budget should be exhausted");
-
-        b.reset_turn();
-
-        // After reset, the same tool can fail again up to the max.
-        assert!(b.record_failure("t").is_ok());
-
-        // Signature budget is also cleared by reset_turn.
-        let sig = "tool|/x|type_mismatch";
-        assert!(b.record_failure_with_signature("other", Some(sig)).is_ok());
-        b.reset_turn();
-        assert!(b.record_failure_with_signature("other", Some(sig)).is_ok());
+        assert!(default_budget
+            .record_failure_with_signature("t", None)
+            .is_err());
+        assert!(explicit_budget
+            .record_failure_with_signature("t", None)
+            .is_err());
     }
 }

@@ -1,7 +1,7 @@
 //! The per-process credentials handle (design §3).
 //!
 //! One `Arc<Credentials>` owns the credential store, the session-key overlay
-//! (keys typed in the TUI, held for this process only), and per-profile
+//! (keys typed into the app, held for this process only), and per-profile
 //! refresh single-flight. Every write, clear, session key, and auth report
 //! goes through [`Credentials::slot_for`], so a `credential_from` profile
 //! shares its target's slot.
@@ -45,7 +45,7 @@ impl Credentials {
 
     /// The process's handle over the user credential store. Every caller
     /// that does not hold an explicit handle (the CLI, session open, the
-    /// TUI's default) shares this one, so session keys and refresh
+    /// desktop app) shares this one, so session keys and refresh
     /// single-flight are per process.
     pub fn shared() -> Arc<Self> {
         static SHARED: std::sync::OnceLock<Arc<Credentials>> = std::sync::OnceLock::new();
@@ -68,7 +68,7 @@ impl Credentials {
         profile.credential_from.as_deref().unwrap_or(&profile.id)
     }
 
-    /// Hold a key typed in the TUI for this process. Callers set it only
+    /// Hold a key the operator typed, for this process only. Callers set it only
     /// after a connect probe that did not return 401 or 403.
     pub fn set_session_key(&self, profile: &ProviderSpec, key: &str) {
         let key = key.trim();

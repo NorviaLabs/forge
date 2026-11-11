@@ -233,7 +233,6 @@ mod xai {
         let p = xai_grok_profile();
         assert_eq!(p.id, "xai");
         assert!(p.effective_auth().is_oauth());
-        assert!(p.rejects_api_key_cli());
         assert!(!p.needs_tui_api_key_prompt());
         assert_eq!(p.api_key_env, vec!["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]);
         assert!(p.default_model().unwrap().starts_with("xai/"));
@@ -419,7 +418,6 @@ mod opencode_go {
         assert_eq!(p.id, "opencode_go");
         assert!(!p.effective_auth().is_oauth());
         assert!(p.needs_tui_api_key_prompt());
-        assert!(!p.rejects_api_key_cli());
         assert!(p.auth_url.as_deref().unwrap().contains("opencode.ai"));
     }
 

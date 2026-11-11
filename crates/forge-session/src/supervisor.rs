@@ -342,9 +342,9 @@ impl SupervisorHandle {
     /// Queue a command and hand back its completion receiver without awaiting
     /// execution.
     ///
-    /// The terminal owner must keep reading input and painting while a busy
-    /// actor drains a turn, so callers poll the receiver on their own tick
-    /// instead of blocking on it. [`Self::command`] stays the awaited
+    /// A frontend must keep handling input while a busy actor drains a turn,
+    /// so callers poll the receiver on their own tick instead of blocking on
+    /// it. [`Self::command`] stays the awaited
     /// convenience for non-UI callers. Failures in command execution are still
     /// published as supervisor events.
     pub fn submit(
@@ -413,7 +413,7 @@ impl SessionActor {
         interrupted_prompts: Vec<(u64, String)>,
         workspace_trusted: bool,
     ) -> Self {
-        // The trust gate is enforced in the core session, not only the TUI.
+        // The trust gate is enforced in the core session, not only the frontend.
         session.set_workspace_trusted(workspace_trusted);
         let session_id = session.session_id;
         let model = session.model_client();
@@ -1834,13 +1834,9 @@ async fn execute_command(
                 };
                 forge_workspace::gh::validate_pull_request_branch(&pr, &branch)?;
                 let checks = forge_workspace::gh::checks(&workspace, &pr.number.to_string())?;
-                let gate = forge_workspace::gh::MergeGate {
-                    checks,
-                    review_decision: pr.review_decision.clone(),
-                };
                 Ok(format!(
                     "PR #{} · checks: {:?} · review: {:?} · Forge tests passed: {} (refresh is read-only)",
-                    pr.number, gate.checks, gate.review_decision, forge_tests_passed
+                    pr.number, checks, pr.review_decision, forge_tests_passed
                 ))
             })
             .await
@@ -1937,8 +1933,8 @@ async fn execute_command(
         } => {
             // An empty label is legal: the task starts unnamed and is named
             // from its first prompt. A prompt supplied here (the form path)
-            // is used directly; the TUI renames an unnamed task when the
-            // operator types its first message instead.
+            // is used directly; otherwise `SubmitPrompt` names an unnamed
+            // task from the operator's first message.
             let label = if label.trim().is_empty() {
                 first_prompt
                     .as_deref()
@@ -2105,10 +2101,10 @@ async fn execute_command(
             ));
             state.actors.write().await.insert(task.session_id, actor);
             drop(_git_mutation);
-            // Select the new session before the trust branch below, not after:
-            // the TUI only opens the trust overlay for the session it has
-            // already selected. It resolves a `Selected` event against the
-            // roster it already holds, so the row is published first — the
+            // Select the new session before the trust branch below, not after,
+            // so a creation waiting on trust is already the selected session.
+            // Clients resolve a `Selected` event against the roster they
+            // already hold, so the row is published first — the
             // same order `Refresh` and `replace_conversation` use. Ownership is
             // a row property: `Primary` is untouched, only the selection moves.
             let _ = state
@@ -4575,7 +4571,7 @@ mod tests {
                     }
                     Ok(Ok(_)) => {}
                     // Fallen behind: the retained history is partial, so
-                    // resubscribe (as the TUI does) and let the next refresh's
+                    // resubscribe and let the next refresh's
                     // roster report the current state.
                     Ok(Err(broadcast::error::RecvError::Lagged(_))) => {
                         events = handle.subscribe();
@@ -6881,9 +6877,8 @@ mod tests {
     /// Regression: when the session's future-task queue is non-empty, a turn
     /// that finishes at a tool boundary yields to the queue
     /// (`ApplyOutcome::YieldToQueue`) — but the supervised driver returned
-    /// that outcome without transitioning the lifecycle (the unsupervised
-    /// TUI path calls `yield_current_turn_for_queue` itself; the coordinator
-    /// did not). The lifecycle stayed `Working`, so the next prompt journaled
+    /// that outcome without transitioning the lifecycle (it never called
+    /// `yield_current_turn_for_queue`). The lifecycle stayed `Working`, so the next prompt journaled
     /// its `user_message`, then `start_fresh_attempt` rejected the new task
     /// (illegal from `Working`) and the driver's `?` dropped the error
     /// without marking the queue item or turn state — the follow-up wedged
@@ -7305,7 +7300,7 @@ mod tests {
                 .await
                 .unwrap();
 
-        // The TUI's quit-all path sends `Shutdown` through its handle first.
+        // A frontend may send `Shutdown` through its handle before `shutdown()`.
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
         supervisor.shutdown().await.unwrap();
         RepositoryLease::acquire(temp.path(), temp.path())
@@ -8141,8 +8136,7 @@ mod tests {
             .find(|task| task.label == "parser")
             .expect("provisional task row");
         let workspace = task.workspace.clone();
-        // The session waiting on trust is already the selected conversation,
-        // which is what lets the TUI raise the modal instead of a toast.
+        // The session waiting on trust is already the selected conversation.
         assert_eq!(
             control.selected().await.unwrap(),
             Some(task.session_id),

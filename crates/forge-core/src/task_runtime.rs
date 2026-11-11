@@ -1,7 +1,7 @@
 //! Private runtime handles for background task execution.
 //!
 //! The queue and background stores are session-owned here. `AgentSession`
-//! exposes read-only accessors for the TUI, while the channels that drive
+//! exposes read-only accessors, while the channels that drive
 //! those stores remain private runtime state.
 
 use std::collections::HashMap;

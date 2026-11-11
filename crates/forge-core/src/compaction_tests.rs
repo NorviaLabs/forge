@@ -145,7 +145,7 @@ fn padding(tag: &str) -> String {
 async fn grow_context(session: &mut AgentSession, turns: usize) {
     for i in 0..turns {
         session
-            .run_user_message(&padding(&format!("request {i}:")))
+            .run_user_message_with_stream(&padding(&format!("request {i}:")), None)
             .await
             .unwrap();
     }
@@ -247,7 +247,14 @@ async fn manual_compaction_runs_below_the_automatic_threshold() {
 
     assert_eq!(record.trigger, CompactionTrigger::Manual);
     assert!(record.tokens_after < record.tokens_before);
-    assert_eq!(session.installed_checkpoint_count(), 1);
+    assert_eq!(
+        session
+            .messages
+            .iter()
+            .filter(|message| forge_context::compaction::is_checkpoint_message(message))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -419,7 +426,14 @@ async fn the_retained_tail_is_the_most_recent_conversation_verbatim() {
     // System prompt, checkpoint, then the raw tail.
     assert_eq!(session.messages[0].role, MessageRole::System);
     assert_eq!(session.messages[1].role, MessageRole::System);
-    assert_eq!(session.installed_checkpoint_count(), 1);
+    assert_eq!(
+        session
+            .messages
+            .iter()
+            .filter(|message| forge_context::compaction::is_checkpoint_message(message))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -514,7 +528,11 @@ async fn repeated_compaction_merges_state_instead_of_nesting_summaries() {
         .unwrap();
 
     assert_eq!(
-        session.installed_checkpoint_count(),
+        session
+            .messages
+            .iter()
+            .filter(|message| forge_context::compaction::is_checkpoint_message(message))
+            .count(),
         1,
         "a second compaction replaces the first checkpoint rather than stacking one"
     );
@@ -573,7 +591,14 @@ async fn assert_rollback(checkpoints: Vec<Result<String, String>>, expected: &st
     );
     assert_eq!(session.context_state().epoch, epoch_before);
     assert!(session.context_state().checkpoint.is_none());
-    assert_eq!(session.installed_checkpoint_count(), 0);
+    assert_eq!(
+        session
+            .messages
+            .iter()
+            .filter(|message| forge_context::compaction::is_checkpoint_message(message))
+            .count(),
+        0
+    );
     assert_eq!(session.compaction_telemetry().compaction_count, 0);
     assert_eq!(session.compaction_telemetry().failure_count, 1);
     assert_eq!(
@@ -714,7 +739,14 @@ async fn a_compacted_session_reconstructs_the_same_context_on_resume() {
         facts,
         "protected facts are rebuilt from canonical user turns, not from the projection"
     );
-    assert_eq!(resumed.installed_checkpoint_count(), 1);
+    assert_eq!(
+        resumed
+            .messages
+            .iter()
+            .filter(|message| forge_context::compaction::is_checkpoint_message(message))
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

@@ -1519,8 +1519,8 @@ mod tests {
             s.session_id
         };
 
-        // The TUI's `/resume` swaps the conversation of a live session in
-        // place (`resume_session`) instead of building a new one.
+        // `resume_session` swaps the conversation of a live session in place
+        // instead of building a new one.
         let model = Arc::new(MockModelClient::script(vec![text_response(
             "must not run on resume",
         )]));

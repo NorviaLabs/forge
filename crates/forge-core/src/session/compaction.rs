@@ -22,9 +22,9 @@
 use std::time::Instant;
 
 use forge_context::compaction::{
-    compaction_message, is_checkpoint_message, messages_tokens, plan_compaction, protected_fact,
-    Checkpoint, CompactionError, CompactionPlan, CompactionPolicy, CompactionRecord,
-    CompactionTelemetry, CompactionTrigger, SessionContextState,
+    compaction_message, messages_tokens, plan_compaction, protected_fact, Checkpoint,
+    CompactionError, CompactionPlan, CompactionPolicy, CompactionRecord, CompactionTelemetry,
+    CompactionTrigger, SessionContextState,
 };
 use forge_model::{ModelClient, ModelRequest};
 use forge_types::{strip_protocol_markers, ModelResponse};
@@ -82,8 +82,9 @@ impl AgentSession {
 
     /// Point compaction at the active model's real limits.
     ///
-    /// Keeps `ContextEngine::capacity_tokens` in step so the status bar's
-    /// percentage and the compaction trigger describe the same window.
+    /// Keeps `ContextEngine::capacity_tokens` in step so
+    /// `context_usage_ratio` and the compaction trigger describe the same
+    /// window.
     pub fn set_context_window(&mut self, context_window: usize, max_output: Option<usize>) {
         if context_window == 0 {
             return;
@@ -357,15 +358,6 @@ impl AgentSession {
                 tracing::warn!(%error, "unreadable persisted context state; continuing uncompacted");
             }
         }
-    }
-
-    /// Number of checkpoint messages in the live context. Exactly one after a
-    /// compaction, and never more however many times compaction has run.
-    pub fn installed_checkpoint_count(&self) -> usize {
-        self.messages
-            .iter()
-            .filter(|message| is_checkpoint_message(message))
-            .count()
     }
 }
 

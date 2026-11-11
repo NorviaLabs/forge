@@ -1,7 +1,6 @@
 //! Authoritative task/attempt lifecycle. `ActiveTaskState` is the single
 //! source of truth for "what task is active, is Forge working/waiting, and
-//! why" — the header, transcript, composer, and queue all read it rather
-//! than keeping their own copy.
+//! why" — callers read it rather than keeping their own copy.
 //!
 //! This module is intentionally I/O-free: transition legality and state
 //! mutation are pure so they can be unit-tested without a `Journal` or a
@@ -179,6 +178,7 @@ impl ActiveTaskState {
     /// True only while `Waiting` on this exact request — used to reject
     /// stale/superseded responses (a different request id, a task that has
     /// since moved on, or a request that was already consumed).
+    #[cfg(test)]
     pub fn is_active_wait(&self, request_id: &str) -> bool {
         matches!(
             (&self.lifecycle, &self.wait_reason),

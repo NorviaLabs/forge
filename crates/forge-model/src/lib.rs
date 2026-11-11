@@ -104,12 +104,6 @@ impl ModelError {
         }
     }
 
-    /// Rate limited. Separated from the rest of [`Self::is_retryable`] because it is
-    /// the case that wants a backoff rather than an immediate retry.
-    pub fn is_rate_limited(&self) -> bool {
-        self.status() == Some(429)
-    }
-
     /// The failure looks transient, so a retry may succeed without operator action:
     /// a network fault, a rate limit, or a server-side error.
     pub fn is_retryable(&self) -> bool {
@@ -477,7 +471,7 @@ mod tests {
         };
         assert_eq!(rate_limited.status(), Some(429));
         assert!(rate_limited.is_retryable());
-        assert!(rate_limited.is_rate_limited());
+        assert!(rate_limited.status() == Some(429));
         assert!(!rate_limited.is_auth_failure());
 
         let unauthorized = ModelError::ProviderStatus {
@@ -495,7 +489,7 @@ mod tests {
             detail: String::new(),
         };
         assert!(server_fault.is_retryable());
-        assert!(!server_fault.is_rate_limited());
+        assert!(server_fault.status() != Some(429));
 
         let bad_request = ModelError::ProviderStatus {
             status: 400,

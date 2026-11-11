@@ -1,6 +1,6 @@
-//! Human-readable invocation strings for built-in tool calls, rendered under
-//! the tool label in the TUI conversation panel (TUI-02). Each formatter reads
-//! the same JSON keys its tool's args struct deserializes.
+//! Human-readable invocation strings for built-in tool calls, for display
+//! under the tool label. Each formatter reads the same JSON keys its tool's
+//! args struct deserializes.
 
 use serde_json::Value;
 

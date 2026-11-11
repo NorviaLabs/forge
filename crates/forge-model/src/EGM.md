@@ -21,7 +21,7 @@ Submodules are private. The crate-external surface is the items defined in
 `PromptSnapshot`, `PromptTransport`). Other `pub`/`pub(crate)` items listed
 under the module bullets below are crate-internal seams used by `native/`.
 
-- `ModelError` (`#[non_exhaustive]`): `Http`, `Provider`, `ProviderStatus{status, detail}`, `ProviderAuth{status, message}`, `MissingApiKey`, `UnknownRoute` (no profile serves the model id's prefix), `Transport`, `Protocol`, `Other`; `status() -> Option<u16>`, `is_auth_failure()`, `is_rate_limited()`, `is_retryable()`.
+- `ModelError` (`#[non_exhaustive]`): `Http`, `Provider`, `ProviderStatus{status, detail}`, `ProviderAuth{status, message}`, `MissingApiKey`, `UnknownRoute` (no profile serves the model id's prefix), `Transport`, `Protocol`, `Other`; `status() -> Option<u16>`, `is_auth_failure()`, `is_retryable()`.
 - `SharedMessages` — `Arc`-backed `Vec<Message>` with `Deref`/`DerefMut`, `Clone` (O(1)), `Default`, `shared()`, `shares_storage_with(&Self) -> bool`, `storage_id() -> u64`, `From<Vec<Message>>`, `IntoIterator for &SharedMessages`.
 - `ModelRequest { messages, tools, model, workspace_root, session_id, reasoning_effort, thinking_enabled, prompt_cache }` — no route or profile field; `model` (`<provider>/<model>`) selects the profile.
 - `ModelClient` trait (`Send + Sync`): required `complete`; defaulted `complete_with_stream(req, Option<StreamEventTx>)`, `set_route_table(RouteTable)` (no-op), `prompt_wire(&ModelRequest) -> Value` (OpenAI-compat projection), `prompt_transport_key(&ModelRequest) -> &'static str` (`"mock"`).

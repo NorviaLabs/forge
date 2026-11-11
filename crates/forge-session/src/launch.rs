@@ -4,8 +4,8 @@
 //! nothing. It probes repository ownership read-only, so a launch another
 //! Forge would make a second writer is refused before any setup screen and
 //! before any trust or theme write, and it reports whether the workspace
-//! still needs trust. The frontend then runs its own screens (the TUI's
-//! setup screen, the desktop's native confirm) and calls
+//! still needs trust. The frontend then runs its own screens (the desktop's
+//! trust screen) and calls
 //! [`LaunchPlan::launch`], which re-checks trust, then takes ownership,
 //! recovers interrupted creations, resolves the session target and opens the
 //! session.
@@ -842,7 +842,7 @@ mod tests {
         let fixture = Fixture::new(false);
         let plan = fixture.plan().await;
         assert!(plan.needs_trust());
-        // What the TUI's trust screen does when the user accepts.
+        // What accepting the trust screen does.
         forge_config::grant_trust_at(&trust_store(&fixture), fixture.repo.path()).unwrap();
         plan.launch(LaunchTarget::New)
             .await

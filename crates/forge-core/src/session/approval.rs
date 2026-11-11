@@ -170,8 +170,9 @@ impl AgentSession {
         Ok(())
     }
 
-    /// Resolve an approval without executing the tool yet. The TUI uses this so a
-    /// heavy command can run off the event loop while frames still paint.
+    /// Resolve an approval without executing the tool yet. The supervisor uses
+    /// this to run the approved tool in its own task, where the turn can still
+    /// be cancelled.
     pub async fn prepare_approved_hitl(
         &mut self,
         actor: &str,

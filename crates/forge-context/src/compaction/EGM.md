@@ -28,7 +28,7 @@ lives in `forge-core`'s session module.
     `category()` labels for telemetry.
   - `CompactionRecord` (+`succeeded()`), `CompactionTelemetry::record`.
   - `SessionContextState { epoch, checkpoint, tail_start_message_index,
-    protected_facts }`, `has_checkpoint`.
+    protected_facts }`.
   - `is_checkpoint_message(&Message)`.
 - Facts (`facts.rs`):
   - `ProtectedFact { kind, text, source_message_index }`,

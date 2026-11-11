@@ -13,21 +13,6 @@ impl AgentSession {
         session_id: SessionId,
     ) -> Result<ResumeReport, LoopError> {
         if session_id == self.session_id {
-            // No in-memory record of local-only composer lines exists (only
-            // the journal has it) — re-open and replay this session's own
-            // journal rather than track a parallel in-memory copy. This is
-            // the trivial "resume into the session you're already in"
-            // branch, not the common path, so the extra read is cheap and
-            // acceptable. Best-effort: a read glitch here degrades to no
-            // recalled history rather than failing the whole no-op resume.
-            let composer_lines = match Journal::open(self.journal.directory(), session_id).await {
-                Ok(journal) => journal
-                    .replay(session_id)
-                    .await
-                    .map(|state| state.composer_lines)
-                    .unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
             return Ok(ResumeReport {
                 last_seq: self.events.len() as u64,
                 model_steps: self.token_usage.model_steps as usize,
@@ -37,7 +22,6 @@ impl AgentSession {
                     .filter(|message| message.role == MessageRole::Tool)
                     .count(),
                 incomplete_intents: 0,
-                composer_lines,
             });
         }
 
@@ -83,7 +67,6 @@ impl AgentSession {
             model_steps: state.model_responses.len(),
             tool_results: state.tool_results.len(),
             incomplete_intents: state.incomplete_intents.len(),
-            composer_lines: state.composer_lines,
         };
         self.session_id = session_id;
         self.coordinator = AgentCoordinator::with_config(session_id, self.coordinator.config());
@@ -456,27 +439,6 @@ impl AgentSession {
         fork.cache_epoch = 0;
         fork.last_cache_transport = None;
         Ok(fork)
-    }
-
-    /// Whether this session can reach the network at all.
-    ///
-    /// False when no egress proxy could be started, in which case confined
-    /// commands have no route out. Worth surfacing: a failed `cargo build`
-    /// looks like a broken build rather than a missing proxy, and this is how
-    /// a caller can tell the difference.
-    pub fn has_network_egress(&self) -> bool {
-        self.egress.is_some()
-    }
-
-    /// Take the egress connection events recorded so far this session,
-    /// including those of MCP servers sharing the session's egress state.
-    /// Events from before an [`Self::adopt_egress_state`] are discarded with
-    /// the state that recorded them.
-    pub fn drain_egress_events(&self) -> Vec<forge_tools::egress::EgressEvent> {
-        self.egress
-            .as_ref()
-            .map(|runtime| runtime.drain_events())
-            .unwrap_or_default()
     }
 
     /// The hosts this session may reach, for display.

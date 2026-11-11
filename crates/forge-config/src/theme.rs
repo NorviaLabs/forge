@@ -96,7 +96,7 @@ pub struct SyntaxPalette {
     pub default: Rgb,
 }
 
-/// Semantic tokens for one TUI theme.
+/// Semantic color tokens for one theme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ThemePalette {
     pub background: Rgb,
@@ -125,7 +125,7 @@ pub struct ThemePalette {
     /// Active-work token (2026 design system). Optional in TOML with
     /// `warning` fallback for backward compatibility.
     pub activity: Rgb,
-    /// Border for the composer while an approval is pending ("paused" look).
+    /// Border tint while an approval is pending ("paused" look).
     pub waiting_border: Rgb,
     /// Hue of structural landmarks inside a model response — section labels
     /// and list markers. Editorial treatment (see FORGE-DESIGN §5): the

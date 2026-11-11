@@ -149,8 +149,8 @@ impl AgentSession {
         Ok(item)
     }
 
-    /// Cancel a still-queued item by its 1-based visible position (matches
-    /// the existing keyboard cancel-by-row UX). Returns `None` if the
+    /// Cancel a still-queued item by its 1-based visible position. Returns
+    /// `None` if the
     /// position is out of range or the item is no longer cancellable
     /// (already promoting/promoted/removed).
     pub async fn cancel_queued_at(

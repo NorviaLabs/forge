@@ -560,7 +560,7 @@ pub struct PromptAttachment {
     pub line: usize,
 }
 
-/// The context block the TUI also prepends for an attached file.
+/// The context block prepended to a prompt for an attached file.
 pub fn attachment_text(root: &Path, attachment: &PromptAttachment) -> Result<String, String> {
     let path = resolve(root, &attachment.path)?;
     if !path.is_file() {

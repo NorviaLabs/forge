@@ -1632,72 +1632,6 @@ pub fn host_allow_rule(host: &str) -> String {
     format!("host({})", suggest_host_pattern(host))
 }
 
-/// Best-effort host from a failed command's output, when the proxy log is not
-/// available (tests, or a client that never printed the 403 body).
-pub fn extract_denied_host(output: &str) -> Option<String> {
-    if let Some(host) = output
-        .split("host ")
-        .nth(1)
-        .and_then(|rest| rest.split(" is not allowed").next())
-    {
-        if let Some(host) = sanitize_host(host) {
-            return Some(host);
-        }
-    }
-    for marker in [
-        "Could not resolve host: ",
-        "Could not resolve host ",
-        "Failed to connect to ",
-    ] {
-        if let Some(rest) = output.split(marker).nth(1) {
-            let token = rest
-                .split(|c: char| c.is_whitespace() || ['\'', '"', ')', ','].contains(&c))
-                .next()
-                .unwrap_or("");
-            if let Some(host) = sanitize_host(token) {
-                return Some(host);
-            }
-        }
-    }
-    for prefix in ["https://", "http://"] {
-        if let Some(idx) = output.find(prefix) {
-            let rest = &output[idx + prefix.len()..];
-            let hostport = rest
-                .split(['/', '"', '\'', ' ', '\n', '?', '#'])
-                .next()
-                .unwrap_or("");
-            let host = hostport
-                .rsplit_once('@')
-                .map(|(_, h)| h)
-                .unwrap_or(hostport);
-            let host = host.rsplit_once(']').map(|(_, h)| h).unwrap_or(host);
-            let host = host.split(':').next().unwrap_or(host);
-            if let Some(host) = sanitize_host(host) {
-                return Some(host);
-            }
-        }
-    }
-    None
-}
-
-fn sanitize_host(raw: &str) -> Option<String> {
-    let host = raw
-        .trim()
-        .trim_matches(|c| matches!(c, '.' | '"' | '\'' | '`'))
-        .to_ascii_lowercase();
-    if host.is_empty() || host.starts_with('.') || host.contains("..") || host.contains('/') {
-        return None;
-    }
-    if host
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
-    {
-        Some(host)
-    } else {
-        None
-    }
-}
-
 /// Split a CONNECT target into the host to authorize and the port to dial.
 ///
 /// Strict on purpose. Brackets are the IPv6 literal form, so bracketed content
@@ -2296,28 +2230,6 @@ mod tests {
         assert_eq!(host_allow_rule("api.github.com"), "host(**.github.com)");
         assert_eq!(suggest_host_pattern("127.0.0.1"), "127.0.0.1");
         assert_eq!(suggest_host_pattern("localhost"), "localhost");
-    }
-
-    #[test]
-    fn denied_host_is_pulled_from_gh_and_git_errors() {
-        assert_eq!(
-            extract_denied_host(
-                "failed to authenticate: Post \"https://api.github.com/graphql\": Forge Sandbox Denied"
-            )
-            .as_deref(),
-            Some("api.github.com")
-        );
-        assert_eq!(
-            extract_denied_host(
-                "fatal: unable to access 'https://github.com/x/y': Could not resolve host: github.com"
-            )
-            .as_deref(),
-            Some("github.com")
-        );
-        assert_eq!(
-            extract_denied_host("Forge Sandbox Denied: host crates.io is not allowed\n").as_deref(),
-            Some("crates.io")
-        );
     }
 
     #[test]

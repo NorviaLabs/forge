@@ -8,7 +8,6 @@ use crate::*;
 
 impl AgentSession {
     /// Append a user message to the session (journal + transcript) without calling the model.
-    /// Used by the TUI so the YOU bubble can paint before the model run starts.
     pub async fn append_user_message(&mut self, text: &str) -> Result<(), LoopError> {
         self.append_user_message_with_attachments(text, Vec::new())
             .await
@@ -56,21 +55,6 @@ impl AgentSession {
         self.turn.reset();
         self.last_completion = None;
         self.reconcile_dangling_tool_calls().await
-    }
-
-    /// Lightweight, side-effect-free record of a composer submission — slash
-    /// command, plain chat, or any future submission type — independent of
-    /// whether it becomes a model-directed `UserMessage` via
-    /// `append_user_message`. No lifecycle transition, no message-list
-    /// mutation, callable regardless of session state (unlike
-    /// `append_user_message`, which is gated on not being `Waiting`).
-    /// Feeds `ResumeReport::composer_lines`, restoring the TUI's Up/Down
-    /// arrow-key history on resume for lines that never reach the model.
-    pub async fn record_composer_line(&self, text: &str) -> Result<(), LoopError> {
-        self.journal
-            .append_composer_line(self.session_id, text)
-            .await?;
-        Ok(())
     }
 
     /// Build the next model request from current transcript + tools.
@@ -647,11 +631,6 @@ impl AgentSession {
             // rather than forcing it to Interrupted.
             _ => Ok(()),
         }
-    }
-
-    /// Run until no tool calls, HITL pause, or an error.
-    pub async fn run_user_message(&mut self, text: &str) -> Result<ModelResponse, LoopError> {
-        self.run_user_message_with_stream(text, None).await
     }
 
     /// [`Self::run_user_message`] with token deltas forwarded to `stream_tx`.

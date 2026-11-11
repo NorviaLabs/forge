@@ -1,6 +1,6 @@
 //! Explicit FIFO queue of future-task instructions. A queue item is never
 //! itself `Working`/`Completed`/etc. — only the task it gets promoted into
-//! is. Owned by `AgentSession` (not the TUI) so promotion/journaling/
+//! is. Owned by `AgentSession` (not the frontend) so promotion/journaling/
 //! restoration all go through one store with direct `Journal` access.
 
 use std::collections::VecDeque;
@@ -137,8 +137,7 @@ impl TaskQueue {
         });
     }
 
-    /// Cancel by 1-based position in the *visible* list — matches the
-    /// existing keyboard cancel-by-row UX.
+    /// Cancel by 1-based position in the *visible* list.
     pub fn remove_at_visible_position(&mut self, one_based: usize) -> Option<QueuedTask> {
         let id = self.visible().nth(one_based.checked_sub(1)?)?.id;
         self.remove(id)

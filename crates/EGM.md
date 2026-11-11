@@ -45,11 +45,11 @@ Agent runtime:
 Workspace and policy services:
 
 - forge-context: [./forge-context/EGM.md](./forge-context/EGM.md) -
-  `ContextEngine`, which handles tool-output offload, the progress document,
+  `ContextEngine`, which handles tool-output offload, the progress path,
   AGENTS.md and skill discovery. It also contains the pure compaction planner.
 - forge-workspace: [./forge-workspace/EGM.md](./forge-workspace/EGM.md) -
-  Workspace-confined file ops, attachments, git status/review/sync, the GitHub
-  read adapter, and the `gh` mutations and merge gate.
+  Attachments, git status parsing, local git operations and review, the
+  GitHub read adapter, and the `gh` mutations.
 - forge-search: [./forge-search/EGM.md](./forge-search/EGM.md) -
   `WorkspaceIndex` file/content search and Quick Open scoring. Read-only.
 - forge-governance: [./forge-governance/EGM.md](./forge-governance/EGM.md) -

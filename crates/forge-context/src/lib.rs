@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
-use forge_types::{ProgressDocument, SessionId};
+use forge_types::SessionId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -184,15 +184,6 @@ impl ContextEngine {
         self.workspace.join(p)
     }
 
-    pub fn read_progress(&self) -> Result<Option<ProgressDocument>, ContextError> {
-        let path = self.progress_path();
-        if !path.is_file() {
-            return Ok(None);
-        }
-        let s = fs::read_to_string(path)?;
-        Ok(Some(serde_json::from_str(&s)?))
-    }
-
     pub fn load_agents_md(&self) -> String {
         let p = self.workspace.join("AGENTS.md");
         fs::read_to_string(p).unwrap_or_default()
@@ -214,19 +205,11 @@ impl ContextEngine {
         skills
     }
 
-    /// Skill count without cloning manifests. The status bar asks for this
-    /// every frame; `load_skills().len()` used to deep-copy every body.
+    /// Skill count without cloning manifests. Session snapshots ask for this
+    /// on every refresh; `load_skills().len()` used to deep-copy every body.
     pub fn skill_count(&self) -> usize {
         self.load_skills().len()
     }
-}
-
-/// Reduction ratio for offload (for tests / metrics).
-pub fn reduction_ratio(original_tokens: usize, in_context_tokens: usize) -> f64 {
-    if original_tokens == 0 {
-        return 0.0;
-    }
-    1.0 - (in_context_tokens as f64 / original_tokens as f64)
 }
 
 /// Structured representation of one `SKILL.md`, per the Agent Skills open
@@ -341,7 +324,7 @@ fn global_agents_skills_dir() -> Option<PathBuf> {
     //
     // Without it, whatever a developer happens to have installed globally is
     // spliced into every session's system prompt during tests. That is not
-    // hypothetical: it made a TUI approval test fail on machines with skills
+    // hypothetical: it made an approval test fail on machines with skills
     // installed and pass in CI, which has none. The larger prompt pushed the
     // context lifecycle into making its own model call, that call consumed the
     // scripted mock's first response, and the turn under test silently
@@ -417,7 +400,7 @@ mod tests {
         let big = "x".repeat(20_000); // ~5000 tokens
         let o = eng.offload_tool_output(&big).unwrap().expect("offload");
         let in_tok = estimate_tokens(&o.in_context);
-        let ratio = reduction_ratio(o.tokens_estimate, in_tok);
+        let ratio = 1.0 - in_tok as f64 / o.tokens_estimate as f64;
         assert!(
             ratio >= 0.80,
             "expected >=80% reduction, got {ratio} ({} -> {})",
@@ -645,14 +628,6 @@ mod tests {
     }
 
     #[test]
-    fn read_progress_returns_none_when_no_file_written_yet() {
-        let dir = tempdir().unwrap();
-        init_repo(dir.path());
-        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
-        assert!(eng.read_progress().unwrap().is_none());
-    }
-
-    #[test]
     fn load_agents_md_returns_empty_string_when_missing() {
         let dir = tempdir().unwrap();
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
@@ -665,11 +640,5 @@ mod tests {
         std::fs::write(dir.path().join("AGENTS.md"), "follow the rules").unwrap();
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         assert_eq!(eng.load_agents_md(), "follow the rules");
-    }
-
-    #[test]
-    fn reduction_ratio_is_zero_for_zero_original_tokens() {
-        assert_eq!(reduction_ratio(0, 0), 0.0);
-        assert_eq!(reduction_ratio(0, 5), 0.0);
     }
 }

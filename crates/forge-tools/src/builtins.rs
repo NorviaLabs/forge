@@ -784,7 +784,7 @@ impl Tool for BackgroundRunTool {
 }
 
 /// Model-callable TODO/checklist tool. Parses args and returns a static ack;
-/// the agent loop emits a `plan_update` turn event so the TUI can render it.
+/// the agent loop emits a `plan_update` turn event so the frontend can render it.
 /// There is no server-side plan state — each call fully replaces what clients show.
 pub struct UpdatePlanTool;
 

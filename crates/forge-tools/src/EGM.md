@@ -65,17 +65,16 @@ Subdirectories:
   `WebFetchTool` (`web_fetch`), `WebFetchArgs`, `web_fetch_tool`.
 - Validation: `validate_args`, `validation_error_signature`,
   `ValidationBudget` (`new`,
-  `with_default_max`, `record_failure`, `record_failure_with_signature`,
-  `reset_turn`).
+  `with_default_max`, `record_failure_with_signature`).
 - Output shaping: `compress_tool_output`.
 - Invocation display: `tool_invocation`.
 - Sandbox (`sandbox.rs`): `SandboxPolicy` (`for_workspace`,
   `with_read_only_workspace`, `workspace_writable`, `with_command_access`,
   `toolchain_env`, `with_read_path`, `with_git_writable`, `with_session_tmp`,
   `with_egress_proxy`, `egress_proxy_port`, `with_egress_socket`,
-  `egress_socket`, `workspace_root`, `readonly_subpaths`, `with_egress`),
+  `egress_socket`, `workspace_root`, `with_egress`),
   `Unavailable`
-  (`reason`, `startup_message`), `availability`,
+  (`reason`), `availability`,
   `seatbelt_profile`, `wrap_shell_command`, `wrap_command`, `shell_env`,
   `temp_env`, `egress_env`, `explain_denial`, `EgressGrant`
   (`take_denied_host`, `permits_host`, `allow_patterns`),
@@ -87,7 +86,7 @@ Subdirectories:
 - Egress (`egress.rs`): `EgressPolicy`, `EgressOptions`, `EgressOutcome`,
   `EgressDenial`, `EgressEvent`, `EgressShared`, `EgressProxy`,
   `EgressInvocation`, `CallGateway`, `denial_for_confined_command`,
-  `suggest_host_pattern`, `host_allow_rule`, `extract_denied_host`,
+  `suggest_host_pattern`, `host_allow_rule`,
   `EGRESS_CONNECT_TIMEOUT`, `EGRESS_IDLE_TIMEOUT`, `EGRESS_EVENT_CAPACITY`,
   `SANDBOX_DENIED_REASON`, `PRIVATE_ADDRESS_DENIED_REASON`,
   `HOST_DENIED_EXPLANATION`. `EgressShared`/`CallGateway` expose
@@ -120,7 +119,7 @@ Subdirectories:
   egress gateway), which the approve-all session mode uses for background
   shells.
 - The OS sandbox mounts the workspace's `.git` and `.forge` read-only
-  (`readonly_subpaths`). `with_git_writable` opens `.git` for git mutation
+  (private `readonly_subpaths_of`). `with_git_writable` opens `.git` for git mutation
   commands but always keeps `hooks` and `config` read-only (in `.git` and in
   linked-worktree gitdirs, on both Seatbelt and bubblewrap), because those
   name programs a later unconfined git would execute.
@@ -162,7 +161,7 @@ Subdirectories:
   that host exactly (or `EgressOptions::allow_private_destinations` is set); wildcard grants
   never reach private destinations, and no grant prompt is offered for it.
 - The egress event log is bounded at `EGRESS_EVENT_CAPACITY`; overflow drops the
-  oldest event and increments `dropped_events`.
+  oldest event and increments an internal dropped counter.
 - `EgressProxy`/`EgressInvocation`/`CallGateway` stop listening when dropped;
   the Unix socket file is removed on drop.
 

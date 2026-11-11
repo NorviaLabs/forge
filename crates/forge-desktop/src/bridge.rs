@@ -3108,10 +3108,9 @@ pub async fn list_models() -> Result<Vec<ModelOption>, String> {
         let registry = forge_connect::loaded_registry();
         let store = forge_connect::CredentialStore::user_default();
         let cache = forge_connect::ModelCatalogCache::user_default();
-        // A provider connected elsewhere (the TUI, an imported sign-in, a
-        // migrated credential file) may have no cached catalog here. Refresh
-        // the stale ones first, as the TUI does on opening its picker;
-        // otherwise its models never become selectable in the desktop.
+        // A provider connected elsewhere (an imported sign-in, a migrated
+        // credential file) may have no cached catalog here. Refresh the stale
+        // ones first; otherwise its models never become selectable.
         for profile in registry.profiles() {
             if !cache.is_fresh(&profile.id) {
                 let _ = forge_connect::refresh_profile_catalog(profile, &store, &cache);

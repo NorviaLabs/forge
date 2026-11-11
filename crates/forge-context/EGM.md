@@ -2,8 +2,8 @@
 
 ## Overview
 
-Context-lifecycle crate (CTX-01/02): offloading oversized tool output, progress
-checkpointing, skill discovery, and context compaction. It depends only on
+Context-lifecycle crate (CTX-01/02): offloading oversized tool output, progress-path
+resolution, skill discovery, and context compaction. It depends only on
 `forge-types` and `forge-storage`, so the compaction rules stay pure and
 reusable by frontends and tests. Source lives in `src/`.
 
@@ -15,8 +15,8 @@ reusable by frontends and tests. Source lives in `src/`.
 ## Interface
 
 - `ContextEngine`, `ContextConfig`, `OffloadResult`, `ContextError`,
-  `SkillManifest`, `discover_skills`, `estimate_tokens`,
-  `estimate_messages_tokens`, `reduction_ratio` ([src](./src/EGM.md)).
+  `SkillManifest`, `discover_skills`, `estimate_tokens`
+  ([src](./src/EGM.md)).
 - `compaction` module: `Checkpoint`, `plan_compaction`, `CompactionPolicy`,
   `SessionContextState`, protected facts, and tail selection
   ([src/compaction](./src/compaction/EGM.md)).
@@ -32,8 +32,7 @@ reusable by frontends and tests. Source lives in `src/`.
 
 ## Side Effects
 
-- `ContextEngine` writes offloaded tool bodies and the progress document, and
-  reads `AGENTS.md` and `SKILL.md` files from the workspace and the global
+- `ContextEngine` writes offloaded tool bodies and reads `AGENTS.md` and `SKILL.md` files from the workspace and the global
   skills directory.
 - Reads the `FORGE_GLOBAL_SKILLS_DIR` environment variable.
 

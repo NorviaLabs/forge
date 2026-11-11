@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::exclude::{ensure_managed_block, resolve_exclude_path, ExcludeError};
 use crate::git::{detect_repo_info, GitTopology, RepoInfo};
-use crate::migrate::{migrate_legacy_runtime_files, MigrationOutcome, MigrationRecord};
+use crate::migrate::{migrate_legacy_runtime_files, MigrationRecord};
 
 /// The Forge-managed exclude pattern. Deliberately narrow: excludes only
 /// the runtime-owned subtree, never all of `.forge/` (which would also
@@ -294,11 +294,12 @@ impl LocalRuntimeStorage {
     /// by Git — surfaced so a caller can warn the operator ("Forge did not
     /// modify the Git index; review the tracked files before migration"),
     /// never silently altered.
+    #[cfg(test)]
     pub fn tracked_migration_conflicts(&self) -> Vec<PathBuf> {
         self.migration_report
             .borrow()
             .iter()
-            .filter(|r| r.outcome == MigrationOutcome::Tracked)
+            .filter(|r| r.outcome == crate::MigrationOutcome::Tracked)
             .map(|r| r.source.clone())
             .collect()
     }

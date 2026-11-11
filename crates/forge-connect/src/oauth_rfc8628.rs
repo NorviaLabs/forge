@@ -1,7 +1,7 @@
 //! xAI / SpaceXAI OAuth — same endpoints Grok Build uses (`auth.x.ai` OIDC).
 //!
 //! HTTP uses **ureq** (pure sync). Do **not** use `reqwest::blocking` here — it nests a
-//! Tokio runtime and panics when called from the async TUI (`Cannot drop a runtime in a
+//! Tokio runtime and panics when called from async code (`Cannot drop a runtime in a
 //! context where blocking is not allowed`).
 //!
 //! Grok Build defaults:
@@ -243,32 +243,6 @@ impl Rfc8628Client {
                 .or_else(|| Some(refresh_token.to_string())),
             expires_at,
         })
-    }
-
-    /// Block until the user finishes device login or timeout.
-    pub fn poll_until_tokens(
-        &self,
-        pending: &OauthPending,
-        max_wait: std::time::Duration,
-    ) -> Result<OauthTokens, Rfc8628Error> {
-        let deadline = std::time::Instant::now() + max_wait;
-        let mut interval = std::time::Duration::from_secs(pending.interval_secs.max(1));
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(Rfc8628Error::Expired);
-            }
-            match self.poll_token_once(pending) {
-                Ok(tokens) => return Ok(tokens),
-                Err(Rfc8628Error::AuthorizationPending) => {
-                    std::thread::sleep(interval);
-                }
-                Err(Rfc8628Error::SlowDown) => {
-                    interval += std::time::Duration::from_secs(5);
-                    std::thread::sleep(interval);
-                }
-                Err(e) => return Err(e),
-            }
-        }
     }
 }
 
@@ -729,37 +703,6 @@ mod tests {
         assert!(
             matches!(err, Rfc8628Error::Token(msg) if msg.contains("empty access_token on refresh"))
         );
-    }
-
-    #[test]
-    fn poll_until_tokens_retries_through_authorization_pending() {
-        // SlowDown's own error mapping is covered by
-        // poll_token_once_maps_known_oauth_error_codes; not exercised here too,
-        // since poll_until_tokens adds a hardcoded 5s backoff on that leg that
-        // would make this test needlessly slow for no extra coverage.
-        let Some(base) = forge_test_support::mock_http(vec![
-            (400, r#"{"error":"authorization_pending"}"#, vec![]),
-            (200, r#"{"access_token":"tok"}"#, vec![]),
-        ]) else {
-            eprintln!("skipping: this host denies binding a listener");
-            return;
-        };
-        let client = mock_client(base);
-        let pending = pending_for(&client);
-        let tokens = client
-            .poll_until_tokens(&pending, std::time::Duration::from_secs(30))
-            .unwrap();
-        assert_eq!(tokens.access_token, "tok");
-    }
-
-    #[test]
-    fn poll_until_tokens_returns_expired_once_the_deadline_has_passed() {
-        let client = mock_client("http://127.0.0.1:1".into()); // never reached
-        let pending = pending_for(&client);
-        let err = client
-            .poll_until_tokens(&pending, std::time::Duration::from_millis(0))
-            .unwrap_err();
-        assert!(matches!(err, Rfc8628Error::Expired));
     }
 
     /// Live smoke against auth.x.ai (skipped if FORGE_SKIP_NETWORK=1).

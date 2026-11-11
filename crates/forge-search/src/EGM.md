@@ -3,7 +3,7 @@
 ## Overview
 
 Workspace file/content search for agents and UI, backed by `fff-search`. Wraps
-a long-lived, incrementally updated file picker with frecency, then adds
+a long-lived, incrementally updated file picker, then adds
 Quick Open re-ranking and a merged name+content result list for
 search-as-you-type.
 
@@ -14,7 +14,7 @@ search-as-you-type.
 - `DEFAULT_SEARCH_MAX_FILES: usize = 200`, `MIN_CONTENT_QUERY_CHARS: usize = 2`.
 - `SearchError::{Init, ScanTimeout, Lock}`.
 - `WorkspaceIndexOptions { watch: true, scan_timeout: 10s, wait_for_scan: true }`.
-- `WorkspaceIndex::{open, open_with_options, workspace_root, wait_for_scan, find_files, find_files_quick_open, grep, grep_scoped, search_files, note_file_changed, note_file_opened}`.
+- `WorkspaceIndex::{open, open_with_options, workspace_root, wait_for_scan, find_files, find_files_quick_open, grep, grep_scoped, search_files, note_file_changed}`.
 - `merge_search_results(name: FindResponse, content: GrepResponse, max_files) -> MergedSearch`.
 
 `quick_open.rs`:
@@ -29,7 +29,7 @@ search-as-you-type.
 - `max_results == 0` returns an empty response without touching the index; an empty/whitespace grep pattern also returns empty.
 - Every query path calls `wait_for_scan` first, so a slow initial scan surfaces as `SearchError::ScanTimeout` (default 10s) rather than partial results.
 - `relevance` is normalized against the **top hit of the same result set** (`score / top_score`, clamped to `0.0..=1.0`), not against an absolute scale. `GrepSearchHit.relevance` is `Option<f32>`: normalized against the max `fuzzy_score`, and `None` for hits without one (every non-`Fuzzy` mode).
-- `find_files_quick_open` pulls a wider candidate set (`max_results * 8`, clamped to `100..=400`) from fff, re-ranks with Quick Open scoring, then truncates; an empty query delegates to plain `find_files` so frecency ordering survives. Its `total_matched` counts re-ranked hits within that candidate window, not fff's total match count as in `find_files`.
+- `find_files_quick_open` pulls a wider candidate set (`max_results * 8`, clamped to `100..=400`) from fff, re-ranks with Quick Open scoring, then truncates; an empty query delegates to plain `find_files`. Its `total_matched` counts re-ranked hits within that candidate window, not fff's total match count as in `find_files`.
 - Content matching waits for `MIN_CONTENT_QUERY_CHARS` (2) characters; one character is a whole-workspace scan whose only possible output is noise.
 - Grep hit text is capped at `MAX_GREP_LINE_CHARS` (240) and context at `MAX_GREP_CONTEXT_CHARS` (320) in the returned hit. In `Literal` mode, a hit without match offsets re-reads its source line from disk unbounded before truncation, so a very long (e.g. minified) line is read whole into memory.
 - `path` and `include` filters are applied as FFF query constraints **before** pagination. Post-filtering the first page would drop every hit when the first `max_results` matches live outside the requested directory.
@@ -41,7 +41,7 @@ search-as-you-type.
 
 - Scans and watches the workspace filesystem; spawns scanner threads inside `fff-search`.
 - Reads file contents for grep and for building hit context.
-- `note_file_opened` updates frecency state; `note_file_changed` updates the index for a path.
+- `note_file_changed` updates the index for a path.
 - Holds a read lock on the shared picker for the duration of a query.
 - Resolves paths relative to the workspace root passed to `open`.
 

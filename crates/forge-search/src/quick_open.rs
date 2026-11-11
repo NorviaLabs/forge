@@ -1,4 +1,4 @@
-//! VS Code–inspired Quick Open path scoring for the TUI.
+//! VS Code–inspired Quick Open path scoring.
 //!
 //! Agent `glob` keeps permissive fuzzy matching; Quick Open uses word-boundary
 //! subsequence scoring with basename and path-segment bonuses.

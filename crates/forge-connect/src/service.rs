@@ -292,23 +292,6 @@ impl<'a> ConnectService<'a> {
         Ok(pending)
     }
 
-    /// Single non-blocking poll of a device-code session (for TUI ticks).
-    pub fn poll_oauth_once(
-        &mut self,
-        pending: &OauthPending,
-    ) -> Result<Option<ConnectOutcome>, ConnectError> {
-        // An offline stub session has nothing to poll.
-        if pending.client_id == "stub" {
-            return Ok(None);
-        }
-        match OauthDispatcher::poll(pending)? {
-            PollResult::Complete(tokens) => {
-                Ok(Some(self.connect_oauth(&pending.profile_id, tokens)?))
-            }
-            PollResult::Pending | PollResult::SlowDown => Ok(None),
-        }
-    }
-
     /// Block until device login completes for CLI callers.
     pub fn complete_oauth_device_flow(
         &mut self,
@@ -341,7 +324,7 @@ impl<'a> ConnectService<'a> {
         }
     }
 
-    /// Connect dispatch used by CLI/TUI after collecting secrets.
+    /// Connect dispatch, called after collecting secrets.
     pub fn connect(
         &mut self,
         profile_id: &str,
@@ -637,7 +620,7 @@ pub fn format_connected(outcome: &ConnectOutcome, title: &str) -> String {
     )
 }
 
-/// Whether TUI should open API key modal before calling connect.
+/// Whether the profile needs an API key prompt before calling connect.
 pub fn needs_tui_api_key_prompt(registry: &ConnectRegistry, profile_id: &str) -> bool {
     registry
         .get(profile_id)
@@ -645,7 +628,7 @@ pub fn needs_tui_api_key_prompt(registry: &ConnectRegistry, profile_id: &str) ->
         .unwrap_or(false)
 }
 
-/// Whether TUI should open OAuth overlay.
+/// Whether connecting the profile runs an OAuth flow.
 pub fn needs_tui_oauth(registry: &ConnectRegistry, profile_id: &str) -> bool {
     registry
         .get(profile_id)
@@ -1135,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn start_poll_and_complete_oauth_stub_paths_are_non_networked() {
+    fn start_and_complete_oauth_stub_paths_are_non_networked() {
         let guard = EnvGuard::new(OAUTH_ENV);
         guard.set("FORGE_CONNECT_OAUTH_STUB", "1");
         let dir = tempdir().unwrap();
@@ -1152,16 +1135,11 @@ mod tests {
         let pending = svc.start_oauth("xai").unwrap();
         assert_eq!(pending.profile_id, "xai");
         assert!(pending.operator_instructions().contains("xAI"));
-        // A stub session has nothing to poll, for any provider.
-        assert!(matches!(svc.poll_oauth_once(&pending), Ok(None)));
         assert!(svc
             .complete_oauth_device_flow(&pending, std::time::Duration::from_millis(1))
             .unwrap_err()
             .to_string()
             .contains("stub OAuth cannot complete"));
-
-        let other = OauthPending::start_stub("other", "https://auth.example");
-        assert_eq!(svc.poll_oauth_once(&other).unwrap(), None);
     }
 
     #[test]
@@ -1712,50 +1690,6 @@ mod tests {
             store.get_oauth("xai").unwrap().unwrap().access_token,
             "refreshed"
         );
-    }
-
-    #[test]
-    fn poll_oauth_once_completes_device_flow_via_mock() {
-        use forge_test_support::mock_http;
-
-        const ENV: &[&str] = &["FORGE_CONNECT_SKIP_VERIFY"];
-        let guard = EnvGuard::new(ENV);
-        let Some(base) = mock_http(vec![(
-            200,
-            r#"{"access_token":"poll-access","refresh_token":"poll-refresh","expires_in":3600}"#,
-            vec![],
-        )]) else {
-            eprintln!("skipping: this host denies binding a listener");
-            return;
-        };
-        guard.set("FORGE_CONNECT_SKIP_VERIFY", "1");
-
-        let dir = tempdir().unwrap();
-        let store = CredentialStore::new(dir.path().join("c.toml"));
-        let preferences = PreferenceStore::new(dir.path().join("p.toml"));
-        let reg = oauth_registry_at(&base);
-        let mut svc = ConnectService {
-            registry: &reg,
-            credentials: &crate::credentials::Credentials::for_test(&store),
-            preferences: &preferences,
-            active_profile_id: None,
-            active_model: None,
-        };
-        let pending = OauthPending {
-            profile_id: "xai".into(),
-            verification_uri: format!("{base}/oauth2/device"),
-            verification_uri_complete: None,
-            user_code: "AB12".into(),
-            device_code: "dc".into(),
-            auth_server: base,
-            interval_secs: 1,
-            expires_in_secs: Some(900),
-            client_id: crate::oauth_rfc8628::DEFAULT_CLIENT_ID.into(),
-            flavor: crate::OauthFlavor::Rfc8628,
-        };
-        let outcome = svc.poll_oauth_once(&pending).unwrap().unwrap();
-        assert_eq!(outcome.key_source, KeySource::Oauth);
-        assert!(svc.active_profile_id.is_none());
     }
 
     #[test]

@@ -80,25 +80,6 @@ pub fn mcp_tool_name(server_id: &str, tool: &str) -> String {
     format!("{MCP_TOOL_NAME_PREFIX}{server_id}:{tool}")
 }
 
-pub fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
-    let rest = name.strip_prefix(MCP_TOOL_NAME_PREFIX)?;
-    let (sid, tool) = rest.split_once(':')?;
-    Some((sid, tool))
-}
-
-/// Register static (test/demo) MCP tools into a registry with namespacing.
-pub fn register_static_mcp(
-    registry: &mut ToolRegistry,
-    server_id: &str,
-    tools: Vec<StaticMcpTool>,
-) {
-    for mut t in tools {
-        let full = mcp_tool_name(server_id, &t.tool_name);
-        t.tool_name = full.clone();
-        registry.register(Arc::new(t));
-    }
-}
-
 /// Minimal stdio JSON-RPC MCP client (tools/list + tools/call).
 pub struct McpStdioClient {
     /// Kills the server's whole process group — the server and anything it
@@ -516,10 +497,6 @@ impl McpStdioClient {
         Ok(out)
     }
 
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<ToolOutput, McpError> {
-        self.call_tool_attributed(name, args, None).await.result
-    }
-
     /// Run one `tools/call` and report the hosts the server's egress endpoint
     /// refused while it was in flight. While the call runs, the endpoint's
     /// connections are attributed to `call_id` (when given) instead of
@@ -743,10 +720,6 @@ impl McpManager {
         self
     }
 
-    pub async fn connect_all(&mut self, servers: &[McpServerConfig]) -> Vec<String> {
-        self.connect_all_with_workspace(servers, None).await
-    }
-
     /// Connect MCP servers with each child process rooted in the session
     /// workspace.
     pub async fn connect_all_in_workspace(
@@ -926,6 +899,20 @@ pub fn install_search_tools(registry: &mut ToolRegistry) {
         return;
     }
     registry.register(Arc::new(SearchToolsTool { catalog }));
+}
+
+/// Test fixture: register in-process tools under MCP-style names.
+#[cfg(test)]
+pub fn register_static_mcp(
+    registry: &mut ToolRegistry,
+    server_id: &str,
+    tools: Vec<StaticMcpTool>,
+) {
+    for mut t in tools {
+        let full = mcp_tool_name(server_id, &t.tool_name);
+        t.tool_name = full.clone();
+        registry.register(Arc::new(t));
+    }
 }
 
 #[cfg(test)]
@@ -1111,7 +1098,7 @@ done
         let working = fixture_server_two_tools();
         let mut manager = McpManager::new();
         assert!(manager
-            .connect_all(&[broken_cfg, fixture_cfg(&working)])
+            .connect_all_with_workspace(&[broken_cfg, fixture_cfg(&working)], None)
             .await
             .is_empty());
 
@@ -1132,7 +1119,10 @@ done
         cfg.enabled_tools = Some(vec!["echo".into()]);
 
         let mut manager = McpManager::new();
-        assert!(manager.connect_all(&[cfg]).await.is_empty());
+        assert!(manager
+            .connect_all_with_workspace(&[cfg], None)
+            .await
+            .is_empty());
 
         let mut registry = ToolRegistry::new();
         assert!(manager.register_into(&mut registry).await.is_empty());
@@ -1152,7 +1142,10 @@ done
         cfg.disabled_tools = Some(vec!["ping".into()]);
 
         let mut manager = McpManager::new();
-        assert!(manager.connect_all(&[cfg]).await.is_empty());
+        assert!(manager
+            .connect_all_with_workspace(&[cfg], None)
+            .await
+            .is_empty());
 
         let mut registry = ToolRegistry::new();
         assert!(manager.register_into(&mut registry).await.is_empty());
@@ -1224,20 +1217,6 @@ done
             .await
             .unwrap();
         assert!(out.content.contains("No tools matched"), "{}", out.content);
-    }
-
-    #[test]
-    fn namespace_roundtrip() {
-        let n = mcp_tool_name("demo", "echo");
-        assert_eq!(n, "mcp:demo:echo");
-        let (s, t) = parse_mcp_tool_name(&n).unwrap();
-        assert_eq!(s, "demo");
-        assert_eq!(t, "echo");
-        assert!(parse_mcp_tool_name("not-mcp").is_none());
-        assert!(parse_mcp_tool_name("mcp:server-only").is_none());
-        let (s, t) = parse_mcp_tool_name("mcp:demo:tool:with:colons").unwrap();
-        assert_eq!(s, "demo");
-        assert_eq!(t, "tool:with:colons");
     }
 
     #[tokio::test]
@@ -1339,8 +1318,9 @@ done
         assert_eq!(tools[0].name, "echo");
         assert_eq!(tools[0].description, "Echo text");
         let output = client
-            .call_tool("echo", json!({"text": "hello"}))
+            .call_tool_attributed("echo", json!({"text": "hello"}), None)
             .await
+            .result
             .unwrap();
         assert!(output.is_error);
         assert!(output.content.contains("hello"));
@@ -1366,11 +1346,11 @@ done
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
         let (first, second) = tokio::join!(
-            client.call_tool("echo", json!({"n": 1})),
-            client.call_tool("echo", json!({"n": 2}))
+            client.call_tool_attributed("echo", json!({"n": 1}), None),
+            client.call_tool_attributed("echo", json!({"n": 2}), None)
         );
-        assert!(first.unwrap().content.contains("hello"));
-        assert!(second.unwrap().content.contains("hello"));
+        assert!(first.result.unwrap().content.contains("hello"));
+        assert!(second.result.unwrap().content.contains("hello"));
     }
 
     #[tokio::test]
@@ -1414,7 +1394,10 @@ done
         };
 
         let mut manager = McpManager::new();
-        assert!(manager.connect_all(&[cfg]).await.is_empty());
+        assert!(manager
+            .connect_all_with_workspace(&[cfg], None)
+            .await
+            .is_empty());
 
         let mut registry = ToolRegistry::new();
         assert!(manager.register_into(&mut registry).await.is_empty());
@@ -1439,16 +1422,19 @@ done
     async fn manager_default_and_connect_all_reports_spawn_failures() {
         let mut manager = McpManager::default();
         let errors = manager
-            .connect_all(&[McpServerConfig {
-                id: "missing".into(),
-                transport: "stdio".into(),
-                command: "/no/such/mcp-server".into(),
-                args: Vec::new(),
-                side_effect_class: SideEffectClass::Exec,
-                enabled_tools: None,
-                disabled_tools: None,
-                ..Default::default()
-            }])
+            .connect_all_with_workspace(
+                &[McpServerConfig {
+                    id: "missing".into(),
+                    transport: "stdio".into(),
+                    command: "/no/such/mcp-server".into(),
+                    args: Vec::new(),
+                    side_effect_class: SideEffectClass::Exec,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    ..Default::default()
+                }],
+                None,
+            )
             .await;
         assert_eq!(errors.len(), 1);
         assert!(errors[0].starts_with("missing:"));
@@ -1554,7 +1540,11 @@ done
         let client =
             McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
                 .await?;
-        let report = client.call_tool("probe", json!({})).await?.content;
+        let report = client
+            .call_tool_attributed("probe", json!({}), None)
+            .await
+            .result?
+            .content;
         let connected = timeout(Duration::from_millis(200), listener.accept())
             .await
             .is_ok();
@@ -1748,11 +1738,21 @@ done
             .is_empty());
         let client = manager.clients.get("fixture").unwrap().clone();
 
-        let before = client.call_tool("probe", json!({})).await.unwrap().content;
+        let before = client
+            .call_tool_attributed("probe", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
         assert!(before.contains("status=403"), "{before}");
 
         session.grant_host("127.0.0.1");
-        let after = client.call_tool("probe", json!({})).await.unwrap().content;
+        let after = client
+            .call_tool_attributed("probe", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
         assert!(after.contains("status=200"), "{after}");
 
         let events = session.drain_events();
@@ -1951,7 +1951,12 @@ done
         let mut policy = EgressPolicy::new();
         policy.allow("127.0.0.1");
         session.replace_policy(policy);
-        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        let report = client
+            .call_tool_attributed("probe", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
         assert!(report.contains("status=200"), "{report}");
     }
 
@@ -1984,7 +1989,12 @@ done
             McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
                 .await
                 .unwrap();
-        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        let report = client
+            .call_tool_attributed("probe", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
         assert!(report.contains("tmp=ok"), "{report}");
         assert!(report.contains("same=yes"), "{report}");
         assert!(report.contains("ws=denied"), "{report}");
@@ -2047,7 +2057,12 @@ done
             McpStdioClient::spawn_with_workspace(&cfg, Some(workspace.path()), &deny_all_egress())
                 .await
                 .unwrap();
-        let report = client.call_tool("probe", json!({})).await.unwrap().content;
+        let report = client
+            .call_tool_attributed("probe", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
         assert!(report.contains("cache=read"), "{report}");
         assert!(report.contains("own=read"), "{report}");
         assert!(report.contains("secret=denied"), "{report}");
@@ -2158,7 +2173,12 @@ done
             )
             .await
             .unwrap();
-            let report = client.call_tool("probe", json!({})).await.unwrap().content;
+            let report = client
+                .call_tool_attributed("probe", json!({}), None)
+                .await
+                .result
+                .unwrap()
+                .content;
             let pid = report
                 .split("grandchild=")
                 .nth(1)

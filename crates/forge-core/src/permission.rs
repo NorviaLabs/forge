@@ -616,7 +616,7 @@ mod propagation_contract {
         // And it must not own a proxy of its own: two proxies per session means
         // two allow-lists and two things to revoke.
         assert!(
-            !child.has_network_egress(),
+            !child.egress.is_some(),
             "the child holds a grant, not a listener"
         );
     }

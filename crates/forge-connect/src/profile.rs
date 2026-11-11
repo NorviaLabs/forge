@@ -32,7 +32,7 @@ pub enum OauthFlavor {
     Chatgpt,
 }
 
-/// When the TUI asks for a key.
+/// How Forge asks for a key.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum AuthPrompt {
@@ -428,10 +428,6 @@ impl ProviderSpec {
         auth.kind == AuthKind::ApiKey && auth.prompt == AuthPrompt::Tui
     }
 
-    pub fn rejects_api_key_cli(&self) -> bool {
-        self.effective_auth().is_oauth()
-    }
-
     pub fn is_user(&self) -> bool {
         self.origin == SpecOrigin::User
     }
@@ -441,7 +437,7 @@ impl ProviderSpec {
         self.wire.unwrap_or(WireKind::ChatCompletions)
     }
 
-    /// The profile's auth (an API key prompted in the TUI when unset).
+    /// The profile's auth (an API key prompted for in the app when unset).
     pub fn effective_auth(&self) -> AuthSpec {
         self.auth.clone().unwrap_or_default()
     }
@@ -541,7 +537,7 @@ mod tests {
         );
         assert_eq!(api.default_model(), Some("demo/model-a"));
         assert!(api.needs_tui_api_key_prompt());
-        assert!(!api.rejects_api_key_cli());
+        assert!(!api.effective_auth().is_oauth());
 
         let oauth = profile(
             crate::AuthSpec::oauth(
@@ -552,7 +548,7 @@ mod tests {
         );
         assert_eq!(oauth.default_model(), None);
         assert!(!oauth.needs_tui_api_key_prompt());
-        assert!(oauth.rejects_api_key_cli());
+        assert!(oauth.effective_auth().is_oauth());
     }
 
     #[test]

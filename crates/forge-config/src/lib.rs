@@ -799,7 +799,7 @@ mod tests {
     /// Redirecting the config dir is not optional hygiene. `Config::load`
     /// merges `~/.../forge/config.toml` before anything else, so a developer
     /// with a personal config had it silently layered under every assertion
-    /// here — a single `[tui] theme = "system"` was enough to fail
+    /// here — a single personal setting was enough to fail
     /// `defaults_workspace_to_cwd` locally while CI, which has no user
     /// config, stayed green. Shares the crate-wide `ENV_LOCK` with
     /// `permissions.rs`'s `IsolatedUserConfig`, since rustc runs tests in

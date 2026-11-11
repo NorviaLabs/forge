@@ -300,39 +300,6 @@ impl Unavailable {
             }
         }
     }
-
-    /// Stderr copy when Forge refuses to start. The CLI prints this and
-    /// exits; it is the only user-facing surface for a missing sandbox.
-    pub fn startup_message(&self) -> String {
-        match self {
-            Self::UnsupportedPlatform => {
-                format!(
-                    "{}\nInside WSL2, install bubblewrap: sudo apt install bubblewrap",
-                    self.reason()
-                )
-            }
-            Self::MissingDependency("bubblewrap") => {
-                format!(
-                    "{}\nInstall it with: sudo apt install bubblewrap   or   brew install bubblewrap",
-                    self.reason()
-                )
-            }
-            Self::MissingDependency("sandbox-exec") => {
-                format!(
-                    "{}\nForge needs /usr/bin/sandbox-exec, which ships with macOS.",
-                    self.reason()
-                )
-            }
-            Self::MissingDependency(what) => {
-                format!("{}\nInstall {what} and retry.", self.reason())
-            }
-            Self::CannotApply => format!(
-                "{}\nForge is likely running inside another sandbox, and a process \
-                 cannot enter a second one. Run Forge outside that layer.",
-                self.reason()
-            ),
-        }
-    }
 }
 
 /// Whether this host can confine a spawned process.
@@ -737,14 +704,6 @@ impl SandboxPolicy {
         }
         paths.push(root.join(".forge"));
         paths
-    }
-
-    /// The read-only carve-outs for this policy's workspace, as configured.
-    ///
-    /// Note these are *unresolved*; the profile resolves the root first. See
-    /// [`seatbelt_profile`] for why that matters.
-    pub fn readonly_subpaths(&self) -> Vec<PathBuf> {
-        Self::readonly_subpaths_of(&self.workspace_root, self.git_writable)
     }
 }
 
@@ -1634,15 +1593,18 @@ mod tests {
     fn policy_marks_git_and_forge_readonly() {
         let ws = workspace();
         let p = SandboxPolicy::for_workspace(ws.path());
+        let readonly = |p: &SandboxPolicy| {
+            SandboxPolicy::readonly_subpaths_of(&p.workspace_root, p.git_writable)
+        };
         assert_eq!(
-            p.readonly_subpaths(),
+            readonly(&p),
             vec![ws.path().join(".git"), ws.path().join(".forge")]
         );
         // A real `.git` directory gets its hooks and config carved read-only.
         let gitdir = ws.path().join(".git");
         std::fs::create_dir_all(&gitdir).unwrap();
         assert_eq!(
-            p.clone().with_git_writable().readonly_subpaths(),
+            readonly(&p.clone().with_git_writable()),
             vec![
                 gitdir.join("hooks"),
                 gitdir.join("config"),
@@ -1655,7 +1617,7 @@ mod tests {
         std::fs::remove_dir_all(&gitdir).unwrap();
         std::fs::write(&gitdir, "gitdir: /tmp/somewhere\n").unwrap();
         assert_eq!(
-            p.clone().with_git_writable().readonly_subpaths(),
+            readonly(&p.clone().with_git_writable()),
             vec![ws.path().join(".forge")],
             "a linked worktree must not bind a nonexistent .git/hooks"
         );
@@ -2063,29 +2025,6 @@ mod tests {
         assert!(Unavailable::MissingDependency("bubblewrap")
             .reason()
             .contains("bubblewrap"));
-    }
-
-    #[test]
-    fn startup_message_includes_the_install_line() {
-        let linux = Unavailable::MissingDependency("bubblewrap").startup_message();
-        assert!(
-            linux.contains("sandbox unavailable: bubblewrap not found"),
-            "{linux}"
-        );
-        assert!(linux.contains("sudo apt install bubblewrap"), "{linux}");
-        assert!(linux.contains("brew install bubblewrap"), "{linux}");
-
-        let windows = Unavailable::UnsupportedPlatform.startup_message();
-        assert!(windows.contains("run under WSL2 on Windows"), "{windows}");
-        assert!(
-            windows.contains("Inside WSL2, install bubblewrap: sudo apt install bubblewrap"),
-            "{windows}"
-        );
-
-        let macos = Unavailable::MissingDependency("sandbox-exec").startup_message();
-        assert!(macos.contains("sandbox-exec not found"), "{macos}");
-        assert!(macos.contains("/usr/bin/sandbox-exec"), "{macos}");
-        assert!(!macos.contains("brew install bubblewrap"), "{macos}");
     }
 
     #[cfg(target_os = "macos")]

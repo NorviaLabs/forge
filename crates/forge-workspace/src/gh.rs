@@ -525,14 +525,6 @@ pub fn merge(workspace: &Path, reference: &str, method: &str) -> Result<String, 
     Ok(String::from_utf8_lossy(&output).trim().to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeGate {
-    pub checks: Vec<String>,
-    pub review_decision: Option<String>,
-}
-
-impl MergeGate {}
-
 pub fn repository(workspace: &Path) -> Result<String, GithubError> {
     let remote = run_git(workspace, &["remote", "get-url", "origin"], GH_TIMEOUT)?;
     if !remote.status.success() {

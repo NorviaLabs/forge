@@ -330,9 +330,7 @@ pub struct TranscriptSnapshot {
 ///
 /// Messages only ever append or get replaced wholesale, so lengths plus the
 /// size of the tail catch every change that matters — including the growing
-/// last message during streaming. This mirrors the assumption the TUI's own
-/// conversation render cache has always keyed on; it is the same trade, not a
-/// new one.
+/// last message during streaming.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct TranscriptFingerprint {
     messages_storage_id: u64,
@@ -391,7 +389,7 @@ impl TranscriptSnapshot {
     ///
     /// This is the read-only path for looking at a background subagent's
     /// session. The child owns that session and may still be writing to it, so
-    /// the TUI must not open a second runtime against it — `open_session`
+    /// this process must not open a second runtime against it — `open_session`
     /// builds a runtime, it does not merely read. Replaying the journal is a
     /// second *reader*, which is what the durable store's WAL mode permits.
     ///
@@ -432,7 +430,7 @@ impl TranscriptSnapshot {
 /// A read-only transcript for a session this process does not own, rebuilt from
 /// its journal.
 ///
-/// The TUI's view of a background subagent's session. Read-only by
+/// The desktop app's view of a background subagent's session. Read-only by
 /// construction: this replays the journal rather than opening a runtime, so it
 /// cannot become a second writer against a session the child still owns.
 ///
@@ -690,7 +688,10 @@ mod tests {
         .await;
         session
             .set_governance(forge_governance::Governance::default().require_hitl_for_tool("bash"));
-        session.run_user_message("push").await.unwrap();
+        session
+            .run_user_message_with_stream("push", None)
+            .await
+            .unwrap();
 
         let snapshot = SessionSnapshot::capture(&session);
         assert!(snapshot.is_awaiting_approval());
@@ -704,7 +705,10 @@ mod tests {
     async fn refreshing_an_unchanged_transcript_reuses_the_same_allocation() {
         let dir = tempdir().unwrap();
         let mut session = session_with(vec![text("hi")], dir.path()).await;
-        session.run_user_message("hello").await.unwrap();
+        session
+            .run_user_message_with_stream("hello", None)
+            .await
+            .unwrap();
 
         let mut snapshot = TranscriptSnapshot::capture(&session);
         let first = snapshot.messages().as_ptr();
@@ -724,13 +728,19 @@ mod tests {
     async fn refreshing_picks_up_new_and_growing_messages() {
         let dir = tempdir().unwrap();
         let mut session = session_with(vec![text("one"), text("two")], dir.path()).await;
-        session.run_user_message("first").await.unwrap();
+        session
+            .run_user_message_with_stream("first", None)
+            .await
+            .unwrap();
 
         let mut snapshot = TranscriptSnapshot::capture(&session);
         let before = snapshot.messages().len();
         let revision = snapshot.revision();
 
-        session.run_user_message("second").await.unwrap();
+        session
+            .run_user_message_with_stream("second", None)
+            .await
+            .unwrap();
         snapshot.refresh(&session);
         assert!(snapshot.revision() > revision);
         assert!(
@@ -782,7 +792,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let mut session = session_with(vec![text("hi")], dir.path()).await;
         let before = SessionSnapshot::capture(&session);
-        session.run_user_message("hello").await.unwrap();
+        session
+            .run_user_message_with_stream("hello", None)
+            .await
+            .unwrap();
         let after = SessionSnapshot::capture(&session);
 
         assert_eq!(before.workspace_root(), after.workspace_root());

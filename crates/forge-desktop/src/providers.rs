@@ -105,8 +105,8 @@ pub fn connect(
                     "Provider rejected the key or it could not be saved. Check it and retry."
                         .to_string()
                 })?;
-                // Same precedence as the TUI: a key typed now wins over an
-                // environment variable for this process.
+                // A key typed now wins over an environment variable for this
+                // process.
                 credentials.set_session_key(profile, &key);
                 outcome
             }
@@ -279,7 +279,7 @@ fn prompt_key() -> Result<String, String> {
 
 #[cfg(not(target_os = "macos"))]
 fn prompt_key() -> Result<String, String> {
-    Err("Set the provider's API-key environment variable or connect it in Forge's terminal frontend, then retry. Native key entry is currently macOS-only.".into())
+    Err("Set the provider's API-key environment variable, then retry. Native key entry is currently macOS-only.".into())
 }
 
 #[cfg(test)]

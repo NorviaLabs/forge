@@ -1,9 +1,8 @@
-//! Installed themes, shared with the terminal frontend.
+//! Installed themes, loaded through forge-config.
 //!
-//! The desktop renders HTML, not terminal cells, so it cannot use the TUI's
-//! palette directly. It maps the same semantic tokens onto CSS custom
-//! properties, which keeps a drop-in `~/.config/forge/themes/*.toml` working
-//! in both frontends.
+//! The desktop renders HTML, so it cannot use forge-config's palette
+//! directly. It maps the palette's semantic tokens onto CSS custom
+//! properties, so a drop-in `~/.config/forge/themes/*.toml` still applies.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -57,7 +56,7 @@ fn view(theme: ThemeDefinition) -> ThemeView {
 }
 
 fn colors(palette: &ThemePalette) -> BTreeMap<&'static str, String> {
-    // Desktop tokens are deliberately coarser than the TUI's; map each one
+    // Desktop tokens are deliberately coarser than forge-config's; map each one
     // to the token it already stood for in app.css.
     [
         ("bg", palette.background),
@@ -189,8 +188,8 @@ mod tests {
         (hi + 0.05) / (lo + 0.05)
     }
 
-    /// The desktop's mapped tokens must keep the same AA floor as the TUI:
-    /// 4.5:1 for text and 3:1 for the control border.
+    /// The desktop's mapped tokens must meet the WCAG AA floor: 4.5:1 for
+    /// text and 3:1 for the control border.
     #[test]
     fn builtin_desktop_tokens_meet_wcag_aa() {
         let themes = list(None);

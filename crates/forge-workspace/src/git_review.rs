@@ -174,24 +174,6 @@ pub fn validated_relative_path(root: &Path, path: &Path) -> Result<PathBuf, Stri
     Ok(rel)
 }
 
-pub fn delete_untracked(root: &Path, path: &Path) -> Result<(), String> {
-    let rel = validated_relative_path(root, path)?;
-    if is_tracked(root, &rel) {
-        return Err("refusing to delete a tracked path".into());
-    }
-    let abs = root
-        .canonicalize()
-        .map_err(|e| format!("workspace root: {e}"))?
-        .join(&rel);
-    let meta = fs::symlink_metadata(&abs).map_err(|e| format!("stat {}: {e}", abs.display()))?;
-    if meta.is_dir() {
-        fs::remove_dir_all(&abs).map_err(|e| format!("delete dir {}: {e}", abs.display()))?;
-    } else {
-        fs::remove_file(&abs).map_err(|e| format!("delete {}: {e}", abs.display()))?;
-    }
-    Ok(())
-}
-
 pub fn parse_file_diff(path: PathBuf, diff: &str, untracked: bool) -> FileDiff {
     let binary = diff.contains("Binary files ") || diff.contains("GIT binary patch");
     let mut headers = Vec::new();
@@ -430,40 +412,5 @@ diff --git a/file.txt b/file.txt
         restore_path(dir.path(), Path::new("file.txt")).unwrap();
         let text = fs::read_to_string(dir.path().join("file.txt")).unwrap();
         assert_eq!(text, "one\ntwo\nthree\n");
-    }
-
-    #[test]
-    fn delete_untracked_removes_the_file() {
-        let dir = repo();
-        let extra = dir.path().join("extra.txt");
-        fs::write(&extra, "nope\n").unwrap();
-        delete_untracked(dir.path(), Path::new("extra.txt")).unwrap();
-        assert!(!extra.exists());
-    }
-
-    #[test]
-    fn delete_untracked_refuses_tracked_files() {
-        let dir = repo();
-        let err = delete_untracked(dir.path(), Path::new("file.txt")).unwrap_err();
-        assert!(err.contains("tracked"), "{err}");
-        assert!(dir.path().join("file.txt").exists());
-    }
-
-    #[test]
-    fn git_review_operations_reject_paths_outside_or_through_symlinks() {
-        let dir = repo();
-        let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("secret"), "keep\n").unwrap();
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
-
-        #[cfg(unix)]
-        {
-            assert!(delete_untracked(dir.path(), Path::new("link/secret")).is_err());
-            assert_eq!(
-                fs::read_to_string(outside.path().join("secret")).unwrap(),
-                "keep\n"
-            );
-        }
     }
 }

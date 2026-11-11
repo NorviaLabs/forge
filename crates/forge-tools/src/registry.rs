@@ -421,7 +421,7 @@ impl ToolRegistry {
     /// This is what an ACL check needs. [`list_descriptors`](Self::list_descriptors)
     /// answers the same question but clones every name, description and input
     /// schema to do it — far too much for a caller that only wants to count
-    /// what a principal may see, which the status bar does on every frame.
+    /// what a principal may see, which session snapshots do on every refresh.
     pub fn name_classes(&self) -> impl Iterator<Item = (&str, SideEffectClass)> + '_ {
         self.tools
             .values()

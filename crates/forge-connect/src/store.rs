@@ -83,10 +83,9 @@ pub struct CredentialStore {
     path: PathBuf,
     /// Last successful parse, with the file identity it came from.
     ///
-    /// Reading credentials sits on the TUI render path (the header's
-    /// "connected" state), where it ran several times per frame — each one a
-    /// stat, a read, and a full TOML parse of the secrets file. Caching the
-    /// parse keeps that to a single stat per call. Only successful loads are
+    /// Callers read credentials often, and each uncached read is a stat, a
+    /// read, and a full TOML parse of the secrets file. Caching the parse
+    /// keeps that to a single stat per call. Only successful loads are
     /// cached, so a permissions or schema error is re-reported every time
     /// rather than latched.
     cache: Mutex<Option<(FileStamp, CredentialsFile)>>,
@@ -172,6 +171,7 @@ impl CredentialStore {
         })
     }
 
+    #[cfg(test)]
     pub fn is_connected(&self, profile_id: &str) -> Result<bool, StoreError> {
         self.with_file(|file| {
             !file.auth_required.contains(profile_id)
@@ -201,6 +201,7 @@ impl CredentialStore {
         self.with_file(|file| file.auth_required.contains(profile_id))
     }
 
+    #[cfg(test)]
     pub fn list_profile_ids(&self) -> Result<Vec<String>, StoreError> {
         self.with_file(|file| {
             let mut ids: Vec<String> = file.keys.keys().cloned().collect();

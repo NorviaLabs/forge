@@ -32,70 +32,11 @@ pub fn strip_protocol_markers(text: &str) -> String {
     out.trim().to_string()
 }
 
-/// Defensive outer bound on a session title, in characters. The token cap in
-/// [`title_from_prompt`] decides the length of a normal first message; this
-/// only bites when the kept tokens are unusually long.
-pub const TITLE_MAX_CHARS: usize = 60;
-
-/// Most `-`-joined tokens a session title keeps. Measured on the normalized
-/// title, not on whitespace words: `src/main.rs breaks now` is four tokens.
-const TITLE_MAX_TOKENS: usize = 4;
-
-/// Most words [`title_from_prompt`] draws from the first sentence before
+/// Most words [`session_name_from_prompt`] draws from the first sentence before
 /// normalizing. Filler words do not count against it, so a prompt that spends
 /// its first ten words on pleasantries still names the session after the noun
 /// that follows them.
 const TITLE_MAX_WORDS: usize = 4;
-
-/// Derive a branch-safe slug from the first user message.
-///
-/// For a human-readable session label, use [`session_name_from_prompt`]. Both
-/// functions use the same meaningful opening; this one normalizes it to
-/// kebab-case for branch-oriented identifiers.
-///
-/// Cuts at the first newline, or at the first `.`/`!`/`?` followed by
-/// whitespace or end-of-input (so a `.` inside `main.rs` or `v1.2.3` is not a
-/// boundary), drops trailing punctuation, then keeps the *meaningful* opening:
-/// at most [`TITLE_MAX_WORDS`] words, with the filler in [`FILLER_WORDS`] —
-/// articles, conjunctions, prepositions, pronouns, auxiliaries, question words,
-/// pleasantries — skipped so the name says what the prompt is *about* rather
-/// than how it is phrased. `Can you please fix the login bug?` becomes
-/// `fix-login-bug`, not `can-you-please-fix`.
-///
-/// The surviving words are then kebab-cased: lowercase, every run of
-/// non-alphanumerics collapsed to a single `-`, no leading or trailing `-`, and
-/// at most [`TITLE_MAX_TOKENS`] tokens — so `src/main.rs breaks now` becomes
-/// `src-main-rs-breaks`. [`TITLE_MAX_CHARS`] is only an outer bound against
-/// long tokens. Falls back to `untitled-session` when nothing usable remains.
-///
-/// The result is branch-oriented, not the displayed session name. A
-/// prompt-derived session label uses [`session_name_from_prompt`], while branch
-/// materialization slugifies that label back to this kebab-case shape. Keep
-/// this output valid as a git ref segment and compatible with
-/// `forge_storage::sanitize_label`:
-///
-/// ```text
-/// sanitize_label(title_from_prompt(prompt)) == title_from_prompt(prompt)
-/// ```
-///
-/// That equality holds for ordinary prompt-derived names within the storage
-/// slug length limit. An unusually long token can still be truncated by
-/// `sanitize_label`; if either cap changes, keep the branch-slug contract in
-/// sync.
-pub fn title_from_prompt(prompt: &str) -> String {
-    let first_line = prompt.split('\n').next().unwrap_or("");
-    let cut = sentence_end(first_line).unwrap_or(first_line.len());
-    let head = trim_trailing(first_line[..cut].trim());
-    let selected = meaningful_head(head);
-    let title = kebab_tokens(
-        truncate_at_word_boundary(&selected, TITLE_MAX_CHARS),
-        TITLE_MAX_TOKENS,
-    );
-    if title.is_empty() {
-        return "untitled-session".to_string();
-    }
-    title
-}
 
 /// Derive the human-readable session label from the first prompt.
 ///
@@ -147,7 +88,7 @@ fn trim_trailing(text: &str) -> &str {
     text.trim_end_matches(|c: char| c.is_whitespace() || is_trailing_punct(c))
 }
 
-/// Words that name no topic on their own, so [`title_from_prompt`] skips them
+/// Words that name no topic on their own, so [`session_name_from_prompt`] skips them
 /// while picking the words for a session name: closed-class words (articles,
 /// conjunctions, prepositions, pronouns, question words, auxiliaries), the
 /// pleasantries and hedges that open so many prompts, and the opener verbs
@@ -363,54 +304,6 @@ fn meaningful_head(head: &str) -> String {
     }
     let words = if kept.is_empty() { opening } else { kept };
     words.join(" ")
-}
-
-/// Cut `text` to at most `max` characters, preferring the last whitespace
-/// before the limit so a word is never split. A single over-long token is
-/// hard-cut at `max`.
-fn truncate_at_word_boundary(text: &str, max: usize) -> &str {
-    if text.chars().count() <= max {
-        return text;
-    }
-    let cut = text
-        .char_indices()
-        .map(|(index, _)| index)
-        .nth(max)
-        .unwrap_or(text.len());
-    let head = &text[..cut];
-    match head.rfind(char::is_whitespace) {
-        Some(index) if !head[..index].trim().is_empty() => &head[..index],
-        _ => head,
-    }
-}
-
-/// Lowercase `text` into kebab form, keeping at most `max_tokens` `-`-joined
-/// tokens: every run of non-alphanumerics collapses to one `-`, with no
-/// leading or trailing `-`. The output holds only lowercase ASCII
-/// alphanumerics and `-`, which is what lets `sanitize_label` return it
-/// unchanged.
-fn kebab_tokens(text: &str, max_tokens: usize) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut tokens = 0usize;
-    let mut in_token = false;
-    for c in text.chars() {
-        if !c.is_ascii_alphanumeric() {
-            in_token = false;
-            continue;
-        }
-        if !in_token {
-            if tokens == max_tokens {
-                break;
-            }
-            if tokens > 0 {
-                out.push('-');
-            }
-            tokens += 1;
-            in_token = true;
-        }
-        out.push(c.to_ascii_lowercase());
-    }
-    out
 }
 
 use chrono::{DateTime, Utc};
@@ -784,13 +677,6 @@ pub enum JournalEventType {
     /// journal under its own `SessionId`.
     SubagentSpawned,
     SubagentFinished,
-    /// A line was submitted in the composer — slash command, plain chat, or
-    /// any future submission type (e.g. a planned `!shell` direct-execute
-    /// prefix) — independent of whether it became a model-directed
-    /// `UserMessage`. Feeds the TUI's Up/Down arrow-key history on resume;
-    /// unlike `UserMessage`, this fires for every submission, not just ones
-    /// that reach the model.
-    ComposerLineSubmitted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -965,7 +851,7 @@ impl AskUserQuestionArgs {
     pub const MAX_OPTIONS: usize = 4;
     pub const MAX_HEADER_CHARS: usize = 30;
 
-    /// Fill missing ids/headers and reject shapes the TUI cannot present.
+    /// Fill missing ids/headers and reject out-of-range shapes.
     pub fn normalize(mut self) -> Result<Self, String> {
         if self.questions.len() < Self::MIN_QUESTIONS || self.questions.len() > Self::MAX_QUESTIONS
         {
@@ -1252,23 +1138,6 @@ pub struct BackgroundTaskId(pub u64);
 mod tests {
     use super::*;
 
-    /// `forge-types` cannot call `forge_storage::sanitize_label` (the
-    /// dependency runs the other way), so assert the property that makes that
-    /// function a no-op: only `[a-z0-9-]`, no leading/trailing/`--`, and
-    /// within its 40-character cap.
-    fn assert_sanitize_label_stable(title: &str) {
-        assert!(
-            title
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
-            "{title:?}"
-        );
-        assert!(!title.starts_with('-'), "{title:?}");
-        assert!(!title.ends_with('-'), "{title:?}");
-        assert!(!title.contains("--"), "{title:?}");
-        assert!(title.chars().count() <= 40, "{title:?}");
-    }
-
     #[test]
     fn session_name_from_prompt_uses_natural_spacing() {
         assert_eq!(
@@ -1283,126 +1152,6 @@ mod tests {
             session_name_from_prompt("Could you please fix the login bug?"),
             "Fix login bug"
         );
-    }
-
-    #[test]
-    fn title_from_prompt_kebab_cases_the_opening() {
-        assert_eq!(title_from_prompt("Rewrite the lexer"), "rewrite-lexer");
-        assert_eq!(title_from_prompt("API key missing"), "api-key-missing");
-        assert_eq!(title_from_prompt("foo_bar baz"), "foo-bar-baz");
-        assert_eq!(
-            title_from_prompt("Fix auth\nDetails follow here"),
-            "fix-auth"
-        );
-        assert_eq!(
-            title_from_prompt("Fix the login bug. Then run tests"),
-            "fix-login-bug"
-        );
-    }
-
-    #[test]
-    fn title_from_prompt_keeps_at_most_four_tokens() {
-        // Four meaningful words, so the filler among them is simply dropped.
-        assert_eq!(
-            title_from_prompt("fix the login bug and then run the tests"),
-            "fix-login-bug-run"
-        );
-        // Tokens are counted after normalization, not as whitespace words.
-        assert_eq!(
-            title_from_prompt("src/main.rs breaks now"),
-            "src-main-rs-breaks"
-        );
-        // A dotted version normalizes into separate tokens, so the token cap
-        // applies to it like any other text: dropping the preposition lets the
-        // whole version through, and `now` is what the cap cuts instead.
-        assert_eq!(title_from_prompt("Upgrade to v1.2.3 now"), "upgrade-v1-2-3");
-    }
-
-    #[test]
-    fn title_from_prompt_drops_leading_separators() {
-        // Trimming only the ends of the raw text used to leave `--help fails`
-        // as `-help-fails`, which `sanitize_label` turned into the branch
-        // `forge/-help-fails`.
-        assert_eq!(title_from_prompt("--help fails"), "help-fails");
-        assert_eq!(title_from_prompt("...run the tests"), "run-tests");
-    }
-
-    #[test]
-    fn title_from_prompt_skips_filler_words() {
-        // The name should read as the subject of the request, not as the
-        // pleasantries and auxiliaries that introduce it.
-        assert_eq!(
-            title_from_prompt("Can you please fix the login bug?"),
-            "fix-login-bug"
-        );
-        assert_eq!(
-            title_from_prompt("I want to rewrite the parser"),
-            "rewrite-parser"
-        );
-        assert_eq!(
-            title_from_prompt("Could you take a look at the auth flow"),
-            "take-look-auth-flow"
-        );
-        // Filler does not consume one of the four word slots: the scan keeps
-        // going until it has found four words that carry the topic.
-        assert_eq!(
-            title_from_prompt("Hi there, could you please kindly and then rewrite the lexer"),
-            "rewrite-lexer"
-        );
-    }
-
-    #[test]
-    fn title_from_prompt_falls_back_to_the_opening_for_pure_filler() {
-        // Nothing but filler: keep the literal opening rather than give up and
-        // call every such session `untitled-session`.
-        assert_eq!(title_from_prompt("please just do it"), "please-just-do-it");
-        // `help` is not filler — `--help fails` means the flag, not a request.
-        assert_eq!(title_from_prompt("help me fix this"), "help-fix");
-    }
-
-    #[test]
-    fn title_from_prompt_falls_back_when_empty() {
-        for prompt in ["", "   ", "!!! ???", "\nbody only"] {
-            assert_eq!(title_from_prompt(prompt), "untitled-session", "{prompt:?}");
-        }
-    }
-
-    #[test]
-    fn title_from_prompt_is_already_a_branch_slug() {
-        let prompts = [
-            "Rewrite the lexer",
-            "fix the login bug and then run the tests",
-            "Fix auth\nDetails follow here",
-            "Fix the login bug. Then run tests",
-            "Upgrade to v1.2.3 now",
-            "src/main.rs breaks now",
-            "--help fails",
-            "Can you please fix the login bug?",
-            "I want to rewrite the parser",
-            "please just do it",
-            "API key missing",
-            "foo_bar baz",
-            "!!!",
-            "",
-            "   ",
-            "\nbody only",
-        ];
-        for prompt in prompts {
-            assert_sanitize_label_stable(&title_from_prompt(prompt));
-        }
-    }
-
-    #[test]
-    fn title_from_prompt_char_cap_is_an_outer_bound_only() {
-        let long = "word ".repeat(40);
-        // The token cap decides first: four tokens, far under the char bound.
-        assert_eq!(title_from_prompt(&long), "word-word-word-word");
-
-        // A single over-long token is hard-cut at the char bound, not dropped.
-        // `sanitize_label`'s own 40-char cap means this bound is deliberately
-        // the looser one: it only stops a pathological token from dominating.
-        let token = "a".repeat(200);
-        assert_eq!(title_from_prompt(&token).chars().count(), TITLE_MAX_CHARS);
     }
 
     #[test]

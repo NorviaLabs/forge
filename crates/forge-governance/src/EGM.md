@@ -11,7 +11,7 @@ or host); `audit.rs` is the shared in-memory decision log.
 
 - `Governance { principal, acl, hitl_tools, hitl_classes, audit,
   pattern_allow, pattern_deny }` with:
-  - `with_principal`, `with_acl`, `require_hitl_for_tool`,
+  - `with_acl`, `require_hitl_for_tool`,
     `with_pattern_rules` (builder helpers),
   - `filter_tools(Vec<ToolDescriptor>) -> Vec<ToolDescriptor>`,
   - `authorize(&ToolCall, SideEffectClass) -> PolicyDecision`,

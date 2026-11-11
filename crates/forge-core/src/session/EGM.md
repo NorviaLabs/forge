@@ -16,8 +16,7 @@ from the crate root and can therefore reach them.
     `set_governance`, `apply_egress_policy`, `adopt_egress_state`,
     `grant_egress_host`, `allow_suggested_pattern_for_session`,
     `clear_session_pattern_allows`, `session_pattern_allow_count`,
-    `session_pattern_allows`, `grant_covers`, `has_network_egress`,
-    `egress_tcp_addr`, `drain_egress_events`, `egress_grant`.
+    `session_pattern_allows`, `grant_covers`, `egress_grant`.
 - Lifecycle, queue, and background (`tasks.rs`):
   - `yield_current_turn_for_queue`, `queue`, `background`,
     `cancel_background_task`, `pending_hitl`, `enqueue_task`,
@@ -30,12 +29,12 @@ from the crate root and can therefore reach them.
     `validate_grant_decision`.
 - Model steps and turns (`turn_ops.rs`):
   - `append_user_message`, `append_user_message_with_attachments`,
-    `record_composer_line`, `build_model_request`, `apply_model_response`,
+    `build_model_request`, `apply_model_response`,
     `begin_model_response_application`, `finalize_turn_failure`,
     `mark_cancelled`, `mark_model_call_failed`, `mark_interrupted_if_stale`,
-    `run_user_message`, `run_user_message_with_stream`, `prepare_model_step`,
+    `run_user_message_with_stream`, `prepare_model_step`,
     `prepare_model_step_after_compaction`, `run_agent_turns`,
-    `run_agent_turns_in_scope`, `force_context_reset_async`.
+    `run_agent_turns_in_scope`.
 - Tool execution (`tools.rs`):
   - `ModelResponseApplication`, `PendingToolApplication`,
     `CompletedToolApplication`, `PendingHitlExecution`,
@@ -51,13 +50,11 @@ from the crate root and can therefore reach them.
     `finish_context_compaction`, `begin_auto_context_compaction`,
     `compaction_policy`, `set_context_window`, `compaction_telemetry`,
     `context_state`, `context_tokens`, `context_pressure_reached`,
-    `installed_checkpoint_count`, `checkpoint_context_message`,
     `compact_tokens`.
 - Inspection (`inspect.rs`):
   - `model_selection`, `set_model_selection`, `journal_dir`,
     `loaded_skills_count`, `loaded_skill_names`, `loaded_skills`, `list_tools`,
-    `tool_count`, `context_usage_ratio`, `journal_cursor`,
-    `token_usage_report`, `token_usage_lines`, `model_client`,
+    `tool_count`, `context_usage_ratio`, `token_usage_report`, `model_client`,
     `tool_registry`, `background_control`, `workspace_root`,
     `request_turn_cancel`, `begin_turn_cancellation_scope`,
     `set_active_model`, `set_active_profile_id`, `set_image_input_supported`,

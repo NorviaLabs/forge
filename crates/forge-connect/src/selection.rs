@@ -18,7 +18,6 @@ pub struct ModelSelection {
     /// The connect profile that owns this route, when known.
     pub profile_id: Option<String>,
     /// Transport-level effort string (e.g. `"high"`), not a UI-layer enum —
-    /// this crate has no dependency on the TUI's `ReasoningEffort` type, and
     /// this is exactly the string shape already persisted via
     /// `CredentialStore::set_last_effort`/`last_effort`.
     pub effort: String,

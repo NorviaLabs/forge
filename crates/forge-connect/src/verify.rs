@@ -339,7 +339,7 @@ mod tests {
 
     /// The module contract is that `Display` output stays byte-identical to the
     /// strings these checks returned before they were given types, because
-    /// callers (and the TUI) surface them verbatim. Pin every variant.
+    /// callers surface them verbatim. Pin every variant.
     #[test]
     fn display_strings_are_stable() {
         assert_eq!(VerifyError::EmptyKey.to_string(), "API key is empty");

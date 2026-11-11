@@ -67,7 +67,6 @@ impl Default for WorkspaceIndexOptions {
 pub struct WorkspaceIndex {
     root: PathBuf,
     shared_picker: SharedFilePicker,
-    shared_frecency: SharedFrecency,
     scan_timeout: Duration,
 }
 
@@ -82,10 +81,9 @@ impl WorkspaceIndex {
     ) -> Result<Arc<Self>, SearchError> {
         let root = root.as_ref().to_path_buf();
         let shared_picker = SharedFilePicker::default();
-        let shared_frecency = SharedFrecency::default();
         FilePicker::new_with_shared_state(
             shared_picker.clone(),
-            shared_frecency.clone(),
+            SharedFrecency::default(),
             FilePickerOptions {
                 base_path: root.display().to_string(),
                 mode: FFFMode::Ai,
@@ -98,7 +96,6 @@ impl WorkspaceIndex {
         let index = Arc::new(Self {
             root,
             shared_picker,
-            shared_frecency,
             scan_timeout: options.scan_timeout,
         });
         if options.wait_for_scan {
@@ -386,32 +383,6 @@ impl WorkspaceIndex {
         }
         Ok(())
     }
-
-    /// Record that a file was opened so future ranking can boost recency.
-    pub fn note_file_opened(&self, path: impl AsRef<Path>) -> Result<(), SearchError> {
-        let path = path.as_ref();
-        let frecency = self
-            .shared_frecency
-            .read()
-            .map_err(|e| SearchError::Lock(e.to_string()))?;
-        if let Some(tracker) = frecency.as_ref() {
-            let _ = tracker.track_access(path);
-        }
-        drop(frecency);
-
-        let mut picker_guard = self
-            .shared_picker
-            .write()
-            .map_err(|e| SearchError::Lock(e.to_string()))?;
-        if let Some(picker) = picker_guard.as_mut() {
-            if let Ok(frecency) = self.shared_frecency.read() {
-                if let Some(tracker) = frecency.as_ref() {
-                    let _ = picker.update_single_file_frecency(path, tracker);
-                }
-            }
-        }
-        Ok(())
-    }
 }
 
 fn grep_line_snippet(text: &str, column: usize) -> String {
@@ -575,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn file_notifications_and_open_notifications_accept_missing_paths() {
+    fn file_notifications_accept_missing_paths() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("note.txt"), "before\n").unwrap();
         let index = WorkspaceIndex::open_with_options(
@@ -589,23 +560,6 @@ mod tests {
         std::fs::write(dir.path().join("note.txt"), "after_token\n").unwrap();
         index.note_file_changed("note.txt").unwrap();
         index.note_file_changed("missing.txt").unwrap();
-        index.note_file_opened("note.txt").unwrap();
-        index.note_file_opened("missing.txt").unwrap();
-    }
-
-    #[test]
-    fn opened_file_can_be_recorded_without_frecency_tracking() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("note.txt"), "note\n").unwrap();
-        let index = WorkspaceIndex::open_with_options(
-            dir.path(),
-            WorkspaceIndexOptions {
-                watch: false,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        index.note_file_opened("note.txt").unwrap();
     }
 
     #[test]
@@ -910,7 +864,6 @@ mod tests {
         let path = dir.path().join("new.txt");
         std::fs::write(&path, "new").unwrap();
         index.note_file_changed(&path).unwrap();
-        index.note_file_opened(&path).unwrap();
     }
 
     fn name_response(paths: &[&str]) -> FindResponse {

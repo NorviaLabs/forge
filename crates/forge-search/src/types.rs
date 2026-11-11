@@ -40,8 +40,7 @@ pub struct GrepResponse {
 /// Ordered, deduplicated file list for search-as-you-type.
 ///
 /// Files whose *path* matches come first, then files that matched only on
-/// content, so the ranking the Files panel already shows survives. The TUI
-/// turns this back into tree rows by synthesizing the ancestors of each path.
+/// content, so the ranking the Files panel already shows survives.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MergedSearch {
     /// Workspace-relative paths, in display order.

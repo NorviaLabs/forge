@@ -28,8 +28,8 @@ all logic lives in `src/`.
 ## Side Effects
 
 - Scans and (by default) watches the workspace filesystem via `fff-search`
-  background threads; reads file contents for grep; mutates in-memory frecency
-  state. No writes, network, or subprocesses.
+  background threads; reads file contents for grep. No writes, network, or
+  subprocesses.
 
 ## Notes
 

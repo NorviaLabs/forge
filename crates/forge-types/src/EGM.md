@@ -11,8 +11,7 @@ read-only git subcommand list shared across crates.
 
 - `strip_protocol_markers(&str) -> String`: removes known control envelopes
   (e.g. `\confidence{…}`) and trims.
-- `title_from_prompt(&str) -> String`, `session_name_from_prompt(&str) -> String`,
-  `TITLE_MAX_CHARS` (60).
+- `session_name_from_prompt(&str) -> String`.
 - `SessionId = Uuid`.
 - `TaskLifecycle`: `Ready`, `Working`, `Waiting`, `Completed`, `Failed`,
   `Cancelled`, `Interrupted` (non-exhaustive; serde aliases `running` and
@@ -34,7 +33,7 @@ read-only git subcommand list shared across crates.
   prompt_cache_write_tokens }` and `ModelStreamEvent`, `ModelResponse { text,
   tool_calls, usage, thinking }`.
 - `JournalEventType` (session/user/model/tool/state/hitl/context/queue/
-  background/subagent/composer tags) and `JournalEvent { seq, session_id, ts,
+  background/subagent tags) and `JournalEvent { seq, session_id, ts,
   event_type, schema_version, payload, trace_id }`.
 - `ToolDescriptor { name, description, input_schema, side_effect_class,
   idempotent }`; `MCP_TOOL_NAME_PREFIX = "mcp:"`;
@@ -64,11 +63,11 @@ read-only git subcommand list shared across crates.
 - `strip_protocol_markers` removes only structural envelopes, never prose; an
   unterminated marker rewinds so the tail is emitted exactly once and no text
   is duplicated or dropped.
-- `title_from_prompt` draws at most `TITLE_MAX_WORDS` (4) words from the first
-  sentence, skipping filler words so they do not count toward that budget
-  (all-filler input falls back to the literal opening). The survivors are
-  kebab-cased to at most `TITLE_MAX_TOKENS` (4) normalized tokens, and the
-  result never exceeds `TITLE_MAX_CHARS` characters.
+- `session_name_from_prompt` draws at most `TITLE_MAX_WORDS` (4) words from
+  the first sentence of the first line, skipping filler words so they do not
+  count toward that budget (all-filler input falls back to the literal
+  opening; empty input yields `Untitled session`), and capitalizes the first
+  letter.
 - `TaskLifecycle` is authoritative for UI busy/waiting state; consumers must
   not derive their own lifecycle from streaming flags.
 - `Message.outcome`/`ToolOutput.outcome` are the recorded result; an absent

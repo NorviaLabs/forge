@@ -21,7 +21,7 @@ prefix (`<profile_id>/<model>`).
   name, include_str!)` for `anthropic`, `claude_agent`, `ollama`, `openai`,
   `opencode`, `xai` `.toml`, sorted), `builtin_specs()` (parsed once; eight
   profiles), `builtin_profile(id)` (panics on an unknown id),
-  `profile_ids::{ANTHROPIC, CLAUDE_AGENT, OLLAMA, OPENAI, OPENAI_CODEX,
+  `profile_ids::{ANTHROPIC, OLLAMA, OPENAI, OPENAI_CODEX,
   OPENCODE_GO, OPENCODE_ZEN, XAI}`.
 - Provider specs (`profile.rs`): `ProviderSpec` (`ConnectProfile` is a type
   alias), `SpecOrigin` (`Builtin`, `User`), `ConnectOutcome { profile_id,
@@ -44,8 +44,7 @@ prefix (`<profile_id>/<model>`).
   `guidance`, `min_key_len`, `billing_url`/`billing_note`, `effort_family`,
   `prompt_cache_key`,
   `model_provider_prefix`, `provider`, `provider_label`, `label`, `origin`.
-  Methods: `default_model`, `has_multiple_routes(registry)`,
-  `needs_tui_api_key_prompt`, `rejects_api_key_cli`, `is_user`,
+  Methods: `default_model`, `needs_tui_api_key_prompt`, `is_user`,
   `effective_wire` (default `chat-completions`), `effective_auth` (default
   app-prompted API key), `effective_catalog_kind` (default from wire),
   `wire_for_model(bare)`.
@@ -53,9 +52,8 @@ prefix (`<profile_id>/<model>`).
   (`start`, `start_stub`, `open_url`, `operator_instructions`; carries
   `flavor`).
 - Credential store (`store.rs`): `CredentialStore` (`new`, `user_default`,
-  `path`, `read_count`, `get_api_key`, `set_api_key`, `get_oauth`,
-  `set_oauth`, `clear`, `clear_all`, `is_connected`,
-  `needs_authentication(profile_id)`, `list_profile_ids`), `StoreError`.
+  `path`, `get_api_key`, `set_api_key`, `get_oauth`, `set_oauth`, `clear`,
+  `clear_all`, `needs_authentication(profile_id)`), `StoreError`.
   Crate-internal: `mark_auth_required`, `resolve_key`, `resolve_connected`,
   `CREDENTIALS_SCHEMA_VERSION`.
 - Credentials handle (`credentials.rs`): `Credentials` (`new`,
@@ -84,12 +82,10 @@ prefix (`<profile_id>/<model>`).
 - Preferences (`preferences.rs`): `PreferenceStore` — `new`,
   `user_default`, `path`, `last_selection`,
   `set_last_selection`, `last_selection_struct(registry)`, `last_effort`,
-  `set_last_effort`, `clear_last_selection`, `previous_selection`,
-  `previous_effort`, `record_switch`, `quick_switch`, `would_forget(matches)`
-  and `forget_provider(matches) -> ForgetOutcome { cleared_last,
-  cleared_previous }` (only `forget_provider` clears `previous_*`).
-- Removal (`remove.rs`): `ConnectService::preview_removal(providers_path,
-  id)`, `remove_custom_provider(providers_path, catalog, id)`, and
+  `set_last_effort`, `clear_last_selection`, `would_forget(matches)` and
+  `forget_provider(matches) -> ForgetOutcome { cleared_last }`.
+- Removal (`remove.rs`): `ConnectService::remove_custom_provider(
+  providers_path, catalog, id)` and
   `clear_provider_state(catalog, spec)`; `RemovalReport`, `RemovalError {
   NotFound, BuiltIn, DuplicateId, Providers }`, `StoreKind`.
 - Registry (`registry.rs`): `ConnectRegistry` — `new`, `register`, `profiles`,
@@ -100,12 +96,12 @@ prefix (`<profile_id>/<model>`).
   String>`, `update_custom_provider(id, base_url, model, details:
   Option<&ProviderDetails>) -> Result<ProviderSpec, String>`,
   `ProviderDetails { title, label, api_key_env }`,
-  `save_manual_model(profile_id, model)`; crate-internal
-  `user_providers_path` (`<config_dir>/forge/providers.toml`).
+  `save_manual_model(profile_id, model)`, `user_providers_path`
+  (`<config_dir>/forge/providers.toml`).
 - Service (`service.rs`): `ConnectService { registry, credentials,
   preferences, active_profile_id, active_model }` (`list_lines`, `status`,
   `status_message`, `connect`, `connect_api_key`, `connect_oauth`,
-  `start_oauth`, `poll_oauth_once`, `complete_oauth_device_flow`,
+  `start_oauth`, `complete_oauth_device_flow`,
   `connect_start_oauth`, `disconnect`, `profile`, `ensure_oauth_fresh`,
   `connected_profiles`, `report_auth_failure`, `report_auth_success`),
   `ConnectAction`, `ConnectError`, `parse_connect_args`,
@@ -113,10 +109,10 @@ prefix (`<profile_id>/<model>`).
   `needs_tui_api_key_prompt`, `needs_tui_oauth`.
 - Catalog (`catalog.rs`): `ModelCatalogCache` (`new`, `user_default`,
   `path`, `with_ttl`, `is_fresh`, `registry_is_fresh`, `get_cached`, `put`,
-  `clear_profile`, `get_registry_cached`, `get_registry_cost`,
+  `clear_profile`, `get_registry_cached`,
   `model_limits`, `model_accepts_image_input`, `image_input_ready`,
-  `model_effort_options`, `model_supports_thinking_off`, `effort_ready`),
-  `CatalogEntry`, `CatalogSource`, `CatalogCost`, `CatalogLimits`,
+  `model_effort_options`, `model_supports_thinking_off`),
+  `CatalogEntry`, `CatalogSource`, `CatalogLimits`,
   `CatalogError` (`is_auth_failure`, `rejected_credential`,
   `is_retryable`), `fetch_remote_models`, `refresh_profile_catalog`,
   `refresh_models_dev_registry`, `models_for_picker`,
@@ -128,7 +124,8 @@ prefix (`<profile_id>/<model>`).
 - Selection (`selection.rs`): `ModelSelection { provider, model,
   profile_id, effort }`.
 - Discovery/import (`import.rs`): `DiscoveredLogin`, `DiscoveredSecret`,
-  `discover_logins`, `discover_logins_in`, `login_for_profile`,
+  `discover_logins`, `discover_logins_in`, `discover_user_logins`,
+  `login_for_profile`,
   `xdg_data_home`.
 - Cost/usage (`cost.rs`): `provider_cost_report`.
 - Atomic writes (`atomic.rs`, crate-internal): `write_atomic(path, bytes,
@@ -223,7 +220,7 @@ prefix (`<profile_id>/<model>`).
   defaults to `x-api-key` for `anthropic-messages`, else bearer.
 - `auth_required` is a persisted per-profile (per-slot) flag in the
   credentials file: a flagged profile keeps its stored key/tokens but
-  `is_connected` is false and resolution yields none across restarts.
+  `needs_authentication` is true and resolution yields none across restarts.
   `set_api_key`, `set_oauth`, and `clear` remove the flag; `clear_all`
   empties it. Only `report_auth_failure`/`report_auth_success` write it.
 - `connect_api_key` rejects OAuth profiles; a key-optional profile (Ollama)
@@ -240,14 +237,12 @@ prefix (`<profile_id>/<model>`).
   is a non-authoritative hint (profile default, then first cached model, then
   `<prefix>/default`), and `format_connected` tells the user to choose a model
   (appending "not verified" when applicable).
-- `poll_oauth_once` returns `Ok(None)` for any stub session (`client_id ==
-  "stub"`); `complete_oauth_device_flow` errors on one. OAuth flows dispatch
+- `complete_oauth_device_flow` errors on a stub session (`client_id ==
+  "stub"`). OAuth flows dispatch
   on `auth.flavor` (`rfc8628` or `chatgpt`), never on profile id.
 - Preferences live in a separate non-sensitive file with no permission gate and
-  no parse cache. `set_last_selection`, `last_selection`, and
-  `previous_selection` normalize saved model ids to the current prefix;
-  `record_switch` and `quick_switch` store and return ids as given (trimmed
-  by `record_switch` only).
+  no parse cache. `set_last_selection` and `last_selection` normalize saved
+  model ids to the current prefix.
 - Built-in registry has exactly seven profiles. User `providers.toml` entries
   only add providers: each sets only custom-allowed keys, uses
   `chat-completions` or `anthropic-messages` wire, `api-key` or
@@ -278,7 +273,7 @@ prefix (`<profile_id>/<model>`).
   section (quoted or bare header), and the `[manual_models]` key from
   `providers.toml`, keeping every other byte and re-parsing to prove it
   (otherwise the layout error, nothing written). Then the key, the catalog
-  cache entry, and every `last_*`/`previous_*` selection pointing at the
+  cache entry, and every `last_*` selection pointing at the
   provider (by id, or by its current or older model prefix) are cleared
   best-effort; failures are listed in `RemovalReport::failed`. The report
   names custom key variables still set and entry fields the picker cannot

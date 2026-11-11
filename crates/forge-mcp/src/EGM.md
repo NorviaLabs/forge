@@ -12,16 +12,13 @@ file use a scripted fixture server; they are not part of the contract surface.
 
 - `McpError`: `Io`, `Json`, `Protocol(String)`, `Timeout(&'static str)`,
   `NotFound(String)`, `Sandbox(String)`.
-- `mcp_tool_name(server_id, tool) -> String`, `parse_mcp_tool_name(name) ->
-  Option<(&str, &str)>`.
+- `mcp_tool_name(server_id, tool) -> String`.
 - `StaticMcpTool { server_id, tool_name, description, schema, side_effect_class,
-  handler }` and `register_static_mcp(&mut ToolRegistry, server_id,
-  Vec<StaticMcpTool>)`: in-process MCP-like tools for tests/demos.
+  handler }`: in-process MCP-like tool for tests (registered by the test-only
+  `register_static_mcp`).
 - `McpStdioClient`:
   - `spawn(&McpServerConfig)`,
-  - `spawn_in_workspace(&McpServerConfig, &Path)`,
   - `list_tools() -> Result<Vec<McpToolInfo>, McpError>`,
-  - `call_tool(name, Value) -> Result<ToolOutput, McpError>`,
   - `call_tool_attributed(name, Value, Option<&str>) -> McpCallOutcome`,
   - `server_id() -> &str`.
 - `mcp_egress_label(server_id) -> String` (`mcp:<server>`).
@@ -30,11 +27,10 @@ file use a scripted fixture server; they are not part of the contract surface.
 - `McpToolInfo { name, description, input_schema }` (serde).
 - `RemoteMcpTool`: `Tool` implementation forwarding to the client; carries the
   full namespaced name, remote name, and configured side-effect class.
-- `McpManager`: `new`, `with_egress_policy`, `with_egress_shared`,
-  `egress_shared`, `connect_all`, `connect_all_in_workspace`,
-  `register_into(&mut ToolRegistry)`. `connect_all*` and `register_into`
-  return per-server error strings (`"<id>: <error>"`); the session shows
-  them as `mcp:` startup notices.
+- `McpManager`: `new`, `with_egress_shared`, `connect_all_in_workspace`,
+  `register_into(&mut ToolRegistry)`. `connect_all_in_workspace` and
+  `register_into` return per-server error strings (`"<id>: <error>"`); the
+  session shows them as `mcp:` startup notices.
 - `SearchToolsTool` and `install_search_tools(&mut ToolRegistry)`.
 
 ## Invariants
@@ -72,7 +68,7 @@ file use a scripted fixture server; they are not part of the contract surface.
 - A sandboxed launch with no workspace is refused with
   `McpError::Protocol("sandboxed MCP server needs a workspace")`. It never
   falls back to the process working directory, which may belong to another
-  project; sessions pass the workspace through `spawn_in_workspace`.
+  project; sessions pass the workspace through `connect_all_in_workspace`.
 
 ## Side Effects
 
@@ -84,7 +80,7 @@ file use a scripted fixture server; they are not part of the contract surface.
   denied-host queue it mutates are per-server, not the session-shared
   `EgressShared`.
 - Mutates the supplied `ToolRegistry` (`register_into`,
-  `register_static_mcp`, `install_search_tools`).
+  `install_search_tools`).
 - Emits `tracing` warnings on sandbox/egress degradation, skipped tools, and
   empty allowlists.
 

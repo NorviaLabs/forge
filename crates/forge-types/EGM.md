@@ -31,9 +31,9 @@ one wire and in-memory representation.
 - `TaskId`, `AttemptId`, `QueueItemId`, and `BackgroundTaskId` are `u64`
   newtypes and are never reinterpreted across domains. `SessionId` is a plain
   `Uuid` type alias, so the type system does not enforce this for it.
-- Helpers (`strip_protocol_markers`, `title_from_prompt`,
-  `session_name_from_prompt`, `is_readonly_git_subcommand`, image inspection)
-  are pure and allocation-bounded.
+- Helpers (`strip_protocol_markers`, `session_name_from_prompt`,
+  `is_readonly_git_subcommand`, image inspection) are pure and
+  allocation-bounded.
 - `is_readonly_git_subcommand` is deliberately conservative and shared by
   governance and transcript so their read/write judgments cannot drift.
 

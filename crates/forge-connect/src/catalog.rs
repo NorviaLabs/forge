@@ -134,12 +134,6 @@ pub struct CatalogEntry {
     pub source: CatalogSource,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct CatalogCost {
-    pub input: f64,
-    pub output: f64,
-}
-
 /// A model's advertised token limits, from models.dev `limit`.
 ///
 /// Context compaction reads these rather than assuming a window size: the
@@ -168,9 +162,6 @@ struct CatalogFile {
     /// profile_id → public models.dev model ids, namespaced for Forge routing.
     #[serde(default)]
     registry_models: BTreeMap<String, Vec<String>>,
-    /// provider/model id → dollars per million tokens.
-    #[serde(default)]
-    registry_costs: BTreeMap<String, CatalogCost>,
     /// provider/model id → advertised context/output token limits.
     #[serde(default)]
     registry_limits: BTreeMap<String, CatalogLimits>,
@@ -382,14 +373,12 @@ impl ModelCatalogCache {
     fn put_registry(
         &self,
         models: BTreeMap<String, Vec<String>>,
-        costs: BTreeMap<String, CatalogCost>,
         limits: BTreeMap<String, CatalogLimits>,
         image_input: BTreeSet<String>,
         effort: BTreeMap<String, Vec<String>>,
     ) -> Result<(), CatalogError> {
         let mut file = self.load();
         file.registry_models = models;
-        file.registry_costs = costs;
         file.registry_limits = limits;
         file.registry_image_input = image_input;
         file.registry_image_input_ready = true;
@@ -430,7 +419,6 @@ pub fn refresh_models_dev_registry(
         })?;
 
     let mut by_profile = BTreeMap::new();
-    let mut costs = BTreeMap::new();
     let mut limits: BTreeMap<String, CatalogLimits> = BTreeMap::new();
     let mut image_input = BTreeSet::new();
     let mut effort_by_model = BTreeMap::new();
@@ -448,9 +436,6 @@ pub fn refresh_models_dev_registry(
             for (model_id, model) in models {
                 if models_dev_model_is_agent_compatible(model) {
                     let id = format!("{}/{}", profile.model_provider_prefix, model_id);
-                    if let Some(cost) = models_dev_cost(model) {
-                        costs.insert(id.clone(), cost);
-                    }
                     if let Some(model_limits) = models_dev_limits(model) {
                         limits.insert(id.clone(), model_limits);
                     }
@@ -469,16 +454,8 @@ pub fn refresh_models_dev_registry(
         total += ids.len();
         by_profile.insert(profile.id.clone(), ids.into_iter().collect());
     }
-    cache.put_registry(by_profile, costs, limits, image_input, effort_by_model)?;
+    cache.put_registry(by_profile, limits, image_input, effort_by_model)?;
     Ok(total)
-}
-
-fn models_dev_cost(model: &serde_json::Value) -> Option<CatalogCost> {
-    let cost = model.get("cost")?;
-    Some(CatalogCost {
-        input: cost.get("input").and_then(serde_json::Value::as_f64)?,
-        output: cost.get("output").and_then(serde_json::Value::as_f64)?,
-    })
 }
 
 fn models_dev_limits(model: &serde_json::Value) -> Option<CatalogLimits> {
@@ -1277,19 +1254,12 @@ mod tests {
     }
 
     #[test]
-    fn registry_cost_roundtrip() {
+    fn registry_roundtrip() {
         let dir = tempdir().unwrap();
         let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
         cache
             .put_registry(
                 BTreeMap::from([("openai".into(), vec!["openai/gpt-test".into()])]),
-                BTreeMap::from([(
-                    "openai/gpt-test".into(),
-                    CatalogCost {
-                        input: 2.0,
-                        output: 8.0,
-                    },
-                )]),
                 BTreeMap::from([(
                     "openai/gpt-test".into(),
                     CatalogLimits {
@@ -1312,23 +1282,13 @@ mod tests {
                 context: 200_000,
                 output: 32_000,
             }),
-            "limits must survive the TOML round-trip alongside costs"
+            "limits must survive the TOML round-trip"
         );
         assert!(cache.registry_is_fresh());
     }
 
     #[test]
-    fn catalog_cost_and_models_dev_filter_handle_missing_fields() {
-        assert_eq!(models_dev_cost(&serde_json::json!({})), None);
-        assert_eq!(
-            models_dev_cost(&serde_json::json!({
-                "cost": { "input": 1.25, "output": 9.5 }
-            })),
-            Some(CatalogCost {
-                input: 1.25,
-                output: 9.5,
-            })
-        );
+    fn models_dev_filter_handles_missing_fields() {
         assert!(!models_dev_model_is_agent_compatible(&serde_json::json!({
             "tool_call": true,
             "modalities": { "output": ["image"] }
@@ -1389,13 +1349,7 @@ mod tests {
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai/gpt-5.6-terra".into()]);
         cache
-            .put_registry(
-                registry,
-                BTreeMap::new(),
-                BTreeMap::new(),
-                BTreeSet::new(),
-                BTreeMap::new(),
-            )
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1418,13 +1372,7 @@ mod tests {
             vec!["openai/gpt-5.6-sol".into(), "openai/gpt-5.6-terra".into()],
         );
         cache
-            .put_registry(
-                registry,
-                BTreeMap::new(),
-                BTreeMap::new(),
-                BTreeSet::new(),
-                BTreeMap::new(),
-            )
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);
@@ -1609,13 +1557,7 @@ mod tests {
         let mut registry = BTreeMap::new();
         registry.insert(profile.id.clone(), vec!["openai_codex/not-entitled".into()]);
         cache
-            .put_registry(
-                registry,
-                BTreeMap::new(),
-                BTreeMap::new(),
-                BTreeSet::new(),
-                BTreeMap::new(),
-            )
+            .put_registry(registry, BTreeMap::new(), BTreeSet::new(), BTreeMap::new())
             .unwrap();
 
         let entries = models_for_picker(&[profile], &store, &cache, false);

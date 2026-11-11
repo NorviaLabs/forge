@@ -150,7 +150,4 @@ pub struct ResumeReport {
     pub model_steps: usize,
     pub tool_results: usize,
     pub incomplete_intents: usize,
-    /// Legacy session composer lines retained for journal compatibility. TUI
-    /// recall is now loaded from its user-level workspace history store.
-    pub composer_lines: Vec<String>,
 }

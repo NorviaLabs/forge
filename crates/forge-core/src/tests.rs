@@ -18,20 +18,6 @@ struct GatedTool {
 }
 
 #[tokio::test]
-async fn token_usage_lines_explain_missing_provider_usage() {
-    let dir = tempdir().unwrap();
-    let mut s = idle_session(dir.path()).await;
-    s.token_usage.model_steps = 1;
-    s.token_usage.model_calls_with_usage = 0;
-
-    let lines = s.token_usage_lines();
-
-    assert!(lines
-        .iter()
-        .any(|line| line.contains("provider did not return usage")));
-}
-
-#[tokio::test]
 async fn setting_model_fields_keeps_the_selection_and_tool_context_synchronized() {
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;
@@ -441,7 +427,10 @@ async fn orchestration_tools_return_results_without_aborting_the_turn() {
     let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    session.run_user_message("inspect agents").await.unwrap();
+    session
+        .run_user_message_with_stream("inspect agents", None)
+        .await
+        .unwrap();
     assert_eq!(session.active_task.lifecycle, TaskLifecycle::Completed);
     let tool_messages: Vec<_> = session
         .messages
@@ -896,7 +885,9 @@ async fn failed_approved_escalation_is_a_tool_result_not_a_turn_failure() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
         .await
         .unwrap();
-    s.run_user_message("set git config").await.unwrap();
+    s.run_user_message_with_stream("set git config", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     assert!(s.pending_hitl().unwrap().sandbox_escalation);
 
@@ -1714,7 +1705,7 @@ async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
     let mut session = AgentSession::create(no_gov_cfg(dir.path()), model, tools)
         .await
         .unwrap();
-    if !session.has_network_egress() {
+    if !session.egress.is_some() {
         return; // no egress proxy on this host, so there is no policy to consult
     }
     session.append_user_message("read the page").await.unwrap();
@@ -1747,7 +1738,12 @@ async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
     assert!(!payload.sandbox_escalation);
 
     assert!(
-        session.drain_egress_events().is_empty(),
+        session
+            .egress
+            .as_ref()
+            .map(|egress| egress.drain_events())
+            .unwrap_or_default()
+            .is_empty(),
         "the denied host is refused before it reaches the gateway"
     );
 
@@ -1779,7 +1775,13 @@ async fn a_web_fetch_denied_host_prompts_and_the_granted_retry_refetches() {
     );
     let mut events = Vec::new();
     for _ in 0..100 {
-        events.extend(session.drain_egress_events());
+        events.extend(
+            session
+                .egress
+                .as_ref()
+                .map(|egress| egress.drain_events())
+                .unwrap_or_default(),
+        );
         if !events.is_empty() {
             break;
         }
@@ -2536,7 +2538,7 @@ async fn loop_text_only_completes() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    let r = s.run_user_message("hello").await.unwrap();
+    let r = s.run_user_message_with_stream("hello", None).await.unwrap();
     assert_eq!(r.text, "all done");
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
 }
@@ -2564,9 +2566,8 @@ async fn promote_next_queued_starts_a_new_task_and_removes_the_item() {
 
 /// A turn that ends at a tool boundary while the future-task queue is
 /// non-empty hands off to the queue (`ApplyOutcome::YieldToQueue`). The
-/// coordinator must transition the lifecycle to `Completed` — like the
-/// unsupervised TUI does after `run_agent_turns` — so a later prompt can
-/// start a fresh attempt. Regression: the lifecycle stayed `Working`, the
+/// coordinator must transition the lifecycle to `Completed` so a later
+/// prompt can start a fresh attempt. Regression: the lifecycle stayed `Working`, the
 /// next prompt's `start_fresh_attempt` rejected the new task (illegal from
 /// `Working`), and the follow-up never reached the model.
 #[tokio::test]
@@ -2600,14 +2601,17 @@ async fn queue_yield_leaves_the_lifecycle_completed_and_accepts_the_next_prompt(
     // which is what makes a tool-ending turn hand off to the queue.
     s.enqueue_task("queued instruction").await.unwrap();
 
-    let first = s.run_user_message("first").await.unwrap();
+    let first = s.run_user_message_with_stream("first", None).await.unwrap();
     assert!(first.tool_calls.len() == 1);
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
 
     // The follow-up must start a fresh attempt and drive the model — bounded
     // indirectly by the mock's scripted responses (an illegal-transition
     // error here is the regression).
-    let follow_up = s.run_user_message("follow-up").await.unwrap();
+    let follow_up = s
+        .run_user_message_with_stream("follow-up", None)
+        .await
+        .unwrap();
     assert_eq!(follow_up.text, "follow-up answer");
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
 }
@@ -2809,7 +2813,10 @@ async fn loop_runs_tool_then_finishes() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    let r = s.run_user_message("read it").await.unwrap();
+    let r = s
+        .run_user_message_with_stream("read it", None)
+        .await
+        .unwrap();
     assert_eq!(r.text, "read ok");
     let assistant = s
         .messages
@@ -2855,7 +2862,10 @@ async fn malformed_read_file_offset_is_rejected_and_does_not_execute() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    let r = s.run_user_message("Summarize this codebase").await.unwrap();
+    let r = s
+        .run_user_message_with_stream("Summarize this codebase", None)
+        .await
+        .unwrap();
     assert_eq!(r.text, "Forge is a Rust workspace.");
     let tool_msgs: Vec<_> = s
         .messages
@@ -2920,7 +2930,10 @@ async fn repeated_malformed_read_file_exhausts_validation_budget() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    let _ = s.run_user_message("read it").await.unwrap();
+    let _ = s
+        .run_user_message_with_stream("read it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     assert!(
         s.messages
@@ -2967,7 +2980,10 @@ async fn empty_final_after_tools_is_terminal_failure_not_success() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    let _ = s.run_user_message("read it").await.unwrap();
+    let _ = s
+        .run_user_message_with_stream("read it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     assert!(s
         .messages
@@ -3078,7 +3094,10 @@ async fn resume_restores_conversation_context_and_usage() {
     let mut session = AgentSession::create(cfg.clone(), model, ToolRegistry::new())
         .await
         .unwrap();
-    session.run_user_message("read it").await.unwrap();
+    session
+        .run_user_message_with_stream("read it", None)
+        .await
+        .unwrap();
     let session_id = session.session_id;
     drop(session);
 
@@ -3171,7 +3190,7 @@ async fn resume_serves_journaled_tool_without_reexecuting() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("read").await.unwrap();
+    s.run_user_message_with_stream("read", None).await.unwrap();
     let session_id = s.session_id;
     std::fs::write(dir.path().join("f.txt"), "second").unwrap();
 
@@ -3197,7 +3216,10 @@ async fn resume_serves_journaled_tool_without_reexecuting() {
         AgentSession::resume(base_cfg(dir.path()), model, ToolRegistry::new(), session_id)
             .await
             .unwrap();
-    resumed.run_user_message("read again").await.unwrap();
+    resumed
+        .run_user_message_with_stream("read again", None)
+        .await
+        .unwrap();
     let tool_messages: Vec<_> = resumed
         .messages
         .iter()
@@ -3353,57 +3375,6 @@ async fn resume_records_validation_failure_for_an_invalid_idempotent_intent() {
 }
 
 #[tokio::test]
-async fn resume_session_report_includes_composer_lines_in_order() {
-    use forge_durable::{new_session_id, Journal};
-
-    let dir = tempdir().unwrap();
-    let journal_dir = dir.path().join("j");
-    let sid = new_session_id();
-    let journal = Journal::open(&journal_dir, sid).await.unwrap();
-    journal.append_session_created(sid).await.unwrap();
-    // A mix of a local-only command and real messages — all should come
-    // back, since ComposerLineSubmitted fires for every submission.
-    journal.append_composer_line(sid, "/status").await.unwrap();
-    journal.append_composer_line(sid, "second").await.unwrap();
-    journal.append_composer_line(sid, "third").await.unwrap();
-
-    let mut current = AgentSession::create(
-        base_cfg(dir.path()),
-        Arc::new(MockModelClient::script(vec![])),
-        ToolRegistry::new(),
-    )
-    .await
-    .unwrap();
-
-    let report = current.resume_session(sid).await.unwrap();
-    assert_eq!(
-        report.composer_lines,
-        vec![
-            "/status".to_string(),
-            "second".to_string(),
-            "third".to_string()
-        ]
-    );
-}
-
-#[tokio::test]
-async fn resume_session_into_self_derives_composer_lines_from_own_journal() {
-    let dir = tempdir().unwrap();
-    let mut session = AgentSession::create(
-        base_cfg(dir.path()),
-        Arc::new(MockModelClient::script(vec![])),
-        ToolRegistry::new(),
-    )
-    .await
-    .unwrap();
-    session.record_composer_line("only message").await.unwrap();
-    let sid = session.session_id;
-
-    let report = session.resume_session(sid).await.unwrap();
-    assert_eq!(report.composer_lines, vec!["only message".to_string()]);
-}
-
-#[tokio::test]
 async fn resume_retries_idempotent_incomplete_intent() {
     use forge_durable::{new_session_id, Journal};
 
@@ -3488,7 +3459,7 @@ async fn repeated_hitl_denials_stop_the_turn_instead_of_retrying() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("push").await.unwrap();
+    s.run_user_message_with_stream("push", None).await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
     s.resolve_hitl(HitlDecision::Deny, "test").await.unwrap();
@@ -3532,7 +3503,7 @@ async fn hitl_pauses_on_git_push() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    let r = s.run_user_message("push").await.unwrap();
+    let r = s.run_user_message_with_stream("push", None).await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     assert!(s.pending_hitl().is_some());
     assert!(r.text.contains("HITL"));
@@ -3640,7 +3611,7 @@ async fn session_paused_on_args_probe(
         .unwrap();
     s.set_governance(Governance::default().require_hitl_for_tool("args_probe"));
     s.set_workspace_trusted(true);
-    s.run_user_message("go").await.unwrap();
+    s.run_user_message_with_stream("go", None).await.unwrap();
     let payload = s.pending_hitl().expect("policy HITL prompt");
     assert_eq!(payload.args_redacted["api_key"], "[REDACTED]");
     s
@@ -3710,7 +3681,7 @@ async fn approve_all_auto_approves_hitl_and_keeps_the_tool_confined() {
     s.set_workspace_trusted(true);
     s.set_approve_all(true);
 
-    s.run_user_message("go").await.unwrap();
+    s.run_user_message_with_stream("go", None).await.unwrap();
 
     assert!(s.approve_all());
     assert!(
@@ -3852,7 +3823,7 @@ async fn approve_all_does_not_override_an_explicit_deny() {
     }));
     s.set_approve_all(true);
 
-    s.run_user_message("go").await.unwrap();
+    s.run_user_message_with_stream("go", None).await.unwrap();
 
     assert!(
         s.pending_hitl().is_none(),
@@ -3900,7 +3871,9 @@ async fn inspection_bash_runs_without_a_prompt_in_accept_edits() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
         .await
         .unwrap();
-    s.run_user_message("look around").await.unwrap();
+    s.run_user_message_with_stream("look around", None)
+        .await
+        .unwrap();
 
     // There is no classifier and no permission mode: shell is not gated.
     // The OS sandbox is the boundary.
@@ -3945,7 +3918,9 @@ async fn rg_tool_name_is_a_synonym_for_grep() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
         .await
         .unwrap();
-    s.run_user_message("search").await.unwrap();
+    s.run_user_message_with_stream("search", None)
+        .await
+        .unwrap();
     assert!(s.pending_hitl().is_none(), "rg synonym must not prompt");
     assert!(
         s.messages.iter().any(|m| {
@@ -3982,7 +3957,7 @@ async fn hitl_deny_with_feedback_reaches_the_agent_as_tool_result_content() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("push").await.unwrap();
+    s.run_user_message_with_stream("push", None).await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
     s.resolve_hitl_with_feedback(
@@ -4024,7 +3999,7 @@ async fn hitl_deny_with_blank_feedback_omits_it_from_the_message() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("push").await.unwrap();
+    s.run_user_message_with_stream("push", None).await.unwrap();
 
     s.resolve_hitl_with_feedback(HitlDecision::Deny, "test", Some("   "))
         .await
@@ -4072,7 +4047,9 @@ async fn resuming_from_hitl_does_not_leak_stale_waiting_evidence_into_completion
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
@@ -4116,7 +4093,9 @@ async fn hitl_large_tool_output_is_offloaded_before_insert() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
     s.run_agent_turns(None).await.unwrap();
@@ -4192,7 +4171,9 @@ async fn acl_denied_tool_call_is_refused_at_execution_time() {
     let mut acl = AclPolicy::allow_all();
     acl.deny("read_file".into());
     s.set_governance(Governance::default().with_acl(acl));
-    s.run_user_message("read it").await.unwrap();
+    s.run_user_message_with_stream("read it", None)
+        .await
+        .unwrap();
 
     let tool_contents: Vec<&str> = s
         .messages
@@ -4241,7 +4222,9 @@ async fn hitl_approve_does_not_take_the_denial_path() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
@@ -4291,7 +4274,9 @@ async fn approving_a_batched_hitl_call_leaves_every_tool_call_with_a_result() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("do both").await.unwrap();
+    s.run_user_message_with_stream("do both", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
     s.resolve_hitl(HitlDecision::Approve, "test").await.unwrap();
@@ -4394,7 +4379,9 @@ async fn session_pattern_allow_skips_hitl_for_the_command_family() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert!(s.pending_hitl().is_some());
     assert_eq!(
         s.allow_suggested_pattern_for_session(&ToolCall {
@@ -4444,7 +4431,9 @@ async fn offload_large_tool_output() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("read big").await.unwrap();
+    s.run_user_message_with_stream("read big", None)
+        .await
+        .unwrap();
     let tool_msg = s
         .messages
         .iter()
@@ -4481,7 +4470,10 @@ async fn tool_output_just_under_the_offload_threshold_stays_inline() {
     let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    session.run_user_message("read mid").await.unwrap();
+    session
+        .run_user_message_with_stream("read mid", None)
+        .await
+        .unwrap();
     let tool_msg = session
         .messages
         .iter()
@@ -4528,7 +4520,10 @@ async fn a_model_step_applies_multiple_tool_calls_in_order() {
     let mut session = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    session.run_user_message("read both").await.unwrap();
+    session
+        .run_user_message_with_stream("read both", None)
+        .await
+        .unwrap();
     let tool_contents: Vec<_> = session
         .messages
         .iter()
@@ -4580,7 +4575,7 @@ async fn independent_read_calls_execute_concurrently_and_apply_in_order() {
 
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        session.run_user_message("read both"),
+        session.run_user_message_with_stream("read both", None),
     )
     .await
     .expect("read calls should reach the barrier together")
@@ -4612,7 +4607,7 @@ async fn accumulates_prompt_cache_tokens_in_session_usage() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("hi").await.unwrap();
+    s.run_user_message_with_stream("hi", None).await.unwrap();
     assert_eq!(s.token_usage.prompt_cache_hits, 7);
     assert_eq!(s.token_usage.prompt_cache_writes, 2);
 }
@@ -4634,22 +4629,12 @@ async fn accumulates_api_token_usage_for_cost() {
     let mut s = AgentSession::create(base_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("hi").await.unwrap();
+    s.run_user_message_with_stream("hi", None).await.unwrap();
     assert_eq!(s.token_usage.prompt_tokens, 10);
     assert_eq!(s.token_usage.completion_tokens, 3);
     assert_eq!(s.token_usage.model_steps, 1);
     assert_eq!(s.token_usage.model_calls_with_usage, 1);
     assert!(s.token_usage.thinking_tokens_est >= 1);
-    let lines = s.token_usage_lines();
-    assert!(lines.iter().any(|l| l.contains("prompt/input")));
-    assert!(lines.iter().any(|l| l.contains("completion/output")));
-    assert!(lines.iter().any(|l| l.contains("In-context estimate")));
-    assert!(
-        !lines
-            .iter()
-            .any(|l| l.contains("$0") || l.contains("USD") || l.contains("price")),
-        "should not report dollar cost: {lines:?}"
-    );
     let report = s.token_usage_report();
     assert!(report.user_tokens_est >= 1);
     assert!(report.system_tokens_est >= 1);
@@ -4789,7 +4774,9 @@ async fn resume_restores_a_valid_waiting_session_and_can_resolve_it() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     let request_id = s.pending_hitl().unwrap().call_id.clone();
 
@@ -4893,7 +4880,9 @@ async fn write_file_at_large_context() {
             format!("filler context message {i} {}", "x".repeat(2000)),
         ));
     }
-    s.run_user_message("create new.txt").await.unwrap();
+    s.run_user_message_with_stream("create new.txt", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
@@ -5025,20 +5014,6 @@ async fn prepare_model_step_leaves_a_small_context_alone() {
     assert!(!s.events.iter().any(|e| e.kind == "context_compacted"));
     assert_eq!(s.compaction_telemetry().compaction_count, 0);
     assert_eq!(s.messages.len(), 1);
-}
-
-#[tokio::test]
-async fn journal_cursor_is_exposed() {
-    let dir = tempdir().unwrap();
-    let mut s = idle_session(dir.path()).await;
-
-    let before = s.journal_cursor().await.unwrap();
-    s.append_user_message("advance the journal").await.unwrap();
-    let after = s.journal_cursor().await.unwrap();
-    assert!(
-        after > before,
-        "cursor should advance after a journalled append ({before} -> {after})"
-    );
 }
 
 #[tokio::test]
@@ -5213,7 +5188,7 @@ async fn exec_only_tool_failure_is_journalled_without_a_tool_message() {
     s.run_one_tool_exec_only(&call, &mut budget).await.unwrap();
 
     assert_eq!(s.messages.len(), before);
-    assert!(s.journal_cursor().await.unwrap() > 0);
+    assert!(s.journal.last_seq().await.unwrap() > 0);
 }
 
 #[tokio::test]
@@ -5285,7 +5260,10 @@ async fn ask_user_question_pauses_until_answered() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    let result = s.run_user_message("pick a db").await.unwrap();
+    let result = s
+        .run_user_message_with_stream("pick a db", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
     assert!(s.pending_question().is_some());
     assert!(result.text.contains("Awaiting answers"));
@@ -5521,7 +5499,9 @@ async fn model_claims_success_without_a_verified_edit_fails() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("delete missing.txt").await.unwrap();
+    s.run_user_message_with_stream("delete missing.txt", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     assert!(s
         .messages
@@ -5543,7 +5523,9 @@ async fn write_file_success_completes() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("create new.txt").await.unwrap();
+    s.run_user_message_with_stream("create new.txt", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("new.txt")).unwrap(),
@@ -5569,7 +5551,9 @@ async fn bash_nonzero_exit_fails_with_exit_code_in_message() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     let failure = s
         .messages
@@ -5606,7 +5590,9 @@ async fn bash_exit_zero_completes_and_reports_success() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     let tool_message = s
         .messages
@@ -5630,7 +5616,9 @@ async fn bash_exit_127_reports_spawn_failed_command_not_found() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     let tool_message = s
         .messages
@@ -5662,7 +5650,7 @@ async fn hitl_denial_message_carries_denied_outcome() {
         .await
         .unwrap();
     with_shell_hitl(&mut s);
-    s.run_user_message("push").await.unwrap();
+    s.run_user_message_with_stream("push", None).await.unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
 
     s.resolve_hitl_with_feedback(HitlDecision::Deny, "test", None)
@@ -5709,7 +5697,9 @@ async fn acl_denial_message_carries_denied_outcome() {
     let mut acl = AclPolicy::allow_all();
     acl.deny("read_file".into());
     s.set_governance(Governance::default().with_acl(acl));
-    s.run_user_message("read it").await.unwrap();
+    s.run_user_message_with_stream("read it", None)
+        .await
+        .unwrap();
 
     let tool_message = s
         .messages
@@ -5754,7 +5744,9 @@ async fn write_then_failing_validation_completes_with_the_check_reported_as_inco
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("write and validate").await.unwrap();
+    s.run_user_message_with_stream("write and validate", None)
+        .await
+        .unwrap();
 
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     let completion = s.last_completion.as_ref().unwrap();
@@ -5809,7 +5801,9 @@ async fn edit_tool_produces_file_evidence_so_a_real_edit_is_not_reported_as_fail
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("edit it").await.unwrap();
+    s.run_user_message_with_stream("edit it", None)
+        .await
+        .unwrap();
 
     assert_eq!(
         std::fs::read_to_string(dir.path().join("edit_me.txt")).unwrap(),
@@ -5857,7 +5851,9 @@ async fn a_failed_git_inspection_does_not_fail_a_turn_that_edited_a_file() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("fix it").await.unwrap();
+    s.run_user_message_with_stream("fix it", None)
+        .await
+        .unwrap();
 
     // `git log` fails here: the tempdir is not a repository.
     assert_eq!(
@@ -5905,7 +5901,9 @@ async fn a_failed_git_mutation_still_fails_the_turn() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("fix and commit").await.unwrap();
+    s.run_user_message_with_stream("fix and commit", None)
+        .await
+        .unwrap();
 
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
 }
@@ -5941,7 +5939,9 @@ async fn a_missing_verification_command_is_reported_without_failing_the_edit() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("edit and verify").await.unwrap();
+    s.run_user_message_with_stream("edit and verify", None)
+        .await
+        .unwrap();
 
     assert_eq!(
         std::fs::read_to_string(dir.path().join("mod.txt")).unwrap(),
@@ -5970,7 +5970,9 @@ async fn search_zero_matches_completes() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("search for it").await.unwrap();
+    s.run_user_message_with_stream("search for it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(
         s.last_completion.as_ref().unwrap().evidence_summary.detail,
@@ -6001,7 +6003,9 @@ async fn two_edits_one_fails_is_partial_failure_not_completed() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("update both").await.unwrap();
+    s.run_user_message_with_stream("update both", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     assert_eq!(
         s.last_completion.as_ref().unwrap().reason,
@@ -6022,7 +6026,9 @@ async fn read_only_turn_completes_without_tool_calls() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("what is this repo?").await.unwrap();
+    s.run_user_message_with_stream("what is this repo?", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(
         s.last_completion.as_ref().unwrap().reason,
@@ -6052,7 +6058,7 @@ async fn dangling_tool_call_text_does_not_complete() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("change the greeting in greeter.py")
+    s.run_user_message_with_stream("change the greeting in greeter.py", None)
         .await
         .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
@@ -6093,7 +6099,9 @@ async fn prose_mentioning_a_tool_name_still_completes() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("how do I create a file?").await.unwrap();
+    s.run_user_message_with_stream("how do I create a file?", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(
         s.last_completion.as_ref().unwrap().reason,
@@ -6116,7 +6124,9 @@ async fn git_add_with_no_changes_fails_effect_not_observed() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("stage a.txt").await.unwrap();
+    s.run_user_message_with_stream("stage a.txt", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
     assert_eq!(
         s.last_completion.as_ref().unwrap().reason,
@@ -6147,7 +6157,9 @@ async fn git_add_then_commit_completes_with_verified_effect() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("commit the change").await.unwrap();
+    s.run_user_message_with_stream("commit the change", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
     assert_eq!(
         s.last_completion.as_ref().unwrap().reason,
@@ -6186,7 +6198,9 @@ async fn git_restore_staged_completes_with_verified_effect() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("unstage a.txt").await.unwrap();
+    s.run_user_message_with_stream("unstage a.txt", None)
+        .await
+        .unwrap();
 
     // The unstage actually happened and no longer differs from HEAD.
     assert!(
@@ -6237,7 +6251,9 @@ async fn git_restore_staged_and_worktree_completes_with_verified_effect() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("revert a.txt entirely").await.unwrap();
+    s.run_user_message_with_stream("revert a.txt entirely", None)
+        .await
+        .unwrap();
 
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -6389,7 +6405,9 @@ async fn continuing_a_failed_turn_starts_a_fresh_attempt() {
     let mut s = AgentSession::create(no_gov_cfg(dir.path()), model, ToolRegistry::new())
         .await
         .unwrap();
-    s.run_user_message("run it").await.unwrap();
+    s.run_user_message_with_stream("run it", None)
+        .await
+        .unwrap();
     assert_eq!(s.active_task.lifecycle, TaskLifecycle::Failed);
 
     // Continue (no new user message) after a failure must start a fresh

@@ -64,10 +64,10 @@ impl AgentSession {
 
     /// How many tools this session would expose to the model.
     ///
-    /// Equivalent to `list_tools().len()`, without building the list. The
-    /// status bar asks for this every frame, where materialising every
-    /// descriptor — name, description and a cloned input schema apiece — was
-    /// one of the larger per-frame allocation sources.
+    /// Equivalent to `list_tools().len()`, without building the list.
+    /// Session snapshots ask for this on every refresh, where materialising
+    /// every descriptor — name, description and a cloned input schema apiece
+    /// — would be wasted allocation.
     pub fn tool_count(&self) -> usize {
         if self.enable_gov {
             self.tools
@@ -134,10 +134,6 @@ impl AgentSession {
         total
     }
 
-    pub async fn journal_cursor(&self) -> Result<u64, LoopError> {
-        Ok(self.journal.last_seq().await?)
-    }
-
     /// Full token-usage report for status UIs (API totals + in-context estimates). No $.
     pub fn token_usage_report(&self) -> TokenUsageReport {
         let mut system_tokens_est = 0usize;
@@ -187,46 +183,7 @@ impl AgentSession {
         }
     }
 
-    pub fn token_usage_lines(&self) -> Vec<String> {
-        let r = self.token_usage_report();
-        let api = &r.api;
-        let mut lines = vec![
-            "Session token usage (not $)".to_string(),
-            String::new(),
-            "API-reported (cumulative)".to_string(),
-            format!("  prompt/input tokens:      {}", api.prompt_tokens),
-            format!("  completion/output tokens: {}", api.completion_tokens),
-            format!("  total API tokens:         {}", api.total_api_tokens()),
-            format!(
-                "  model steps:              {} ({} with usage metadata)",
-                api.model_steps, api.model_calls_with_usage
-            ),
-            format!("  thinking tokens (est.):   {}", api.thinking_tokens_est),
-            String::new(),
-            "In-context estimate (~4 chars/token)".to_string(),
-            format!(
-                "  total: {} / {}  ({:.1}% of capacity)",
-                r.context_tokens_est, r.context_capacity, r.context_pct
-            ),
-            format!("  system:    {}", r.system_tokens_est),
-            format!("  tool schemas: {}", r.tool_schema_tokens_est),
-            format!("  user:      {}", r.user_tokens_est),
-            format!("  assistant: {}", r.assistant_tokens_est),
-            format!(
-                "  tool:      {} ({} tool msgs)",
-                r.tool_tokens_est, r.tool_message_count
-            ),
-            format!("  thinking:  {}", r.thinking_in_context_est),
-            format!("  messages:  {}", r.message_count),
-        ];
-        if api.model_steps > 0 && api.model_calls_with_usage == 0 {
-            lines.push(String::new());
-            lines.push("Note: provider did not return usage; API totals may stay 0.".into());
-        }
-        lines
-    }
-
-    /// Shared model client handle (for streaming from the TUI without holding `&mut self`).
+    /// Shared model client handle, usable without holding `&mut self`.
     pub fn model_client(&self) -> Arc<dyn ModelClient> {
         self.model.clone()
     }

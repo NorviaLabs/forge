@@ -43,41 +43,6 @@ pub struct Journal {
     checkpoint_requests: Arc<OnceLock<tokio::sync::mpsc::Sender<SessionId>>>,
 }
 
-/// Return the most recently modified session journal in `dir`.
-///
-/// Session journals are one database per session, and SQLite updates the
-/// database file whenever a journal event is written. Invalid or unrelated
-/// files are ignored so a stale runtime artifact cannot prevent startup.
-pub fn latest_session_id(dir: &Path) -> Result<Option<SessionId>, JournalError> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let mut latest: Option<(std::time::SystemTime, SessionId)> = None;
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("db") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let Ok(session_id) = Uuid::parse_str(stem) else {
-            continue;
-        };
-        let modified = entry
-            .metadata()?
-            .modified()
-            .unwrap_or(std::time::UNIX_EPOCH);
-        if latest.as_ref().is_none_or(|(time, _)| modified > *time) {
-            latest = Some((modified, session_id));
-        }
-    }
-    Ok(latest.map(|(_, session_id)| session_id))
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultPayload {
     pub call_id: String,
@@ -95,9 +60,6 @@ pub struct ReplayState {
     /// tool intents without results (fail-safe)
     pub incomplete_intents: Vec<String>,
     pub user_messages: Vec<String>,
-    /// Legacy composer submissions retained for journal compatibility. Current
-    /// TUI recall is stored separately at user level.
-    pub composer_lines: Vec<String>,
     /// Ordered active conversation reconstructed from journal events.
     pub messages: Vec<Message>,
     /// Completed model responses, used to restore cumulative usage metrics.
@@ -147,7 +109,6 @@ impl ReplayState {
             tool_results: HashMap::new(),
             incomplete_intents: Vec::new(),
             user_messages: Vec::new(),
-            composer_lines: Vec::new(),
             messages: Vec::new(),
             model_responses: Vec::new(),
             events: Vec::new(),
@@ -175,7 +136,6 @@ struct ReplayCheckpoint {
     tool_results: HashMap<String, ToolResultPayload>,
     incomplete_intents: Vec<String>,
     user_messages: Vec<String>,
-    composer_lines: Vec<String>,
     messages: Vec<Message>,
     model_responses: Vec<ModelResponse>,
     pending_hitl: Option<Value>,
@@ -198,7 +158,6 @@ impl ReplayCheckpoint {
             tool_results: state.tool_results.clone(),
             incomplete_intents: state.incomplete_intents.clone(),
             user_messages: state.user_messages.clone(),
-            composer_lines: state.composer_lines.clone(),
             messages: state.messages.clone(),
             model_responses: state.model_responses.clone(),
             pending_hitl: state.pending_hitl.clone(),
@@ -222,7 +181,6 @@ impl ReplayCheckpoint {
             tool_results: self.tool_results,
             incomplete_intents: self.incomplete_intents,
             user_messages: self.user_messages,
-            composer_lines: self.composer_lines,
             messages: self.messages,
             model_responses: self.model_responses,
             events: Vec::new(),
@@ -454,21 +412,6 @@ impl Journal {
         }
         self.append(session_id, JournalEventType::UserMessage, payload)
             .await
-    }
-
-    /// Records a composer submission independent of whether it became a
-    /// model-directed `UserMessage` — see `JournalEventType::ComposerLineSubmitted`.
-    pub async fn append_composer_line(
-        &self,
-        session_id: SessionId,
-        text: &str,
-    ) -> Result<u64, JournalError> {
-        self.append(
-            session_id,
-            JournalEventType::ComposerLineSubmitted,
-            json!({ "content": text }),
-        )
-        .await
     }
 
     pub async fn append_tool_intent(
@@ -968,11 +911,6 @@ impl Journal {
                         promoted_without_confirmation.insert(id);
                     }
                 }
-                JournalEventType::ComposerLineSubmitted => {
-                    if let Some(c) = payload.get("content").and_then(|v| v.as_str()) {
-                        state.composer_lines.push(c.to_string());
-                    }
-                }
                 JournalEventType::ModelResponse => {
                     // Older journals only contain response metadata and remain resumable with
                     // partial history; current journals persist the complete response.
@@ -1286,14 +1224,6 @@ impl Journal {
         .await?;
         Ok(())
     }
-
-    /// Cached result if tool already completed (DUR-02).
-    pub fn cached_tool_result<'a>(
-        state: &'a ReplayState,
-        call_id: &str,
-    ) -> Option<&'a ToolResultPayload> {
-        state.tool_results.get(call_id)
-    }
 }
 
 pub fn new_session_id() -> SessionId {
@@ -1453,7 +1383,7 @@ mod tests {
         // Simulate crash before result — incomplete intent
         let state = j.replay(sid).await.unwrap();
         assert_eq!(state.incomplete_intents, vec!["c1".to_string()]);
-        assert!(Journal::cached_tool_result(&state, "c1").is_none());
+        assert!(!state.tool_results.contains_key("c1"));
 
         j.append_tool_result(
             sid,
@@ -1471,31 +1401,9 @@ mod tests {
 
         let state2 = j.replay(sid).await.unwrap();
         assert!(state2.incomplete_intents.is_empty());
-        let cached = Journal::cached_tool_result(&state2, "c1").unwrap();
+        let cached = state2.tool_results.get("c1").unwrap();
         assert_eq!(cached.output.content, "ok");
         assert_eq!(state2.user_messages, vec!["hi".to_string()]);
-    }
-
-    #[tokio::test]
-    async fn composer_lines_and_user_messages_dont_cross_contaminate() {
-        let dir = tempdir().unwrap();
-        let sid = new_session_id();
-        let j = Journal::open(dir.path(), sid).await.unwrap();
-        j.append_session_created(sid).await.unwrap();
-        // A local-only command (never becomes a UserMessage)...
-        j.append_composer_line(sid, "/status").await.unwrap();
-        // ...and a real model-directed message, which per the "unified
-        // event" design also gets a ComposerLineSubmitted record alongside
-        // its UserMessage one.
-        j.append_composer_line(sid, "hello").await.unwrap();
-        j.append_user_message(sid, "hello").await.unwrap();
-
-        let state = j.replay(sid).await.unwrap();
-        assert_eq!(
-            state.composer_lines,
-            vec!["/status".to_string(), "hello".to_string()]
-        );
-        assert_eq!(state.user_messages, vec!["hello".to_string()]);
     }
 
     #[tokio::test]
@@ -2079,68 +1987,6 @@ mod tests {
         assert!(tool_calls_message.thinking.is_none());
         assert_eq!(tool_calls_message.tool_calls.len(), 1);
         assert_eq!(tool_calls_message.tool_calls[0].id, "c-tc");
-    }
-
-    /// A missing session directory is the first-run case, not an error.
-    #[test]
-    fn latest_session_id_is_none_for_missing_or_empty_dir() {
-        let dir = tempdir().unwrap();
-        assert!(latest_session_id(&dir.path().join("never-created"))
-            .unwrap()
-            .is_none());
-        assert!(latest_session_id(dir.path()).unwrap().is_none());
-    }
-
-    /// Only `<uuid>.db` names are sessions. Everything else in the directory —
-    /// sidecar files, other extensions, extensionless files, and `.db` files
-    /// whose stem is not a UUID — is skipped rather than failing the scan.
-    #[test]
-    fn latest_session_id_skips_non_session_files() {
-        let dir = tempdir().unwrap();
-        for name in [
-            "notes.txt",
-            "sessions.json",
-            "README",
-            "abcdef.db",
-            "not-a-uuid.db",
-        ] {
-            std::fs::write(dir.path().join(name), b"x").unwrap();
-        }
-        // A `.db` sidecar that SQLite itself may leave behind.
-        let real = new_session_id();
-        std::fs::write(dir.path().join(format!("{real}.db-wal")), b"x").unwrap();
-        std::fs::write(dir.path().join(format!("{real}.db-shm")), b"x").unwrap();
-        assert!(latest_session_id(dir.path()).unwrap().is_none());
-
-        // Add one genuine session file and it becomes the answer.
-        std::fs::write(dir.path().join(format!("{real}.db")), b"x").unwrap();
-        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(real));
-    }
-
-    /// "Latest" is by mtime, not by directory order or name.
-    #[test]
-    fn latest_session_id_picks_the_most_recently_modified() {
-        let dir = tempdir().unwrap();
-        let older = new_session_id();
-        let newer = new_session_id();
-        std::fs::write(dir.path().join(format!("{older}.db")), b"x").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        std::fs::write(dir.path().join(format!("{newer}.db")), b"x").unwrap();
-        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(newer));
-
-        // Touching the older file makes it the latest.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        std::fs::write(dir.path().join(format!("{older}.db")), b"xx").unwrap();
-        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(older));
-    }
-
-    #[tokio::test]
-    async fn latest_session_id_finds_a_journal_opened_through_the_normal_path() {
-        let dir = tempdir().unwrap();
-        let sid = new_session_id();
-        let journal = Journal::open(dir.path(), sid).await.unwrap();
-        journal.append_session_created(sid).await.unwrap();
-        assert_eq!(latest_session_id(dir.path()).unwrap(), Some(sid));
     }
 
     /// `ModelRequest` carries the cache-epoch bookkeeping that compaction

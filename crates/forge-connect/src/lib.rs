@@ -33,8 +33,8 @@ mod verify;
 pub use auth::{OauthPending, OauthTokens};
 pub use catalog::{
     fetch_remote_models, models_for_picker, refresh_models_dev_registry, refresh_profile_catalog,
-    runnable_models_for_picker, CatalogCost, CatalogEntry, CatalogError, CatalogLimits,
-    CatalogSource, ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
+    runnable_models_for_picker, CatalogEntry, CatalogError, CatalogLimits, CatalogSource,
+    ModelCatalogCache, DEFAULT_TTL_SECS, MODELS_DEV_TTL_SECS,
 };
 pub use cost::provider_cost_report;
 pub use credentials::Credentials;

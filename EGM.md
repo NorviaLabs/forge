@@ -63,17 +63,15 @@ This file is the EGM contract index. The human-maintained
 
 ## Global Side Effects
 
-- Terminal takeover (raw mode, alternate screen, mouse) is restored on every
-  exit path.
 - Per-session SQLite journals, the repository control DB, the lease file,
-  offload/progress files, and git worktrees, all under the runtime storage root.
+  offload files, and git worktrees, all under the runtime storage root.
 - User-global config under `config_dir/forge`: `config.toml`, `trust.toml`,
   `permissions.toml`, `credentials.toml`, `preferences.toml`,
   `providers.toml`, and the model catalog.
 - Outbound HTTPS to model providers, catalogs, OAuth endpoints, web
   fetch/search, and GitHub (`gh`).
-- Subprocesses: shells, git, PTYs, MCP servers, external editor, subagents,
-  and loopback egress listeners.
+- Subprocesses: shells, git, PTYs, MCP servers, subagents, and loopback
+  egress listeners.
 
 ## System Verification
 

@@ -1,11 +1,11 @@
 //! The operator's answer to a pending approval, applied in one place.
 //!
-//! Every frontend (TUI, supervisor, headless, CLI) used to map a menu choice
+//! Every caller (supervisor, headless, CLI) used to map a menu choice
 //! to its own sequence of `grant_egress_host`, session pattern allows,
 //! personal-permissions writes and `resolve_hitl` calls. They now hand the
 //! session a [`GrantDecision`]; the session checks it against the pending
 //! payload, applies the grant it carries, and resolves the approval. Clients
-//! keep only rendering and key handling.
+//! keep only rendering and input handling.
 
 use crate::*;
 
