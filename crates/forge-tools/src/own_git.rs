@@ -96,7 +96,14 @@ async fn open_network(grant: &EgressGrant, repo: &Path) -> Option<forge_sandbox:
         .prefix("forge-git-")
         .tempdir()
         .ok()?;
-    let mut env = crate::credentials::credential_helper_env(Some(grant), scratch.path(), repo);
+    // The invocation's own endpoint, so it is the one that supplies the
+    // credentials for this git.
+    let endpoint = EgressGrant {
+        proxy_port: invocation.tcp_addr().port(),
+        socket_path: PathBuf::new(),
+        control: Some(invocation.shared().clone()),
+    };
+    let mut env = crate::credentials::credential_helper_env(Some(&endpoint), scratch.path(), repo);
     let mut loopback_ports = Vec::new();
     if let Some((broker, git_ssh_command)) =
         crate::shell_spawn::start_ssh_broker(&invocation, &[]).await

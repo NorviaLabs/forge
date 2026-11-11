@@ -898,3 +898,134 @@ async fn a_call_gateway_is_labelled_isolated_and_stops_on_drop() {
     }
     assert!(refused, "a dropped gateway must stop listening on {addr}");
 }
+
+/// A local HTTPS server with a certificate of its own, which answers every
+/// request with the request head it received. Returns its port and its
+/// certificate (DER), for the gateway to trust.
+#[cfg(unix)]
+async fn echoing_https_upstream() -> (u16, Vec<u8>) {
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    let key = rcgen::KeyPair::generate().unwrap();
+    let cert = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let config = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(
+        vec![cert.der().clone()],
+        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+    )
+    .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(tls) = acceptor.accept(sock).await else {
+                    return;
+                };
+                let mut reader = BufReader::new(tls);
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{head}",
+                    head.len()
+                );
+                let _ = reader.get_mut().write_all(response.as_bytes()).await;
+                let _ = reader.get_mut().shutdown().await;
+            });
+        }
+    });
+    (port, cert.der().to_vec())
+}
+
+/// A client told to send plain requests to the gateway's socket (the GitHub
+/// CLI) holds a placeholder; the gateway does the TLS and puts the user's
+/// credential in its place. Credentials that are not the user's are refused.
+#[cfg(unix)]
+#[tokio::test]
+async fn the_gateway_supplies_the_credential_for_a_plain_request_on_its_socket() {
+    use forge_tools::egress::EgressOptions;
+    use tokio::net::UnixStream;
+
+    let (port, upstream_cert) = echoing_https_upstream().await;
+    let mut policy = EgressPolicy::new();
+    policy.allow("localhost");
+    let options = EgressOptions {
+        allow_private_destinations: true,
+        ..EgressOptions::default()
+    };
+    let mut proxy = EgressProxy::start_with_options(policy.clone(), options)
+        .await
+        .unwrap();
+    proxy.shared().trust_upstream_root(upstream_cert);
+    let placeholder = proxy
+        .shared()
+        .supply_credential("localhost", "the-real-token")
+        .unwrap();
+    assert!(!placeholder.contains("the-real-token"));
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("gw.sock");
+    proxy.serve_on_unix_socket(&socket, policy).await.unwrap();
+
+    let exchange = |authorization: String, host: String| {
+        let socket = socket.clone();
+        async move {
+            let mut stream = UnixStream::connect(&socket).await.unwrap();
+            let request = format!(
+                "GET /user HTTP/1.1\r\nHost: {host}\r\nAuthorization: {authorization}\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(10),
+                stream.read_to_string(&mut response),
+            )
+            .await;
+            response
+        }
+    };
+
+    let host = format!("localhost:{port}");
+    let response = exchange(format!("token {placeholder}"), host.clone()).await;
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(
+        response.contains("Authorization: token the-real-token"),
+        "{response}"
+    );
+    assert!(!response.contains(&placeholder), "{response}");
+    assert!(response.contains("Host: localhost"), "{response}");
+
+    let foreign = exchange("token somebody-elses".into(), host).await;
+    assert!(foreign.starts_with("HTTP/1.1 403"), "{foreign}");
+    assert!(
+        foreign.contains("credentials Forge did not supply"),
+        "{foreign}"
+    );
+
+    // A host the policy does not allow is refused before any connection.
+    let denied = exchange(format!("token {placeholder}"), "other.example".into()).await;
+    assert!(denied.starts_with("HTTP/1.1 403"), "{denied}");
+
+    // The same plain request on the TCP port is not accepted.
+    let mut tcp = TcpStream::connect(proxy.addr()).await.unwrap();
+    tcp.write_all(b"GET /user HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut answer = String::new();
+    let _ = tcp.read_to_string(&mut answer).await;
+    assert!(answer.starts_with("HTTP/1.1 400"), "{answer}");
+}

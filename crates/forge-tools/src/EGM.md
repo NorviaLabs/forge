@@ -207,6 +207,25 @@ Subdirectories:
   replaced (`credentials::host_identity_env`), `http.proxy` and
   `core.gitProxy` point at the gateway, and the signing programs at the
   broker. There is no SSH-to-HTTPS rewrite any more.
+- Credentials stay outside the sandbox (`tls_intercept.rs`,
+  `credentials::behind_the_gateway`). A confined spawn's credential store and
+  `{LABEL}_TOKEN` hold a placeholder (`EgressShared::supply_credential`);
+  the session's in-memory authority's certificate is appended to the system
+  roots in a bundle the spawn trusts (`GIT_SSL_CAINFO`, `SSL_CERT_FILE`,
+  `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`). An
+  endpoint whose client was given that bundle terminates `CONNECT host:443`
+  for a host with a registered credential (`serve_terminated`), replaces the
+  placeholder in the forwarded request (`supply_credentials`), one request
+  per connection, and speaks verified TLS to the host. An `Authorization`
+  without the placeholder is refused with a 403. Other hosts and other
+  endpoints keep opaque tunnels. A client that rejects the certificate is
+  reported by `untrusting_note`.
+- `gh` cannot trust the authority (Go on macOS uses the system verifier
+  only), so `GH_CONFIG_DIR` points it at a config with `http_unix_socket`
+  set to the invocation's Unix socket. That socket alone accepts origin-form
+  requests (`ProxyRequest::Origin`): the gateway applies the host policy,
+  does the TLS and supplies the credential. The Seatbelt profile allows
+  exactly that socket path.
 - The `git` tool runs confined through the shell spawn path
   (`builtins::run_git_confined`): argument validation and the host
   pre-check first, then `git <sub> <quoted args>` as a confined shell

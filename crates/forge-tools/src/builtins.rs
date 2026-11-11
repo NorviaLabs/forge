@@ -644,6 +644,16 @@ async fn run_shell_command_inner(
         }
         content.push_str(&crate::egress::user_refusal_note(&refused_hosts));
     }
+    let untrusting = egress_invocation
+        .as_ref()
+        .map(|invocation| invocation.shared().take_untrusting_hosts())
+        .unwrap_or_default();
+    if !untrusting.is_empty() {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&crate::egress::untrusting_note(&untrusting));
+    }
     if confined_run && refused_hosts.is_empty() {
         let denied_host = egress_invocation
             .as_ref()

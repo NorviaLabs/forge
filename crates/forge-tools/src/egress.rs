@@ -406,6 +406,16 @@ pub struct EgressShared {
     /// from `denied`: that queue is what raises a host approval, and a host
     /// the user has just said no to must not be asked about again.
     refused: Arc<Mutex<Vec<String>>>,
+    /// The session's credentials and certificate authority, shared by every
+    /// endpoint.
+    intercept: Arc<crate::tls_intercept::Intercept>,
+    /// Whether this endpoint's client was given the session authority's
+    /// certificate. Only then is a tunnel to a credentialed host terminated:
+    /// a client that does not trust the authority would just fail.
+    intercepting: Arc<std::sync::atomic::AtomicBool>,
+    /// Credentialed hosts whose client would not accept the session
+    /// authority's certificate, for this invocation.
+    untrusting: Arc<Mutex<Vec<String>>>,
 }
 
 /// What [`EgressShared::admit`] decided.
@@ -422,6 +432,19 @@ impl Admission {
     pub fn allowed(self) -> bool {
         self == Self::Allowed
     }
+}
+
+/// Appended to a command's output when a program in it would not accept the
+/// sandbox certificate for a host Forge supplies credentials to.
+pub fn untrusting_note(hosts: &[String]) -> String {
+    format!(
+        "A program in this command could not reach {} because it does not accept the sandbox's \
+         certificate. Forge keeps your credentials for that host outside the sandbox and supplies \
+         them at its proxy, which only programs that honour a custom certificate bundle can use \
+         (git, curl, gh, Node, Python). Use one of those, or request to run the command \
+         unconfined.",
+        hosts.join(", ")
+    )
 }
 
 /// Appended to a command's output when the user refused a host it tried to
@@ -450,7 +473,47 @@ impl EgressShared {
             asker: Arc::new(RwLock::new(None)),
             once: Arc::new(Mutex::new(Vec::new())),
             refused: Arc::new(Mutex::new(Vec::new())),
+            intercept: Arc::default(),
+            intercepting: Arc::default(),
+            untrusting: Arc::default(),
         }
+    }
+
+    /// Have this endpoint supply `password` for `host` (and its subdomains)
+    /// itself, and return the placeholder its client should hold instead.
+    /// The caller must give that client the certificate from
+    /// [`Self::session_ca_pem`]: from now on this endpoint terminates TLS to
+    /// credentialed hosts. `None` when no authority could be created; the
+    /// caller then has to hand over the real credential, as before.
+    pub fn supply_credential(&self, host: &str, password: &str) -> Option<String> {
+        self.intercept.ca_pem()?;
+        let placeholder = self.intercept.register(host, password);
+        self.intercepting.store(true, Ordering::Relaxed);
+        Some(placeholder)
+    }
+
+    /// Take the credentialed hosts a client of this endpoint could not
+    /// reach because it does not accept the session authority.
+    pub fn take_untrusting_hosts(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .untrusting
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    /// The session authority's certificate, PEM.
+    pub fn session_ca_pem(&self) -> Option<String> {
+        self.intercept.ca_pem()
+    }
+
+    /// Internal, for tests only: also trust this DER certificate when the
+    /// gateway verifies a credentialed host.
+    #[doc(hidden)]
+    pub fn trust_upstream_root(&self, der: Vec<u8>) {
+        self.intercept
+            .trust_upstream_root(rustls::pki_types::CertificateDer::from(der));
     }
 
     /// Send hosts the policy has no rule for to `asker` instead of refusing
@@ -566,6 +629,9 @@ impl EgressShared {
             asker: Arc::clone(&self.asker),
             once: Arc::new(Mutex::new(Vec::new())),
             refused: Arc::new(Mutex::new(Vec::new())),
+            intercept: Arc::clone(&self.intercept),
+            intercepting: Arc::default(),
+            untrusting: Arc::default(),
         }
     }
 
@@ -799,7 +865,7 @@ impl EgressProxy {
             while let Ok((client, _)) = listener.accept().await {
                 let shared = accept.clone();
                 tokio::spawn(async move {
-                    let _ = serve(client, shared).await;
+                    let _ = serve(client, shared, false).await;
                 });
             }
         });
@@ -951,9 +1017,13 @@ impl EgressInvocation {
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket_path =
             std::path::Path::new("/tmp").join(format!("f{}-{sequence}.sock", std::process::id()));
-        // Only the Linux sandbox routes through the socket.
+        // The Linux sandbox routes everything through the socket. On macOS
+        // it is for clients that send plain requests to it instead of doing
+        // TLS themselves; failing to bind it only loses that.
         if cfg!(target_os = "linux") {
             proxy.serve_on_unix_socket_inner(&socket_path).await?;
+        } else {
+            let _ = proxy.serve_on_unix_socket_inner(&socket_path).await;
         }
         let grant = crate::sandbox::EgressGrant {
             proxy_port: proxy.addr().port(),
@@ -984,6 +1054,11 @@ impl EgressInvocation {
             grant: None,
             held: Vec::new(),
         }))
+    }
+
+    /// This endpoint's live state.
+    pub fn shared(&self) -> &EgressShared {
+        self.proxy.shared()
     }
 
     /// Keep `service` alive until this endpoint is dropped.
@@ -1145,6 +1220,9 @@ enum ProxyRequest {
     /// An absolute-form plain-HTTP request (`GET http://host/path HTTP/1.1`),
     /// rewritten to origin-form and forwarded.
     Forward(ForwardRequest),
+    /// An origin-form request (`GET /path HTTP/1.1`, `Host: host`) for an
+    /// HTTPS host. Accepted on the Unix socket only.
+    Origin { host: String, port: u16 },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1179,7 +1257,7 @@ struct ForwardRequest {
 /// The stream is split *before* buffering so the read half can be buffered
 /// while the write half stays usable. Wrapping the whole stream and later
 /// unwrapping would discard anything the client pipelined behind its headers.
-async fn serve<S>(client: S, shared: EgressShared) -> io::Result<()>
+async fn serve<S>(client: S, shared: EgressShared, origin_form: bool) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
 {
@@ -1194,9 +1272,14 @@ where
         return respond(&mut write_half, 400, "Bad Request", "").await;
     };
     let (host, port) = match &request {
-        ProxyRequest::Connect { host, port } => (host.clone(), *port),
+        ProxyRequest::Connect { host, port } | ProxyRequest::Origin { host, port } => {
+            (host.clone(), *port)
+        }
         ProxyRequest::Forward(forward) => (forward.host.clone(), forward.port),
     };
+    if matches!(request, ProxyRequest::Origin { .. }) && !origin_form {
+        return respond(&mut write_half, 400, "Bad Request", "").await;
+    }
     let attempt = Attempt {
         shared: &shared,
         label: shared.attribution(),
@@ -1208,9 +1291,43 @@ where
     let Some((upstream, upstream_addr)) = attempt.open_upstream(&mut write_half).await? else {
         return Ok(());
     };
+    // A plain request for an HTTPS host, from a client that was told to
+    // speak to this socket instead of doing TLS itself (`gh`): the gateway
+    // does the TLS, and supplies the credential.
+    if matches!(request, ProxyRequest::Origin { .. }) {
+        let Some(upstream) =
+            tls_to_upstream(upstream, upstream_addr, &mut write_half, &attempt).await?
+        else {
+            return Ok(());
+        };
+        let secret = shared.intercept.secret_for(&host);
+        return forward_with_credentials(
+            reader,
+            write_half,
+            upstream,
+            upstream_addr,
+            &head,
+            secret.as_ref(),
+            &attempt,
+        )
+        .await;
+    }
+    // A host Forge holds a credential for, reached by a client that trusts
+    // the session authority: terminate, so the credential is supplied here
+    // and never inside the sandbox.
+    if matches!(request, ProxyRequest::Connect { .. })
+        && port == 443
+        && shared.intercepting.load(Ordering::Relaxed)
+    {
+        if let Some(secret) = shared.intercept.secret_for(&host) {
+            let client = tokio::io::join(reader, write_half);
+            return serve_terminated(client, upstream, upstream_addr, &secret, &attempt).await;
+        }
+    }
     let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
 
     match request {
+        ProxyRequest::Origin { .. } => unreachable!("handled above"),
         ProxyRequest::Connect { .. } => {
             if let Err(error) = write_half
                 .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -1262,6 +1379,195 @@ where
         }
     }
     Ok(())
+}
+
+/// Terminate the client's TLS as `attempt.host`, forward one request to the
+/// real host over TLS with the user's credential supplied, and relay the
+/// response.
+async fn serve_terminated<C>(
+    mut client: C,
+    upstream: TcpStream,
+    upstream_addr: SocketAddr,
+    secret: &crate::tls_intercept::Secret,
+    attempt: &Attempt<'_>,
+) -> io::Result<()>
+where
+    C: AsyncRead + AsyncWrite + Unpin,
+{
+    let (shared, host) = (attempt.shared, attempt.host);
+    let failed = |why: String| attempt.record(EgressOutcome::UpstreamFailed(why), None, 0, 0);
+    let Some(server_config) = shared.intercept.server_config(host) else {
+        failed("cannot prepare TLS termination".into());
+        return respond(&mut client, 502, "Bad Gateway", "").await;
+    };
+    client
+        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+        .await?;
+    let accept = tokio_rustls::TlsAcceptor::from(server_config).accept(client);
+    let client = match tokio::time::timeout(shared.options.connect_timeout, accept).await {
+        Ok(Ok(client)) => client,
+        // Most often a client that does not trust the session authority.
+        Ok(Err(error)) => {
+            failed(format!("client TLS (the sandbox certificate): {error}"));
+            let mut untrusting = shared
+                .untrusting
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !untrusting.iter().any(|known| known == host) {
+                untrusting.push(host.to_string());
+            }
+            return Ok(());
+        }
+        Err(_) => {
+            failed("client TLS timed out".into());
+            return Ok(());
+        }
+    };
+    let (client_read, mut client_write) = tokio::io::split(client);
+    let mut client_read = BufReader::new(client_read);
+    let Some(upstream) =
+        tls_to_upstream(upstream, upstream_addr, &mut client_write, attempt).await?
+    else {
+        return Ok(());
+    };
+
+    let Some(head) = read_head(&mut client_read).await? else {
+        failed("malformed request inside TLS".into());
+        return respond(&mut client_write, 400, "Bad Request", "").await;
+    };
+    forward_with_credentials(
+        client_read,
+        client_write,
+        upstream,
+        upstream_addr,
+        &head,
+        Some(secret),
+        attempt,
+    )
+    .await
+}
+
+/// Forward one origin-form request (`head`) to `attempt.host` over the
+/// established TLS connection `upstream`, supplying the user's credential in
+/// place of its placeholder, and relay the response.
+async fn forward_with_credentials<CR, CW, U>(
+    client_read: CR,
+    mut client_write: CW,
+    upstream: U,
+    upstream_addr: SocketAddr,
+    head: &[String],
+    secret: Option<&crate::tls_intercept::Secret>,
+    attempt: &Attempt<'_>,
+) -> io::Result<()>
+where
+    CR: AsyncRead + Unpin,
+    CW: AsyncWrite + Unpin,
+    U: AsyncRead + AsyncWrite + Unpin,
+{
+    let (shared, host) = (attempt.shared, attempt.host);
+    let failed = |why: String| attempt.record(EgressOutcome::UpstreamFailed(why), None, 0, 0);
+    let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
+    let request = parse_origin_form(head);
+    let Some((mut request_head, headers)) = request else {
+        failed("malformed request".into());
+        return respond(&mut client_write, 400, "Bad Request", "").await;
+    };
+    let headers = match secret {
+        Some(secret) => crate::tls_intercept::supply_credentials(secret, headers),
+        None => Ok(headers
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()),
+    };
+    let Ok(headers) = headers else {
+        attempt.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
+        let body = format!(
+            "{SANDBOX_DENIED_REASON}: this request to {host} carries credentials Forge did not \
+             supply. Inside the sandbox, {host} is reached with the user's own identity only.\n"
+        );
+        return respond(&mut client_write, 403, SANDBOX_DENIED_REASON, &body).await;
+    };
+    for (name, value) in &headers {
+        if !name.eq_ignore_ascii_case("host") {
+            request_head.push_str(&format!("{name}: {value}\r\n"));
+        }
+    }
+    request_head.push_str(&format!("Host: {host}\r\nConnection: close\r\n\r\n"));
+    if let Err(error) = upstream_write.write_all(request_head.as_bytes()).await {
+        failed(format!("write {upstream_addr}: {error}"));
+        return respond(&mut client_write, 502, "Bad Gateway", "").await;
+    }
+    let (up, down) = relay_forward(
+        client_read,
+        client_write,
+        upstream_read,
+        upstream_write,
+        shared.options.idle_timeout,
+    )
+    .await;
+    attempt.record(
+        EgressOutcome::Allowed,
+        Some(upstream_addr),
+        request_head.len() as u64 + up,
+        down,
+    );
+    Ok(())
+}
+
+/// `METHOD /target HTTP/1.x` and its headers, hop-by-hop ones dropped: the
+/// request line to send, and the headers. `None` for anything else.
+fn parse_origin_form(head: &[String]) -> Option<(String, Vec<(&str, &str)>)> {
+    let (line, header_lines) = head.split_first()?;
+    let mut parts = line.split(' ');
+    let (method, target, version) = (parts.next()?, parts.next()?, parts.next()?);
+    let valid = parts.next().is_none()
+        && !method.is_empty()
+        && method.bytes().all(is_token_byte)
+        && target.starts_with('/')
+        && matches!(version, "HTTP/1.1" | "HTTP/1.0");
+    valid.then_some(())?;
+    Some((
+        format!("{method} {target} {version}\r\n"),
+        forward_headers(header_lines)?,
+    ))
+}
+
+/// TLS from the gateway to the real `attempt.host`, verified against the
+/// public roots. On failure the client has been answered.
+async fn tls_to_upstream<W>(
+    upstream: TcpStream,
+    upstream_addr: SocketAddr,
+    client: &mut W,
+    attempt: &Attempt<'_>,
+) -> io::Result<Option<tokio_rustls::client::TlsStream<TcpStream>>>
+where
+    W: AsyncWrite + Unpin,
+{
+    let (shared, host) = (attempt.shared, attempt.host);
+    let failed = |why: String| attempt.record(EgressOutcome::UpstreamFailed(why), None, 0, 0);
+    let config = shared
+        .intercept
+        .client_config()
+        .zip(rustls::pki_types::ServerName::try_from(host.to_string()).ok());
+    let Some((config, server_name)) = config else {
+        failed("cannot prepare TLS".into());
+        respond(client, 502, "Bad Gateway", "").await?;
+        return Ok(None);
+    };
+    let connect = tokio_rustls::TlsConnector::from(config).connect(server_name, upstream);
+    match tokio::time::timeout(shared.options.connect_timeout, connect).await {
+        Ok(Ok(upstream)) => Ok(Some(upstream)),
+        Ok(Err(error)) => {
+            failed(format!("TLS to {upstream_addr}: {error}"));
+            respond(client, 502, "Bad Gateway", "").await?;
+            Ok(None)
+        }
+        Err(_) => {
+            failed(format!("TLS to {upstream_addr}: timed out"));
+            respond(client, 504, "Gateway Timeout", "").await?;
+            Ok(None)
+        }
+    }
 }
 
 /// One destination decision, attributed and timed from the client's arrival.
@@ -1433,6 +1739,18 @@ fn parse_request(head: &[String]) -> Option<(ProxyRequest, &[String])> {
         // `crates.io` and then dialled the bracketed form.
         let (host, port) = split_host_port(&target)?;
         return Some((ProxyRequest::Connect { host, port }, headers));
+    }
+    if let Some((_, origin_headers)) = parse_origin_form(head) {
+        let target = origin_headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("host"))?
+            .1;
+        let (host, port) = if target.contains(':') && !target.ends_with(']') {
+            split_host_port(target)?
+        } else {
+            split_host_port(&format!("{target}:443"))?
+        };
+        return Some((ProxyRequest::Origin { host, port }, headers));
     }
     let forward = parse_absolute_form(line)?;
     // Validate the headers before the policy runs, so a malformed request is
@@ -1829,7 +2147,7 @@ where
 }
 
 async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> {
-    serve(client, shared).await
+    serve(client, shared, true).await
 }
 
 /// Family pattern for a denied host, used as `host(...)` in permissions.toml.

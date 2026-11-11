@@ -1289,6 +1289,23 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
             "(allow network-outbound (remote ip \"localhost:{port}\"))\n"
         ));
     }
+    // The gateway's Unix socket, for a client that is told to send plain
+    // requests there instead of doing TLS itself. Named exactly; no other
+    // socket on the host becomes reachable.
+    if let Some(socket) = policy.egress_socket.as_deref().filter(|path| path.exists()) {
+        let mut paths = vec![socket.to_path_buf()];
+        if let Ok(resolved) = socket.canonicalize() {
+            if resolved != socket {
+                paths.push(resolved);
+            }
+        }
+        for path in paths {
+            let literal = sbpl_literal(&path)?;
+            profile.push_str(&format!(
+                "(allow network-outbound (remote unix-socket (path-literal \"{literal}\")))\n"
+            ));
+        }
+    }
 
     // Writable: the workspace (unless the policy mounts it read-only), and a
     // session scratch directory if one was granted. Nothing else — in

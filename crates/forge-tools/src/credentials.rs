@@ -63,7 +63,96 @@ pub fn host_identity_env(
     let credentials = grant
         .map(|grant| credentials_for_grant(grant, workspace_root))
         .unwrap_or_default();
-    identity_env(&credentials, config_dir)
+    let (credentials, mut env) = behind_the_gateway(grant, credentials, config_dir);
+    env.extend(identity_env(&credentials, config_dir));
+    env
+}
+
+/// Point the GitHub CLI at the gateway's Unix socket.
+///
+/// `gh` is a Go program, and on macOS Go verifies certificates with the
+/// system's trust store only: no variable makes it accept the session
+/// authority. It does have a setting to send its requests, in plain HTTP, to
+/// a Unix socket; the gateway does the TLS from there.
+fn gh_socket_env(grant: Option<&EgressGrant>, config_dir: &Path) -> Vec<(String, String)> {
+    let socket = grant
+        .map(|grant| grant.socket_path.as_path())
+        .filter(|path| path.exists())
+        .and_then(Path::to_str);
+    let dir = config_dir.join("gh");
+    let Some(socket) = socket.filter(|path| !path.contains(['\n', '"', '\\'])) else {
+        return Vec::new();
+    };
+    let written = std::fs::create_dir_all(&dir).is_ok()
+        && std::fs::write(
+            dir.join("config.yml"),
+            format!("http_unix_socket: \"{socket}\"\n"),
+        )
+        .is_ok();
+    match dir.to_str().filter(|_| written) {
+        Some(dir) => vec![("GH_CONFIG_DIR".into(), dir.to_string())],
+        None => Vec::new(),
+    }
+}
+
+/// The system's root certificates, which the bundle given to a confined
+/// process must still contain: the variables below replace a client's trust
+/// store, they do not add to it.
+const SYSTEM_ROOTS: &str = "/etc/ssl/cert.pem";
+
+/// Keep the credentials out of the sandbox: the gateway supplies each one
+/// itself, and the confined process gets a placeholder plus the session
+/// authority's certificate so it accepts the gateway's TLS.
+///
+/// Returns the credentials to project (placeholders in place of passwords)
+/// and the environment that makes clients trust the authority. When the
+/// gateway cannot do this (no live endpoint, no authority, no readable
+/// system roots) the credentials come back unchanged, as before.
+fn behind_the_gateway(
+    grant: Option<&EgressGrant>,
+    credentials: Vec<HostCredential>,
+    config_dir: &Path,
+) -> (Vec<HostCredential>, Vec<(String, String)>) {
+    let Some(endpoint) = grant.and_then(|grant| grant.control.as_ref()) else {
+        return (credentials, Vec::new());
+    };
+    if credentials.is_empty() {
+        return (credentials, Vec::new());
+    }
+    let bundle = config_dir.join("forge-ca-bundle.pem");
+    let written = endpoint
+        .session_ca_pem()
+        .zip(std::fs::read_to_string(SYSTEM_ROOTS).ok())
+        .is_some_and(|(authority, roots)| {
+            std::fs::write(&bundle, format!("{roots}\n{authority}")).is_ok()
+        });
+    let Some(bundle) = bundle.to_str().filter(|_| written) else {
+        return (credentials, Vec::new());
+    };
+    let shielded = credentials
+        .iter()
+        .map(|cred| {
+            Some(HostCredential {
+                password: endpoint.supply_credential(&cred.host, &cred.password)?,
+                ..cred.clone()
+            })
+        })
+        .collect::<Option<Vec<_>>>();
+    let Some(shielded) = shielded else {
+        return (credentials, Vec::new());
+    };
+    let mut env: Vec<(String, String)> = [
+        "GIT_SSL_CAINFO",
+        "SSL_CERT_FILE",
+        "CURL_CA_BUNDLE",
+        "REQUESTS_CA_BUNDLE",
+        "NODE_EXTRA_CA_CERTS",
+    ]
+    .into_iter()
+    .map(|name| (name.to_string(), bundle.to_string()))
+    .collect();
+    env.extend(gh_socket_env(grant, config_dir));
+    (shielded, env)
 }
 
 fn identity_env(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {
@@ -282,7 +371,9 @@ pub(crate) fn credential_helper_env(
     let credentials = grant
         .map(|grant| credentials_for_grant(grant, workspace_root))
         .unwrap_or_default();
-    helper_env(&credentials, config_dir)
+    let (credentials, mut env) = behind_the_gateway(grant, credentials, config_dir);
+    env.extend(helper_env(&credentials, config_dir));
+    env
 }
 
 fn helper_env(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {

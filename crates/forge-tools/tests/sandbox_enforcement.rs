@@ -1545,6 +1545,58 @@ async fn host_grant_projects_git_identity_through_the_sandbox() {
         "ls-remote should return a SHA, got {}",
         ls_remote.content
     );
+
+    // The credential itself never enters the sandbox: the process holds a
+    // placeholder, and the gateway swaps the real one in on the way out.
+    let run =
+        |command: &'static str| run_shell_command_with_egress(command, ws.path(), Some(&grant));
+    let held = run("printf %s \"$GITHUB_TOKEN\"").await.unwrap();
+    assert!(
+        held.content.starts_with("forge-placeholder-"),
+        "the sandbox holds {:?}",
+        held.content
+    );
+    let who = run("curl -sS -H \"Authorization: token $GITHUB_TOKEN\" https://api.github.com/user")
+        .await
+        .unwrap();
+    assert!(
+        who.content.contains("\"login\""),
+        "the placeholder must authenticate as the user: {}",
+        who.content
+    );
+
+    // The GitHub CLI cannot be made to trust the session authority, so it
+    // is pointed at the gateway's socket; it authenticates the same way.
+    if Command::new("gh").arg("--version").output().is_ok() {
+        let gh = run("gh api /user --jq .login").await.unwrap();
+        assert!(
+            !gh.is_error && !gh.content.trim().is_empty(),
+            "gh: {}",
+            gh.content
+        );
+    }
+
+    // A program that will not accept the sandbox certificate fails, and the
+    // output says why instead of leaving a bare TLS error.
+    let untrusting = run("curl -sS --cacert /etc/ssl/cert.pem https://api.github.com/zen").await;
+    let text = match &untrusting {
+        Ok(output) => output.content.clone(),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        text.contains("does not accept the sandbox's certificate"),
+        "{text}"
+    );
+
+    // Somebody else's token to the same host is not the user's identity.
+    let foreign =
+        run("curl -sS -H 'Authorization: token ghp_someone_elses' https://api.github.com/user")
+            .await;
+    let text = match &foreign {
+        Ok(output) => output.content.clone(),
+        Err(error) => error.to_string(),
+    };
+    assert!(text.contains("credentials Forge did not supply"), "{text}");
 }
 
 fn host_has_https_credentials(host: &str) -> bool {
