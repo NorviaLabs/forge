@@ -16,7 +16,8 @@ use forge_connect::{Attach, WireKind};
 use forge_types::ModelResponse;
 
 use super::{
-    anthropic_messages, chat_completions, claude_agent, responses, NativeModelClient, Target,
+    anthropic_messages, chat_completions, claude_agent, responses, tool_names, NativeModelClient,
+    Target,
 };
 use crate::{ModelError, ModelRequest, StreamEventTx};
 
@@ -29,8 +30,20 @@ pub(super) async fn complete(
     tx: Option<StreamEventTx>,
 ) -> Result<ModelResponse, ModelError> {
     match wire {
-        WireKind::ChatCompletions => chat_completions::complete(client, req, target, tx).await,
-        WireKind::AnthropicMessages => anthropic_messages::complete(client, req, target, tx).await,
+        WireKind::ChatCompletions | WireKind::AnthropicMessages => {
+            // These wires reject tool names with a colon (every MCP tool's
+            // `mcp:server:tool`): send an alias and map the reply back.
+            let names = tool_names::ToolNames::for_request(&req);
+            let req = names.apply(req);
+            let tx = names.restoring(tx);
+            let mut response = if wire == WireKind::ChatCompletions {
+                chat_completions::complete(client, req, target, tx).await?
+            } else {
+                anthropic_messages::complete(client, req, target, tx).await?
+            };
+            names.restore(&mut response);
+            Ok(response)
+        }
         WireKind::ClaudeAgent => claude_agent::complete(client, req, target, tx).await,
         // The ChatGPT flavor owns its own Responses endpoint and headers.
         WireKind::Responses if target.attach == Attach::BearerAccountId => {
@@ -50,7 +63,8 @@ pub(super) fn prompt_projection(
         // Claude Code builds the real request; the Messages projection is
         // the closest shape for prefix diagnostics.
         WireKind::AnthropicMessages | WireKind::ClaudeAgent => {
-            anthropic_messages::prompt_projection(client, req)
+            let req = tool_names::ToolNames::for_request(req).apply(req.clone());
+            anthropic_messages::prompt_projection(client, &req)
         }
         WireKind::Responses => {
             // The wire takes the bare model id.
@@ -66,7 +80,10 @@ pub(super) fn prompt_projection(
                 true,
             ))
         }
-        WireKind::ChatCompletions => crate::prompt_wire::openai_compat_prompt_cached(req, client),
+        WireKind::ChatCompletions => {
+            let req = tool_names::ToolNames::for_request(req).apply(req.clone());
+            crate::prompt_wire::openai_compat_prompt_cached(&req, client)
+        }
     }
 }
 

@@ -557,7 +557,7 @@ pub(super) fn tool_aliases(req: &ModelRequest) -> BTreeMap<String, String> {
     aliases
 }
 
-fn digest(value: &str, length: usize) -> String {
+pub(super) fn digest(value: &str, length: usize) -> String {
     let encoded = format!("{:x}", Sha256::digest(value.as_bytes()));
     encoded[..length].to_string()
 }

@@ -3,6 +3,7 @@ mod chat_completions;
 mod claude_agent;
 mod protocol;
 mod responses;
+mod tool_names;
 
 #[cfg(test)]
 mod test_support {
@@ -473,6 +474,7 @@ impl ModelClient for NativeModelClient {
         req: ModelRequest,
         tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, ModelError> {
+        let req = crate::with_tool_results_in_order(req);
         let (target, wire) = self.target_for(&req).await?;
         protocol::complete(self, req, target, wire, tx).await
     }
@@ -482,7 +484,8 @@ impl ModelClient for NativeModelClient {
     }
 
     fn prompt_wire(&self, req: &ModelRequest) -> serde_json::Value {
-        protocol::prompt_projection(self, req, self.wire_for_request(req))
+        let req = crate::with_tool_results_in_order(req.clone());
+        protocol::prompt_projection(self, &req, self.wire_for_request(&req))
     }
 
     fn prompt_transport_key(&self, req: &ModelRequest) -> &'static str {

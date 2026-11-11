@@ -29,7 +29,7 @@ use std::sync::{
 
 use async_trait::async_trait;
 use forge_config::Config;
-use forge_types::{Message, ModelResponse, ModelStreamEvent, ToolDescriptor};
+use forge_types::{Message, MessageRole, ModelResponse, ModelStreamEvent, ToolDescriptor};
 use thiserror::Error;
 
 /// Best-effort stream events from `complete_with_stream` (cross-thread, non-async).
@@ -201,6 +201,71 @@ impl<'a> IntoIterator for &'a SharedMessages {
     }
 }
 
+/// The request with every tool result directly after the assistant message
+/// whose call it answers.
+///
+/// Chat Completions style APIs reject a `tool` message that does not follow
+/// the `tool_calls` message it belongs to. A result can end up elsewhere: a
+/// failed or interrupted turn gets a synthetic result for its unanswered call
+/// appended at the end of the transcript, after later messages, and a journal
+/// replay rebuilds the transcript in journal order. Unchanged (and not
+/// copied) when the order is already right; a result that answers no call in
+/// the transcript stays where it is.
+pub fn with_tool_results_in_order(mut request: ModelRequest) -> ModelRequest {
+    if let Some(ordered) = tool_results_in_order(&request.messages) {
+        request.messages = ordered.into();
+    }
+    request
+}
+
+fn tool_results_in_order(messages: &[Message]) -> Option<Vec<Message>> {
+    use std::collections::HashMap;
+    let mut owner: HashMap<&str, usize> = HashMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        if message.role == MessageRole::Assistant {
+            for call in &message.tool_calls {
+                owner.entry(call.id.as_str()).or_insert(index);
+            }
+        }
+    }
+    // Results that belong to a call, grouped under the message that made it.
+    let mut answers: HashMap<usize, Vec<usize>> = HashMap::new();
+    let mut moved = vec![false; messages.len()];
+    for (index, message) in messages.iter().enumerate() {
+        if message.role != MessageRole::Tool {
+            continue;
+        }
+        let Some(id) = message.tool_call_id.as_deref() else {
+            continue;
+        };
+        if let Some(&assistant) = owner.get(id) {
+            if assistant < index {
+                answers.entry(assistant).or_default().push(index);
+                moved[index] = true;
+            }
+        }
+    }
+    let mut order = Vec::with_capacity(messages.len());
+    for (index, is_moved) in moved.iter().enumerate() {
+        if *is_moved {
+            continue;
+        }
+        order.push(index);
+        if let Some(group) = answers.get(&index) {
+            order.extend(group.iter().copied());
+        }
+    }
+    if order.iter().copied().eq(0..messages.len()) {
+        return None;
+    }
+    Some(
+        order
+            .into_iter()
+            .map(|index| messages[index].clone())
+            .collect(),
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelRequest {
     pub messages: SharedMessages,
@@ -286,6 +351,84 @@ pub fn client_from_config(cfg: &Config) -> Result<Box<dyn ModelClient>, ModelErr
 
 #[cfg(test)]
 mod tests {
+    fn assistant_calling(ids: &[&str]) -> Message {
+        let mut message = Message::new(MessageRole::Assistant, "");
+        message.tool_calls = ids
+            .iter()
+            .map(|id| forge_types::ToolCall {
+                id: (*id).into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({}),
+            })
+            .collect();
+        message
+    }
+
+    fn result_for(id: &str) -> Message {
+        let mut message = Message::new(MessageRole::Tool, format!("result {id}"));
+        message.tool_call_id = Some(id.into());
+        message
+    }
+
+    fn shape(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .map(|message| match message.role {
+                MessageRole::Tool => format!("tool:{}", message.tool_call_id.as_deref().unwrap()),
+                MessageRole::Assistant if !message.tool_calls.is_empty() => format!(
+                    "calls:{}",
+                    message
+                        .tool_calls
+                        .iter()
+                        .map(|call| call.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+                _ => message.content.clone(),
+            })
+            .collect()
+    }
+
+    /// A synthetic result appended after later messages (a failed turn's
+    /// unanswered call) goes back next to its call.
+    #[test]
+    fn a_late_tool_result_is_moved_next_to_its_call() {
+        let messages = vec![
+            Message::new(MessageRole::User, "go"),
+            assistant_calling(&["a", "b"]),
+            result_for("a"),
+            Message::new(MessageRole::Assistant, "turn failed"),
+            result_for("b"),
+            Message::new(MessageRole::User, "try again"),
+        ];
+        let ordered = tool_results_in_order(&messages).expect("misordered");
+        assert_eq!(
+            shape(&ordered),
+            [
+                "go",
+                "calls:a,b",
+                "tool:a",
+                "tool:b",
+                "turn failed",
+                "try again"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_well_ordered_transcript_is_left_alone() {
+        let messages = vec![
+            Message::new(MessageRole::User, "go"),
+            assistant_calling(&["a"]),
+            result_for("a"),
+            Message::new(MessageRole::Assistant, "done"),
+        ];
+        assert!(tool_results_in_order(&messages).is_none());
+        // A result that answers no call in the transcript stays put.
+        let orphan = vec![Message::new(MessageRole::User, "go"), result_for("nobody")];
+        assert!(tool_results_in_order(&orphan).is_none());
+    }
+
     use super::*;
     use forge_types::{MessageRole, ToolCall};
     use std::sync::mpsc;

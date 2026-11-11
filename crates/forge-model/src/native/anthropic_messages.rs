@@ -259,7 +259,13 @@ pub(super) fn messages_body(
                         "input": call.arguments
                     })
                 }));
-                messages.push(json!({"role": "assistant", "content": content}));
+                // An assistant turn with no text and no tool call (a reply
+                // that was only reasoning) has no content to send, and the
+                // API rejects `"content": []`. Leave it out; the adjacent
+                // user messages are merged by the API.
+                if !content.is_empty() {
+                    messages.push(json!({"role": "assistant", "content": content}));
+                }
             }
             // `MessageRole` is `#[non_exhaustive]`. Carry an unrecognised future role
             // through as user content: never fabricate system/assistant authority for a
@@ -462,6 +468,37 @@ fn apply_reasoning_settings(
 
 #[cfg(test)]
 mod tests {
+    /// A reply that was only reasoning leaves an empty assistant message in
+    /// the transcript. The wire must not send it: `"content": []` is rejected.
+    #[test]
+    fn an_assistant_message_with_nothing_to_send_is_left_out() {
+        let request = ModelRequest {
+            workspace_root: std::path::PathBuf::new(),
+            model: "anthropic/claude".into(),
+            session_id: None,
+            prompt_cache: true,
+            side_call: false,
+            reasoning_effort: None,
+            thinking_enabled: true,
+            tools: vec![],
+            messages: vec![
+                Message::new(MessageRole::User, "hi"),
+                Message::new(MessageRole::Assistant, ""),
+                Message::new(MessageRole::User, "are you there?"),
+            ]
+            .into(),
+        };
+        let (_, messages) = messages_body(&request, None);
+        let roles: Vec<&str> = messages
+            .iter()
+            .map(|message| message["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "user"]);
+        assert!(messages
+            .iter()
+            .all(|message| message["content"] != json!([])));
+    }
+
     use super::*;
     use crate::native::test_support::serve_once;
     use crate::native::tests::{key, test_client};
