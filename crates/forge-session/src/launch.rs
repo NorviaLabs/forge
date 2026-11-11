@@ -975,6 +975,31 @@ mod tests {
             .any(|notice| notice == SELECTED_SESSION_GONE));
     }
 
+    /// A journal with no session row (written by `forge bench`, or left by a
+    /// creation that failed part-way) cannot be resumed in a Git project. It
+    /// must be passed over, not chosen because it happens to be the newest.
+    #[tokio::test]
+    async fn continue_skips_a_newer_journal_that_has_no_session_row() {
+        let fixture = Fixture::new(true);
+        let (_older, newer) = fixture.two_sessions().await;
+        let orphan = open_session(&fixture.cfg, SessionTarget::New)
+            .await
+            .unwrap()
+            .session
+            .session_id;
+        wait_closed(&fixture.journal(orphan)).await;
+        fixture.touch(newer, Duration::from_secs(60));
+        fixture.touch(orphan, Duration::from_secs(0));
+
+        let launched = fixture
+            .plan()
+            .await
+            .launch(LaunchTarget::Continue)
+            .await
+            .unwrap();
+        assert_eq!(launched.opened.session.session_id, newer);
+    }
+
     #[tokio::test]
     async fn continue_outside_git_reopens_the_most_recent_without_a_notice() {
         let dir = TempDir::new().unwrap();

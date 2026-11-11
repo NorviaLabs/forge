@@ -1794,20 +1794,36 @@ impl RepositoryControl {
                     | SessionLifecycle::Retained
             )
         }) {
-            let valid = worktrees.iter().any(|worktree| {
-                if !same_path(&worktree.path, &session.workspace) {
-                    return false;
-                }
-                if session.branch.is_empty() {
-                    // Branchless (detached) managed session: valid while its
-                    // worktree is still detached. The branch is materialized on
-                    // the first filesystem change, after which `branch` is set.
-                    worktree.branch.is_none()
-                } else {
-                    worktree.branch.as_deref() == Some(session.branch.as_str())
-                }
-            });
+            // The main worktree is the operator's own checkout: they switch
+            // branches in it freely, and the session follows. Its row tracks
+            // whatever is checked out now instead of going unavailable
+            // because the branch it started on is no longer the current one.
+            let followed_branch = (session.ownership == WorktreeOwnership::Primary)
+                .then(|| {
+                    worktrees
+                        .iter()
+                        .find(|worktree| same_path(&worktree.path, &session.workspace))
+                        .map(|worktree| worktree.branch.clone().unwrap_or_default())
+                })
+                .flatten();
+            let valid = followed_branch.is_some()
+                || worktrees.iter().any(|worktree| {
+                    if !same_path(&worktree.path, &session.workspace) {
+                        return false;
+                    }
+                    if session.branch.is_empty() {
+                        // Branchless (detached) managed session: valid while its
+                        // worktree is still detached. The branch is materialized on
+                        // the first filesystem change, after which `branch` is set.
+                        worktree.branch.is_none()
+                    } else {
+                        worktree.branch.as_deref() == Some(session.branch.as_str())
+                    }
+                });
+            // Every session of a directory project runs in the project root,
+            // so sharing it is the normal case there, not a conflict.
             let occupied_by_other = valid
+                && session.ownership != WorktreeOwnership::Directory
                 && active_workspaces.iter().any(|(session_id, workspace)| {
                     *session_id != session.session_id && same_path(workspace, &session.workspace)
                 });
@@ -1832,6 +1848,13 @@ impl RepositoryControl {
                 .bind(session.session_id.to_string())
                 .execute(&mut *transaction)
                 .await?;
+            if let Some(branch) = followed_branch.filter(|branch| *branch != session.branch) {
+                sqlx::query("UPDATE sessions SET branch = ? WHERE session_id = ?")
+                    .bind(branch)
+                    .bind(session.session_id.to_string())
+                    .execute(&mut *transaction)
+                    .await?;
+            }
         }
         transaction.commit().await?;
         Ok(())
@@ -3138,6 +3161,78 @@ mod tests {
             control.session(session_id).await.unwrap().lifecycle,
             SessionLifecycle::Active
         );
+    }
+
+    /// Switching branches in the main worktree is the operator's ordinary
+    /// work. The primary session follows it rather than going unavailable.
+    #[tokio::test]
+    async fn the_primary_session_follows_a_branch_switch_in_the_main_worktree() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let mut primary = new_session(&root, "main", None);
+        primary.ownership = WorktreeOwnership::Primary;
+        primary.branch = "main".into();
+        let session_id = primary.session_id;
+        control.register_session(primary, None).await.unwrap();
+        let checked_out = |branch: Option<&str>| WorktreeRecord {
+            path: root.clone(),
+            branch: branch.map(str::to_string),
+            head: None,
+            prunable: false,
+        };
+
+        control
+            .reconcile_worktrees(&[checked_out(Some("feature"))])
+            .await
+            .unwrap();
+        let row = control.session(session_id).await.unwrap();
+        assert_eq!(row.lifecycle, SessionLifecycle::Active);
+        assert_eq!(row.branch, "feature");
+
+        // A detached HEAD (rebase, bisect) is still the same checkout.
+        control
+            .reconcile_worktrees(&[checked_out(None)])
+            .await
+            .unwrap();
+        let row = control.session(session_id).await.unwrap();
+        assert_eq!(row.lifecycle, SessionLifecycle::Active);
+        assert_eq!(row.branch, "");
+    }
+
+    /// Sessions of a directory project all run in the project root. Reopening
+    /// the project must leave every one of them active.
+    #[tokio::test]
+    async fn directory_sessions_sharing_the_root_stay_active_across_reconciliation() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("notes");
+        std::fs::create_dir_all(&root).unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let mut ids = Vec::new();
+        for label in ["a", "b"] {
+            let mut session = new_session(&root, label, None);
+            session.ownership = WorktreeOwnership::Directory;
+            session.branch = String::new();
+            ids.push(session.session_id);
+            control.register_session(session, None).await.unwrap();
+        }
+        let project_root = [WorktreeRecord {
+            path: root.clone(),
+            branch: None,
+            head: None,
+            prunable: false,
+        }];
+
+        for _ in 0..2 {
+            control.reconcile_worktrees(&project_root).await.unwrap();
+            for id in &ids {
+                assert_eq!(
+                    control.session(*id).await.unwrap().lifecycle,
+                    SessionLifecycle::Active
+                );
+            }
+        }
     }
 
     #[test]
