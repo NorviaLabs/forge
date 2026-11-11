@@ -140,6 +140,14 @@
           </button>
         </li>
       {/if}
+      {#if live.length > 0}
+        <li class="new-row">
+          <button type="button" class="new-session" onclick={() => onNew?.()}>
+            <Icon name="plus" size={12} />
+            New session
+          </button>
+        </li>
+      {/if}
     </ul>
 
     {#if closed.length > 0}
@@ -767,5 +775,27 @@
     .closed summary {
       transition: none;
     }
+  }
+
+  /* New session ends the list it adds to. */
+  .new-session {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: var(--control-lg);
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: none;
+    color: var(--muted);
+    font-size: var(--text-md);
+    text-align: left;
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  }
+
+  .new-session:hover {
+    background: var(--hover);
+    color: var(--text);
   }
 </style>

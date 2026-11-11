@@ -156,7 +156,6 @@
   let pendingClose = $state("");
   let pickerOpen = $state(false);
   let providersOpen = $state(false);
-  let githubOpen = $state(false);
   let detailsOpen = $state(false);
   let helpOpen = $state(false);
   let settingsOpen = $state(false);
@@ -498,7 +497,7 @@
         id: "action:github",
         group: "Actions",
         label: "GitHub issues / pull requests / CI…",
-        action: () => (githubOpen = true),
+        action: openGithub,
       },
       { id: "action:status", group: "Actions", label: "Token, cost, tool and skill details…", action: () => (detailsOpen = true) },
       { id: "action:settings", group: "Actions", label: "Settings: theme, sound, providers, GitHub…", action: () => (settingsOpen = true) },
@@ -1655,6 +1654,13 @@
     else openTerminal();
   }
 
+  // GitHub is a screen of the session, beside Session and Files.
+  function openGithub() {
+    if (!sessionId || !supportsGit) return;
+    viewFor(views, sessionId).screen = "github";
+    screenAnnouncement = "GitHub";
+  }
+
   function openFiles() {
     if (!sessionId) return;
     const view = viewFor(views, sessionId);
@@ -1917,6 +1923,19 @@
         <Icon name="layers" size={14} />
       </button>
       <span class="wordmark" title={currentProject?.root}>{currentProject?.name ?? "Forge"}</span>
+      <!-- One switch between the session and its files, in the same place on
+           both screens, so moving either way is the same gesture. -->
+      {#if currentView.screen !== "terminal"}
+        <div class="view-switch" role="tablist" aria-label="View">
+          <button type="button" role="tab" aria-selected={currentView.screen === "session"} disabled={!sessionId} onclick={() => currentView.screen !== "session" && backToSession()}>Session</button>
+          <button bind:this={filesButton} type="button" role="tab" aria-selected={currentView.screen === "files"} title={`Files (${chord("E")})`} disabled={!sessionId} onclick={openFiles}>
+            Files{#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
+          </button>
+          {#if supportsGit}
+            <button type="button" role="tab" aria-selected={currentView.screen === "github"} disabled={!sessionId} onclick={openGithub}>GitHub</button>
+          {/if}
+        </div>
+      {/if}
     </div>
     {#if currentView.screen === "session"}
       <div class="head-title">
@@ -1933,10 +1952,6 @@
       <span class="spacer"></span>
       <!-- Icons for the three everyday actions; each has its name as a tooltip
            and an accessible label. -->
-      <button bind:this={filesButton} type="button" class="icon-btn head-icon" title={`Files (${chord("E")})`} aria-label="Files" disabled={!sessionId} onclick={openFiles}>
-        <Icon name="files" size={15} />
-        {#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
-      </button>
       <button
         bind:this={terminalButton}
         type="button"
@@ -1950,9 +1965,6 @@
       >
         <Icon name="terminal" size={15} />
       </button>
-      <button type="button" class="icon-btn head-icon" title="New session" aria-label="New session" aria-haspopup="dialog" onclick={openNewSession}>
-        <Icon name="plus" size={15} />
-      </button>
       <div class="more">
         <button type="button" class="icon-btn head-icon" class:on={moreOpen} title="More" aria-label="More" aria-haspopup="menu" aria-expanded={moreOpen} onclick={() => (moreOpen = !moreOpen)}>
           <Icon name="more" size={15} />
@@ -1963,7 +1975,6 @@
             <button type="button" role="menuitem" disabled={!sessionId} onclick={() => fromMore(() => (sessionMenu = "actions"))}>Session<span class="menu-note">model, approvals, rename, close</span></button>
             <button type="button" role="menuitem" disabled={!sessionId} onclick={() => fromMore(() => (detailsOpen = true))}>Context and usage</button>
             <button type="button" role="menuitem" disabled={!sessionId} onclick={() => fromMore(() => showActivity("plan"))}>Activity<span class="menu-note">plan, tasks, agents, queue</span></button>
-            <button type="button" role="menuitem" disabled={!sessionId || !supportsGit} title={supportsGit ? undefined : "GitHub needs a Git repository"} onclick={() => fromMore(() => (githubOpen = true))}>GitHub<span class="menu-note">issues, pull requests, checks</span></button>
             <hr />
             <button type="button" role="menuitem" onclick={() => fromMore(() => (settingsOpen = true))}>Settings</button>
             <button type="button" role="menuitem" onclick={() => fromMore(() => (helpOpen = true))}>Help and shortcuts</button>
@@ -1971,11 +1982,13 @@
         {/if}
       </div>
     {:else}
-      <button type="button" class="btn head-btn" onclick={backToSession}>
-        <Icon name="arrow-left" size={13} />
-        Session
-      </button>
-      <strong>{currentView.screen === "files" ? "Files" : "Terminal"}</strong>
+      {#if currentView.screen === "terminal"}
+        <button type="button" class="btn head-btn" onclick={backToSession}>
+          <Icon name="arrow-left" size={13} />
+          Session
+        </button>
+        <strong>Terminal</strong>
+      {/if}
       <span class="head-session">{activeSession?.label ?? ""}</span>
       {#if currentView.screen === "files" && currentView.tabs.length === 1}
         {@const only = currentView.tabs[0]}
@@ -2122,6 +2135,18 @@
         contextUsage={info.contextUsage}
         onContext={() => (detailsOpen = true)}
       />
+    {:else if currentView.screen === "github"}
+      {#key sessionId}
+        <Github
+          embedded
+          onClose={backToSession}
+          sessionId={sessionId}
+          sessionIssue={githubIssue}
+          sessionPr={githubPr}
+          onCreateSession={createIssueSession}
+          onChanged={refreshFiles}
+        />
+      {/key}
     {:else if currentView.screen === "files"}
       {#key sessionId}
         <Files
@@ -2611,18 +2636,6 @@
   {#if providersOpen}
     <Providers onClose={() => (providersOpen = false)} onChanged={async () => { models = await invoke("list_models"); }} />
   {/if}
-  {#if githubOpen}
-    {#key sessionId}
-      <Github
-        onClose={() => (githubOpen = false)}
-        sessionId={sessionId}
-        sessionIssue={githubIssue}
-        sessionPr={githubPr}
-        onCreateSession={createIssueSession}
-        onChanged={refreshFiles}
-      />
-    {/key}
-  {/if}
   {#if detailsOpen}
     {#key sessionId}<Details {sessionId} onClose={() => (detailsOpen = false)} />{/key}
   {/if}
@@ -2630,7 +2643,7 @@
     <Help onClose={() => (helpOpen = false)} onSettings={() => { helpOpen = false; settingsOpen = true; }} />
   {/if}
   {#if settingsOpen}
-    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (settingsOpen = false)} onProviders={() => { settingsOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { settingsOpen = false; githubOpen = true; } : null} />
+    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (settingsOpen = false)} onProviders={() => { settingsOpen = false; providersOpen = true; }} />
   {/if}
   {#if newSessionOpen}
     <div class="modal">
@@ -2732,16 +2745,17 @@
     background: var(--surface);
   }
 
+  /* Over the rail on the session screen, but never narrower than what it
+     holds: the window buttons' inset plus the view switch. */
   .brand {
     display: flex;
     align-items: center;
     gap: 8px;
-    width: 280px;
+    min-width: 280px;
     flex: none;
-    min-width: 0;
     padding: 0 16px;
   }
-  .app.focus .brand { width: auto; }
+  .app.focus .brand { min-width: 0; }
   /* macOS draws the window's close, minimise and zoom buttons over the
      bar's left end; the brand starts clear of them. */
   .topbar.mac .brand { padding-left: 84px; }
@@ -2804,9 +2818,26 @@
   .menu button:disabled { color: var(--muted); }
   .menu-note { margin-left: auto; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
   .menu hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--border); }
-  .head-icon .count { position: absolute; top: 0; right: 0; min-width: 14px; padding: 0 3px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; line-height: 14px; text-align: center; }
+  /* Session | Files: a two-way switch at the start of the bar. */
+  .view-switch {
+    display: inline-flex; flex: none; padding: 2px; gap: 2px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg);
+  }
+  .view-switch button {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px;
+    border: 0; border-radius: 4px; background: none; color: var(--muted); font-size: var(--text-sm); font-weight: 500;
+    transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+  }
+  .view-switch button:hover:not(:disabled) { color: var(--text); }
+  .view-switch button[aria-selected="true"] { background: var(--raised); color: var(--text); }
+  .view-switch button:disabled { opacity: 0.5; cursor: default; }
+  .view-switch .count {
+    min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent-soft); color: var(--accent);
+    font-size: var(--text-xs); font-weight: 600; line-height: 16px; text-align: center;
+  }
 
   .focus-head > strong { margin-left: 12px; }
+  .focus-head .head-session { margin-left: 12px; }
   .head-session { margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-sm); }
   .head-doc { flex: none; max-width: 280px; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .head-btn { flex: none; }

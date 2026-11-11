@@ -1,6 +1,7 @@
 //! The diffs the agent's most recent turn produced, read from the session's
-//! messages. A tool result that is a unified diff becomes one card per file,
-//! so "last turn" stays honest after the working tree moves on.
+//! messages. The result of a tool that writes files is a unified diff of what
+//! it wrote; each becomes one card per file, so "last turn" stays honest
+//! after the working tree moves on.
 
 use forge_types::{Message, MessageRole};
 
@@ -18,10 +19,16 @@ pub fn diff_cards(messages: &[Message]) -> Vec<(String, Vec<String>)> {
         if message.role != MessageRole::Tool || is_validation_failure(&message.content) {
             continue;
         }
+        let name = message.name.as_deref().unwrap_or("tool");
+        // Only a tool that writes files changed anything. `git diff`, `git
+        // show` or `git log -p` through the shell or the git tool print a
+        // diff of changes that already exist; reading one is not making one.
+        if !WRITING_TOOLS.contains(&name) {
+            continue;
+        }
         if !looks_like_diff(&message.content) {
             continue;
         }
-        let name = message.name.as_deref().unwrap_or("tool");
         for (path, lines) in split_diff_sections(name, &message.content) {
             match cards.iter_mut().find(|(seen, _)| *seen == path) {
                 Some(entry) => entry.1 = lines,
@@ -32,6 +39,9 @@ pub fn diff_cards(messages: &[Message]) -> Vec<(String, Vec<String>)> {
     cards.sort_by(|left, right| left.0.cmp(&right.0));
     cards
 }
+
+/// The agent's tools whose result is a diff of the files they wrote.
+const WRITING_TOOLS: &[&str] = &["write_file", "edit", "apply_patch"];
 
 /// A message the operator sent. A repair task is written in the user role
 /// by the evaluator, not by the operator, so it does not start a turn.
@@ -200,6 +210,9 @@ mod tests {
             tool("read_file", "--- a/x\n+++ b/x\nplain text"),
             // The model's own prose is never a tool result.
             message(MessageRole::Assistant, None, &applied),
+            // Reading a diff of changes that already exist is not making one.
+            tool("git", &applied),
+            tool("bash", &format!("$ git show HEAD\n{applied}")),
         ];
         assert!(diff_cards(&messages).is_empty());
     }

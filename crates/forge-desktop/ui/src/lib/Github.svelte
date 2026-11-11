@@ -11,6 +11,7 @@
     sessionPr = "",
     onCreateSession = () => {},
     onChanged = () => {},
+    embedded = false,
   } = $props();
   let issues = $state([]);
   let details = $state(null);
@@ -67,12 +68,11 @@
   onMount(() => { load("github_issues"); });
 </script>
 
-<div class="overlay">
-  <div class="github" role="dialog" aria-modal="true" aria-labelledby="github-title" tabindex="-1" use:modal={{ onClose }}>
+{#snippet body()}
     <header>
       <h2 id="github-title">GitHub</h2>
       <button class="btn" type="button" disabled={busy} onclick={() => load("github_issues")}>Refresh issues</button>
-      <button class="icon-btn" type="button" aria-label="Close GitHub" onclick={onClose}><Icon name="close" size={13} /></button>
+      {#if !embedded}<button class="icon-btn" type="button" aria-label="Close GitHub" onclick={onClose}><Icon name="close" size={13} /></button>{/if}
     </header>
     <div class="top">
     <p class="hint">
@@ -151,8 +151,20 @@
         {#if !details}<p>Select an issue or enter a pull request number.</p>{/if}
       </section>
     </div>
+{/snippet}
+
+<!-- A screen beside Session and Files when embedded; a dialog otherwise. -->
+{#if embedded}
+  <section class="github embedded" aria-labelledby="github-title">
+    {@render body()}
+  </section>
+{:else}
+  <div class="overlay">
+    <div class="github" role="dialog" aria-modal="true" aria-labelledby="github-title" tabindex="-1" use:modal={{ onClose }}>
+      {@render body()}
+    </div>
   </div>
-</div>
+{/if}
 
 <style>
   .overlay {
@@ -396,5 +408,16 @@
     .issue {
       transition: none;
     }
+  }
+
+  .github.embedded {
+    flex: 1;
+    width: auto;
+    height: auto;
+    min-height: 0;
+    border: 0;
+    border-radius: 0;
+    background: var(--bg);
+    box-shadow: none;
   }
 </style>

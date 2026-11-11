@@ -1,10 +1,10 @@
 <script>
-  // App settings: how Forge looks and sounds, and the two connections it
-  // keeps (model providers and GitHub). Help holds only help.
+  // App settings: how Forge looks and sounds, and the model providers it
+  // connects to. Help holds only help.
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
 
-  let { onClose, onProviders, onGithub, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
+  let { onClose, onProviders, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
 </script>
 
 <div class="overlay">
@@ -36,13 +36,6 @@
           <span class="note">Sign in, add a key, or add a custom provider.</span>
         </span>
         <button class="link" type="button" onclick={onProviders}>Manage</button>
-      </div>
-      <div class="row">
-        <span class="what">
-          <span>GitHub</span>
-          <span class="note">{onGithub ? "Issues, pull requests and checks for this repository." : "Needs a Git repository: this project is a plain folder."}</span>
-        </span>
-        <button class="link" type="button" disabled={!onGithub} onclick={onGithub}>Open</button>
       </div>
     </div>
   </div>
