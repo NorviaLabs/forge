@@ -84,11 +84,15 @@ impl AgentSession {
     /// has no image input — execution denies the call.
     pub(crate) fn tools_for_model(&self) -> Vec<forge_types::ToolDescriptor> {
         let descriptors = self.tools.list_descriptors();
-        let visible = if self.enable_gov {
+        let mut visible = if self.enable_gov {
             self.governance.filter_tools((*descriptors).clone())
         } else {
             (*descriptors).clone()
         };
+        if self.is_subagent() {
+            // Not offered to a subagent: see `SUBAGENT_CANNOT_NEST`.
+            visible.retain(|tool| !matches!(tool.name.as_str(), "spawn_agent" | "background_run"));
+        }
         self.defer_mcp_tool_schemas(visible)
     }
 
@@ -169,11 +173,23 @@ impl AgentSession {
         &self,
         task: IsolatedTask<T>,
     ) -> Result<T, LoopError> {
+        // A subagent is cancelled through its own run token (the parent's
+        // stop, an interrupt, the user's cancel on the child, retirement),
+        // not the turn token a root session uses. Watching only the turn
+        // token let a child's running command finish its side effects after
+        // the child had been stopped.
+        let child_cancelled = async {
+            match &self.cancel_token {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
         tokio::select! {
             joined = task.join() => joined
                 .map_err(|error| LoopError::Other(format!("tool task join: {error}")))?
                 .ok_or(LoopError::Cancelled),
             _ = self.turn_cancel_token.cancelled() => Err(LoopError::Cancelled),
+            _ = child_cancelled => Err(LoopError::Cancelled),
         }
     }
 

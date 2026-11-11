@@ -834,7 +834,7 @@ impl AgentSession {
         );
         self.tasks
             .background
-            .set_auto_continue_on_completion(id, self.approve_all);
+            .set_auto_continue_on_completion(id, self.approve_all());
         self.journal
             .append_background_task_started(self.session_id, id, "shell", &label, None)
             .await?;
@@ -1079,6 +1079,10 @@ impl AgentSession {
         }
 
         let output = match serde_json::from_value::<Args>(call.arguments.clone()) {
+            Ok(_) if self.is_subagent() => forge_types::ToolOutput::failed_exit(
+                crate::session::tools::SUBAGENT_CANNOT_NEST.to_string(),
+                None,
+            ),
             Ok(args) => {
                 let label = args
                     .label

@@ -298,12 +298,20 @@ impl AgentSession {
     /// [`Self::set_workspace_trusted`]); disabling always applies. Returns
     /// whether the request took effect.
     pub fn set_approve_all(&mut self, on: bool) -> bool {
-        self.approve_all = on && self.workspace_trusted;
-        self.approve_all == on
+        let applied = on && self.workspace_trusted;
+        self.approve_all
+            .store(applied, std::sync::atomic::Ordering::Release);
+        applied == on
+    }
+
+    /// Whether this session is a subagent: one run of a child started by a
+    /// parent session, which carries that run's cancellation token.
+    pub(crate) fn is_subagent(&self) -> bool {
+        self.cancel_token.is_some()
     }
 
     pub fn approve_all(&self) -> bool {
-        self.approve_all
+        self.approve_all.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Record whether this session's workspace is trusted. Set once by the
@@ -311,7 +319,8 @@ impl AgentSession {
     pub fn set_workspace_trusted(&mut self, trusted: bool) {
         self.workspace_trusted = trusted;
         if !trusted {
-            self.approve_all = false;
+            self.approve_all
+                .store(false, std::sync::atomic::Ordering::Release);
         }
     }
 

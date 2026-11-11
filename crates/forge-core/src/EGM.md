@@ -37,6 +37,13 @@ concern they drive (listed below).
   `BackgroundTaskOutcome` is `pub` in the private module but not re-exported.
   `AgentSession` methods: `spawn_background_shell`, `poll_background_tasks`,
   `descendant_worktrees`, `retire_resources`.
+- A subagent is stopped through its own run token (`cancel_token`), which
+  `join_tool_execution` watches along with the turn token, so a command a
+  stopped child is running is abandoned too. Approve-all is one flag shared by
+  a session and its subagents (`approve_all: Arc<AtomicBool>`). A subagent
+  cannot start agents or background jobs of its own (`is_subagent`,
+  `SUBAGENT_CANNOT_NEST`): what it started would sit in a registry nothing
+  polls, so those tools are not offered to it and a call is answered with why.
 - Subagents (`subagent.rs`): `SubagentSpec`, `SubagentOutcome`;
   `AgentSession::spawn_subagent`.
 - Agent coordination (`agent_coordinator.rs`): `AgentCoordinator`,

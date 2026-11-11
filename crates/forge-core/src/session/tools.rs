@@ -5,6 +5,14 @@
 use crate::*;
 use forge_tools::{AgentMessageAction, AgentMessageArgs, SpawnAgentArgs, WaitAgentArgs};
 
+/// Why a subagent cannot start agents or background jobs of its own. What it
+/// started would belong to the child's own registry, which nothing polls: a
+/// grandchild's approval request could never be shown or answered, and a
+/// job's result would never come back, though the tool promised it would.
+pub(crate) const SUBAGENT_CANNOT_NEST: &str = "a subagent cannot start agents or background jobs \
+     of its own (their approvals and results have nowhere to go); do the work yourself, in the \
+     foreground, or report back so the parent can start it";
+
 fn is_agent_tool(name: &str) -> bool {
     matches!(name, "spawn_agent" | "send_message" | "wait_agent")
 }
@@ -69,7 +77,7 @@ pub struct CompletedHitlExecution {
 impl AgentSession {
     fn authorize_tool_call(&self, call: &ToolCall, class: SideEffectClass) -> PolicyDecision {
         let mut decision = self.governance.authorize(call, class);
-        if self.approve_all && decision == PolicyDecision::Hitl {
+        if self.approve_all() && decision == PolicyDecision::Hitl {
             decision = PolicyDecision::Allow;
         }
         let args_redacted = self.governance.redact_args(&call.arguments);
@@ -525,7 +533,7 @@ impl AgentSession {
                     )));
                 } else if let Some(host) = denied_host
                     .as_deref()
-                    .filter(|_| self.approve_all && !parallel)
+                    .filter(|_| self.approve_all() && !parallel)
                     .filter(|_| self.turn.take_host_auto_grant(&call.id))
                 {
                     // Approve-all answers a host prompt the way "Allow for this
@@ -1143,6 +1151,9 @@ impl AgentSession {
     ) -> Result<Option<ModelResponse>, LoopError> {
         let output = match call.name.as_str() {
             "spawn_agent" => {
+                if self.is_subagent() {
+                    return Err(LoopError::Other(SUBAGENT_CANNOT_NEST.into()));
+                }
                 let args: SpawnAgentArgs =
                     serde_json::from_value(call.arguments.clone()).map_err(|error| {
                         LoopError::Other(format!("invalid spawn_agent arguments: {error}"))

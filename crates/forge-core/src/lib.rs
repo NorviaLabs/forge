@@ -139,7 +139,11 @@ pub struct AgentSession {
     /// decision is auto-approved and a sandbox-denied host is granted for the
     /// session. Shell stays confined: running outside the sandbox is still a
     /// per-command prompt. Never persisted; defaults off.
-    approve_all: bool,
+    ///
+    /// Shared with the subagents this session spawns: turning it off takes
+    /// effect for children already running (and retained ones woken later),
+    /// not only for children created afterwards.
+    approve_all: Arc<std::sync::atomic::AtomicBool>,
     /// Whether this session's workspace is trusted. The owner sets this from
     /// the trust store at assembly; `set_approve_all` refuses to enable
     /// approve-all unless it is true, so the trust gate is enforced in the

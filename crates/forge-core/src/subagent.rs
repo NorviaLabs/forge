@@ -159,7 +159,7 @@ impl AgentSession {
             context,
             enable_context: self.enable_context,
             enable_gov: self.enable_gov,
-            approve_all: self.approve_all,
+            approve_all: self.approve_all.clone(),
             workspace_trusted: self.workspace_trusted,
             audit: crate::audit::SessionAudit::default(),
             cancel_token: Some(cancel_token),
@@ -273,7 +273,7 @@ impl AgentSession {
             context,
             enable_context: self.enable_context,
             enable_gov: self.enable_gov,
-            approve_all: self.approve_all,
+            approve_all: self.approve_all.clone(),
             workspace_trusted: self.workspace_trusted,
             audit: crate::audit::SessionAudit::default(),
             cancel_token: Some(cancel_token),
@@ -459,7 +459,7 @@ impl AgentSession {
         );
         self.tasks
             .background
-            .set_auto_continue_on_completion(task_id, self.approve_all);
+            .set_auto_continue_on_completion(task_id, self.approve_all());
         let run_id = self
             .tasks
             .background
@@ -602,7 +602,7 @@ impl AgentSession {
         );
         self.tasks
             .background
-            .set_auto_continue_on_completion(task_id, self.approve_all);
+            .set_auto_continue_on_completion(task_id, self.approve_all());
         self.journal
             .append_background_task_started_with_parent(
                 self.session_id,
@@ -1887,6 +1887,89 @@ mod tests {
 
         s.mark_cancelled().await.unwrap();
         assert!(s.background().get(id).unwrap().cancel.is_cancelled());
+    }
+
+    /// Approve-all is the session's, children included: turning it off must
+    /// reach a child that is already running, not only later ones.
+    #[tokio::test]
+    async fn turning_approve_all_off_reaches_an_existing_child() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path()).await;
+        let mut s = session_with_script(dir.path(), vec![]).await;
+        s.set_workspace_trusted(true);
+        assert!(s.set_approve_all(true));
+        let child = s
+            .create_child(
+                forge_durable::new_session_id(),
+                dir.path().to_path_buf(),
+                CancellationToken::new(),
+                &SubagentSpec {
+                    role: "worker".into(),
+                    prompt: "go".into(),
+                    mode: AgentMode::Writer,
+                    tool_allowlist: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            child.approve_all(),
+            "the child starts under the parent's mode"
+        );
+
+        s.set_approve_all(false);
+
+        assert!(!child.approve_all(), "the running child follows the change");
+    }
+
+    /// Whatever a subagent started would sit in a registry nothing polls:
+    /// approvals unanswerable, results never delivered. It is not offered
+    /// those tools, and a call to one is answered with why not.
+    #[tokio::test]
+    async fn a_subagent_cannot_start_agents_or_background_jobs() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path()).await;
+        let s = session_with_script(dir.path(), vec![]).await;
+        let mut child = s
+            .create_child(
+                forge_durable::new_session_id(),
+                dir.path().to_path_buf(),
+                CancellationToken::new(),
+                &SubagentSpec {
+                    role: "worker".into(),
+                    prompt: "go".into(),
+                    mode: AgentMode::Writer,
+                    tool_allowlist: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(child.is_subagent());
+        assert!(!s.is_subagent());
+        let offered: Vec<String> = child
+            .tools_for_model()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(!offered
+            .iter()
+            .any(|name| name == "spawn_agent" || name == "background_run"));
+
+        let call = forge_types::ToolCall {
+            id: "bg-1".into(),
+            name: "background_run".into(),
+            arguments: serde_json::json!({"command": "echo hi", "label": "greet"}),
+        };
+        child.dispatch_background_run(&call).await.unwrap();
+        assert_eq!(child.background().list().count(), 0, "nothing was started");
+        let answer = child.messages.last().unwrap();
+        assert_eq!(answer.tool_call_id.as_deref(), Some("bg-1"));
+        assert!(
+            answer.content.contains("cannot start agents"),
+            "{}",
+            answer.content
+        );
     }
 
     #[tokio::test]

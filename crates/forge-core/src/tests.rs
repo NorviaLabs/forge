@@ -6286,6 +6286,81 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
     );
 }
 
+/// A subagent is stopped through its own run token. A command it is running
+/// must stop with it, not finish its side effects afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_a_subagent_run_aborts_its_running_tool() {
+    struct SlowMarkerTool {
+        marker: std::path::PathBuf,
+        started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    #[async_trait]
+    impl forge_tools::Tool for SlowMarkerTool {
+        fn name(&self) -> &str {
+            "slow_marker"
+        }
+        fn description(&self) -> &str {
+            "Sleep, then write a marker"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+        fn side_effect_class(&self) -> SideEffectClass {
+            SideEffectClass::Exec
+        }
+        async fn call(
+            &self,
+            _ctx: &ToolContext,
+            _args: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            if let Some(started) = self.started.lock().unwrap().take() {
+                let _ = started.send(());
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            let _ = std::fs::write(&self.marker, "done");
+            Ok(ToolOutput::success("done"))
+        }
+    }
+
+    let dir = tempdir().unwrap();
+    let marker = dir.path().join("child-marker");
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(SlowMarkerTool {
+        marker: marker.clone(),
+        started: std::sync::Mutex::new(Some(started_tx)),
+    }));
+    let mut s = AgentSession::create(no_gov_cfg(dir.path()), script(vec![]), tools)
+        .await
+        .unwrap();
+    // What a subagent carries: a run token, and a turn token nothing cancels.
+    let run = tokio_util::sync::CancellationToken::new();
+    s.cancel_token = Some(run.clone());
+    let cancel = run.clone();
+    tokio::spawn(async move {
+        started_rx.await.expect("the tool starts before the cancel");
+        cancel.cancel();
+    });
+
+    let began = std::time::Instant::now();
+    let result = s
+        .apply_model_response(tool_call_response(vec![ToolCall {
+            id: "c1".into(),
+            name: "slow_marker".into(),
+            arguments: json!({}),
+        }]))
+        .await;
+
+    assert!(matches!(result, Err(LoopError::Cancelled)), "{result:?}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(2));
+    tokio::time::sleep(std::time::Duration::from_millis(3_500)).await;
+    assert!(
+        !marker.exists(),
+        "the stopped child's tool still ran to the end"
+    );
+}
+
 /// A single denial is not a failure. The model is told the call was refused,
 /// answers without it, and the turn completes.
 #[tokio::test]
