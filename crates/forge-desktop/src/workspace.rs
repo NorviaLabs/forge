@@ -5,7 +5,6 @@
 //!
 //! Every path is confined to the active session's workspace.
 
-use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
@@ -931,15 +930,10 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
         .to_string())
 }
 
-/// The set of files the tree renders, for tests.
-#[allow(dead_code)]
-fn paths(entries: &[FileEntry]) -> BTreeSet<String> {
-    entries.iter().map(|entry| entry.path.clone()).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
 
     fn tempdir() -> PathBuf {

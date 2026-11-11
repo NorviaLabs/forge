@@ -135,11 +135,7 @@ pub struct SessionContextState {
     pub protected_facts: Vec<ProtectedFact>,
 }
 
-impl SessionContextState {
-    pub fn has_checkpoint(&self) -> bool {
-        self.checkpoint.is_some()
-    }
-}
+impl SessionContextState {}
 
 /// True when `message` is an installed checkpoint rather than a real system
 /// prompt. A previous checkpoint is replaced by the new one, never stacked.

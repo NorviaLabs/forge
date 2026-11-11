@@ -22,9 +22,9 @@
 use std::time::Instant;
 
 use forge_context::compaction::{
-    checkpoint_message, compaction_message, is_checkpoint_message, messages_tokens,
-    plan_compaction, protected_fact, Checkpoint, CompactionError, CompactionPlan, CompactionPolicy,
-    CompactionRecord, CompactionTelemetry, CompactionTrigger, SessionContextState,
+    compaction_message, is_checkpoint_message, messages_tokens, plan_compaction, protected_fact,
+    Checkpoint, CompactionError, CompactionPlan, CompactionPolicy, CompactionRecord,
+    CompactionTelemetry, CompactionTrigger, SessionContextState,
 };
 use forge_model::{ModelClient, ModelRequest};
 use forge_types::{strip_protocol_markers, ModelResponse};
@@ -366,14 +366,6 @@ impl AgentSession {
             .iter()
             .filter(|message| is_checkpoint_message(message))
             .count()
-    }
-
-    /// The checkpoint as it currently appears in model-visible context.
-    pub fn checkpoint_context_message(&self) -> Option<forge_types::Message> {
-        self.context_state
-            .checkpoint
-            .as_ref()
-            .map(checkpoint_message)
     }
 }
 

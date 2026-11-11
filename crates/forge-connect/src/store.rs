@@ -99,13 +99,6 @@ pub struct CredentialStore {
 }
 
 impl CredentialStore {
-    /// Reads performed through this store so far. Each one stats the
-    /// credential file, so a caller on a hot path can assert it is not
-    /// doing that. Diagnostic only — never a correctness signal.
-    pub fn read_count(&self) -> u64 {
-        self.reads.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,

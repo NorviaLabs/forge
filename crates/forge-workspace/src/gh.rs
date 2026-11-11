@@ -44,143 +44,6 @@ pub struct PrRepository {
     pub name: String,
 }
 
-pub fn branch_protection_required_approvals(
-    workspace: &Path,
-    base: &str,
-) -> Result<u64, GithubError> {
-    let repo = repository(workspace)?;
-    let base = base.replace('/', "%2F");
-    let endpoint = format!("repos/{repo}/branches/{base}/protection/required_pull_request_reviews");
-    match run_gh(workspace, ["api", &endpoint]) {
-        Ok(bytes) => {
-            #[derive(Deserialize)]
-            struct Reviews {
-                required_approving_review_count: u64,
-            }
-            Ok(serde_json::from_slice::<Reviews>(&bytes)?.required_approving_review_count)
-        }
-        Err(GithubError::Command(error))
-            if error.contains("404") || error.contains("Not Found") =>
-        {
-            Ok(0)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-pub fn branch_protection_configured(workspace: &Path, base: &str) -> Result<bool, GithubError> {
-    let repo = repository(workspace)?;
-    let base = base.replace('/', "%2F");
-    let endpoint = format!("repos/{repo}/branches/{base}/protection");
-    match run_gh(workspace, ["api", &endpoint]) {
-        Ok(_) => Ok(true),
-        Err(GithubError::Command(error))
-            if error.contains("404") || error.contains("Not Found") =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-pub fn branch_protection_status_checks(
-    workspace: &Path,
-    base: &str,
-) -> Result<Vec<String>, GithubError> {
-    let repo = repository(workspace)?;
-    let base = base.replace('/', "%2F");
-    let endpoint = format!("repos/{repo}/branches/{base}/protection/required_status_checks");
-    let output = run_gh(workspace, ["api", &endpoint]);
-    match output {
-        Ok(bytes) => {
-            #[derive(Deserialize)]
-            struct Checks {
-                contexts: Vec<String>,
-            }
-            let value: Checks = serde_json::from_slice(&bytes)?;
-            Ok(value.contexts)
-        }
-        Err(GithubError::Command(error))
-            if error.contains("404") || error.contains("Not Found") =>
-        {
-            Ok(Vec::new())
-        }
-        Err(error) => Err(error),
-    }
-}
-
-/// True when repository rules require another approval. If the API is unavailable,
-/// fail closed so the caller does not treat unknown policy as permission to merge.
-pub fn branch_protection_requires_review(
-    workspace: &Path,
-    base: &str,
-) -> Result<bool, GithubError> {
-    let repo = repository(workspace)?;
-    let base = base.replace('/', "%2F");
-    let endpoint = format!("repos/{repo}/branches/{base}/protection/required_pull_request_reviews");
-    let output = run_gh(workspace, ["api", &endpoint]);
-    match output {
-        Ok(_) => Ok(true),
-        Err(GithubError::Command(error))
-            if error.contains("404") || error.contains("Not Found") =>
-        {
-            Ok(false)
-        }
-        Err(error) => Err(error),
-    }
-}
-
-pub fn wait_for_checks(
-    workspace: &Path,
-    reference: &str,
-    max_polls: usize,
-) -> Result<Vec<String>, GithubError> {
-    for _ in 0..max_polls.max(1) {
-        let current = checks(workspace, reference)?;
-        if !current.is_empty()
-            && current
-                .iter()
-                .all(|row| !row.split_whitespace().any(|part| part == "pending"))
-        {
-            return Ok(current);
-        }
-        std::thread::sleep(std::time::Duration::from_secs(10));
-    }
-    checks(workspace, reference)
-}
-
-pub fn pull_request_for_issue(
-    workspace: &Path,
-    issue_number: u64,
-) -> Result<Option<PullRequest>, GithubError> {
-    let Some(pr) = find_issue_pull_request(workspace, issue_number)? else {
-        return Ok(None);
-    };
-    if pr.state != "OPEN" {
-        return Ok(None);
-    }
-    Ok(Some(pr))
-}
-
-pub fn resolve_reviews_and_checks(
-    workspace: &Path,
-    issue_number: u64,
-) -> Result<Option<MergeGate>, GithubError> {
-    let Some(pr) = pull_request_for_issue(workspace, issue_number)? else {
-        return Ok(None);
-    };
-    let gate = merge_gate(workspace, &pr.number.to_string())?;
-    Ok(Some(gate))
-}
-
-pub fn create_issue_pull_request(
-    workspace: &Path,
-    issue_number: u64,
-) -> Result<String, GithubError> {
-    let branch = current_branch(workspace)?;
-    create_issue_pull_request_for_branch(workspace, issue_number, &branch)
-}
-
 pub fn create_issue_pull_request_for_branch(
     workspace: &Path,
     issue_number: u64,
@@ -381,28 +244,6 @@ pub fn typed_review_followup_prompt(
         .map(|check| format!("{} fail FAILURE", bounded_text(&check.name, 512)))
         .collect();
     review_followup_prompt(workspace, reference, &rows)
-}
-
-/// Submit a PR review decision, optionally with a summary comment.
-pub fn submit_review(
-    workspace: &Path,
-    reference: &str,
-    decision: &str,
-    body: &str,
-) -> Result<String, GithubError> {
-    let repo = repository(workspace)?;
-    let mut args = vec!["pr", "review", reference, "--repo", &repo];
-    args.push(match decision {
-        "approve" => "--approve",
-        "request-changes" => "--request-changes",
-        "comment" => "--comment",
-        _ => return Err(GithubError::Command("unsupported review decision".into())),
-    });
-    if !body.is_empty() {
-        args.extend(["--body", body]);
-    }
-    let output = run_gh(workspace, args)?;
-    Ok(String::from_utf8_lossy(&output).trim().to_string())
 }
 
 pub fn find_issue_pull_request(
@@ -690,49 +531,7 @@ pub struct MergeGate {
     pub review_decision: Option<String>,
 }
 
-impl MergeGate {
-    /// GitHub CLI `pr checks` reports each check's conclusion in its row.
-    /// A `pass` substring is the only successful textual state; unknown states fail closed.
-    pub fn github_ready(&self) -> bool {
-        let checks_ready = !self.checks.is_empty()
-            && self
-                .checks
-                .iter()
-                .all(|line| line.rsplit(' ').nth(1) == Some("pass"));
-        let review_ready = self
-            .review_decision
-            .as_deref()
-            .is_some_and(|decision| matches!(decision, "APPROVED"));
-        checks_ready && review_ready
-    }
-}
-
-pub fn merge_gate(workspace: &Path, reference: &str) -> Result<MergeGate, GithubError> {
-    let pr = pull_request(workspace, reference)?;
-    let checks = checks(workspace, reference)?;
-    Ok(MergeGate {
-        checks,
-        review_decision: pr.review_decision,
-    })
-}
-
-/// Merge only after GitHub checks/reviews and Forge's own tests are successful.
-pub fn merge_if_ready(
-    workspace: &Path,
-    reference: &str,
-    method: &str,
-    forge_tests_passed: bool,
-) -> Result<String, GithubError> {
-    if !forge_tests_passed {
-        return Err(GithubError::Command("Forge tests have not passed".into()));
-    }
-    if !merge_gate(workspace, reference)?.github_ready() {
-        return Err(GithubError::Command(
-            "GitHub checks or required review are not ready".into(),
-        ));
-    }
-    merge(workspace, reference, method)
-}
+impl MergeGate {}
 
 pub fn repository(workspace: &Path) -> Result<String, GithubError> {
     let remote = run_git(workspace, &["remote", "get-url", "origin"], GH_TIMEOUT)?;
@@ -984,12 +783,7 @@ mod tests {
     }
 
     #[test]
-    fn named_pass_is_not_a_passing_check_and_feedback_is_byte_bounded() {
-        let gate = MergeGate {
-            checks: vec!["pass fail FAILURE".into()],
-            review_decision: Some("APPROVED".into()),
-        };
-        assert!(!gate.github_ready());
+    fn feedback_is_byte_bounded() {
         assert_eq!(bounded_text("ééé", 3), "é");
     }
 

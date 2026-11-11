@@ -85,18 +85,12 @@ pub fn build_attachment_text(
 #[derive(Debug)]
 pub enum AttachmentError {
     Unreadable,
-    #[allow(dead_code)]
-    OutsideRepository,
-    #[allow(dead_code)]
-    Binary,
 }
 
 impl std::fmt::Display for AttachmentError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unreadable => write!(f, "Unable to attach current file"),
-            Self::OutsideRepository => write!(f, "File is outside the repository"),
-            Self::Binary => write!(f, "Cannot attach binary files"),
         }
     }
 }

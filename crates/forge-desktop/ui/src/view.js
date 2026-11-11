@@ -34,7 +34,7 @@ export function defaultView() {
   };
 }
 
-export function defaultFiles() {
+function defaultFiles() {
   return {
     // Folder path ("" is the root) -> `{ entries, truncated }`.
     listings: {},

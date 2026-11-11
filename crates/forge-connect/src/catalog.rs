@@ -309,10 +309,6 @@ impl ModelCatalogCache {
             .unwrap_or_default()
     }
 
-    pub fn get_registry_cost(&self, model_id: &str) -> Option<CatalogCost> {
-        self.load().registry_costs.get(model_id).copied()
-    }
-
     /// Advertised context/output limits for `model_id`.
     ///
     /// `None` means this cache has no row — offline, a pre-feature catalog
@@ -381,11 +377,6 @@ impl ModelCatalogCache {
                 .get(&id)
                 .is_some_and(|options| options.iter().any(|option| option == "none"))
         })
-    }
-
-    /// Whether `reasoning_options` has been ingested at least once.
-    pub fn effort_ready(&self) -> bool {
-        self.load().registry_effort_ready
     }
 
     fn put_registry(
@@ -1312,13 +1303,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            cache.get_registry_cost("openai/gpt-test"),
-            Some(CatalogCost {
-                input: 2.0,
-                output: 8.0,
-            })
-        );
-        assert_eq!(
             cache.get_registry_cached("openai"),
             vec!["openai/gpt-test".to_string()]
         );
@@ -2146,7 +2130,6 @@ mod tests {
         assert!(!cache.model_accepts_image_input("unknown/model"));
         assert!(!cache.model_accepts_image_input(""));
         assert!(cache.image_input_ready());
-        assert!(cache.effort_ready());
         assert_eq!(
             cache.model_effort_options("openai/gpt-4.1-mini"),
             Some(Vec::<String>::new())

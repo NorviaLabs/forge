@@ -59,24 +59,7 @@ impl fmt::Debug for DiscoveredLogin {
     }
 }
 
-impl DiscoveredLogin {
-    /// The short right-aligned tag in the provider list: "reuse Codex".
-    ///
-    /// The account goes in [`Self::offer_label`] instead — the tag column is
-    /// a few characters wide, and an elided email there would say less than
-    /// nothing.
-    pub fn tag_label(&self) -> String {
-        format!("reuse {}", self.source)
-    }
-
-    /// One line for the picker: "reuse Codex sign-in (me@example.com)".
-    pub fn offer_label(&self) -> String {
-        match &self.account {
-            Some(account) => format!("reuse {} sign-in ({account})", self.source),
-            None => format!("reuse {} sign-in", self.source),
-        }
-    }
-}
+impl DiscoveredLogin {}
 
 /// Every reusable sign-in found under `home`, newest source first within a
 /// profile so the caller can take the first match per profile.
@@ -490,11 +473,6 @@ mod tests {
         let found = discover_logins(home.path());
         let login = login_for_profile(&found, crate::builtin::profile_ids::XAI).unwrap();
         assert_eq!(login.account.as_deref(), Some("me@example.com"));
-        assert_eq!(
-            login.offer_label(),
-            "reuse Grok sign-in (me@example.com)",
-            "the picker says whose session it is"
-        );
     }
 
     #[test]

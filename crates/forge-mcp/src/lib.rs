@@ -330,15 +330,6 @@ impl McpStdioClient {
         Self::spawn_with_workspace(cfg, None, &deny_all_egress()).await
     }
 
-    /// Spawn an MCP server with its process working directory bound to the
-    /// session workspace.
-    pub async fn spawn_in_workspace(
-        cfg: &McpServerConfig,
-        workspace: &Path,
-    ) -> Result<Self, McpError> {
-        Self::spawn_with_workspace(cfg, Some(workspace), &deny_all_egress()).await
-    }
-
     /// `egress` is the live egress state a sandboxed server's endpoint
     /// enforces; it is unused for an unsandboxed server.
     async fn spawn_with_workspace(
@@ -743,14 +734,6 @@ impl McpManager {
         }
     }
 
-    /// Host allowlist enforced on outbound traffic from servers configured
-    /// with `sandbox = true`, as a state of its own: later grants do not
-    /// reach it. Defaults to empty (every host denied). A session should use
-    /// [`Self::with_egress_shared`] instead.
-    pub fn with_egress_policy(self, policy: EgressPolicy) -> Self {
-        self.with_egress_shared(EgressShared::new(policy, EgressOptions::default()))
-    }
-
     /// Route sandboxed servers through the live egress state `egress` — the
     /// same state the session gateway serves. Its policy is read on every
     /// CONNECT, so grants and policy replacements apply to MCP traffic
@@ -758,11 +741,6 @@ impl McpManager {
     pub fn with_egress_shared(mut self, egress: EgressShared) -> Self {
         self.egress = egress;
         self
-    }
-
-    /// The live egress state sandboxed servers route through.
-    pub fn egress_shared(&self) -> &EgressShared {
-        &self.egress
     }
 
     pub async fn connect_all(&mut self, servers: &[McpServerConfig]) -> Vec<String> {

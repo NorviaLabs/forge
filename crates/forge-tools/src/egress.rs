@@ -421,14 +421,6 @@ impl EgressShared {
         log.events.drain(..).collect()
     }
 
-    /// Events discarded because the log was full, over this log's life.
-    pub fn dropped_events(&self) -> u64 {
-        self.events
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .dropped
-    }
-
     fn record_event(&self, event: EgressEvent) {
         match &event.outcome {
             EgressOutcome::Allowed => tracing::info!(

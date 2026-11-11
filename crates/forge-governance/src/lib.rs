@@ -62,11 +62,6 @@ impl Default for Governance {
 }
 
 impl Governance {
-    pub fn with_principal(mut self, p: Principal) -> Self {
-        self.principal = p;
-        self
-    }
-
     pub fn with_acl(mut self, acl: AclPolicy) -> Self {
         self.acl = acl;
         self
@@ -718,19 +713,6 @@ mod tests {
             trace_id: None,
         });
         assert_eq!(g.audit.len(), 1);
-    }
-
-    #[test]
-    fn with_principal_replaces_the_default_local_dev_principal() {
-        let custom = Principal {
-            id: "svc-account".into(),
-            roles: vec!["ci".into()],
-            scopes: vec!["deploy".into()],
-            surface: "api".into(),
-        };
-        let g = Governance::default().with_principal(custom.clone());
-        assert_eq!(g.principal, custom);
-        assert_ne!(g.principal, Principal::local_dev());
     }
 
     #[test]

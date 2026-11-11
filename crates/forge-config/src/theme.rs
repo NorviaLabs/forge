@@ -39,12 +39,6 @@ impl Rgb {
         };
         ((hue + 360.0) % 360.0, saturation * 100.0, lightness * 100.0)
     }
-
-    /// Shortest distance between two hues, in degrees (0-180).
-    pub fn hue_distance(self, other: Self) -> f64 {
-        let raw = (self.to_hsl().0 - other.to_hsl().0).abs() % 360.0;
-        raw.min(360.0 - raw)
-    }
 }
 
 impl<'de> Deserialize<'de> for Rgb {
@@ -161,42 +155,7 @@ pub struct ThemePalette {
     pub syntax: SyntaxPalette,
 }
 
-/// Minimum hue separation between a theme's `accent` and any hue that
-/// reports an outcome.
-///
-/// The accent answers "where am I and what will my next keystroke touch";
-/// `success`/`warning`/`error` answer "what happened to that thing". A theme
-/// that renders both in the same hue cannot say both at once — the focused
-/// border, the caret and the selected row start reading as status.
-///
-/// 60 is calibrated rather than chosen: it is the threshold that separates
-/// the built-in themes whose accent is legible against their status colours
-/// from the ones where it is not. `info` and `agent` are deliberately not
-/// included — neither reports an outcome, so both belong to the accent's own
-/// family and are expected to sit near it.
-pub const ACCENT_STATUS_MIN_HUE_DISTANCE: f64 = 60.0;
-
-impl ThemePalette {
-    /// The outcome hue closest to `accent`, as `(role, distance in degrees)`.
-    pub fn nearest_status_hue(&self) -> (&'static str, f64) {
-        [
-            ("success", self.success),
-            ("warning", self.warning),
-            ("error", self.error),
-        ]
-        .into_iter()
-        .map(|(role, colour)| (role, self.accent.hue_distance(colour)))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .expect("three status roles")
-    }
-
-    /// `Some((role, distance))` when `accent` sits too close to an outcome
-    /// hue to be told apart from it.
-    pub fn accent_status_collision(&self) -> Option<(&'static str, f64)> {
-        let (role, distance) = self.nearest_status_hue();
-        (distance < ACCENT_STATUS_MIN_HUE_DISTANCE).then_some((role, distance))
-    }
-}
+impl ThemePalette {}
 
 /// One installable theme (metadata + palette).
 #[derive(Clone, Debug, PartialEq, Eq)]

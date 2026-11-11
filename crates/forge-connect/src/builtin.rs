@@ -45,7 +45,6 @@ pub fn builtin_profile(id: &str) -> ProviderSpec {
 /// The built-in profile ids.
 pub mod profile_ids {
     pub const ANTHROPIC: &str = "anthropic";
-    pub const CLAUDE_AGENT: &str = "claude_agent";
     pub const OLLAMA: &str = "ollama";
     pub const OPENAI: &str = "openai";
     pub const OPENAI_CODEX: &str = "openai_codex";

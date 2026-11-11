@@ -830,13 +830,4 @@ impl AgentSession {
     ) -> Result<ModelResponse, LoopError> {
         TurnCoordinator::run(self, stream_tx).await
     }
-
-    /// `/compact`: run the compaction pipeline on demand.
-    ///
-    /// Identical to the automatic path in every respect but the trigger
-    /// label, and permitted below the automatic threshold — the operator may
-    /// know the next stretch of work needs headroom before the policy does.
-    pub async fn force_context_reset_async(&mut self) -> Result<CompactionRecord, LoopError> {
-        self.compact_context(CompactionTrigger::Manual).await
-    }
 }

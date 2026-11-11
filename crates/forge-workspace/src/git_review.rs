@@ -4,8 +4,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::git_status::PathStatus;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffHunk {
     pub header: String,
@@ -25,23 +23,6 @@ pub struct FileDiff {
     pub hunks: Vec<DiffHunk>,
     pub binary: bool,
     pub untracked: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reviewability {
-    Reviewable,
-    Conflicted,
-    Binary,
-}
-
-pub fn reviewability(status: PathStatus, diff: &FileDiff) -> Reviewability {
-    if status.is_conflicted() {
-        Reviewability::Conflicted
-    } else if diff.binary {
-        Reviewability::Binary
-    } else {
-        Reviewability::Reviewable
-    }
 }
 
 /// Dirty worktree + index vs `HEAD`. Untracked files are a synthetic add diff.
@@ -352,31 +333,6 @@ fn run_git(root: &Path, args: &[&str], allow_one: bool) -> Result<String, String
     ))
 }
 
-/// Add `path` to the index. Reversible with [`unstage_path`], which is why
-/// `/diff` binds it without a confirmation step.
-pub fn stage_path(root: &Path, path: &Path) -> Result<(), String> {
-    let rel = validated_relative_path(root, path)?;
-    run_git(root, &["add", "--", &rel.to_string_lossy()], false)?;
-    Ok(())
-}
-
-/// Remove `path` from the index, leaving the worktree untouched.
-///
-/// `git restore --staged` fails on a repository with no commits yet, where
-/// there is no `HEAD` to restore from; `git rm --cached` is the fallback that
-/// still only touches the index.
-pub fn unstage_path(root: &Path, path: &Path) -> Result<(), String> {
-    let rel = validated_relative_path(root, path)?;
-    let name = rel.to_string_lossy().to_string();
-    match run_git(root, &["restore", "--staged", "--", &name], false) {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            run_git(root, &["rm", "--cached", "--quiet", "--", &name], false)?;
-            Ok(())
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,7 +457,6 @@ diff --git a/file.txt b/file.txt
         #[cfg(unix)]
         std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
 
-        assert!(stage_path(dir.path(), outside.path().join("secret").as_path()).is_err());
         #[cfg(unix)]
         {
             assert!(delete_untracked(dir.path(), Path::new("link/secret")).is_err());

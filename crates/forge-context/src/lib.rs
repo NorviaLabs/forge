@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use forge_storage::{LocalRuntimeStorage, RuntimeDataKind, RuntimeStorage};
-use forge_types::{Message, ProgressDocument, SessionId};
+use forge_types::{ProgressDocument, SessionId};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -67,10 +67,6 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4).max(1)
 }
 
-pub fn estimate_messages_tokens(messages: &[Message]) -> usize {
-    messages.iter().map(|m| estimate_tokens(&m.content)).sum()
-}
-
 #[derive(Debug, Clone)]
 pub struct OffloadResult {
     pub uri: String,
@@ -99,16 +95,6 @@ impl ContextEngine {
             goal: String::new(),
             skills_cache: Arc::new(RwLock::new(None)),
         }
-    }
-
-    /// Fraction of the heuristic capacity the transcript currently occupies.
-    ///
-    /// A display figure for the status bar only. What to *do* about context
-    /// pressure is [`compaction::CompactionPolicy`]'s decision, and it works
-    /// from the active model's real window rather than this heuristic.
-    pub fn usage_ratio(&self, messages: &[Message]) -> f64 {
-        let used = estimate_messages_tokens(messages) as f64;
-        used / self.config.capacity_tokens as f64
     }
 
     /// CTX-01: offload large tool body to disk; return compact in-context form.
@@ -198,21 +184,6 @@ impl ContextEngine {
         self.workspace.join(p)
     }
 
-    pub fn write_progress(&self, doc: &ProgressDocument) -> Result<(), ContextError> {
-        if self.config.progress_path == default_progress_path() {
-            // Establishes Git exclusion / the application-data fallback on
-            // first real write — reads never trigger this.
-            let _ = LocalRuntimeStorage::new(&self.workspace).path_for(RuntimeDataKind::Checkpoint);
-        }
-        let path = self.progress_path();
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let s = serde_json::to_string_pretty(doc)?;
-        fs::write(path, s)?;
-        Ok(())
-    }
-
     pub fn read_progress(&self) -> Result<Option<ProgressDocument>, ContextError> {
         let path = self.progress_path();
         if !path.is_file() {
@@ -247,14 +218,6 @@ impl ContextEngine {
     /// every frame; `load_skills().len()` used to deep-copy every body.
     pub fn skill_count(&self) -> usize {
         self.load_skills().len()
-    }
-
-    pub fn refresh_skills(&self) -> Arc<Vec<SkillManifest>> {
-        let skills = Arc::new(discover_skills(&self.workspace));
-        if let Ok(mut cache) = self.skills_cache.write() {
-            *cache = Some(Arc::clone(&skills));
-        }
-        skills
     }
 }
 
@@ -404,7 +367,6 @@ pub fn discover_skills(workspace: &std::path::Path) -> Vec<SkillManifest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use forge_types::MessageRole;
     use tempfile::tempdir;
 
     /// Git-initializes `dir` so offload/progress-path resolution exercises
@@ -438,13 +400,6 @@ mod tests {
             1,
             "the heuristic counts unicode scalars, not UTF-8 bytes"
         );
-    }
-
-    #[test]
-    fn estimate_messages_tokens_counts_content_only() {
-        let mut message = Message::new(MessageRole::Assistant, "abcd");
-        message.thinking = Some("x".repeat(400));
-        assert_eq!(estimate_messages_tokens(&[message]), 1);
     }
 
     #[test]
@@ -592,23 +547,6 @@ mod tests {
     }
 
     #[test]
-    fn usage_ratio_increases() {
-        let eng = ContextEngine::new(std::env::current_dir().unwrap(), Uuid::new_v4());
-        let small = vec![Message {
-            outcome: Default::default(),
-            role: MessageRole::User,
-            content: "hi".into(),
-            tool_call_id: None,
-            name: None,
-            thinking: None,
-            thinking_duration_secs: None,
-            tool_calls: vec![],
-            attachments: Vec::new(),
-        }];
-        assert!(eng.usage_ratio(&small) < 0.01);
-    }
-
-    #[test]
     fn maybe_offload_tool_content_passes_small_body_through_unchanged() {
         let dir = tempdir().unwrap();
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
@@ -712,22 +650,6 @@ mod tests {
         init_repo(dir.path());
         let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
         assert!(eng.read_progress().unwrap().is_none());
-    }
-
-    #[test]
-    fn write_then_read_progress_round_trips() {
-        let dir = tempdir().unwrap();
-        init_repo(dir.path());
-        let eng = ContextEngine::new(dir.path().to_path_buf(), Uuid::new_v4());
-        let doc = ProgressDocument::new(eng.session_id, "ship it");
-        eng.write_progress(&doc).unwrap();
-
-        let loaded = eng
-            .read_progress()
-            .unwrap()
-            .expect("progress file must exist");
-        assert_eq!(loaded.goal, "ship it");
-        assert_eq!(loaded.session_id, eng.session_id.to_string());
     }
 
     #[test]

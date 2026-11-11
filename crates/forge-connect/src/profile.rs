@@ -423,17 +423,6 @@ impl ProviderSpec {
             .map(|s| s.as_str())
     }
 
-    /// True when this vendor has more than one offering registered alongside
-    /// it — the only case where the picker nests routes under a chevron.
-    pub fn has_multiple_routes(&self, registry: &crate::registry::ConnectRegistry) -> bool {
-        registry
-            .profiles()
-            .iter()
-            .filter(|p| p.provider == self.provider)
-            .count()
-            > 1
-    }
-
     pub fn needs_tui_api_key_prompt(&self) -> bool {
         let auth = self.effective_auth();
         auth.kind == AuthKind::ApiKey && auth.prompt == AuthPrompt::Tui
