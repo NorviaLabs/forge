@@ -1138,10 +1138,15 @@ impl AgentSession {
                 };
                 (status, summary)
             }
-            Some(BackgroundTaskOutcome::Cancelled) => (
-                BackgroundTaskStatus::Cancelled,
-                format!("Background task '{label}' was cancelled"),
-            ),
+            // A cancellation is the operator's doing (or the session being
+            // retired), so there is nothing for the agent to continue with.
+            Some(BackgroundTaskOutcome::Cancelled) => {
+                queue_completion = false;
+                (
+                    BackgroundTaskStatus::Cancelled,
+                    format!("Background task '{label}' was cancelled"),
+                )
+            }
             Some(BackgroundTaskOutcome::Subagent(outcome)) => {
                 queue_completion = matches!(outcome.status, BackgroundTaskStatus::Succeeded { .. });
                 let summary = format!("Subagent '{label}' finished: {}", outcome.summary);
@@ -1167,10 +1172,13 @@ impl AgentSession {
             // Sender dropped without sending — the spawned task panicked or
             // was torn down; treat conservatively as cancelled rather than
             // silently leaving the task's status stuck at `Running` forever.
-            None => (
-                BackgroundTaskStatus::Cancelled,
-                format!("Background task '{label}' was interrupted"),
-            ),
+            None => {
+                queue_completion = false;
+                (
+                    BackgroundTaskStatus::Cancelled,
+                    format!("Background task '{label}' was interrupted"),
+                )
+            }
         };
 
         self.journal
@@ -1382,6 +1390,24 @@ mod tests {
             wait_terminal(&mut s, id).await;
             // With no human in the loop, the result drives the next turn.
             assert_eq!(s.queue().len(), 1);
+        }
+
+        /// A cancelled job is the operator's doing: its result must not come
+        /// back as work for the agent (retiring a session cancels its jobs).
+        #[tokio::test]
+        async fn a_cancelled_shell_job_queues_nothing_under_approve_all() {
+            let dir = tempdir().unwrap();
+            let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            let id = s
+                .spawn_background_shell("sleep 30".into(), "sleep".into())
+                .await
+                .unwrap();
+
+            assert!(s.cancel_background_task(id));
+            wait_terminal(&mut s, id).await;
+            assert_eq!(s.queue().len(), 0);
         }
 
         #[tokio::test]

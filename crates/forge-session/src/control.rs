@@ -1429,6 +1429,30 @@ impl RepositoryControl {
         parse_session(&row)
     }
 
+    /// Record that a prompt is queued, unless a turn is in flight. A running
+    /// or waiting turn keeps its state (and so its Stop control): the queued
+    /// prompt is visible in the queue, and the driver claims it when the turn
+    /// ends.
+    pub async fn mark_queued(&self, session_id: SessionId) -> Result<(), RepositorySessionError> {
+        let result = sqlx::query(
+            "UPDATE sessions SET turn_state = 'queued', updated_at = ? WHERE session_id = ? \
+             AND lifecycle <> 'archived' AND turn_state NOT IN ('running', 'waiting')",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(session_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            // Unchanged because a turn is in flight, or because there is no
+            // such live session; only the second is an error.
+            let session = self.session(session_id).await?;
+            if session.lifecycle == SessionLifecycle::Archived {
+                return Err(RepositorySessionError::NotFound(session_id));
+            }
+        }
+        Ok(())
+    }
+
     pub async fn set_turn_state(
         &self,
         session_id: SessionId,
@@ -2411,6 +2435,34 @@ mod tests {
             .await
             .unwrap();
         control.archive(session_id).await.unwrap();
+    }
+
+    /// Queueing a follow-up must not hide that a turn is still in flight:
+    /// the page offers Stop only for a running or waiting session.
+    #[tokio::test]
+    async fn marking_queued_leaves_a_turn_in_flight_alone() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        let session = new_session(&dir.path().join("a"), "a", None);
+        let session_id = session.session_id;
+        control.register_session(session, None).await.unwrap();
+        for in_flight in [SupervisorTurnState::Running, SupervisorTurnState::Waiting] {
+            control.set_turn_state(session_id, in_flight).await.unwrap();
+            control.mark_queued(session_id).await.unwrap();
+            assert_eq!(
+                control.session(session_id).await.unwrap().turn_state,
+                in_flight
+            );
+        }
+        control
+            .set_turn_state(session_id, SupervisorTurnState::Completed)
+            .await
+            .unwrap();
+        control.mark_queued(session_id).await.unwrap();
+        assert_eq!(
+            control.session(session_id).await.unwrap().turn_state,
+            SupervisorTurnState::Queued
+        );
     }
 
     #[tokio::test]

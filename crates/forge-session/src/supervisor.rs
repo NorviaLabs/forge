@@ -1907,10 +1907,7 @@ async fn execute_command(
                 .control
                 .set_github_tests_passed(session_id, false)
                 .await?;
-            state
-                .control
-                .set_turn_state(session_id, SupervisorTurnState::Queued)
-                .await?;
+            state.control.mark_queued(session_id).await?;
             publish_actor(&state, session_id).await?;
             start_prompt_driver(state, session_id).await?;
             return Ok(());
@@ -2148,10 +2145,7 @@ async fn execute_command(
                     }
                     if let Some(text) = completed.first_prompt {
                         state.control.enqueue_prompt(session_id, &text).await?;
-                        state
-                            .control
-                            .set_turn_state(session_id, SupervisorTurnState::Queued)
-                            .await?;
+                        state.control.mark_queued(session_id).await?;
                         publish_actor(&state, session_id).await?;
                         start_prompt_driver(state.clone(), session_id).await?;
                     }
@@ -2527,10 +2521,7 @@ async fn execute_command(
                 }
                 if let Some(text) = completed.first_prompt {
                     state.control.enqueue_prompt(session_id, &text).await?;
-                    state
-                        .control
-                        .set_turn_state(session_id, SupervisorTurnState::Queued)
-                        .await?;
+                    state.control.mark_queued(session_id).await?;
                     publish_actor(&state, session_id).await?;
                     start_prompt_driver(state.clone(), session_id).await?;
                 }
@@ -2564,10 +2555,7 @@ async fn execute_command(
             // enqueued, a running driver can claim and finish it at once, and
             // a Queued written after that would overwrite Completed with
             // nothing left to run.
-            state
-                .control
-                .set_turn_state(session_id, SupervisorTurnState::Queued)
-                .await?;
+            state.control.mark_queued(session_id).await?;
             state.control.enqueue_prompt(session_id, &text).await?;
             publish_actor(&state, session_id).await?;
             start_prompt_driver(state, session_id).await?;
@@ -3008,7 +2996,7 @@ async fn poll_background_tasks(state: &Arc<SupervisorState>) {
         if let Ok(mut session) = task_actor.session.try_lock() {
             // Completions that arrived while the session sat idle, or through
             // a command that polled it, wait in its own queue until moved.
-            if !session.queue().is_empty() {
+            if !session.queue().is_empty() && !task_actor.retiring.load(Ordering::Acquire) {
                 let session_id = task_actor.snapshot.read().await.task.session_id;
                 match hand_off_session_queue(state, session_id, &mut session).await {
                     Ok(true) => {
@@ -3528,11 +3516,18 @@ async fn hand_off_session_queue(
     session: &mut AgentSession,
 ) -> Result<bool, RepositorySupervisorError> {
     let items: Vec<_> = session.queue().visible().cloned().collect();
+    let mut moved = false;
     for item in &items {
-        state.control.enqueue_prompt(session_id, &item.text).await?;
+        match state.control.enqueue_prompt(session_id, &item.text).await {
+            Ok(_) => moved = true,
+            // A finished session takes no more work, so its result has
+            // nowhere to run. Drop it instead of retrying on every poll.
+            Err(RepositorySessionError::Archived(_) | RepositorySessionError::Retained(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
         session.cancel_queued_item(item.id).await?;
     }
-    Ok(!items.is_empty())
+    Ok(moved)
 }
 
 /// Materialize a branch for a branchless managed session once its worktree has
@@ -6142,6 +6137,37 @@ mod tests {
             .await
             .unwrap();
         assert!(control.queued_prompts(owner).await.unwrap().is_empty());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// An archived session takes no more prompts, so a result left on its
+    /// queue is dropped rather than retried on every poll.
+    #[tokio::test]
+    async fn a_result_queued_on_an_archived_session_is_dropped() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let control = &supervisor.state.control;
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        task_actor
+            .session
+            .lock()
+            .await
+            .enqueue_task("Background task 'build' finished")
+            .await
+            .unwrap();
+        control.archive(owner).await.unwrap();
+        let mut events = handle.subscribe();
+
+        handle.command(SupervisorCommand::Refresh).await.unwrap();
+
+        assert!(task_actor.session.lock().await.queue().is_empty());
+        assert!(control.queued_prompts(owner).await.unwrap().is_empty());
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, SupervisorEvent::Error { .. }),
+                "dropping the result is not an error: {event:?}"
+            );
+        }
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
