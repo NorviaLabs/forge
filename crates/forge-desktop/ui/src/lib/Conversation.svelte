@@ -117,7 +117,7 @@
   {/if}
 
   {#each visible as message, index (start + index)}
-    <div class="turn {message.role}" class:multi={message.role === "tool" && !oneLine(message)}>
+    <div class="turn {message.role}" class:multi={message.role === "tool" && !oneLine(message)} class:expanded={message.expanded}>
       <div class="who">
         {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}<span class="sr-only">Tool</span>
           <span class="tool-name">{toolName(message)}</span>
@@ -346,6 +346,12 @@
 
   .message.tool pre {
     margin-bottom: 4px;
+  }
+
+  /* Asked for in full: no height cap, so the rest is on the page and not
+     inside a scrolling box. */
+  .turn.expanded pre {
+    max-height: none;
   }
 
   /* Longer output starts on the tool's own row, beside its name. */

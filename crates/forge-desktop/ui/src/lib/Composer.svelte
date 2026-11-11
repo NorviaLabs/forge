@@ -19,6 +19,8 @@
     onToggleTerminal,
     onFocusTerminal,
     onStopTerminal,
+    model = "",
+    onModel,
     contextUsage = 0,
     onContext,
     prompt = $bindable(""),
@@ -179,16 +181,6 @@
   ></textarea>
   {#if imageError}<p class="error" role="alert">{imageError}</p>{/if}
   <footer>
-    <button
-      class="icon-btn"
-      type="button"
-      aria-expanded={drawerOpen}
-      aria-label={drawerOpen ? "Hide terminal" : "Show terminal"}
-      title={drawerOpen ? "Hide terminal (⌃`)" : "Show terminal (⌃`)"}
-      onclick={onToggleTerminal}
-    >
-      <Icon name="terminal" size={14} />
-    </button>
     {#if attachment}
       <div class="attachments" aria-label="File attachment">
         <button class="btn chip" type="button" title="Remove file context" onclick={onRemoveAttachment}>
@@ -205,7 +197,10 @@
         {/each}
       </div>
     {/if}
-    <button class="context" type="button" title="Context & usage" onclick={onContext}>
+    <button class="context model" type="button" title="Change model" onclick={onModel}>
+      <span class="model-name">{model || "Choose a model"}</span>
+    </button>
+    <button class="context" type="button" title="Token and cost details" onclick={onContext}>
       Context {contextPercent}%
       <span class="meter" aria-hidden="true"><span class="fill {contextLevel}" style="width: {contextPercent}%"></span></span>
     </button>
@@ -322,6 +317,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .model-name {
+    max-width: 220px;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
   }
 
   .context {

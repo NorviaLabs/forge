@@ -1,7 +1,7 @@
 <script>
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
-  let { onClose, onProviders, onGithub, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
+  let { onClose, onSettings } = $props();
   import { chord } from "../keys.js";
   const shortcuts = [
     [chord("K"), "Command palette: files, sessions and actions"],
@@ -25,20 +25,18 @@
 
 <div class="overlay">
   <div class="help" role="dialog" aria-modal="true" aria-labelledby="help-title" tabindex="-1" use:modal={{ onClose }}>
-    <header><h2 id="help-title">Help & appearance</h2><button class="icon-btn" type="button" aria-label="Close help" onclick={onClose}><Icon name="close" size={13} /></button></header>
+    <header><h2 id="help-title">Help</h2><button class="icon-btn" type="button" aria-label="Close help" onclick={onClose}><Icon name="close" size={13} /></button></header>
     <div class="body">
-    <label><span>Theme</span> <select class="field" bind:value={theme}><option value="system">System</option>{#each themes as entry}<option value={entry.id}>{entry.name}</option>{/each}</select></label>
-    <label class="toggle"><span>Play a sound when a request waits on you</span> <input type="checkbox" bind:checked={sound} /></label>
     <h3>Keyboard shortcuts</h3>
     <dl>{#each shortcuts as [keys, action]}<dt><kbd>{keys}</kbd></dt><dd>{action}</dd>{/each}</dl>
     <h3>Workspace workflow</h3>
-    <p>The rail lists your projects at the top: a dot shows whether each is closed (ring), idle, working or waiting on you, and requests waiting in other projects appear under their name. Below are the sessions of the project on screen; those waiting on you appear under Needs you. The session header opens Files, Terminal and the Session menu, which holds the plan, agents and tasks, the queue, context and usage, the model, and session actions.</p>
+    <p>The rail lists your projects at the top: a dot shows whether each is closed (ring), idle, working or waiting on you, and requests waiting in other projects appear under their name. Below are the sessions of the project on screen; those waiting on you appear under Needs you. The top bar opens Files, the terminal, a new session and the Session panel, which holds the plan, agents and tasks, the queue, context and usage, the model, and session actions.</p>
     <p>Files is where you browse, edit, stage and commit: scope the list to Changed, Staged or Last turn, stage a row or Stage all, then Commit. ‹ Session or Esc returns to the conversation with your place kept.</p>
     <p>The editor has no buttons. Save, find and jump using shortcuts or the command palette. Reload and restore are palette actions; discarding changes still requires confirmation.</p>
-    <p>Shells run your own commands without the agent sandbox. Each session has one shell: the terminal button under the composer shows it as a drawer, Focus terminal fills the window, and hiding it or switching sessions keeps it running. Stop terminal or <code>exit</code> ends it; the next open starts a fresh shell.</p>
+    <p>Shells run your own commands without the agent sandbox. Each session has one shell: Terminal in the top bar shows it as a drawer under the conversation, Focus terminal fills the window, and hiding it or switching sessions keeps it running. Stop terminal or <code>exit</code> ends it; the next open starts a fresh shell.</p>
     <p>Image paste supports PNG, JPEG, GIF and WebP, up to four files of 5 MiB each. Images are saved under workspace <code>.forge/attachments</code>.</p>
     </div>
-    <footer class="actions"><button class="btn" type="button" onclick={onProviders}>Providers…</button><button class="btn" type="button" disabled={!onGithub} title={onGithub ? undefined : "GitHub needs a Git repository"} onclick={onGithub}>GitHub…</button></footer>
+    <footer class="actions"><span class="foot-note">Theme, sound, providers and GitHub are in Settings.</span><button class="btn" type="button" onclick={onSettings}>Open Settings…</button></footer>
   </div>
 </div>
 
@@ -175,5 +173,11 @@
     flex: none;
     padding: 0 16px;
     border-top: 1px solid var(--border);
+  }
+
+  .foot-note {
+    margin-right: auto;
+    color: var(--muted);
+    font-size: var(--text-sm);
   }
 </style>

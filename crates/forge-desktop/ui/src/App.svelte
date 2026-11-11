@@ -4,10 +4,11 @@
   import { invoke } from "./ipc.js";
   import { failureAction } from "./failure.js";
   import { chord, isMac } from "./keys.js";
-  import { applyEvent, emptySnapshot, snapshotFrom } from "./session.js";
+  import { applyEvent, emptySnapshot, snapshotFrom, waitingNote } from "./session.js";
   import { listen } from "@tauri-apps/api/event";
   import Conversation from "./lib/Conversation.svelte";
   import Changes from "./lib/Changes.svelte";
+  import Settings from "./lib/Settings.svelte";
   import Composer from "./lib/Composer.svelte";
   import Sidebar from "./lib/Sidebar.svelte";
   import Inspector from "./lib/Inspector.svelte";
@@ -156,6 +157,21 @@
   let githubOpen = $state(false);
   let detailsOpen = $state(false);
   let helpOpen = $state(false);
+  let settingsOpen = $state(false);
+  // The New session dialog: its name field, and whether it is open.
+  let newSessionOpen = $state(false);
+  let newSessionName = $state("");
+  function openNewSession() {
+    newSessionName = "";
+    newSessionOpen = true;
+  }
+  async function submitNewSession(event) {
+    event.preventDefault();
+    const label = newSessionName.trim();
+    if (!label || creating) return;
+    newSessionOpen = false;
+    await createSession(label);
+  }
   const DARK_QUERY = "(prefers-color-scheme: dark)";
   let themes = $state([]);
   let themeChoice = $state("forge-dark");
@@ -235,6 +251,8 @@
   const hasQueue = $derived(queue.length > 0);
   const hasDecision = $derived(!!(question || approval));
   const needsYou = $derived(Object.keys(attention).length);
+  const terminalShown = $derived(currentView.drawerOpen && !!shells[sessionId]);
+  const waitNote = $derived(waitingNote(snapshot));
   const currentProject = $derived(projects.find((project) => project.id === projectId) ?? null);
   // The word that always accompanies a state dot.
   function turnWord(state) {
@@ -290,7 +308,7 @@
     { name: "/disconnect", help: "Disconnect a provider", run: () => (providersOpen = true) },
     { name: "/model", help: "Switch model for future turns", run: openModelPicker },
     { name: "/effort", help: "Set the model's reasoning effort", run: openModelPicker },
-    { name: "/theme", help: "Switch the desktop theme", run: () => (helpOpen = true) },
+    { name: "/theme", help: "Switch the desktop theme", run: () => (settingsOpen = true) },
     { name: "/status", help: "Show session status and token usage", run: () => (detailsOpen = true) },
     { name: "/context", help: "Show the context breakdown", run: () => (detailsOpen = true) },
     { name: "/plan", help: "Show the latest execution plan", run: () => (sessionMenu = "plan") },
@@ -299,7 +317,7 @@
     { name: "/thinking", help: "Toggle model reasoning", run: toggleThinking },
     { name: "/compact", help: "Continue in a fresh context", run: compactContext },
     { name: "/continue", help: "Continue the last stopped or failed turn", run: continueTurn },
-    { name: "/new", help: "Start a new session", run: () => sidebar?.startNewSession() },
+    { name: "/new", help: "Start a new session", run: openNewSession },
     { name: "/sessions", help: "Switch to another session", run: () => (paletteOpen = true) },
     { name: "/resume", help: "Switch to a previous session", run: () => (paletteOpen = true) },
     { name: "/fork", help: "Fork this conversation into a new session", run: forkSession },
@@ -413,7 +431,7 @@
         id: "action:new",
         group: "Actions",
         label: "New session…",
-        action: () => sidebar?.startNewSession(),
+        action: openNewSession,
       },
       {
         id: "action:approve-all",
@@ -461,7 +479,8 @@
         action: () => (githubOpen = true),
       },
       { id: "action:status", group: "Actions", label: "Token, cost, tool and skill details…", action: () => (detailsOpen = true) },
-      { id: "action:help", group: "Actions", label: "Help, shortcuts and theme…", action: () => (helpOpen = true) },
+      { id: "action:settings", group: "Actions", label: "Settings: theme, sound, providers, GitHub…", action: () => (settingsOpen = true) },
+      { id: "action:help", group: "Actions", label: "Help and shortcuts…", action: () => (helpOpen = true) },
       { id: "git:fetch", group: "Git", label: "Fetch upstream", action: () => performGitOperation({ kind: "fetch" }) },
       { id: "git:pull", group: "Git", label: "Pull upstream…", action: () => requestGitOperation({ kind: "pull" }) },
       { id: "git:push", group: "Git", label: "Push upstream…", action: () => requestGitOperation({ kind: "push" }) },
@@ -798,6 +817,16 @@
   }
 
   async function closeProject(project, stopRunning = false) {
+    // The window always shows a project, so the one on screen is closed by
+    // putting another open project there first. With no other, say so.
+    if (project.id === projectId) {
+      const other = projects.find((entry) => entry.open && entry.id !== projectId);
+      if (!other) {
+        projectProblem = { project, kind: "only_project", message: "" };
+        return;
+      }
+      if (!(await switchProject(other))) return;
+    }
     try {
       await invoke("project_close", { projectId: project.id, stopRunning });
       closeTarget = null;
@@ -1055,7 +1084,7 @@
       record.messageDetails[absolute] = full;
       if (target === sessionId) {
         snapshot.messages = messages.map((message, at) =>
-          at === index ? { ...message, text: full.text, thinking: full.thinking } : message);
+          at === index ? { ...message, text: full.text, thinking: full.thinking, expanded: true } : message);
       }
     } catch (cause) {
       if (target === sessionId) error = String(cause);
@@ -1876,25 +1905,36 @@
         {#if activeSession}<span class="state-dot {turnState}" aria-hidden="true"></span>{/if}
         <strong>{activeSession?.label ?? "No session"}</strong>
         {#if activeSession}<span class="head-state">{turnWord(turnState)}</span>{/if}
-        {#if branch}<span class="chip mono" title={info.workspace}>{branch}</span>
-        {:else if info.workspace}<span class="chip mono checkout" title={info.workspace}>{basename(info.workspace)}</span>{/if}
+        {#if branch}<span class="chip mono head-branch" title={`${branch} · ${info.workspace}`}><Icon name="branch" size={11} /><span>{branch}</span></span>
+        {:else if info.workspace}<span class="chip mono head-branch checkout" title={info.workspace}><span>{basename(info.workspace)}</span></span>{/if}
       </div>
       <span class="spacer"></span>
       {#if needsYou > 0}
         <button type="button" class="btn head-btn needs" onclick={showNeedsYou}>Needs you ({needsYou})</button>
       {/if}
-      <button bind:this={filesButton} type="button" class="btn ghost head-btn" title={`Files (${chord("E")})`} disabled={!sessionId} onclick={openFiles}>
-        <Icon name="files" size={13} />
-        Files
+      <!-- Icons for the three everyday actions; each has its name as a tooltip
+           and an accessible label. -->
+      <button bind:this={filesButton} type="button" class="icon-btn head-icon" title={`Files (${chord("E")})`} aria-label="Files" disabled={!sessionId} onclick={openFiles}>
+        <Icon name="files" size={15} />
         {#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
       </button>
-      <button bind:this={terminalButton} type="button" class="btn ghost head-btn" title="Focus terminal" disabled={!sessionId} onclick={async () => { await openTerminal(); await focusTerminal(); }}>
-        <Icon name="terminal" size={13} />
-        Terminal
+      <button
+        bind:this={terminalButton}
+        type="button"
+        class="icon-btn head-icon"
+        class:on={terminalShown}
+        title={`${terminalShown ? "Hide" : "Show"} terminal (${isMac() ? "⌘J" : "Ctrl+`"})`}
+        aria-label={terminalShown ? "Hide terminal" : "Show terminal"}
+        aria-pressed={terminalShown}
+        disabled={!sessionId}
+        onclick={toggleTerminal}
+      >
+        <Icon name="terminal" size={15} />
       </button>
-      <button type="button" class="btn ghost head-btn model-btn" title="Change model" disabled={!sessionId} onclick={openModelPicker}>
-        <span class="model-name">{info.model || "Choose a model"}</span>
+      <button type="button" class="icon-btn head-icon" title="New session" aria-label="New session" aria-haspopup="dialog" onclick={openNewSession}>
+        <Icon name="plus" size={15} />
       </button>
+      <span class="head-rule" aria-hidden="true"></span>
       <button type="button" class="btn head-btn" aria-haspopup="dialog" disabled={!sessionId} onclick={() => (sessionMenu = "actions")}>Session…</button>
     {:else}
       <button type="button" class="btn head-btn" onclick={backToSession}>
@@ -1950,6 +1990,8 @@
     onClose={closeSession}
     onResume={(session) => { railOpen = false; command("resume_session", { sessionId: session.session_id, currentSessionId: sessionId }); }}
     onHelp={() => (helpOpen = true)}
+    onSettings={() => (settingsOpen = true)}
+    onNew={openNewSession}
   />
 
   <section class="center" class:deciding={hasDecision}>
@@ -1993,6 +2035,16 @@
         </div>
       {/if}
 
+      {#if waitNote}
+        <p class="wait-note" role="status">
+          <span class="state-dot waiting" aria-hidden="true"></span>
+          <span>{waitNote.text}</span>
+          {#if waitNote.action}
+            <button type="button" class="btn" onclick={() => (sessionMenu = waitNote.action)}>{waitNote.label}</button>
+          {/if}
+        </p>
+      {/if}
+
       <div class="decision">
         {#if question}
           <QuestionCard
@@ -2029,8 +2081,10 @@
         onToggleTerminal={toggleTerminal}
         onFocusTerminal={focusTerminal}
         onStopTerminal={() => dropShell(sessionId)}
+        model={info.model}
+        onModel={openModelPicker}
         contextUsage={info.contextUsage}
-        onContext={() => (sessionMenu = "context")}
+        onContext={() => (detailsOpen = true)}
       />
     {:else if currentView.screen === "files"}
       {#key sessionId}
@@ -2102,11 +2156,8 @@
         {supportsGit}
         loading={filesLoading}
         error={filesError}
-        shellRunning={!!shells[sessionId]}
-        shellOpen={currentView.drawerOpen && !!shells[sessionId]}
         onOpenDiff={(path, side) => { openFiles(); openDiff(path, side); }}
         onOpenFiles={openFiles}
-        onToggleTerminal={toggleTerminal}
       />
     {/key}
   {/if}
@@ -2439,6 +2490,13 @@
             <button class="btn primary" type="button" onclick={trustProject}>Trust and open</button>
             <button class="btn" type="button" onclick={() => (projectProblem = null)}>Cancel</button>
           </div>
+        {:else if projectProblem.kind === "only_project"}
+          <h2 id="project-problem-title">{projectProblem.project.name} is the only open project</h2>
+          <p>Forge always shows one project. Open another one first; then this project can be closed, and once closed, removed from the list. Its folder and saved sessions are never deleted.</p>
+          <div class="dialog-actions">
+            <button class="btn" type="button" onclick={() => (projectProblem = null)}>Cancel</button>
+            <button class="btn primary" type="button" onclick={() => { projectProblem = null; addProject(); }}>Open another project…</button>
+          </div>
         {:else}
           <h2 id="project-problem-title">{projectProblem.project.name} has moved</h2>
           <p>{projectProblem.message}</p>
@@ -2492,7 +2550,28 @@
     {#key sessionId}<Details {sessionId} onClose={() => (detailsOpen = false)} />{/key}
   {/if}
   {#if helpOpen}
-    <Help bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { helpOpen = false; githubOpen = true; } : null} />
+    <Help onClose={() => (helpOpen = false)} onSettings={() => { helpOpen = false; settingsOpen = true; }} />
+  {/if}
+  {#if settingsOpen}
+    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (settingsOpen = false)} onProviders={() => { settingsOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { settingsOpen = false; githubOpen = true; } : null} />
+  {/if}
+  {#if newSessionOpen}
+    <div class="modal">
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-title" tabindex="-1" use:modal={{ onClose: () => (newSessionOpen = false) }}>
+        <form onsubmit={submitNewSession}>
+          <h2 id="new-session-title">New session</h2>
+          <p>{supportsGit ? "The session gets its own Git worktree and branch, so it can work while others do." : "The session works in this folder."}</p>
+          <input class="field new-session-name" bind:value={newSessionName} placeholder="What is this session for?" aria-label="New session name" />
+          <div class="dialog-actions">
+            {#if supportsGit}
+              <button class="btn ghost attach-instead" type="button" onclick={() => { newSessionOpen = false; openAttach(); }}>Attach an existing worktree…</button>
+            {/if}
+            <button class="btn" type="button" onclick={() => (newSessionOpen = false)}>Cancel</button>
+            <button class="btn primary" type="submit" disabled={creating || !newSessionName.trim()}>Create</button>
+          </div>
+        </form>
+      </div>
+    </div>
   {/if}
 
   {#if gitConfirm}
@@ -2591,12 +2670,21 @@
   .topbar.mac .brand { padding-left: 84px; }
   .wordmark { overflow: hidden; font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; text-overflow: ellipsis; white-space: nowrap; }
 
-  .head-title { display: flex; align-items: center; gap: 8px; min-width: 0; padding-left: 12px; }
+  /* The session's name keeps its room; the branch gives way first and
+     never wraps. */
+  .head-title { display: flex; align-items: center; gap: 8px; flex: 0 1 auto; min-width: 0; padding-left: 12px; }
   .head-title strong,
   .focus-head strong { font-size: var(--text-md); font-weight: 600; white-space: nowrap; }
-  .head-title strong { overflow: hidden; text-overflow: ellipsis; }
-  .head-state { color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
-  .head-title .chip { flex: none; max-width: 220px; }
+  .head-title strong { flex: 0 1 auto; min-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+  .head-title .state-dot { flex: none; }
+  .head-state { flex: none; color: var(--muted); font-size: var(--text-sm); white-space: nowrap; }
+  .head-branch { flex: 0 10 auto; min-width: 0; max-width: 200px; white-space: nowrap; }
+  .head-branch span { overflow: hidden; text-overflow: ellipsis; }
+  .head-branch :global(svg) { flex: none; }
+  .head-icon { position: relative; flex: none; width: var(--control-lg); height: var(--control-lg); color: var(--secondary); }
+  .head-icon.on { background: var(--raised); color: var(--text); }
+  .head-icon .count { position: absolute; top: 0; right: 0; min-width: 14px; padding: 0 3px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-size: var(--text-xs); font-weight: 600; line-height: 14px; text-align: center; }
+  .head-rule { flex: none; width: 1px; height: 16px; margin: 0 8px; background: var(--border); }
   .focus-head > strong { margin-left: 12px; }
   .head-session { margin-left: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--text-sm); }
   .head-doc { flex: none; max-width: 280px; margin-left: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2633,6 +2721,19 @@
   }
   .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .queue-strip .btn { height: 24px; padding: 0 8px; }
+
+  /* A wait with no card of its own: what the session needs, in words. */
+  .wait-note {
+    display: flex; align-items: center; gap: 8px;
+    width: calc(100% - 68px); max-width: 720px; margin: 0 auto 8px; padding: 8px 8px 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border)); border-radius: var(--radius-sm);
+    background: var(--surface); color: var(--secondary); font-size: var(--text-sm);
+  }
+  .wait-note span:nth-child(2) { flex: 1; min-width: 0; }
+  .wait-note .btn { height: 24px; padding: 0 8px; flex: none; }
+  .head-btn.on { background: var(--raised); color: var(--text); }
+  .new-session-name { margin-bottom: 16px; }
+  .attach-instead { margin-right: auto; }
 
   .decision { display: contents; }
 
@@ -2832,7 +2933,6 @@
   @media (max-width: 1180px) {
     .app { grid-template-columns: 280px minmax(0, 1fr); }
     .app > :global(.changes) { display: none; }
-    .model-btn { display: none; }
   }
 
   /* Compact: the rail becomes an overlay opened from the header. */

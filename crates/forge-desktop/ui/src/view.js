@@ -85,7 +85,7 @@ export function shownMessages(record, messages) {
   const from = record.clearedFrom;
   return messages.slice(from).map((message, index) => {
     const full = record.messageDetails[from + index];
-    return full ? { ...message, text: full.text, thinking: full.thinking } : message;
+    return full ? { ...message, text: full.text, thinking: full.thinking, expanded: true } : message;
   });
 }
 

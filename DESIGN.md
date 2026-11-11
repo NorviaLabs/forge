@@ -272,10 +272,10 @@ Numerals are tabular everywhere (`font-variant-numeric: tabular-nums` on the bod
 
 A fixed frame: a 44px top bar across the window, then three columns, `280px | 1fr | 400px`, each a full-height flex column that scrolls on its own. The window itself never scrolls.
 
-- **Bar** (44px, panel colour, rule below): the project's name over the rail's 280px (the wordmark "Forge" only when no project is open); the session title, its state dot and word, and the branch chip starting at the conversation column's left edge, not centred; Files, Terminal, the model and Session… at the right. The same 44px height is used for the Changes header, the shell strip, the palette's search row and drawer heads. The bar is also the window's title bar: it is the drag region, a double-click on it zooms the window, and on macOS (overlay title bar, title hidden) the project name starts 84px in to clear the window buttons. Linux keeps its native title bar above it.
-- **Rail** (280px, panel colour, rule at right): search field, a "needs you" group when anything waits, sessions grouped under their project and indented 12px, New session pinned at the foot.
+- **Bar** (44px, panel colour, rule below): the project's name over the rail's 280px (the wordmark "Forge" only when no project is open); the session title, its state dot and word, and the branch chip starting at the conversation column's left edge, not centred; at the right, three 32px icon buttons (Files with its changed count, Terminal, which shows as pressed while its drawer is open, and New session), a 1px divider, then Session…. The branch chip is one line, at most 200px, and gives way before the session name does. The same 44px height is used for the Changes header, the shell strip, the palette's search row and drawer heads. The bar is also the window's title bar: it is the drag region, a double-click on it zooms the window, and on macOS (overlay title bar, title hidden) the project name starts 84px in to clear the window buttons. Linux keeps its native title bar above it.
+- **Rail** (280px, panel colour, rule at right): search field, a "needs you" group when anything waits, sessions grouped under their project and indented 12px, Settings and Help pinned at the foot.
 - **Centre** (ground colour): one centred 720px column shared by the transcript, the strips above the composer, the decision card and the composer, with 24px gutters when the column is narrower.
-- **Changes** (400px, panel colour, rule at left): header, two underline tabs, the file list (at most 34% of the height), a diff preview on the ground colour, and a 44px shell strip at the foot.
+- **Changes** (400px, panel colour, rule at left): header, two underline tabs, the file list (at most 34% of the height), and a diff preview on the ground colour. Its empty states carry a Browse all files button.
 
 Spacing sits on a 4px grid and in practice uses five values: 4, 8, 12, 16 and 24px. 8px is the default gap; 12px is the inside of a compact card and the gap between its parts; 16px is the inside of a card or dialog and a panel's left inset; 24px is the transcript's outer padding. Controls are 28px tall (rows of controls, buttons, icon buttons) or 32px (text fields, session rows, palette rows); compact buttons inside a 32px strip drop to 24px.
 
@@ -338,7 +338,7 @@ Quiet and exact: components are told apart by ground and rule, and only one of t
 ### Inputs / Fields
 - **Style:** 32px tall, `bg` fill, 1px `border-strong`, 6px corners, 10px side padding, `muted` placeholder.
 - **Focus:** border turns `accent` and a 2px `accent` outline sits at -1px. The caret is `accent`.
-- **Composer:** the exception. The textarea is bare inside a 12px-padded card, and the card carries the focus (accent border plus the ring). Its foot holds attachments, the context meter (a 48px by 4px bar with its percentage beside it), keyboard hints, then Stop and Send at the right.
+- **Composer:** the exception. The textarea is bare inside a 12px-padded card, and the card carries the focus (accent border plus the ring). Its foot holds attachments, the model (mono, opens the model picker), the context meter (a 48px by 4px bar with its percentage beside it, opens token and cost details), keyboard hints, then Stop and Send at the right.
 
 ### Navigation
 - **Top bar:** described under Layout. Ghost buttons with a 13px icon; a button whose target holds something waiting takes an amber label and an amber-tinted border.
@@ -374,6 +374,9 @@ Each turn is a block under a one-line speaker header (12px, 600). The operator's
 - **Do** show focus as a 2px `accent` outline, and make every action reachable from the keyboard.
 - **Do** label a shortcut for the platform it runs on ("⌘K" on macOS, "Ctrl+K" elsewhere), through `ui/src/keys.js`; never print both.
 - **Do** keep motion to 120ms colour and opacity transitions, and remove it under `prefers-reduced-motion`.
+- **Do** give each action one home. Files, Terminal and New session live in the top bar; settings (theme, sound, providers, GitHub) live in Settings, not in Help.
+- **Do** use an icon alone only for a frequent action whose meaning is conventional (files, terminal, add, fetch, pull, push, expand), always with a tooltip and an accessible label; decisions and rare actions keep their words.
+- **Do** say what a waiting session needs when no card does: a note above the composer names the reply, setting or outside action it waits for.
 - **Do** write labels in sentence case that say exactly what happens ("Allow once", "Browse files", "The worktree is clean").
 
 ### Don't:

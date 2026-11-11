@@ -13,11 +13,8 @@
     supportsGit = true,
     loading = false,
     error = "",
-    shellOpen = false,
-    shellRunning = false,
     onOpenDiff,
     onOpenFiles,
-    onToggleTerminal,
   } = $props();
 
   const PREVIEW_LINES = 400;
@@ -133,17 +130,13 @@
     {#if supportsGit && status.files.length > 0}
       <span class="total">{status.files.length} {status.files.length === 1 ? "file" : "files"}</span>
     {/if}
-    <span class="spacer"></span>
-    <button type="button" class="btn ghost" disabled={!sessionId} onclick={onOpenFiles}>
-      <Icon name="files" size={13} />
-      Browse files
-    </button>
   </header>
 
   {#if !supportsGit}
     <div class="empty">
       <strong>No Git repository here</strong>
-      <p>Changes are tracked through Git. This folder is a plain directory, so there is nothing to compare; its files are still one click away.</p>
+      <p>Changes are tracked through Git. This folder is a plain directory, so there is nothing to compare.</p>
+      <button type="button" class="btn browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>
     </div>
   {:else}
     <div class="tabs" role="tablist" aria-label="Which changes">
@@ -169,6 +162,9 @@
         {:else}
           <strong>The worktree is clean</strong>
           <p>Nothing is uncommitted on {status.branch || "this branch"}.</p>
+        {/if}
+        {#if !loading}
+          <button type="button" class="btn browse" disabled={!sessionId} onclick={onOpenFiles}>Browse all files</button>
         {/if}
       </div>
     {:else}
@@ -199,7 +195,7 @@
           {#if !preview.loading && !preview.error && (preview.added || preview.removed)}
             <span class="stat mono" aria-label={`${preview.added ?? 0} lines added, ${preview.removed ?? 0} removed`}>+{preview.added ?? 0} −{preview.removed ?? 0}</span>
           {/if}
-          <button type="button" class="btn ghost" disabled={!preview.path} onclick={() => onOpenDiff?.(preview.path, preview.side)}>Open</button>
+          <button type="button" class="icon-btn" title="Open the full diff in Files" aria-label="Open the full diff in Files" disabled={!preview.path} onclick={() => onOpenDiff?.(preview.path, preview.side)}><Icon name="expand" size={13} /></button>
         </header>
         {#if preview.loading}
           <p class="note" role="status">Loading the diff…</p>
@@ -217,13 +213,6 @@
     {/if}
   {/if}
 
-  <footer class="shell-strip">
-    <Icon name="terminal" size={13} />
-    <span class="shell-label">Shell</span>
-    <span class="shell-state">{shellRunning ? (shellOpen ? "open below the conversation" : "running, hidden") : "not started"}</span>
-    <span class="spacer"></span>
-    <button type="button" class="btn" disabled={!sessionId} onclick={onToggleTerminal}>{shellOpen ? "Hide" : "Show"}</button>
-  </footer>
 </aside>
 
 <style>
@@ -398,9 +387,10 @@
     font-size: var(--text-xs);
   }
 
-  .preview-head .btn {
+  .preview-head .icon-btn {
+    flex: none;
+    width: 24px;
     height: 24px;
-    padding: 0 8px;
   }
 
   .diff {
@@ -479,6 +469,11 @@
     padding: 24px;
   }
 
+  .browse {
+    align-self: flex-start;
+    margin-top: 12px;
+  }
+
   .empty strong {
     font-weight: 600;
   }
@@ -510,34 +505,6 @@
     font-size: inherit;
     text-decoration: underline;
     text-underline-offset: 3px;
-  }
-
-  .shell-strip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    height: var(--bar);
-    flex: none;
-    padding: 0 8px 0 16px;
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: var(--text-sm);
-  }
-
-  .shell-label {
-    color: var(--text);
-    font-weight: 500;
-  }
-
-  .shell-state {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .shell-strip .btn {
-    height: 24px;
-    padding: 0 8px;
   }
 
   @media (prefers-reduced-motion: reduce) {

@@ -26,6 +26,12 @@ impl AgentSession {
         self.tasks.background.cancel(id)
     }
 
+    /// Why the active task is parked, if it is. Approvals and questions have
+    /// their own payload views; this is for the reasons that carry none.
+    pub fn wait_reason(&self) -> Option<&WaitReason> {
+        self.active_task.wait_reason.as_ref()
+    }
+
     /// The HITL payload the active task is waiting on, if any — a
     /// convenience view over `active_task.wait_reason`'s `Approval` variant.
     pub fn pending_hitl(&self) -> Option<&HitlPayload> {

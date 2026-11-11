@@ -14,6 +14,7 @@ export function emptySnapshot() {
     skillDescriptions: [],
     approval: null,
     question: null,
+    waitingOn: null,
     approveAll: false,
     thinking: false,
     imageInput: false,
@@ -42,6 +43,7 @@ export function snapshotFrom(event, record) {
     skillDescriptions: event.skill_descriptions ?? [],
     approval: event.pending_approval ?? null,
     question: event.pending_question ?? null,
+    waitingOn: event.waiting_on ?? null,
     approveAll: event.approve_all,
     thinking: event.thinking,
     imageInput: event.image_input ?? false,
@@ -61,6 +63,27 @@ export function snapshotFrom(event, record) {
     githubIssue: event.github_issue_number ?? null,
     githubPr: event.github_pr_url ?? "",
   };
+}
+
+// What a waiting session needs when no decision card says so: the words to
+// show above the composer and, when there is somewhere to go, where. Null
+// when the session is not waiting or a card already asks.
+export function waitingNote(snapshot) {
+  if (snapshot.turnState !== "waiting" || snapshot.approval || snapshot.question) return null;
+  if (snapshot.background.some((task) => task.awaiting_approval || task.approval)) {
+    return { text: "A background task of this session needs your approval.", action: "agents", label: "Review" };
+  }
+  const waiting = snapshot.waitingOn;
+  if (waiting?.kind === "reply") {
+    return { text: "Forge asked something in its last message and is waiting for your reply. Type it below and send." };
+  }
+  if (waiting?.kind === "configuration") {
+    return { text: `Forge is waiting for a missing setting: ${waiting.detail}. Add it, then reply below to continue.` };
+  }
+  if (waiting?.kind === "external") {
+    return { text: `Forge is waiting for something outside Forge: ${waiting.detail} Reply below when it is done.` };
+  }
+  return { text: "This session is waiting on you but did not say what for. Reply below, or open its tasks.", action: "agents", label: "Open tasks" };
 }
 
 const busy = (turnState) => turnState === "running" || turnState === "waiting";

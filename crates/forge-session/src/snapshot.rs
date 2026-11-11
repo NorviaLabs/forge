@@ -46,6 +46,9 @@ pub struct SessionSnapshot {
     /// The outstanding `ask_user_question` request, if the session is waiting
     /// on answers.
     pub pending_question: Option<QuestionPayload>,
+    /// What the session waits on when it is neither an approval nor a
+    /// question, so a frontend can say what the operator should do.
+    pub waiting_on: Option<WaitingOn>,
     pub queue_len: usize,
     pub background_len: usize,
     pub workspace_root: PathBuf,
@@ -62,6 +65,35 @@ pub struct SessionSnapshot {
     pub prompt_cache_writes: u64,
 }
 
+/// A wait that has no card of its own: the session is parked until the
+/// operator does the thing named here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WaitingOn {
+    /// The agent asked in prose and waits for a typed reply.
+    Reply,
+    /// A setting is missing; the key names it.
+    Configuration(String),
+    /// Something outside Forge has to happen first.
+    ExternalAction(String),
+    /// A reason this build does not know how to describe.
+    Other,
+}
+
+impl WaitingOn {
+    fn from_reason(reason: &forge_types::WaitReason) -> Option<Self> {
+        use forge_types::WaitReason;
+        match reason {
+            WaitReason::Approval { .. } | WaitReason::Question { .. } => None,
+            WaitReason::Clarification { .. } | WaitReason::Selection { .. } => Some(Self::Reply),
+            WaitReason::MissingConfiguration { key, .. } => Some(Self::Configuration(key.clone())),
+            WaitReason::ExternalAction { description, .. } => {
+                Some(Self::ExternalAction(description.clone()))
+            }
+            _ => Some(Self::Other),
+        }
+    }
+}
+
 impl SessionSnapshot {
     /// Read the session once, for one frame.
     pub fn capture(session: &AgentSession) -> Self {
@@ -71,6 +103,7 @@ impl SessionSnapshot {
             approve_all: session.approve_all(),
             pending_hitl: session.pending_hitl().cloned(),
             pending_question: session.pending_question().cloned(),
+            waiting_on: session.wait_reason().and_then(WaitingOn::from_reason),
             queue_len: session.queue().len(),
             background_len: session.background().len(),
             workspace_root: session.workspace_root().to_path_buf(),
@@ -108,6 +141,7 @@ impl Default for SessionSnapshot {
             approve_all: false,
             pending_hitl: None,
             pending_question: None,
+            waiting_on: None,
             queue_len: 0,
             background_len: 0,
             workspace_root: PathBuf::new(),
@@ -416,6 +450,34 @@ pub async fn replayed_transcript(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_waits_without_a_card_are_reported_as_waiting_on() {
+        use forge_types::WaitReason;
+        let id = || "r1".to_string();
+        assert_eq!(
+            WaitingOn::from_reason(&WaitReason::Clarification { request_id: id() }),
+            Some(WaitingOn::Reply)
+        );
+        assert_eq!(
+            WaitingOn::from_reason(&WaitReason::Selection { request_id: id() }),
+            Some(WaitingOn::Reply)
+        );
+        assert_eq!(
+            WaitingOn::from_reason(&WaitReason::MissingConfiguration {
+                request_id: id(),
+                key: "GITHUB_TOKEN".into()
+            }),
+            Some(WaitingOn::Configuration("GITHUB_TOKEN".into()))
+        );
+        assert_eq!(
+            WaitingOn::from_reason(&WaitReason::ExternalAction {
+                request_id: id(),
+                description: "Merge the PR.".into()
+            }),
+            Some(WaitingOn::ExternalAction("Merge the PR.".into()))
+        );
+    }
 
     #[test]
     fn the_background_signature_changes_only_with_what_the_list_shows() {

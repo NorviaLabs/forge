@@ -52,6 +52,17 @@
   let pane = $state();
   let fileDraft = $state(null);
   let contents = $state("");
+  // One search field, two things it can look in. Content search exists only
+  // for the whole tree, so any other scope is by name.
+  let searchMode = $state("names");
+  const inContents = $derived(searchMode === "contents" && shown === "all");
+  function setSearchMode(mode) {
+    if (mode === searchMode) return;
+    // Carry the typed text across, so switching is "look there instead".
+    if (mode === "contents") { contents = query; query = ""; }
+    else { query = contents; contents = ""; }
+    searchMode = mode;
+  }
   let hits = $state([]);
   let searching = $state(false);
   let searchError = $state("");
@@ -244,13 +255,17 @@
       <div class="filters">
         <div class="filter">
           <Icon name="search" size={12} />
-          <input class="field" bind:value={query} placeholder="Filter files" aria-label="Filter files" spellcheck="false" />
+          {#if inContents}
+            <input class="field" bind:value={contents} placeholder="Search in file contents" aria-label="Search file contents" spellcheck="false" />
+            {#if searching}<span class="mini spin"><Icon name="refresh" size={12} /></span>{/if}
+          {:else}
+            <input class="field" bind:value={query} placeholder="Filter by file name" aria-label="Filter files" spellcheck="false" />
+          {/if}
         </div>
         {#if shown === "all"}
-          <div class="filter">
-            <Icon name="search" size={12} />
-            <input class="field" bind:value={contents} placeholder="Search contents" aria-label="Search file contents" spellcheck="false" />
-            {#if searching}<span class="mini spin"><Icon name="refresh" size={12} /></span>{/if}
+          <div class="search-mode" role="group" aria-label="Search in">
+            <button type="button" class="btn" aria-pressed={!inContents} onclick={() => setSearchMode("names")}>Names</button>
+            <button type="button" class="btn" aria-pressed={inContents} onclick={() => setSearchMode("contents")}>Contents</button>
           </div>
         {/if}
       </div>
@@ -443,9 +458,9 @@
           {/if}
         </div>
         <div class="git-row sync">
-          <button type="button" class="btn" title={supportsGit ? undefined : NO_GIT} disabled={gitBusy || !supportsGit} onclick={() => onGitOperation({ kind: "fetch" })}>Fetch</button>
-          <button type="button" class="btn" title={supportsGit ? undefined : NO_GIT} disabled={gitBusy || !supportsGit} onclick={() => onGitOperation({ kind: "pull" })}>Pull…</button>
-          <button type="button" class="btn" title={supportsGit ? undefined : NO_GIT} disabled={gitBusy || !upstream || !supportsGit} onclick={() => onGitOperation({ kind: "push" })}>Push…</button>
+          <button type="button" class="btn" title={supportsGit ? "Fetch" : NO_GIT} aria-label="Fetch" disabled={gitBusy || !supportsGit} onclick={() => onGitOperation({ kind: "fetch" })}><Icon name="refresh" size={13} /></button>
+          <button type="button" class="btn" title={supportsGit ? "Pull…" : NO_GIT} aria-label="Pull" disabled={gitBusy || !supportsGit} onclick={() => onGitOperation({ kind: "pull" })}><Icon name="arrow-down" size={13} /></button>
+          <button type="button" class="btn" title={!supportsGit ? NO_GIT : upstream ? "Push…" : "Push needs an upstream branch"} aria-label="Push" disabled={gitBusy || !upstream || !supportsGit} onclick={() => onGitOperation({ kind: "push" })}><Icon name="arrow-up" size={13} /></button>
         </div>
       </div>
     </div>
@@ -559,6 +574,34 @@
     color: var(--muted);
     font-size: var(--text-xs);
     font-weight: 400;
+  }
+
+  .search-mode {
+    display: flex;
+  }
+
+  .search-mode .btn {
+    flex: 1;
+    height: 24px;
+    border-radius: 0;
+    color: var(--muted);
+    font-weight: 400;
+  }
+
+  .search-mode .btn:first-child {
+    border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  }
+
+  .search-mode .btn:last-child {
+    margin-left: -1px;
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  }
+
+  .search-mode .btn[aria-pressed="true"] {
+    position: relative;
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--text);
   }
 
   .filters {

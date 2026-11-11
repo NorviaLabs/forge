@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { applyEvent, emptySnapshot, snapshotFrom } from "./session.js";
+import { applyEvent, emptySnapshot, snapshotFrom, waitingNote } from "./session.js";
 import { clearShown, defaultView } from "./view.js";
 
 const row = (id, turn_state = "idle") => ({ session_id: id, label: id, turn_state });
@@ -163,4 +163,36 @@ test("errors and lag are reported; other events are left to the page", () => {
   for (const type of ["workspace", "attention_new", "project_error", "project_switched", "stream"]) {
     assert.equal(applyEvent(state, { type }), null);
   }
+});
+
+test("a waiting session with no card says what it needs", () => {
+  const waiting = (extra = {}) => ({ ...emptySnapshot(), turnState: "waiting", ...extra });
+  // Not waiting, or a card already asks: nothing to add.
+  assert.equal(waitingNote(emptySnapshot()), null);
+  assert.equal(waitingNote(waiting({ approval: { call_id: "c1" } })), null);
+  assert.equal(waitingNote(waiting({ question: { call_id: "q1" } })), null);
+
+  // The agent asked in prose: the reply goes in the composer.
+  assert.match(waitingNote(waiting({ waitingOn: { kind: "reply", detail: "" } })).text, /waiting for your reply/);
+  assert.equal(waitingNote(waiting({ waitingOn: { kind: "reply", detail: "" } })).action, undefined);
+
+  // A child's approval lives in the Session panel, so the note leads there,
+  // and it outranks the session's own reason.
+  const child = waitingNote(waiting({ waitingOn: { kind: "reply", detail: "" }, background: [{ id: 1, awaiting_approval: true }] }));
+  assert.match(child.text, /background task/);
+  assert.equal(child.action, "agents");
+
+  assert.match(waitingNote(waiting({ waitingOn: { kind: "configuration", detail: "GITHUB_TOKEN" } })).text, /GITHUB_TOKEN/);
+  assert.match(waitingNote(waiting({ waitingOn: { kind: "external", detail: "Merge the PR." } })).text, /Merge the PR\./);
+
+  // Nothing said why: the note admits it and still gives somewhere to look.
+  const unknown = waitingNote(waiting());
+  assert.match(unknown.text, /did not say what for/);
+  assert.equal(unknown.action, "agents");
+});
+
+test("the snapshot carries the wait reason", () => {
+  const event = { session_id: "a", turn_state: "waiting", messages: [], approve_all: false, thinking: false, waiting_on: { kind: "reply", detail: "" } };
+  assert.deepEqual(snapshotFrom(event, { clearedFrom: 0, messageDetails: {} }).waitingOn, { kind: "reply", detail: "" });
+  assert.equal(snapshotFrom({ ...event, waiting_on: undefined }, { clearedFrom: 0, messageDetails: {} }).waitingOn, null);
 });

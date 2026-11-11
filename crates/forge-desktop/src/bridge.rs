@@ -48,6 +48,9 @@ pub enum DesktopEvent {
         /// The outstanding `ask_user_question` call, if the turn is parked on
         /// one. Without it a question-waiting turn looks idle forever.
         pending_question: Option<QuestionView>,
+        /// A wait with no card of its own (a typed reply, a missing setting,
+        /// something outside Forge), so the page can say what to do.
+        waiting_on: Option<WaitingView>,
         /// Per-session approve-all: review prompts auto-approved, the sandbox
         /// still enforced.
         approve_all: bool,
@@ -784,6 +787,37 @@ fn message_view(message: &forge_types::Message, full: bool) -> Option<MessageVie
     })
 }
 
+/// What a waiting session needs from the operator when no card shows it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct WaitingView {
+    /// `reply`, `configuration`, `external` or `other`.
+    pub kind: &'static str,
+    /// The missing key, or the outside action, in the agent's words.
+    pub detail: String,
+}
+
+fn waiting_view(waiting: &forge_session::WaitingOn) -> WaitingView {
+    use forge_session::WaitingOn;
+    match waiting {
+        WaitingOn::Reply => WaitingView {
+            kind: "reply",
+            detail: String::new(),
+        },
+        WaitingOn::Configuration(key) => WaitingView {
+            kind: "configuration",
+            detail: escape_invisible(key),
+        },
+        WaitingOn::ExternalAction(description) => WaitingView {
+            kind: "external",
+            detail: escape_invisible(description),
+        },
+        WaitingOn::Other => WaitingView {
+            kind: "other",
+            detail: String::new(),
+        },
+    }
+}
+
 fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
     let messages = snapshot
         .transcript
@@ -802,6 +836,7 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .pending_question
             .as_ref()
             .map(question_view),
+        waiting_on: snapshot.session.waiting_on.as_ref().map(waiting_view),
         approve_all: snapshot.session.approve_all,
         thinking: snapshot
             .details
@@ -3499,6 +3534,23 @@ pub async fn shell_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wait_without_a_card_reaches_the_page_as_words() {
+        use forge_session::WaitingOn;
+        assert_eq!(waiting_view(&WaitingOn::Reply).kind, "reply");
+        let key = waiting_view(&WaitingOn::Configuration("GITHUB_TOKEN".into()));
+        assert_eq!(
+            (key.kind, key.detail.as_str()),
+            ("configuration", "GITHUB_TOKEN")
+        );
+        let outside = waiting_view(&WaitingOn::ExternalAction("Merge the PR.".into()));
+        assert_eq!(
+            (outside.kind, outside.detail.as_str()),
+            ("external", "Merge the PR.")
+        );
+        assert_eq!(waiting_view(&WaitingOn::Other).kind, "other");
+    }
 
     #[test]
     fn a_session_failure_names_what_the_page_can_act_on() {

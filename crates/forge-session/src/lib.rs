@@ -39,7 +39,7 @@ pub use projects::{
 };
 pub use snapshot::{
     replayed_transcript, BackgroundTaskSnapshot, SessionDetailsSnapshot, SessionSnapshot,
-    ShellExecutionSnapshot, TranscriptSnapshot,
+    ShellExecutionSnapshot, TranscriptSnapshot, WaitingOn,
 };
 pub use supervisor::{
     QueuedPromptId, RepositoryBootstrap, RepositorySupervisor, RepositorySupervisorError,

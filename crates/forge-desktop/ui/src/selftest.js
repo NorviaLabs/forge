@@ -126,7 +126,7 @@ export async function runSelfTest(params, sessionId) {
   const backToSession = () => button(document.querySelector(".focus-head"), "Session").click();
   try {
     // One host element carries the shell through drawer, focus and back.
-    document.querySelector('.composer button[aria-label="Show terminal"]').click();
+    document.querySelector('.session-head button[aria-label="Show terminal"]').click();
     await waitFor(() => document.querySelector(`.terminal[data-session="${primary}"] .xterm`), 10000);
     const original = document.querySelector(`.terminal[data-session="${primary}"]`);
     const asDrawer = hostOf(primary)?.classList.contains("drawer");
@@ -220,9 +220,9 @@ export async function runSelfTest(params, sessionId) {
 
   results.theme_switches = false;
   try {
-    button(document, "Help").click();
+    button(document, "Settings").click();
     await sleep(50);
-    const select = document.querySelector(".help select");
+    const select = document.querySelector(".settings select");
     const previous = select.value;
     select.value = "forge-light";
     select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -230,7 +230,7 @@ export async function runSelfTest(params, sessionId) {
     results.theme_switches = document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).color === "rgb(20, 23, 28)";
     select.value = previous;
     select.dispatchEvent(new Event("change", { bubbles: true }));
-    document.querySelector('button[aria-label="Close help"]').click();
+    document.querySelector('button[aria-label="Close settings"]').click();
   } catch (error) { console.error("theme self-test", error); }
 
   // A slash command completes and runs through the composer's Enter path; it

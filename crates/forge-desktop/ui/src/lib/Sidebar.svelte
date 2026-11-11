@@ -30,11 +30,11 @@
     onClose,
     onResume,
     onHelp,
+    onSettings,
+    onNew,
     onCloseRail,
   } = $props();
 
-  let newLabel = $state("");
-  let composing = $state(false);
   let search = $state("");
 
   const needle = $derived(search.trim().toLowerCase());
@@ -56,20 +56,6 @@
     return () => action.destroy();
   }
 
-  // Exposed to the command palette.
-  export function startNewSession() {
-    composing = true;
-    newLabel = "";
-  }
-
-  function submitNew(event) {
-    event.preventDefault();
-    const label = newLabel.trim();
-    if (!label || creating) return;
-    onCreate(label);
-    newLabel = "";
-    composing = false;
-  }
 </script>
 
 {#snippet sessionGroup()}
@@ -155,7 +141,7 @@
       {#if live.length === 0 && !creating}
         <li class="empty">
           <p>No sessions yet. Start one to give an agent a task.</p>
-          <button class="btn primary" type="button" onclick={() => (composing = !composing)}>
+          <button class="btn primary" type="button" onclick={() => onNew?.()}>
             <Icon name="plus" size={13} />
             New session
           </button>
@@ -277,7 +263,13 @@
                   <span class="project-meta">{live.length} {live.length === 1 ? "session" : "sessions"}</span>
                 {/if}
               </button>
-              {#if !current}
+              {#if current}
+                <span class="row-actions">
+                  <button type="button" class="icon-btn" title="Close project…" aria-label={`Close ${project.name}`} onclick={() => onCloseProject?.(project)}>
+                    <Icon name="close" size={12} />
+                  </button>
+                </span>
+              {:else}
                 <span class="row-actions">
                   {#if project.open}
                     <button type="button" class="icon-btn" title="Close project (stops its agents)" aria-label={`Close ${project.name}`} onclick={() => onCloseProject?.(project)}>
@@ -320,34 +312,8 @@
     {/if}
   </div>
 
-  {#if composing}
-    <form class="new" onsubmit={submitNew}>
-      <input
-        class="field"
-        bind:value={newLabel}
-        placeholder="Session name"
-        aria-label="New session name"
-      />
-      <button class="btn primary" type="submit" disabled={creating || !newLabel.trim()}>
-        {creating ? "Creating…" : "Create"}
-      </button>
-    </form>
-  {/if}
-
   <footer class="rail-foot">
-    <button class="btn" type="button" onclick={() => (composing = !composing)}>
-      <Icon name="plus" size={13} />
-      New session
-    </button>
-    <button
-      class="icon-btn"
-      type="button"
-      title="Attach an existing worktree"
-      aria-label="Attach an existing worktree"
-      onclick={onAttach}
-    >
-      <Icon name="layers" size={14} />
-    </button>
+    <button class="btn ghost" type="button" onclick={onSettings}>Settings</button>
     <span class="spacer"></span>
     <button class="btn ghost" type="button" onclick={onHelp}>Help</button>
   </footer>

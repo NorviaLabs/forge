@@ -272,7 +272,7 @@ test("a session shows its transcript without what /clear hid, with expansions ke
   // so it stays expanded after the next snapshot and after another /clear.
   record.messageDetails[3] = { text: "d in full", thinking: "why" };
   const shown = shownMessages(record, transcript);
-  assert.deepEqual(shown[1], { role: "assistant", text: "d in full", thinking: "why" });
+  assert.deepEqual(shown[1], { role: "assistant", text: "d in full", thinking: "why", expanded: true });
   assert.equal(shown[0], transcript[2], "untouched messages are passed through");
 });
 
