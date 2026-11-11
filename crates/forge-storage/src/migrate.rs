@@ -8,7 +8,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -228,9 +227,7 @@ fn is_tracked(workspace: &Path, path: &Path) -> bool {
     let Ok(rel) = path.strip_prefix(workspace) else {
         return false;
     };
-    match Command::new("git")
-        .arg("-C")
-        .arg(workspace)
+    match forge_sandbox::git::command(workspace)
         .arg("ls-files")
         .arg("--")
         .arg(rel)
@@ -371,7 +368,7 @@ mod tests {
         init_repo(dir.path());
         fs::create_dir_all(dir.path().join(".forge")).unwrap();
         fs::write(dir.path().join(".forge/progress.json"), "{}").unwrap();
-        let status = Command::new("git")
+        let status = std::process::Command::new("git")
             .arg("-C")
             .arg(dir.path())
             .args(["add", ".forge/progress.json"])

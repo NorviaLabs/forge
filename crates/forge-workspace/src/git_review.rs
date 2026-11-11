@@ -229,44 +229,38 @@ fn apply_reverse_hunk(root: &Path, diff: &FileDiff, hunk: &DiffHunk) -> Result<(
         patch.push_str(line);
         patch.push('\n');
     }
-    let patch_path = std::env::temp_dir().join(format!(
-        "forge-review-{}-{}.patch",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::write(&patch_path, patch).map_err(|e| format!("write patch: {e}"))?;
-    let worktree = git_command(root)
-        .args([
-            "apply",
-            "--reverse",
-            "--whitespace=nowarn",
-            &patch_path.to_string_lossy(),
-        ])
-        .current_dir(root)
-        .output()
-        .map_err(|e| format!("git apply: {e}"))?;
+    // The patch goes in on stdin: git runs confined and cannot read the
+    // shared temp directory a patch file would sit in.
+    let apply = |extra: &[&str]| -> Result<std::process::Output, String> {
+        use std::io::Write as _;
+        let mut child = git_command(root)
+            .args(["apply", "--reverse", "--whitespace=nowarn"])
+            .args(extra)
+            .arg("-")
+            .current_dir(root)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("git apply: {e}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(patch.as_bytes())
+                .map_err(|e| format!("git apply: {e}"))?;
+        }
+        child
+            .wait_with_output()
+            .map_err(|e| format!("git apply: {e}"))
+    };
+    let worktree = apply(&[])?;
     if !worktree.status.success() {
-        let _ = fs::remove_file(&patch_path);
         return Err(format!(
             "git apply --reverse failed: {}",
             String::from_utf8_lossy(&worktree.stderr)
         ));
     }
     // Index may already match HEAD (unstaged-only). Ignore a cached miss.
-    let _ = git_command(root)
-        .args([
-            "apply",
-            "--reverse",
-            "--cached",
-            "--whitespace=nowarn",
-            &patch_path.to_string_lossy(),
-        ])
-        .current_dir(root)
-        .output();
-    let _ = fs::remove_file(&patch_path);
+    let _ = apply(&["--cached"]);
     Ok(())
 }
 
@@ -281,7 +275,7 @@ fn is_tracked(root: &Path, rel: &Path) -> bool {
 /// `git` rooted at `root` with every repository-redirecting `GIT_*`
 /// variable removed, so the caller's environment cannot point it elsewhere.
 pub(crate) fn git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = forge_sandbox::git::command(root);
     command.current_dir(root);
     for name in [
         "GIT_DIR",

@@ -6,6 +6,7 @@ license.workspace = true
 description = "Workspace data services for Forge: file operations, Git status, and file attachments"
 
 [dependencies]
+forge-sandbox = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

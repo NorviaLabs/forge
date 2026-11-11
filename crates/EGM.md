@@ -67,6 +67,9 @@ Durability and shared contracts:
 - forge-durable: [./forge-durable/EGM.md](./forge-durable/EGM.md) -
   Append-only per-session SQLite journal, deterministic replay with
   checkpoints, and the audit table.
+- forge-sandbox: [./forge-sandbox/EGM.md](./forge-sandbox/EGM.md) - OS-level
+  confinement (Seatbelt policy and profile) and the confined git runner; a
+  leaf crate.
 - forge-storage: [./forge-storage/EGM.md](./forge-storage/EGM.md) - Resolves
   where runtime data lives (`.forge/local/` or app-data), manages the git
   exclude block and legacy migration, and handles the worktree lifecycle.

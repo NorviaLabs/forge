@@ -6,6 +6,7 @@ license.workspace = true
 description = "Centralized runtime-storage resolver: repository-local .forge/local/ with native Git exclusion, and application-data fallback"
 
 [dependencies]
+forge-sandbox = { workspace = true }
 dirs = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

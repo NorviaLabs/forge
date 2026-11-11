@@ -7,7 +7,6 @@
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -929,7 +928,7 @@ pub fn rename_branch(root: &Path, from: &str, to: &str) -> Result<(), String> {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = forge_tools::sandbox::git::command(root)
         .current_dir(root)
         .args(args)
         .output()

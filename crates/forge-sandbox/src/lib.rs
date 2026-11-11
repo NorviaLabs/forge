@@ -21,6 +21,8 @@
 //! * network: denied. Egress exists only via the proxy, and only when a
 //!   grant created it.
 
+pub mod git;
+
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -459,6 +461,12 @@ pub struct SandboxPolicy {
     /// The user's home directory, which the read deny-list is built from.
     /// `None` (no `HOME`) leaves no home-relative rule to write.
     home: Option<PathBuf>,
+    /// With `git_writable`, also open the parts of a git dir that decide
+    /// what git executes (`hooks`, `config`). See [`Self::with_git_open`].
+    git_metadata_writable: bool,
+    /// Further directories the process may read and write: where a new
+    /// worktree is created, or one being removed.
+    extra_write_paths: Vec<PathBuf>,
     /// A Forge-owned directory for package-manager caches, writable and kept
     /// across sessions. See [`Self::with_tool_cache`].
     tool_cache: Option<PathBuf>,
@@ -557,6 +565,28 @@ fn resolved(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// As [`resolved`], for a path whose tail may not exist yet: the deepest
+/// existing ancestor is resolved and the rest appended.
+fn resolved_lenient(path: &Path) -> PathBuf {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            return missing
+                .iter()
+                .rev()
+                .fold(canonical, |path, part| path.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
+}
+
 impl SandboxPolicy {
     /// The default policy for an agent-spawned process in `workspace_root`.
     pub fn for_workspace(workspace_root: impl AsRef<Path>) -> Self {
@@ -577,7 +607,29 @@ impl SandboxPolicy {
                 .map(PathBuf::from)
                 .filter(|home| home.is_absolute()),
             tool_cache: None,
+            git_metadata_writable: false,
+            extra_write_paths: Vec::new(),
         }
+    }
+
+    /// Open the whole git dir for writing, hooks and config included.
+    ///
+    /// Safe only because nothing unconfined runs git on this repository:
+    /// a hook or a config key naming a program runs inside the same sandbox
+    /// as whatever wrote it.
+    pub fn with_git_open(mut self) -> Self {
+        self.git_writable = true;
+        self.git_metadata_writable = true;
+        self
+    }
+
+    /// Also let the process read and write `path`, which need not exist yet.
+    pub fn with_write_path(mut self, path: impl AsRef<Path>) -> Self {
+        let path = resolved_lenient(path.as_ref());
+        if !is_unscoped_runtime_root(&path) && !self.extra_write_paths.contains(&path) {
+            self.extra_write_paths.push(path);
+        }
+        self
     }
 
     /// Build the read deny-list against `home` instead of `$HOME`.
@@ -900,9 +952,15 @@ impl SandboxPolicy {
 
     /// Paths that stay read-only even though they sit inside the writable
     /// root, resolved against `root`.
-    fn readonly_subpaths_of(root: &Path, git_writable: bool) -> Vec<PathBuf> {
+    fn readonly_subpaths_of(
+        root: &Path,
+        git_writable: bool,
+        metadata_writable: bool,
+    ) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        if git_writable {
+        if git_writable && metadata_writable {
+            // The whole git dir is open: see `with_git_open`.
+        } else if git_writable {
             // Refs and objects have to move for a push to happen. Hooks and
             // config do not, and they are the parts of `.git` that decide
             // what git *executes*: a hook, or a config key naming a program
@@ -966,31 +1024,67 @@ fn linked_worktree_git_dirs(workspace: &Path) -> Vec<PathBuf> {
     } else {
         workspace.join(target)
     };
-    let common = std::fs::read_to_string(gitdir.join("commondir"))
+    // The pointer is a file the confined process can rewrite, and what it
+    // names becomes writable, so it is not believed on its own. Git lays a
+    // linked worktree out as `<common>/worktrees/<name>`, holding a `gitdir`
+    // file that names this worktree's `.git` back. A directory the process
+    // cannot write cannot be made to carry that back-reference, so a pointer
+    // redirected at one is refused; the common dir is taken from the layout,
+    // never from the `commondir` file, which the process can also rewrite.
+    let Ok(gitdir) = gitdir.canonicalize() else {
+        return Vec::new();
+    };
+    let Ok(workspace) = workspace.canonicalize() else {
+        return Vec::new();
+    };
+    let names_this_worktree = std::fs::read_to_string(gitdir.join("gitdir"))
         .ok()
-        .map(|common| common.trim().to_string())
-        .filter(|common| !common.is_empty())
-        .map(|common| {
-            if Path::new(&common).is_absolute() {
-                PathBuf::from(common)
-            } else {
-                gitdir.join(common)
-            }
-        })
-        .filter(|common| common != &gitdir);
+        .and_then(|back| PathBuf::from(back.trim()).canonicalize().ok())
+        .is_some_and(|back| back == workspace.join(".git"));
+    let common = gitdir
+        .parent()
+        .filter(|parent| parent.file_name() == Some(OsStr::new("worktrees")))
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    let granted = match (names_this_worktree, common) {
+        (true, Some(common)) => vec![gitdir, common],
+        // A submodule's git dir (`<super>/.git/modules/<name>`) names its
+        // checkout through `core.worktree` instead. The same argument holds:
+        // a directory the process cannot write cannot be made to carry it.
+        _ if submodule_gitdir_names(&gitdir, &workspace) => vec![gitdir],
+        _ => return Vec::new(),
+    };
     let mut dirs = Vec::new();
-    for dir in std::iter::once(gitdir).chain(common) {
-        let Ok(canonical) = dir.canonicalize() else {
-            continue;
-        };
+    for canonical in granted {
         if canonical != workspace
-            && !path_is_under(&canonical, workspace)
+            && !path_is_under(&canonical, &workspace)
             && !dirs.contains(&canonical)
         {
             dirs.push(canonical);
         }
     }
     dirs
+}
+
+/// Whether `gitdir`'s own config says its checkout is `workspace`
+/// (`core.worktree`, written by git when it sets a submodule up).
+fn submodule_gitdir_names(gitdir: &Path, workspace: &Path) -> bool {
+    let Ok(config) = std::fs::read_to_string(gitdir.join("config")) else {
+        return false;
+    };
+    config
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("worktree"))
+        .filter_map(|rest| rest.trim_start().strip_prefix('='))
+        .map(|value| PathBuf::from(value.trim().trim_matches('"')))
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                gitdir.join(path)
+            }
+        })
+        .any(|path| path.canonicalize().is_ok_and(|path| path == workspace))
 }
 
 /// Escape a path for an SBPL string literal.
@@ -1114,6 +1208,7 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
         reopened.push(path.canonicalize().ok()?);
     }
     reopened.extend(policy.linked_git_dirs.iter().cloned());
+    reopened.extend(policy.extra_write_paths.iter().cloned());
 
     // A reopened tree inside a denied one (a workspace under `~/Documents`,
     // the scratch directory under the temp tree) is reached through denied
@@ -1226,7 +1321,11 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     //
     // Derived from the canonical root, not the configured one, for the same
     // reason the root itself is canonicalised.
-    for path in SandboxPolicy::readonly_subpaths_of(&canonical_root, policy.git_writable) {
+    for path in SandboxPolicy::readonly_subpaths_of(
+        &canonical_root,
+        policy.git_writable,
+        policy.git_metadata_writable,
+    ) {
         let literal = sbpl_literal(&path)?;
         profile.push_str(&format!("(deny file-write* (subpath \"{literal}\"))\n"));
     }
@@ -1235,11 +1334,27 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     // in-workspace carve-out: they decide what git executes, so a confined git
     // spawn must never be able to write them, even though the rest of the
     // gitdir is writable. Emitted after the writable allow, so the deny wins.
-    for dir in &policy.linked_git_dirs {
+    for dir in policy
+        .linked_git_dirs
+        .iter()
+        .filter(|_| !policy.git_metadata_writable)
+    {
         for name in GIT_EXECUTABLE_METADATA {
             let path = sbpl_literal(&dir.join(name))?;
             profile.push_str(&format!("(deny file-write* (subpath \"{path}\"))\n"));
         }
+    }
+
+    // Paths the caller named explicitly come last, so they hold even inside
+    // a carve-out above: Forge keeps managed worktrees under `.forge/`, and
+    // removing one has to delete it.
+    if !policy.extra_write_paths.is_empty() {
+        profile.push_str("(allow file-write*");
+        for path in &policy.extra_write_paths {
+            let path = sbpl_literal(path)?;
+            profile.push_str(&format!(" (subpath \"{path}\")"));
+        }
+        profile.push_str(")\n");
     }
 
     Some(profile)
@@ -1515,14 +1630,22 @@ fn bubblewrap_invocation_for(
     // Carved back out last, because the last matching bind wins: emitted
     // before the workspace bind, these would be overridden and `.git` would be
     // writable.
-    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root), policy.git_writable) {
+    for path in SandboxPolicy::readonly_subpaths_of(
+        Path::new(&root),
+        policy.git_writable,
+        policy.git_metadata_writable,
+    ) {
         let path = path.to_str()?.to_string();
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
     }
 
     // The same last-match-wins rule for the linked metadata's hooks and config:
     // emitted after the writable bind, or these binds would be overridden.
-    for dir in &policy.linked_git_dirs {
+    for dir in policy
+        .linked_git_dirs
+        .iter()
+        .filter(|_| !policy.git_metadata_writable)
+    {
         for name in GIT_EXECUTABLE_METADATA {
             let path = dir.join(name).to_str()?.to_string();
             args.extend(["--ro-bind-try".into(), path.clone(), path]);
@@ -1763,7 +1886,7 @@ mod tests {
         let ws = workspace();
         let p = SandboxPolicy::for_workspace(ws.path());
         let readonly = |p: &SandboxPolicy| {
-            SandboxPolicy::readonly_subpaths_of(&p.workspace_root, p.git_writable)
+            SandboxPolicy::readonly_subpaths_of(&p.workspace_root, p.git_writable, false)
         };
         assert_eq!(
             readonly(&p),
@@ -1805,6 +1928,11 @@ mod tests {
         std::fs::write(
             ws.path().join(".git"),
             format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            gitdir.join("gitdir"),
+            format!("{}\n", ws.path().join(".git").display()),
         )
         .unwrap();
 
@@ -1860,6 +1988,11 @@ mod tests {
         std::fs::write(
             ws.path().join(".git"),
             format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            gitdir.join("gitdir"),
+            format!("{}\n", ws.path().join(".git").display()),
         )
         .unwrap();
 
@@ -2376,6 +2509,11 @@ mod bubblewrap_tests {
         std::fs::write(
             ws.path().join(".git"),
             format!("gitdir: {}\n", gitdir.display()),
+        )
+        .unwrap();
+        std::fs::write(
+            gitdir.join("gitdir"),
+            format!("{}\n", ws.path().join(".git").display()),
         )
         .unwrap();
 

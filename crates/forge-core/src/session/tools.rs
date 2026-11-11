@@ -225,7 +225,8 @@ fn observed_failure(content: &str, reason: &str) -> Option<String> {
 }
 
 async fn run_git_readonly(tool_ctx: &ToolContext, args: &[&str]) -> Option<String> {
-    let mut command = tokio::process::Command::new("git");
+    let mut command =
+        tokio::process::Command::from(forge_tools::sandbox::git::command(&tool_ctx.workspace_root));
     forge_tools::strip_credentials(command.as_std_mut(), &tool_ctx.credential_env_names);
     let output = command
         .args(args)

@@ -17,7 +17,6 @@
 //! review — see the M2a plan note this module was built against.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use uuid::Uuid;
 
@@ -93,9 +92,7 @@ pub fn create_session_worktree(
     let name = format!("session-{}", Uuid::new_v4());
     let branch = format!("forge/{name}");
     let path = base_dir.join(&name);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(source_worktree)
+    let output = forge_sandbox::git::unconfined(source_worktree)
         .args(["worktree", "add", "-q"])
         .arg(&path)
         .args(["-b", &branch, "HEAD"])
@@ -128,9 +125,7 @@ pub fn create_detached_session_worktree(
     std::fs::create_dir_all(base_dir)?;
     let name = format!("session-{}", Uuid::new_v4());
     let path = base_dir.join(&name);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(source_worktree)
+    let output = forge_sandbox::git::unconfined(source_worktree)
         .args(["worktree", "add", "-q", "--detach"])
         .arg(&path)
         .arg("HEAD")
@@ -148,9 +143,7 @@ pub fn create_detached_session_worktree(
 /// relative to its `HEAD`. Git-ignored paths (build output) and Forge's own
 /// excluded runtime subtree do not count.
 pub fn worktree_is_dirty(worktree_path: &Path) -> Result<bool, WorktreeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+    let output = forge_sandbox::git::command(worktree_path)
         .args(["status", "--porcelain"])
         .output()?;
     if !output.status.success() {
@@ -169,9 +162,7 @@ pub fn worktree_head(worktree_path: &Path) -> Result<String, WorktreeError> {
 /// Create `branch` at the worktree's current `HEAD` and switch to it,
 /// carrying any uncommitted changes onto the new branch.
 pub fn materialize_branch(worktree_path: &Path, branch: &str) -> Result<(), WorktreeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+    let output = forge_sandbox::git::command(worktree_path)
         .args(["switch", "-c", branch])
         .output()?;
     if !output.status.success() {
@@ -187,9 +178,7 @@ pub fn materialize_branch(worktree_path: &Path, branch: &str) -> Result<(), Work
 /// or remote-tracking. A detached `HEAD` that is not holds commits only the
 /// worktree's own reflog remembers: removing the worktree loses them.
 pub fn head_is_on_a_branch(worktree_path: &Path) -> Result<bool, WorktreeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+    let output = forge_sandbox::git::command(worktree_path)
         .args([
             "for-each-ref",
             "--contains",
@@ -210,9 +199,7 @@ pub fn head_is_on_a_branch(worktree_path: &Path) -> Result<bool, WorktreeError> 
 
 /// Whether `refs/heads/<branch>` already exists in the repository.
 pub fn branch_exists(repo_root: &Path, branch: &str) -> Result<bool, WorktreeError> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let status = forge_sandbox::git::command(repo_root)
         .args([
             "show-ref",
             "--verify",
@@ -229,9 +216,7 @@ pub fn session_branch_slug(label: &str) -> String {
 }
 
 fn rev_parse(worktree_path: &Path, revision: &str) -> Result<String, WorktreeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+    let output = forge_sandbox::git::command(worktree_path)
         .args(["rev-parse", revision])
         .output()?;
     if !output.status.success() {
@@ -317,9 +302,7 @@ fn remove_clean_worktree_inner(
     expected: ExpectedBinding<'_>,
 ) -> Result<(), WorktreeError> {
     verify_worktree_binding(repo_root, worktree_path, expected)?;
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(worktree_path)
+    let status = forge_sandbox::git::command(worktree_path)
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
         .output()?;
     if !status.status.success() {
@@ -335,9 +318,7 @@ fn remove_clean_worktree_inner(
     // cleanup race where the path is rebound between the first ownership
     // check and the destructive `git worktree remove` call.
     verify_worktree_binding(repo_root, worktree_path, expected)?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let output = forge_sandbox::git::command_writing(repo_root, &[worktree_path])
         .args(["worktree", "remove"])
         .arg(worktree_path)
         .output()?;
@@ -407,9 +388,7 @@ pub fn create_worktree(
     let name = format!("subagent-{session_id}-{id}-{slug}");
     let branch = format!("forge/subagent/{name}");
     let path = base_dir.join(&name);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let output = forge_sandbox::git::unconfined(repo_root)
         .args(["worktree", "add", "-q"])
         .arg(&path)
         .args(["-b", &branch])
@@ -426,9 +405,7 @@ pub fn create_worktree(
 /// uncommitted changes in it — the branch itself is untouched (not deleted),
 /// so committed work is never lost, only the working-directory checkout.
 pub fn remove_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let output = forge_sandbox::git::command_writing(repo_root, &[worktree_path])
         .args(["worktree", "remove", "--force"])
         .arg(worktree_path)
         .output()?;
@@ -457,9 +434,8 @@ pub fn repair_worktrees(repo_root: &Path, worktrees: &[PathBuf]) -> Result<(), W
     if worktrees.is_empty() {
         return Ok(());
     }
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let moved: Vec<&Path> = worktrees.iter().map(PathBuf::as_path).collect();
+    let output = forge_sandbox::git::command_writing(repo_root, &moved)
         .args(["worktree", "repair", "--"])
         .args(worktrees)
         .output()?;
@@ -472,9 +448,7 @@ pub fn repair_worktrees(repo_root: &Path, worktrees: &[PathBuf]) -> Result<(), W
 }
 
 pub fn list_worktree_records(repo_root: &Path) -> Result<Vec<WorktreeRecord>, WorktreeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
+    let output = forge_sandbox::git::command(repo_root)
         .args(["worktree", "list", "--porcelain"])
         .output()?;
     if !output.status.success() {

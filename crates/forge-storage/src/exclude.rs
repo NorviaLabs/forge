@@ -6,7 +6,6 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const BEGIN_MARKER: &str = "# BEGIN Forge";
 const END_MARKER: &str = "# END Forge";
@@ -25,9 +24,7 @@ pub enum ExcludeError {
 /// makes worktrees, relocated Git directories, and `.git`-as-a-file setups
 /// resolve to the correct file.
 pub fn resolve_exclude_path(workspace: &Path) -> Result<PathBuf, ExcludeError> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
+    let output = forge_sandbox::git::command(workspace)
         .args(["rev-parse", "--git-path", "info/exclude"])
         .output()
         .map_err(|_| ExcludeError::PathResolutionFailed)?;

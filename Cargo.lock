@@ -1737,6 +1737,7 @@ name = "forge-storage"
 version = "0.1.0-beta.11"
 dependencies = [
  "dirs 7.0.0",
+ "forge-sandbox",
  "forge-test-support",
  "tempfile",
  "thiserror 2.0.21",
@@ -1792,6 +1793,7 @@ name = "forge-workspace"
 version = "0.1.0-beta.11"
 dependencies = [
  "dirs 7.0.0",
+ "forge-sandbox",
  "serde",
  "serde_json",
  "tempfile",

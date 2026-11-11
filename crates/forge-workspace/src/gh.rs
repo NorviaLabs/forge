@@ -545,10 +545,14 @@ const MAX_GIT_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 /// at `timeout` (with its process group). Runs on blocking workers, so an
 /// interactive prompt would otherwise hang one indefinitely.
 fn git_command(workspace: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    // A push contacts the remote with the user's credentials and cannot run
+    // confined yet; everything else here only reads the repository.
+    let mut command = if args.first() == Some(&"push") {
+        forge_sandbox::git::unconfined(workspace)
+    } else {
+        forge_sandbox::git::command(workspace)
+    };
     command
-        .arg("-C")
-        .arg(workspace)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(std::process::Stdio::null());

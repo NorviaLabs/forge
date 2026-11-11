@@ -4,7 +4,6 @@
 //! plain non-Git directory — each needs different storage handling.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GitTopology {
@@ -38,9 +37,7 @@ pub struct RepoInfo {
 }
 
 fn git_rev_parse(workspace: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(workspace)
+    let output = forge_sandbox::git::command(workspace)
         .arg("rev-parse")
         .args(args)
         .output()

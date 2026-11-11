@@ -641,7 +641,7 @@ impl LocalGit {
         if !root.is_dir() {
             return Err(GitServiceError::InvalidRoot);
         }
-        let output = scoped_command(&root)
+        let output = scoped_command(&root, &["rev-parse"])
             .args(["rev-parse", "--show-toplevel"])
             .output()
             .map_err(|source| GitServiceError::Io {
@@ -673,7 +673,7 @@ impl LocalGit {
     /// scrubbed environment. Callers that must read a non-zero exit themselves
     /// (a detached `HEAD`) use this instead of [`Self::run`].
     fn spawn(&self, operation: &'static str, args: &[&str]) -> Result<Output, GitServiceError> {
-        scoped_command(&self.root)
+        scoped_command(&self.root, args)
             .args(args)
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_EDITOR", "true")
@@ -1051,8 +1051,24 @@ fn valid_branch_name(name: &str) -> Result<(), GitServiceError> {
     Ok(())
 }
 
-fn scoped_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+/// Whether `args` is an operation that cannot run confined yet: it contacts
+/// a remote, creates a commit (which may be signed), or checks another
+/// branch's files out (which may download LFS objects).
+fn needs_host(args: &[&str]) -> bool {
+    match args.first().copied() {
+        Some("pull" | "push" | "fetch" | "commit") => true,
+        Some("merge") => !args.contains(&"--abort"),
+        Some("switch") => !args.contains(&"-c"),
+        _ => false,
+    }
+}
+
+fn scoped_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = if needs_host(args) {
+        forge_sandbox::git::unconfined(root)
+    } else {
+        forge_sandbox::git::command(root)
+    };
     command.current_dir(root);
     for name in [
         "GIT_DIR",
