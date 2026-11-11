@@ -615,10 +615,7 @@ impl SupervisorState {
     async fn inherited_model(&self) -> (String, String, Option<String>) {
         let candidates: Vec<SessionId> = self.actors.read().await.keys().cloned().collect();
         if candidates.is_empty() {
-            return {
-                let (model, profile) = crate::starting_model(&self.cfg);
-                (model, profile, None)
-            };
+            return crate::starting_model(&self.cfg);
         }
         let selected = self.control.selected().await.ok().flatten();
         let primary = self
@@ -638,17 +635,11 @@ impl SupervisorState {
             .or_else(|| primary.filter(|id| candidates.contains(id)))
             .or_else(|| candidates.first().copied())
         else {
-            return {
-                let (model, profile) = crate::starting_model(&self.cfg);
-                (model, profile, None)
-            };
+            return crate::starting_model(&self.cfg);
         };
         let actor = self.actors.read().await.get(&id).cloned();
         let Some(actor) = actor else {
-            return {
-                let (model, profile) = crate::starting_model(&self.cfg);
-                (model, profile, None)
-            };
+            return crate::starting_model(&self.cfg);
         };
         // Lock-free: the snapshot carries the same model selection the
         // session holds, so creating a session never waits out another
@@ -660,10 +651,7 @@ impl SupervisorState {
                 details.active_profile_id.clone(),
                 details.reasoning_effort.clone(),
             ),
-            None => {
-                let (model, profile) = crate::starting_model(&self.cfg);
-                (model, profile, None)
-            }
+            None => crate::starting_model(&self.cfg),
         }
     }
 }
@@ -860,6 +848,7 @@ impl RepositorySupervisor {
         let worktrees = topology.worktrees()?;
         control.reconcile_worktrees(&worktrees).await?;
         control.set_selected(Some(primary_session_id)).await?;
+        let (start_model, start_profile, start_effort) = crate::starting_model(cfg);
 
         if control.session(primary_session_id).await.is_err() && !topology.supports_git() {
             // Every session in a directory project runs in the project root,
@@ -874,9 +863,9 @@ impl RepositorySupervisor {
                         branch: String::new(),
                         ownership: WorktreeOwnership::Directory,
                         slot: None,
-                        model_id: crate::starting_model(cfg).0,
-                        profile_id: crate::starting_model(cfg).1,
-                        reasoning_effort: None,
+                        model_id: start_model.clone(),
+                        profile_id: start_profile.clone(),
+                        reasoning_effort: start_effort.clone(),
                     },
                     None,
                 )
@@ -916,9 +905,9 @@ impl RepositorySupervisor {
                         branch,
                         ownership: WorktreeOwnership::Primary,
                         slot: Some(1),
-                        model_id: crate::starting_model(cfg).0,
-                        profile_id: crate::starting_model(cfg).1,
-                        reasoning_effort: None,
+                        model_id: start_model.clone(),
+                        profile_id: start_profile.clone(),
+                        reasoning_effort: start_effort.clone(),
                     },
                     None,
                 )
@@ -2727,6 +2716,12 @@ async fn execute_command(
                     selection.reasoning_effort.as_deref(),
                 )
                 .await?;
+            crate::remember_model_selection(
+                &state.cfg,
+                &selection.model,
+                &selection.profile_id,
+                selection.reasoning_effort.as_deref(),
+            );
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::SetThinking {

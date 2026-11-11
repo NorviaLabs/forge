@@ -122,19 +122,62 @@ pub fn route_table() -> forge_model::RouteTable {
     )
 }
 
-/// The `(model, profile id)` a new session starts on: `mock` for the offline
-/// client, else the last selection saved in `preferences.toml` (in its
-/// current form), else none.
-pub fn starting_model(cfg: &Config) -> (String, String) {
-    if cfg.model.mock {
-        return ("mock".into(), String::new());
+/// The store holding the last model selection. Test builds never fall back
+/// to the user's own file: a test that wants one sets `preferences_path`.
+fn preference_store(cfg: &Config) -> Option<forge_connect::PreferenceStore> {
+    match &cfg.model.preferences_path {
+        Some(path) => Some(forge_connect::PreferenceStore::new(path.clone())),
+        None if cfg!(test) => None,
+        None => Some(forge_connect::PreferenceStore::user_default()),
     }
-    forge_connect::PreferenceStore::user_default()
-        .last_selection_struct(&forge_connect::loaded_registry())
-        .ok()
-        .flatten()
-        .map(|selection| (selection.model, selection.profile_id.unwrap_or_default()))
+}
+
+/// The `(model, profile id, reasoning effort)` a new session starts on:
+/// `mock` for the offline client, else the last selection saved in
+/// `preferences.toml` (in its current form), else none.
+pub fn starting_model(cfg: &Config) -> (String, String, Option<String>) {
+    if cfg.model.mock {
+        return ("mock".into(), String::new(), None);
+    }
+    preference_store(cfg)
+        .and_then(|store| {
+            store
+                .last_selection_struct(&forge_connect::loaded_registry())
+                .ok()
+                .flatten()
+        })
+        .map(|selection| {
+            let effort = (!selection.effort.is_empty()).then_some(selection.effort);
+            (
+                selection.model,
+                selection.profile_id.unwrap_or_default(),
+                effort,
+            )
+        })
         .unwrap_or_default()
+}
+
+/// Save a deliberate model switch as the selection the next fresh session
+/// starts on. Best-effort: a preference that fails to save must not fail the
+/// switch itself.
+pub(crate) fn remember_model_selection(
+    cfg: &Config,
+    model: &str,
+    profile_id: &str,
+    effort: Option<&str>,
+) {
+    if cfg.model.mock || model.is_empty() {
+        return;
+    }
+    let Some(store) = preference_store(cfg) else {
+        return;
+    };
+    let saved = store
+        .set_last_selection(profile_id, model)
+        .and_then(|()| store.set_last_effort(effort.unwrap_or_default()));
+    if let Err(error) = saved {
+        tracing::warn!("could not save the model selection: {error}");
+    }
 }
 
 /// Assemble a session from configuration, independent of any frontend.
@@ -205,11 +248,12 @@ async fn open_session_with_model(
     };
     // A session that has no model yet starts on the last selection (a
     // resumed or forked one keeps its own).
-    let (start_model, start_profile) = starting_model(cfg);
+    let (start_model, start_profile, start_effort) = starting_model(cfg);
     if session.model_selection().model.is_empty() && !start_model.is_empty() {
         let mut selection = session.model_selection();
         selection.model = start_model;
         selection.profile_id = start_profile;
+        selection.reasoning_effort = start_effort;
         session.set_model_selection(selection);
     }
     // A resumed or forked session keeps its own model; either way the
@@ -241,6 +285,42 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tempfile::TempDir;
+
+    /// A model switch is what a fresh session starts on after a restart.
+    #[test]
+    fn a_remembered_selection_is_where_the_next_session_starts() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = Config::default();
+        cfg.model.preferences_path = Some(dir.path().join("preferences.toml"));
+        assert_eq!(starting_model(&cfg), (String::new(), String::new(), None));
+
+        remember_model_selection(&cfg, "anthropic/claude-test", "anthropic", Some("high"));
+        assert_eq!(
+            starting_model(&cfg),
+            (
+                "anthropic/claude-test".into(),
+                "anthropic".into(),
+                Some("high".into())
+            )
+        );
+
+        // Clearing the effort is remembered too.
+        remember_model_selection(&cfg, "anthropic/claude-test", "anthropic", None);
+        assert_eq!(starting_model(&cfg).2, None);
+    }
+
+    /// The offline mock client never touches the preferences file.
+    #[test]
+    fn the_mock_client_neither_reads_nor_writes_the_selection() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("preferences.toml");
+        let mut cfg = Config::default();
+        cfg.model.mock = true;
+        cfg.model.preferences_path = Some(path.clone());
+        remember_model_selection(&cfg, "anthropic/claude-test", "anthropic", None);
+        assert!(!path.exists());
+        assert_eq!(starting_model(&cfg).0, "mock");
+    }
 
     /// Exercises the exact composition `open_session` wires at startup —
     /// `load_permissions` output feeding `Governance::with_pattern_rules` —

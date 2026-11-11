@@ -77,6 +77,10 @@ pub struct ModelConfig {
     /// only in code.
     #[serde(skip)]
     pub catalog_path: Option<PathBuf>,
+    /// The preferences file holding the last model selection. `None` is the
+    /// user's file; tests point it at a temporary file. Set only in code.
+    #[serde(skip)]
+    pub preferences_path: Option<PathBuf>,
 }
 
 fn default_request_timeout() -> u64 {
@@ -91,6 +95,7 @@ impl Default for ModelConfig {
             #[cfg(feature = "fake-provider")]
             mock_script: None,
             catalog_path: None,
+            preferences_path: None,
         }
     }
 }
