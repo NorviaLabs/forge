@@ -1616,6 +1616,18 @@ fn report_persist_error(
     }
 }
 
+/// The turn state to record when an attempt is over, or `None` while it is
+/// still working or waiting.
+fn ended_turn_state(lifecycle: TaskLifecycle) -> Option<SupervisorTurnState> {
+    match lifecycle {
+        TaskLifecycle::Failed => Some(SupervisorTurnState::Failed),
+        TaskLifecycle::Cancelled => Some(SupervisorTurnState::Cancelled),
+        TaskLifecycle::Interrupted => Some(SupervisorTurnState::Interrupted),
+        TaskLifecycle::Completed => Some(SupervisorTurnState::Completed),
+        _ => None,
+    }
+}
+
 async fn resolve_approval(
     state: Arc<SupervisorState>,
     session_id: SessionId,
@@ -1723,6 +1735,21 @@ async fn resolve_approval(
                 session.decide_hitl(decision, &decision_actor).await?;
             }
         }
+    }
+    if let Some(ended) = ended_turn_state(session.active_task.lifecycle) {
+        // Resolving the request ended the turn (a repeated denial stops it,
+        // an approved call can fail it). Continuing would start a fresh
+        // attempt and undo that, so record the outcome and stop here.
+        state.control.set_turn_state(session_id, ended).await?;
+        refresh_actor(&state, &task_actor, &session).await?;
+        drop(session);
+        drop(approval_driver);
+        let _ = state.events.send(SupervisorEvent::Attention {
+            session_id,
+            state: ended,
+            message: "Session stopped".into(),
+        });
+        return Ok(());
     }
     refresh_actor(&state, &task_actor, &session).await?;
     drop(session);
@@ -3432,6 +3459,9 @@ async fn run_one_inner(
             SupervisorTurnState::Waiting
         }
         Ok(_) => SupervisorTurnState::Completed,
+        // A continue sent while the session waits on a request changes
+        // nothing: it is still waiting.
+        Err(LoopError::AwaitingHitl) => SupervisorTurnState::Waiting,
         Err(LoopError::Cancelled) => {
             session.mark_cancelled().await?;
             SupervisorTurnState::Cancelled
@@ -4841,6 +4871,133 @@ mod tests {
         assert_eq!(
             snapshot.queued_prompts,
             vec![(queued_id, "run after review".into())]
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Two denials in a row stop the turn, and it stays stopped: the
+    /// supervisor must not continue it into a fresh attempt. A continue sent
+    /// while the session waits leaves it waiting.
+    #[tokio::test]
+    async fn repeated_denials_stop_the_turn_and_continue_cannot_skip_a_request() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let gated_call = |id: &str| ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: id.into(),
+                name: "gated_approval".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        };
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![
+            gated_call("first"),
+            gated_call("second"),
+            text_response("kept going after the stop"),
+        ]));
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(GatedApprovalTool {
+            started: Arc::new(Notify::new()),
+            release: Arc::new(Notify::new()),
+        }));
+        let mut session = AgentSession::create(loop_cfg, model, tools).await.unwrap();
+        session.set_governance(
+            forge_governance::Governance::default().require_hitl_for_tool("gated_approval"),
+        );
+        let session_id = session.session_id;
+        let task = task_for(session_id, "denials", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let unused: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, unused)
+                .await
+                .unwrap();
+        let pending = |call_id: &'static str| {
+            move |snapshot: &SessionRuntimeSnapshot| {
+                snapshot
+                    .session
+                    .pending_hitl
+                    .as_ref()
+                    .is_some_and(|payload| payload.call_id == call_id)
+            }
+        };
+        let deny = || SupervisorCommand::ResolveApproval {
+            session_id,
+            expected_call_id: None,
+            decision: HitlDecision::Deny,
+            actor: "test".into(),
+            feedback: None,
+        };
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "go".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, pending("first")).await;
+
+        handle
+            .command(SupervisorCommand::ContinueTurn { session_id })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let waiting = wait_for_task_state(&handle, session_id, pending("first")).await;
+        assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+
+        handle.command(deny()).await.unwrap();
+        wait_for_task_state(&handle, session_id, pending("second")).await;
+        handle.command(deny()).await.unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Failed
+        })
+        .await;
+
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let stopped = wait_for_task_state(&handle, session_id, |_| true).await;
+        assert_eq!(stopped.task.turn_state, SupervisorTurnState::Failed);
+        assert!(
+            !stopped
+                .transcript
+                .messages()
+                .iter()
+                .any(|message| message.content == "kept going after the stop"),
+            "a turn stopped for repeated denials must not be continued"
         );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }

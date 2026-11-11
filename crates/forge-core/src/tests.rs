@@ -6266,6 +6266,66 @@ async fn cancelling_a_turn_aborts_the_running_tool() {
     );
 }
 
+/// Continue after Stop is a fresh attempt too, so it can pause for an
+/// approval. Run under the old `Cancelled` lifecycle it could not enter
+/// `Waiting`, and the continued turn died at its first gated call.
+#[tokio::test]
+async fn continuing_a_stopped_turn_can_pause_for_an_approval() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![tool_call_response(vec![ToolCall {
+        id: "1".into(),
+        name: "bash".into(),
+        arguments: json!({"command": "echo gated"}),
+    }])]);
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FailedBashTool));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    with_shell_hitl(&mut s);
+    s.append_user_message("go").await.unwrap();
+    s.mark_cancelled().await.unwrap();
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Cancelled);
+
+    s.run_agent_turns(None).await.unwrap();
+
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Waiting);
+    assert!(s.pending_hitl().is_some());
+}
+
+/// Stopping a turn that waits on an approval ends the request: a resumed
+/// session must not show it again.
+#[tokio::test]
+async fn a_request_pending_when_the_turn_was_stopped_does_not_survive_resume() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(FailedBashTool));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model.clone(), tools)
+        .await
+        .unwrap();
+    with_shell_hitl(&mut s);
+    s.transition_to_new_task(TaskId(1)).await.unwrap();
+    let call = ToolCall {
+        id: "stopped-while-waiting".into(),
+        name: "bash".into(),
+        arguments: json!({"command": "echo should-not-run"}),
+    };
+    let mut budget = ValidationBudget::default();
+    s.start_tool_call(&call, &mut budget).await.unwrap();
+    assert!(s.pending_hitl().is_some());
+    s.mark_cancelled().await.unwrap();
+    let session_id = s.session_id;
+    drop(s);
+
+    let resumed =
+        AgentSession::resume(base_cfg(dir.path()), model, ToolRegistry::new(), session_id)
+            .await
+            .unwrap();
+    assert_eq!(resumed.active_task.lifecycle, TaskLifecycle::Cancelled);
+    assert!(resumed.pending_hitl().is_none());
+}
+
 #[tokio::test]
 async fn continuing_a_failed_turn_starts_a_fresh_attempt() {
     let dir = tempdir().unwrap();

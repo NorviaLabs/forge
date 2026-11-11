@@ -18,13 +18,20 @@ impl TurnCoordinator {
         if session.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
-        // Continuing a session whose last attempt ended in failure is a fresh
-        // attempt, not a resumption of the poisoned one. A terminal lifecycle
-        // blocks the completion evaluator (see `apply_model_response`), so a
-        // successful continuation would otherwise leave the session permanently
-        // Failed — wedged — and the old turn's dangling tool calls would ride
-        // into the next request. Mirrors what a new user message does.
-        if session.active_task.lifecycle == TaskLifecycle::Failed {
+        // Continuing a session whose last attempt ended (failed, stopped,
+        // interrupted or completed) is a fresh attempt, not a resumption of
+        // the finished one. A terminal lifecycle blocks the completion
+        // evaluator (see `apply_model_response`) and cannot enter `Waiting`,
+        // so a continuation would otherwise fail at its first approval or
+        // question, and the old turn's dangling tool calls would ride into the
+        // next request. Mirrors what a new user message does.
+        if matches!(
+            session.active_task.lifecycle,
+            TaskLifecycle::Failed
+                | TaskLifecycle::Cancelled
+                | TaskLifecycle::Interrupted
+                | TaskLifecycle::Completed
+        ) {
             session.start_fresh_attempt().await?;
         }
 

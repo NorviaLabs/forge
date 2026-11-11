@@ -161,6 +161,9 @@ impl ActiveTaskState {
         wait_reason: Option<WaitReason>,
     ) -> Self {
         let has_task = lifecycle != TaskLifecycle::Ready;
+        // Only a waiting attempt has something to wait on. A request that
+        // was pending when the turn was stopped must not come back.
+        let wait_reason = wait_reason.filter(|_| lifecycle == TaskLifecycle::Waiting);
         Self {
             session_id,
             task_id: TaskId(has_task as u64),

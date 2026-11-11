@@ -555,7 +555,9 @@ impl AgentSession {
     /// resume, unlike a live-only error banner.
     pub async fn mark_model_call_failed(&mut self, detail: &str) -> Result<(), LoopError> {
         match self.active_task.lifecycle {
-            TaskLifecycle::Working | TaskLifecycle::Waiting => {
+            // Only a working attempt can fail this way; a waiting one has no
+            // model call in flight and keeps waiting.
+            TaskLifecycle::Working => {
                 self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)
                     .await?;
                 let content = format!("{TURN_FAILED_MARKER}model call failed: {detail}");

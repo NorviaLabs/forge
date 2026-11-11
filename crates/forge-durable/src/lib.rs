@@ -976,6 +976,11 @@ impl Journal {
                         TaskLifecycle::deserialize(payload.get("status").unwrap_or(&Value::Null))
                     {
                         state.status = s;
+                        // A request is pending only while the attempt waits:
+                        // stopping a waiting turn ends the request with it.
+                        if s != TaskLifecycle::Waiting {
+                            state.pending_hitl = None;
+                        }
                     }
                 }
                 JournalEventType::HitlWait => {
@@ -1383,6 +1388,26 @@ mod tests {
         let reset_state = journal.replay(sid).await.unwrap();
         assert_eq!(reset_state.messages.len(), 1);
         assert_eq!(reset_state.messages[0].content, "handoff context");
+    }
+
+    #[tokio::test]
+    async fn a_status_that_leaves_waiting_ends_the_pending_request() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let j = Journal::open(dir.path(), sid).await.unwrap();
+        j.append_session_created(sid).await.unwrap();
+        j.append_hitl_wait(sid, &json!({"call_id": "c1", "tool": "bash"}))
+            .await
+            .unwrap();
+        j.append_status(sid, TaskLifecycle::Waiting).await.unwrap();
+        assert!(j.replay(sid).await.unwrap().pending_hitl.is_some());
+
+        j.append_status(sid, TaskLifecycle::Cancelled)
+            .await
+            .unwrap();
+        let state = j.replay(sid).await.unwrap();
+        assert_eq!(state.status, TaskLifecycle::Cancelled);
+        assert!(state.pending_hitl.is_none());
     }
 
     #[tokio::test]
