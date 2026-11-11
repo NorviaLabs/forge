@@ -380,6 +380,8 @@ struct SessionActor {
     /// driver drains them before it stops, so a `ContinueTurn` that lands in
     /// the hand-off window is never dropped.
     continue_pending: AtomicUsize,
+    /// A prompt was queued since the driver last began draining the queue.
+    prompt_pending: AtomicBool,
     retiring: AtomicBool,
     running_cancel: StdMutex<Option<CancellationToken>>,
     /// The session's own model client, so provider-env updates reach a busy
@@ -433,6 +435,7 @@ impl SessionActor {
             snapshot: RwLock::new(snapshot),
             driving: AtomicBool::new(false),
             continue_pending: AtomicUsize::new(0),
+            prompt_pending: AtomicBool::new(false),
             retiring: AtomicBool::new(false),
             running_cancel: StdMutex::new(None),
             model,
@@ -2253,7 +2256,28 @@ async fn execute_command(
                     return Err(error);
                 }
             }
-            let result = state.control.archive(session_id).await;
+            // Retiring stopped any running turn. Prompts still queued behind
+            // it will never start (a retiring session claims none), so the
+            // row must not go on saying a turn is about to run: that would
+            // refuse the archive after the session's tools are already gone.
+            let queued = state
+                .control
+                .session(session_id)
+                .await
+                .is_ok_and(|row| row.turn_state == SupervisorTurnState::Queued);
+            let result = match queued {
+                true => {
+                    state
+                        .control
+                        .set_turn_state(session_id, SupervisorTurnState::Cancelled)
+                        .await
+                }
+                false => Ok(()),
+            };
+            let result = match result {
+                Ok(()) => state.control.archive(session_id).await,
+                Err(error) => Err(error),
+            };
             if let Some(task_actor) = task_actor {
                 task_actor.finish_retirement();
             }
@@ -3284,6 +3308,7 @@ async fn run_driver(
                 return;
             }
         }
+        task_actor.prompt_pending.store(false, Ordering::Release);
         if let Err(error) = drive_prompts(state.clone(), task_actor.clone()).await {
             let _ = state.events.send(SupervisorEvent::Error {
                 session_id: Some(session_id),
@@ -3300,10 +3325,11 @@ async fn run_driver(
             .await
             .unwrap_or_default();
         let has_continue = task_actor.has_pending_continuation();
-        if !has_continue
-            && (matches!(lifecycle, TaskLifecycle::Waiting | TaskLifecycle::Cancelled)
-                || queued.is_empty())
-        {
+        // A stopped turn does not run what was queued behind it, but a
+        // prompt sent after the stop is a new request and does run.
+        let stopped = lifecycle == TaskLifecycle::Cancelled
+            && !task_actor.prompt_pending.load(Ordering::Acquire);
+        if !has_continue && (lifecycle == TaskLifecycle::Waiting || stopped || queued.is_empty()) {
             return;
         }
         if !task_actor.try_start_driver() {
@@ -3320,6 +3346,10 @@ async fn start_prompt_driver(
     if task_actor.retiring.load(Ordering::Acquire) {
         return Err(RepositorySupervisorError::Retiring(session_id));
     }
+    // Leave a note for a driver that is already running: it may be past its
+    // last look at the queue (finishing a stopped turn), and would otherwise
+    // exit with this prompt still queued.
+    task_actor.prompt_pending.store(true, Ordering::Release);
     if !task_actor.try_start_driver() {
         return Ok(());
     }
@@ -6294,6 +6324,34 @@ mod tests {
             .await
             .unwrap();
         assert!(control.queued_prompts(owner).await.unwrap().is_empty());
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Archiving a session whose prompt is queued but not started must go
+    /// through: its tools are retired first, so a refusal would leave a live
+    /// session that can no longer run anything.
+    #[tokio::test]
+    async fn a_session_with_a_queued_prompt_can_be_archived() {
+        let (_temp, supervisor, handle, _owner, sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        let control = &supervisor.state.control;
+        control
+            .enqueue_prompt(sibling, "not started")
+            .await
+            .unwrap();
+        control.mark_queued(sibling).await.unwrap();
+
+        handle
+            .command(SupervisorCommand::ArchiveSession {
+                session_id: sibling,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            control.session(sibling).await.unwrap().lifecycle,
+            SessionLifecycle::Archived
+        );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
