@@ -6407,7 +6407,7 @@ mod tests {
     async fn stop_holds_back_a_queued_follow_up_until_the_next_prompt() {
         use forge_model::scripted::ScriptedModelClient;
 
-        let scripted: Arc<dyn ModelClient> = Arc::new(
+        let scripted = Arc::new(
             ScriptedModelClient::from_json(
                 r#"{"steps": [
                     {"hold": {"id": "held", "before": "working", "then": {"text": {"text": "never"}}}},
@@ -6417,7 +6417,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let (_temp, supervisor, handle, owner, _sibling) = two_session_supervisor(scripted).await;
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(scripted.clone()).await;
         let control = &supervisor.state.control;
         let submit = |text: &str| SupervisorCommand::SubmitPrompt {
             session_id: owner,
@@ -6434,10 +6435,12 @@ mod tests {
         };
 
         handle.command(submit("first")).await.unwrap();
-        wait_for_task_state(&handle, owner, |snapshot| {
-            snapshot.task.turn_state == SupervisorTurnState::Running
-        })
-        .await;
+        // Wait until the model call is really in flight. The row says
+        // `running` before the request is made, and a Stop landing in that
+        // gap would leave the held step for the follow-up to consume.
+        tokio::time::timeout(std::time::Duration::from_secs(10), scripted.held("held"))
+            .await
+            .expect("the first turn reaches its held model call");
         handle.command(submit("follow-up")).await.unwrap();
         let running = wait_for_task_state(&handle, owner, |_| true).await;
         assert_eq!(
