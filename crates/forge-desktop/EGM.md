@@ -309,3 +309,7 @@ cargo clippy --all-targets --locked --features self-test -- -D warnings
 cargo test --locked && cargo test --locked --features self-test
 cargo build --locked --features self-test && ./target/debug/forge-desktop --self-test
 ```
+
+## Held hosts
+
+The `session` event carries `host_questions`; `HostCard.svelte` shows one card per host while the turn is running, and `answer_host_question` sends the decision (`allow_once`, `allow_for_session`, `allow_always`, `deny`).

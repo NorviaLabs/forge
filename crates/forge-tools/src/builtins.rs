@@ -631,7 +631,20 @@ async fn run_shell_command_inner(
     // or `|| true` can exit zero after an earlier operation was denied. On a
     // successful aggregate status, inspect stderr only to avoid treating
     // denial-like prose on ordinary stdout as a real sandbox event.
-    if confined_run {
+    // A host the user refused when asked is a decision, not a boundary the
+    // command ran into: the failure is reported as it is, with the reason,
+    // and no approval is raised for it.
+    let refused_hosts = egress_invocation
+        .as_ref()
+        .map(crate::egress::EgressInvocation::take_user_refused_hosts)
+        .unwrap_or_default();
+    if !refused_hosts.is_empty() {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&crate::egress::user_refusal_note(&refused_hosts));
+    }
+    if confined_run && refused_hosts.is_empty() {
         let denied_host = egress_invocation
             .as_ref()
             .and_then(crate::egress::EgressInvocation::take_denied_host);
@@ -652,6 +665,12 @@ async fn run_shell_command_inner(
     let exit_code = status.code();
     let outcome = if !is_error {
         ExecutionOutcome::Success
+    } else if !refused_hosts.is_empty() {
+        // The command failed because the user said no to a host it needed.
+        // That is their decision, not a failed step of the turn.
+        ExecutionOutcome::Denied {
+            reason: crate::egress::user_refusal_note(&refused_hosts),
+        }
     } else if exit_code == Some(127) {
         ExecutionOutcome::SpawnFailed {
             reason: "command not found".into(),

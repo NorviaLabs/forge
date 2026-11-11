@@ -402,6 +402,35 @@ pub struct EgressShared {
     asker: Arc<RwLock<Option<HostAsker>>>,
     /// Hosts let through for this invocation only (`HostAnswer::AllowOnce`).
     once: Arc<Mutex<Vec<String>>>,
+    /// Hosts the user refused when asked, for this invocation. Kept apart
+    /// from `denied`: that queue is what raises a host approval, and a host
+    /// the user has just said no to must not be asked about again.
+    refused: Arc<Mutex<Vec<String>>>,
+}
+
+/// What [`EgressShared::admit`] decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Admission {
+    Allowed,
+    /// No rule permits the host and nobody allowed it in time.
+    Refused,
+    /// The user was asked and said no.
+    RefusedByUser,
+}
+
+impl Admission {
+    pub fn allowed(self) -> bool {
+        self == Self::Allowed
+    }
+}
+
+/// Appended to a command's output when the user refused a host it tried to
+/// reach, so the model reads a decision, not a network fault to retry.
+pub fn user_refusal_note(hosts: &[String]) -> String {
+    format!(
+        "Network access to {} was refused by the user. Do not retry it; continue without it or ask.",
+        hosts.join(", ")
+    )
 }
 
 impl EgressShared {
@@ -420,6 +449,7 @@ impl EgressShared {
             call_label: Arc::new(Mutex::new(None)),
             asker: Arc::new(RwLock::new(None)),
             once: Arc::new(Mutex::new(Vec::new())),
+            refused: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -458,8 +488,23 @@ impl EgressShared {
     /// nothing has to be run twice. With no asker, or no answer within
     /// `hold_timeout`, the host is refused as before.
     pub async fn admit(&self, host: &str, port: u16) -> bool {
+        self.admission(host, port).await.allowed()
+    }
+
+    /// Hosts the user refused through this endpoint since the last take.
+    pub fn take_user_refused_hosts(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .refused
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+    }
+
+    /// As [`Self::admit`], telling a refusal by the user from the rest.
+    pub async fn admission(&self, host: &str, port: u16) -> Admission {
         if self.permits(host) {
-            return true;
+            return Admission::Allowed;
         }
         let undecided = self
             .policy
@@ -472,7 +517,7 @@ impl EgressShared {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         let (true, Some(asker)) = (undecided, asker) else {
-            return false;
+            return Admission::Refused;
         };
         let (reply, answer) = tokio::sync::oneshot::channel();
         let ask = HostAsk {
@@ -482,18 +527,26 @@ impl EgressShared {
             reply,
         };
         if asker.send(ask).is_err() {
-            return false;
+            return Admission::Refused;
         }
+        let name = host.trim().trim_end_matches('.').to_ascii_lowercase();
         match tokio::time::timeout(self.options.hold_timeout, answer).await {
-            Ok(Ok(HostAnswer::Allow)) => self.permits(host),
+            Ok(Ok(HostAnswer::Allow)) if self.permits(host) => Admission::Allowed,
             Ok(Ok(HostAnswer::AllowOnce)) => {
                 self.once
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(host.trim().trim_end_matches('.').to_ascii_lowercase());
-                true
+                    .push(name);
+                Admission::Allowed
             }
-            _ => false,
+            Ok(Ok(HostAnswer::Deny)) => {
+                self.refused
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(name);
+                Admission::RefusedByUser
+            }
+            _ => Admission::Refused,
         }
     }
 
@@ -512,6 +565,7 @@ impl EgressShared {
             call_label: Arc::new(Mutex::new(None)),
             asker: Arc::clone(&self.asker),
             once: Arc::new(Mutex::new(Vec::new())),
+            refused: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -947,6 +1001,11 @@ impl EgressInvocation {
         self.proxy.shared().denied_hosts()
     }
 
+    /// Hosts the user refused, when asked, during this invocation.
+    pub fn take_user_refused_hosts(&self) -> Vec<String> {
+        self.proxy.shared().take_user_refused_hosts()
+    }
+
     pub fn label(&self) -> Option<&str> {
         self.proxy.shared().label()
     }
@@ -1227,12 +1286,23 @@ impl Attempt<'_> {
         W: AsyncWrite + Unpin,
     {
         let (shared, host, port) = (self.shared, self.host, self.port);
-        if !shared.admit(host, port).await {
-            shared.record_denied(host.to_string());
-            self.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
-            let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
-            respond(client, 403, SANDBOX_DENIED_REASON, &body).await?;
-            return Ok(None);
+        match shared.admission(host, port).await {
+            Admission::Allowed => {}
+            Admission::Refused => {
+                shared.record_denied(host.to_string());
+                self.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
+                let body = format!("{SANDBOX_DENIED_REASON}: host {host} is not allowed\n");
+                respond(client, 403, SANDBOX_DENIED_REASON, &body).await?;
+                return Ok(None);
+            }
+            // Not queued as a denial: that queue raises a host approval, and
+            // the user has just answered this one.
+            Admission::RefusedByUser => {
+                self.record(EgressOutcome::Denied(EgressDenial::Policy), None, 0, 0);
+                let body = format!("Refused by the user: host {host}\n");
+                respond(client, 403, "Refused By User", &body).await?;
+                return Ok(None);
+            }
         }
 
         // Resolve here, check every address, and dial only what was checked.
@@ -2614,8 +2684,9 @@ mod tests {
         assert_eq!(answers.await.unwrap(), 2, "one ask per invocation");
     }
 
-    /// A refusal, an unanswered ask and a missing asker all end the same way
-    /// as before: 403, with the host recorded for the approval that follows.
+    /// A missing asker and an unanswered ask end as before: 403, with the
+    /// host recorded for the approval that follows. A refusal by the user is
+    /// a 403 too, and final.
     #[tokio::test]
     async fn a_host_that_is_not_allowed_in_time_is_refused_and_recorded() {
         let options = EgressOptions {
@@ -2646,9 +2717,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             drop(ask);
         });
+        // A refusal by the user is not queued for an approval: they have
+        // answered. An ask nobody answered is, as before.
         assert!(connect_line(port, "b.invalid:443").await.contains("403"));
+        assert!(proxy.shared().denied_hosts().is_empty());
+        assert_eq!(proxy.shared().take_user_refused_hosts(), ["b.invalid"]);
         assert!(connect_line(port, "c.invalid:443").await.contains("403"));
-        assert_eq!(proxy.shared().denied_hosts(), ["b.invalid", "c.invalid"]);
+        assert_eq!(proxy.shared().denied_hosts(), ["c.invalid"]);
         refuse.await.unwrap();
     }
 

@@ -830,8 +830,8 @@ mod tests {
     }
 
     /// With someone to ask, a host no rule decides is not refused up front:
-    /// the fetch goes to the gateway, which holds it and asks. A refusal
-    /// there is still reported as a host denial naming the host.
+    /// the fetch goes to the gateway, which holds it and asks. A refusal by
+    /// the user fails the fetch and raises no host approval: they answered.
     #[tokio::test]
     async fn an_undecided_host_is_asked_about_at_the_gateway() {
         let tool = WebFetchTool::new();
@@ -846,16 +846,14 @@ mod tests {
             host
         });
 
-        let error = tool
+        let result = tool
             .call(&ctx, json!({"url": "http://asked.invalid/"}))
-            .await
-            .unwrap_err();
+            .await;
         assert_eq!(refuse.await.unwrap(), "asked.invalid");
-        match error {
-            ToolError::SandboxDenied { denied_host, .. } => {
-                assert_eq!(denied_host.as_deref(), Some("asked.invalid"));
-            }
-            other => panic!("expected a host denial, got {other:?}"),
+        match result {
+            Err(ToolError::SandboxDenied { .. }) => panic!("a refusal must not raise an approval"),
+            Ok(output) => assert!(output.is_error, "{output:?}"),
+            Err(_) => {}
         }
     }
 

@@ -865,6 +865,13 @@ impl AgentSession {
         pre_git: Option<GitPre>,
         output: &ToolOutput,
     ) {
+        // A call that failed because the user refused it something (a host
+        // it tried to reach) is their decision, as a declined approval is:
+        // it leaves the turn's required work and records no failure.
+        if matches!(output.outcome, Some(ExecutionOutcome::Denied { .. })) {
+            self.turn.retire_declined_call(call);
+            return;
+        }
         match call.name.as_str() {
             "write_file" | "apply_patch" | "edit" => {
                 if let Some(pre) = pre_edit {

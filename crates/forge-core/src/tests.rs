@@ -6393,6 +6393,63 @@ async fn a_turn_completes_after_one_denied_call_and_an_answer() {
         .any(|message| message.content == "Understood, I will not run that."));
 }
 
+/// A command that failed because the user refused a host it tried to reach
+/// reports `Denied`. Same rule: their decision, not a failed step.
+struct RefusedHostBashTool;
+
+#[async_trait]
+impl forge_tools::Tool for RefusedHostBashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
+
+    fn description(&self) -> &str {
+        "Fail the way a command does when the user refuses its host"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({"type": "object"})
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        _ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let mut output = ToolOutput::failed_exit("curl: (56) CONNECT tunnel failed", Some(56));
+        output.outcome = Some(forge_types::ExecutionOutcome::Denied {
+            reason: "Network access to example.net was refused by the user.".into(),
+        });
+        Ok(output)
+    }
+}
+
+#[tokio::test]
+async fn a_turn_completes_after_a_command_whose_host_the_user_refused() {
+    let dir = tempdir().unwrap();
+    let model = script(vec![
+        tool_call_response(vec![ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            arguments: json!({"command": "curl https://example.net"}),
+        }]),
+        text_only("Understood, I will not use example.net."),
+    ]);
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(RefusedHostBashTool));
+    let mut s = AgentSession::create(base_cfg(dir.path()), model, tools)
+        .await
+        .unwrap();
+    s.run_user_message_with_stream("go", None).await.unwrap();
+
+    assert!(s.pending_hitl().is_none(), "no approval follows a refusal");
+    assert_eq!(s.active_task.lifecycle, TaskLifecycle::Completed);
+}
+
 /// Continue after Stop is a fresh attempt too, so it can pause for an
 /// approval. Run under the old `Cancelled` lifecycle it could not enter
 /// `Waiting`, and the continued turn died at its first gated call.

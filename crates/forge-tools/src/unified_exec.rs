@@ -285,11 +285,20 @@ async fn collect(
             let exit = format!("\n[process exited with code {}]", exit_code.unwrap_or(-1));
             append_output(session, exit.as_bytes());
             drain_process_output(session).await?;
+            let refused_hosts = session
+                .egress_invocation
+                .as_ref()
+                .map(crate::egress::EgressInvocation::take_user_refused_hosts)
+                .unwrap_or_default();
+            if !refused_hosts.is_empty() {
+                let note = format!("\n{}", crate::egress::user_refusal_note(&refused_hosts));
+                append_output(session, note.as_bytes());
+            }
             let denied_host = session
                 .egress_invocation
                 .as_ref()
                 .and_then(crate::egress::EgressInvocation::take_denied_host);
-            if session.confined {
+            if session.confined && refused_hosts.is_empty() {
                 if let Some(error) = sandbox_denial(
                     &session.command,
                     success,
@@ -304,7 +313,11 @@ async fn collect(
             }
             let body = output_for(session_id, session, max_tokens);
             return Ok(ToolOutput {
-                outcome: Default::default(),
+                outcome: (!success && !refused_hosts.is_empty()).then(|| {
+                    forge_types::ExecutionOutcome::Denied {
+                        reason: crate::egress::user_refusal_note(&refused_hosts),
+                    }
+                }),
                 content: body.to_string(),
                 is_error: !success,
                 exit_code,

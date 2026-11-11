@@ -49,3 +49,5 @@ All submodules are private; the crate surface is `lib.rs` plus its `pub use` re-
 ## Verification
 
 - Run: `cargo test --package forge-config --locked`
+
+- `project_hosts(workspace)` / `append_project_host(workspace, host)`: hosts allowed "always" for a project, stored in `<config dir>/forge/project-hosts.toml` keyed by the project path (a managed worktree under `.forge/local/worktrees/` maps to its project). `load_permissions` merges them as `host(...)` allows.

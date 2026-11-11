@@ -169,6 +169,17 @@ Subdirectories:
   session egress policy; non-http(s) schemes are refused.
 - `git` network subcommands are pre-checked against the host allowlist and then
   routed through the call gateway so unseen hosts are still refused.
+- Hold-and-ask: a host no rule decides (`EgressPolicy::undecided`) is not
+  refused when an asker is set (`EgressShared::set_asker`). The gateway holds
+  the connection (`admit`/`admission`, up to `EGRESS_HOLD_TIMEOUT`) and sends a
+  `HostAsk`; `HostAnswer::Allow` (host already granted) or `AllowOnce` (this
+  invocation only) lets the same connection through. A deny rule, a malformed
+  name, no asker, or no answer refuses as before and queues the host for the
+  approval that follows. A refusal by the user (`Admission::RefusedByUser`) is
+  not queued: the shell tools append `user_refusal_note` to the output, skip
+  denial classification and report `ExecutionOutcome::Denied`. `web_fetch` and
+  the `git` tool pass an undecided host through their pre-check
+  (`asks_about`) so the gateway asks.
 - `EgressPolicy` matching: exact host, `*.domain` (subdomains only),
   `**.domain` (apex and subdomains), and bare `*` (every host); a deny always
   beats an allow. Hosts with an empty label (leading `.` or `..`) are never

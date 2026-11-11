@@ -54,3 +54,7 @@ wiring. It composes `forge-model`, `forge-tools`, `forge-context`,
 ## Verification
 
 - Run: `cargo test --package forge-core --locked`
+
+## Held hosts
+
+`HostQuestions` (from `AgentSession::host_questions`, which also turns holding on) lists the hosts the session's gateway is holding connections for and answers them (`HostDecision`: once, session, always for the project, deny) without the session lock. Approve-all refuses at once, leaving the existing grant-and-retry path. A tool output with `ExecutionOutcome::Denied` retires its call from the turn's required work: a refusal by the user is not a failed step.

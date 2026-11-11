@@ -49,3 +49,7 @@ multi-session supervision. No source code at this level: everything lives in
 ## Verification
 
 - Run: `cargo test --package forge-session --locked`
+
+## Held hosts
+
+`SessionRuntimeSnapshot::host_questions` carries the hosts a running command is waiting to reach; each actor republishes its snapshot when they change. `SupervisorCommand::AnswerHostQuestion` answers one mid-turn, without the session lock.

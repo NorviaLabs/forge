@@ -288,7 +288,8 @@ fn config_failures(app: &tauri::AppHandle) -> Vec<String> {
 }
 
 /// D00: the only listeners this process may hold are the session's
-/// loopback egress proxy (TCP) and its egress Unix socket.
+/// loopback egress proxy (TCP) and, on Linux, its egress Unix socket. macOS
+/// routes the sandbox to the loopback port and binds no socket at all.
 fn listener_failures() -> Vec<String> {
     let mut failures = tcp_listener_failures();
     match listening_unix() {
@@ -301,9 +302,10 @@ fn listener_failures() -> Vec<String> {
                         name.starts_with("forge-egress-") && name.ends_with(".sock")
                     })
             };
-            if paths.len() != 1 || !paths.iter().all(egress) {
+            let expected = usize::from(cfg!(target_os = "linux"));
+            if paths.len() != expected || !paths.iter().all(egress) {
                 failures.push(format!(
-                    "expected exactly the one egress Unix socket, found {paths:?}"
+                    "expected {expected} egress Unix socket(s) and no other, found {paths:?}"
                 ));
             }
         }
