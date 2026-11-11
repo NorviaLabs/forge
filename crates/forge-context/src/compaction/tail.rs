@@ -20,6 +20,21 @@ pub struct TailSelection {
     pub tokens: usize,
     /// Whether the tail begins on a user message (the preferred boundary).
     pub starts_on_user: bool,
+    /// Index of the user message that opens the current turn, carried ahead
+    /// of a tail that starts mid-turn. `None` for an ordinary contiguous
+    /// tail. See [`select_tail_in_turn`].
+    pub anchor: Option<usize>,
+}
+
+impl TailSelection {
+    /// The retained messages: the anchor (if any), then `body[start..]`.
+    pub fn messages(&self, body: &[Message]) -> Vec<Message> {
+        self.anchor
+            .map(|index| body[index].clone())
+            .into_iter()
+            .chain(body[self.start..].iter().cloned())
+            .collect()
+    }
 }
 
 /// Estimated tokens for one message, counting reasoning text — the context
@@ -71,7 +86,57 @@ pub fn select_tail(body: &[Message], target_tokens: usize) -> TailSelection {
         start,
         tokens,
         starts_on_user: body.get(start).is_some_and(|m| m.role == MessageRole::User),
+        anchor: None,
     }
+}
+
+/// A tail for a turn too long to keep whole: the user's current request, then
+/// the most recent steps of the turn that form a self-contained slice.
+///
+/// A long tool-calling turn has no boundary [`select_tail`] accepts inside
+/// it: every assistant message makes tool calls, and a tail may only open on
+/// a user message or a plain reply. So a turn bigger than the budget was
+/// either kept whole (never shrinking the context) or dropped whole, request
+/// and all. Here the tail may open on any assistant message whose tool
+/// results all follow it, and the request that started the turn is carried in
+/// front so the model still sees what it was asked. The checkpoint, which is
+/// written from the whole context, covers the steps in between.
+///
+/// `None` when the body has no user message, or the turn has no such
+/// boundary to cut at (it would be kept whole anyway). A `target_tokens` of
+/// zero keeps the request alone.
+pub fn select_tail_in_turn(body: &[Message], target_tokens: usize) -> Option<TailSelection> {
+    let anchor = body.iter().rposition(|m| m.role == MessageRole::User)?;
+    let mut start = body.len();
+    let mut tokens = 0usize;
+    while start > anchor + 1 && tokens < target_tokens {
+        start -= 1;
+        tokens = tokens.saturating_add(message_tokens(&body[start]));
+    }
+    // Snap back to a step that opens a self-contained slice, as the ordinary
+    // selector does (slightly more than the target rather than an invalid cut).
+    while start < body.len() && !is_valid_step(body, start) {
+        start -= 1;
+        if start <= anchor {
+            return None;
+        }
+    }
+    if start == anchor + 1 && start < body.len() {
+        // Nothing of the turn is left out: not a cut.
+        return None;
+    }
+    Some(TailSelection {
+        start,
+        tokens: message_tokens(&body[anchor]).saturating_add(messages_tokens(&body[start..])),
+        starts_on_user: false,
+        anchor: Some(anchor),
+    })
+}
+
+/// A mid-turn slice may open on any assistant message, tool calls included,
+/// as long as every tool result in it answers a call in it.
+fn is_valid_step(body: &[Message], start: usize) -> bool {
+    body[start].role == MessageRole::Assistant && tool_calls_are_paired(&body[start..])
 }
 
 /// True when `body[start..]` is a self-contained conversation slice.

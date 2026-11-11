@@ -689,6 +689,32 @@ async fn a_failed_automatic_compaction_still_lets_the_turn_proceed() {
         .any(|event| event.kind == "compaction_failed"));
 }
 
+/// A failed automatic compaction is a full-context provider call. Retrying
+/// it on every step of the turn, with nothing changed, repeats the failure
+/// and the cost; it waits until the context has actually grown.
+#[tokio::test]
+async fn a_failed_automatic_compaction_is_not_retried_until_the_context_grows() {
+    let dir = tempdir().unwrap();
+    let model = Arc::new(CheckpointModel::new(vec![Err("provider down".into())]));
+    let mut session = pressured_session(model.clone(), dir.path()).await;
+
+    session.prepare_model_step(0).await.unwrap();
+    assert_eq!(model.compaction_requests().len(), 1);
+    session.prepare_model_step(1).await.unwrap();
+    session.prepare_model_step(2).await.unwrap();
+    assert_eq!(
+        model.compaction_requests().len(),
+        1,
+        "no new attempt while nothing has changed"
+    );
+    assert_eq!(session.compaction_telemetry().failure_count, 1);
+
+    // Real growth lifts the cooldown (a twentieth of the window at least).
+    grow_without_pressure(&mut session, 6).await;
+    session.prepare_model_step(3).await.unwrap();
+    assert_eq!(model.compaction_requests().len(), 2, "retried after growth");
+}
+
 // ---------------------------------------------------------- persistence
 
 #[tokio::test]

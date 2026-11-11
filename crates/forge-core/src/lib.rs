@@ -185,6 +185,11 @@ pub struct AgentSession {
     /// history. Never holds a copy of that history itself.
     context_state: SessionContextState,
     compaction: CompactionTelemetry,
+    /// After an automatic compaction fails, the context size below which no
+    /// new attempt is made. Each attempt is a full-context provider call, and
+    /// a failure that nothing has changed (the context cannot shrink enough)
+    /// would otherwise repeat on every step of the turn.
+    auto_compaction_retry_at: Option<usize>,
     /// How many user turns canonical history holds. Protected facts are keyed
     /// by this ordinal, which compaction cannot disturb because it only
     /// rewrites the projection.

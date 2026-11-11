@@ -47,6 +47,6 @@ pub use policy::{
 };
 pub use prompt::{checkpoint_message, compaction_instruction, compaction_message};
 pub use tail::{
-    message_tokens, messages_tokens, select_tail, tool_calls_are_paired, tool_results_are_complete,
-    TailSelection,
+    message_tokens, messages_tokens, select_tail, select_tail_in_turn, tool_calls_are_paired,
+    tool_results_are_complete, TailSelection,
 };

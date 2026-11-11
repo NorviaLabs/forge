@@ -13,7 +13,10 @@ use super::checkpoint::{Checkpoint, CheckpointError, CHECKPOINT_ROOT};
 use super::facts::ProtectedFact;
 use super::policy::{CompactionPolicy, CompactionTrigger};
 use super::prompt::checkpoint_message;
-use super::tail::{messages_tokens, select_tail, tool_calls_are_paired, tool_results_are_complete};
+use super::tail::{
+    messages_tokens, select_tail, select_tail_in_turn, tool_calls_are_paired,
+    tool_results_are_complete,
+};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
@@ -181,15 +184,30 @@ pub fn plan_compaction(
     let checkpoint_message = checkpoint_message(checkpoint);
     let checkpoint_tokens = messages_tokens(std::slice::from_ref(&checkpoint_message));
     let runway_limit = policy.runway_limit();
+    let preserved_tokens = messages_tokens(&preserved);
 
     let target = policy.tail_target_tokens();
     let attempts = [target, target / 2, target / 4, 0];
     let mut last: Option<CompactionPlan> = None;
 
     for attempt in attempts {
-        let selection = select_tail(body, attempt);
-        let tail = &body[selection.start..];
-        validate_structure(&preserved, tail, source_body_complete)?;
+        let mut selection = select_tail(body, attempt);
+        let mut tail = selection.messages(body);
+        let standard_after = preserved_tokens + checkpoint_tokens + messages_tokens(&tail);
+        // A turn too long to keep whole (or a target that left nothing, which
+        // would drop the user's request) is cut inside the turn instead.
+        if standard_after > runway_limit || tail.is_empty() {
+            if let Some(in_turn) = select_tail_in_turn(body, attempt) {
+                let candidate = in_turn.messages(body);
+                let candidate_after =
+                    preserved_tokens + checkpoint_tokens + messages_tokens(&candidate);
+                if tail.is_empty() || candidate_after < standard_after {
+                    selection = in_turn;
+                    tail = candidate;
+                }
+            }
+        }
+        validate_structure(&preserved, &tail, source_body_complete)?;
 
         let mut messages = Vec::with_capacity(preserved.len() + 1 + tail.len());
         messages.extend(preserved.iter().cloned());
@@ -216,9 +234,9 @@ pub fn plan_compaction(
         if shrank {
             last = Some(plan);
         }
-        if selection.start == 0 {
-            // The tail already covers the whole body; a smaller target cannot
-            // help, because no earlier structural boundary exists.
+        if selection.start == 0 && selection.anchor.is_none() {
+            // The tail already covers the whole body and no cut inside the
+            // current turn was possible; a smaller target cannot help.
             break;
         }
     }
@@ -334,6 +352,88 @@ mod tests {
 
     fn policy() -> CompactionPolicy {
         CompactionPolicy::for_window(30_000, Some(2_000))
+    }
+
+    /// One long turn: the request, then `steps` tool-calling rounds of ~250
+    /// tokens each, ending with a result that awaits the model's next step.
+    fn long_turn(request: &str, steps: usize) -> Vec<Message> {
+        let mut messages = vec![Message::new(MessageRole::User, request.to_string())];
+        for i in 0..steps {
+            let mut call = Message::new(MessageRole::Assistant, big(&format!("s{i}"), 500));
+            call.tool_calls = vec![ToolCall {
+                id: format!("c{i}"),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": format!("step {i}")}),
+            }];
+            messages.push(call);
+            let mut result = Message::new(MessageRole::Tool, big(&format!("r{i}"), 500));
+            result.tool_call_id = Some(format!("c{i}"));
+            messages.push(result);
+        }
+        messages
+    }
+
+    fn pairs_are_intact(messages: &[Message]) -> bool {
+        tool_calls_are_paired(messages) && tool_results_are_complete(messages)
+    }
+
+    /// A current turn bigger than the whole budget used to be kept whole
+    /// (never shrinking) or dropped with its request. It is cut inside the
+    /// turn: the request stays, then the latest steps.
+    #[test]
+    fn a_long_tool_turn_is_cut_inside_the_turn_and_keeps_its_request() {
+        let mut context = long_context(6);
+        context.extend(long_turn("fix the failing build", 120));
+        let plan = plan_compaction(&context, &checkpoint(), &policy(), &[]).unwrap();
+
+        assert!(plan.tokens_after <= policy().runway_limit(), "{plan:?}");
+        let kept = &plan.messages[2..];
+        assert_eq!(
+            kept[0].content, "fix the failing build",
+            "the request leads the tail"
+        );
+        assert_eq!(kept[0].role, MessageRole::User);
+        assert!(kept.len() > 1, "recent steps are kept");
+        assert_eq!(
+            kept.last().unwrap().content,
+            context.last().unwrap().content,
+            "the latest result is kept"
+        );
+        assert!(pairs_are_intact(kept), "every call keeps its result");
+        assert_eq!(
+            kept[1].role,
+            MessageRole::Assistant,
+            "the cut opens on a step"
+        );
+    }
+
+    /// The same turn as a session's first: there is no earlier history for
+    /// the ordinary selector to snap to, so it could never compact at all.
+    #[test]
+    fn a_long_first_turn_can_be_compacted() {
+        let mut context = vec![Message::new(MessageRole::System, "system prompt")];
+        context.extend(long_turn("build the whole feature", 120));
+        let plan = plan_compaction(&context, &checkpoint(), &policy(), &[]).unwrap();
+
+        assert!(plan.tokens_after < plan.tokens_before);
+        assert!(plan.tokens_after <= policy().runway_limit(), "{plan:?}");
+        let kept = &plan.messages[2..];
+        assert_eq!(kept[0].content, "build the whole feature");
+        assert!(pairs_are_intact(kept));
+    }
+
+    /// A turn with nothing the selector can cut at keeps the user's request
+    /// rather than installing a context with no conversation in it.
+    #[test]
+    fn compaction_never_installs_a_context_without_the_users_request() {
+        let mut context = long_context(30);
+        context.extend(long_turn("the current request", 3));
+        // A target of zero (the planner's last resort) used to leave nothing.
+        let selection = select_tail_in_turn(&context[1..], 0).expect("a user message exists");
+        let kept = selection.messages(&context[1..]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].content, "the current request");
+        assert!(select_tail_in_turn(&[Message::new(MessageRole::Assistant, "a")], 0).is_none());
     }
 
     #[test]

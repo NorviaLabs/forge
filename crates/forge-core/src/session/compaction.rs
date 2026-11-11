@@ -188,8 +188,17 @@ impl AgentSession {
             )
             .await
         {
-            Ok(record) => Ok(record),
+            Ok(record) => {
+                self.auto_compaction_retry_at = None;
+                Ok(record)
+            }
             Err(error) => {
+                if trigger == CompactionTrigger::Automatic {
+                    // Wait for real growth: a twentieth of the window, at
+                    // least a few thousand tokens.
+                    let growth = (self.compaction_policy.context_window / 20).max(4_000);
+                    self.auto_compaction_retry_at = Some(tokens_before.saturating_add(growth));
+                }
                 let record = CompactionRecord {
                     trigger,
                     tokens_before,
@@ -224,6 +233,14 @@ impl AgentSession {
     /// Begin automatic compaction only when the pressure policy requires it.
     pub fn begin_auto_context_compaction(&self) -> Option<PendingContextCompaction> {
         if !self.enable_context || !self.context_pressure_reached() {
+            return None;
+        }
+        // A recent failure stands until the context has grown enough that a
+        // retry could plan something different.
+        if self
+            .auto_compaction_retry_at
+            .is_some_and(|retry_at| self.context_tokens() < retry_at)
+        {
             return None;
         }
         Some(self.begin_context_compaction(CompactionTrigger::Automatic))

@@ -240,6 +240,7 @@ impl AgentSession {
             compaction_policy: CompactionPolicy::default(),
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
+            auto_compaction_retry_at: None,
             canonical_user_turns: 0,
             canonical_user_messages: Vec::new(),
         })
@@ -338,6 +339,7 @@ impl AgentSession {
             compaction_policy: CompactionPolicy::default(),
             context_state: SessionContextState::default(),
             compaction: CompactionTelemetry::default(),
+            auto_compaction_retry_at: None,
             canonical_user_turns: 0,
             canonical_user_messages: state.user_messages.clone(),
         };
