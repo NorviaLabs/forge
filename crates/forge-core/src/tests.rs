@@ -1682,11 +1682,22 @@ async fn a_git_push_to_a_denied_host_prompts_and_the_grant_reruns_git() {
     let completed = pending.execute().await;
     session.finish_hitl_execution(completed).await.unwrap();
 
-    assert!(marker.exists(), "the granted retry must re-run git");
-    assert!(session
+    // Git ran this time, confined: it got as far as its transport, which
+    // cannot work in a test (no ssh server, and the test binary is not the
+    // forge helper). The repository's own `core.sshCommand` is not what a
+    // confined git uses, so the marker stays absent.
+    let result = session
         .messages
         .iter()
-        .any(|message| message.tool_call_id.as_deref() == Some("call-git")));
+        .rev()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-git"))
+        .expect("the retry's result is recorded");
+    assert!(
+        result.content.contains("fatal:") && !result.content.contains("blocked by the sandbox"),
+        "the granted retry must re-run git: {}",
+        result.content
+    );
+    assert!(!marker.exists(), "the repository's ssh command ran");
 }
 
 /// `web_fetch` obeys the same host allowlist as a confined shell command: an

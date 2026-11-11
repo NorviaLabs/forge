@@ -750,8 +750,9 @@ for long-running work, or `exec_command` followed by `write_stdin` when you \
 need to poll an interactive session. Never use `ps` or `pgrep` to find a \
 Forge-managed command. \
 A host(...) grant projects HTTPS identity for that host into the confined \
-spawn (SSH git remotes become HTTPS; git-dir writes stay limited to git \
-itself, never to git hooks)."
+spawn. Git over SSH and commit signing work through the user's own keys, \
+which stay outside the sandbox (git-dir writes stay limited to git itself, \
+never to git hooks)."
     }
     fn input_schema(&self) -> Value {
         schema_for::<BashArgs>()
@@ -1814,6 +1815,15 @@ Not a free-form shell. Prefer this over `bash(git …)`."
         // runs, so the host-grant prompt names it without a failed attempt.
         crate::git_network::check_git_network(ctx, &sub, &parsed.operands, &parsed.options).await?;
 
+        // Git runs in the sandbox, like a shell command: a hook or a program
+        // the repository's config names is then confined too. The network,
+        // SSH and signing reach it through the spawn's gateway and brokers.
+        // An approved unconfined retry, or a host that cannot confine, takes
+        // the host path below.
+        if !ctx.unconfined_shell && crate::sandbox::availability().is_ok() {
+            return run_git_confined(ctx, &sub, &a.args, &parsed.operands).await;
+        }
+
         // Enforcement: a network subcommand's traffic goes through this
         // call's gateway, which refuses any host the pre-check could not see.
         // No grant (no live proxy) keeps the direct path; a grant whose
@@ -1890,6 +1900,65 @@ Not a free-form shell. Prefer this over `bash(git …)`."
             attachments: Vec::new(),
         })
     }
+}
+
+async fn run_git_confined(
+    ctx: &ToolContext,
+    sub: &str,
+    args: &[String],
+    operands: &[String],
+) -> Result<ToolOutput, ToolError> {
+    // `sub` is an allowlisted word; the arguments are quoted so the shell
+    // passes each one through as it is.
+    // A per-URL or per-remote proxy setting outranks `http.proxy`; each is
+    // pointed at the gateway, whose address the confined shell has in
+    // `$HTTP_PROXY`.
+    let proxy_keys =
+        if ctx.egress.is_some() && crate::git_network::is_network_invocation(sub, operands) {
+            crate::git_network::proxy_override_keys(ctx).await?
+        } else {
+            Vec::new()
+        };
+    let command = std::iter::once("git".to_string())
+        .chain(proxy_keys.iter().map(|key| {
+            format!(
+                "-c {}\"$HTTP_PROXY\"",
+                crate::ssh_broker::shell_quote(&format!("{key}="))
+            )
+        }))
+        .chain(std::iter::once(sub.to_string()))
+        .chain(args.iter().map(|arg| crate::ssh_broker::shell_quote(arg)))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let timeout = crate::git_network::git_timeout(sub, args);
+    let run = run_shell_command_inner(
+        &command,
+        &ctx.workspace_root,
+        ctx.egress.as_deref(),
+        ctx.session_tmp.as_deref().map(|temp| temp.path()),
+        true,
+        None,
+        ctx.tool_call_id.as_deref(),
+        &ctx.credential_env_names,
+    );
+    // Dropping the run kills the whole process group.
+    let Ok(result) = tokio::time::timeout(timeout, run).await else {
+        return Ok(ToolOutput {
+            outcome: Some(ExecutionOutcome::TimedOut),
+            content: format!(
+                "git {sub}: timed out after {}s; the git process and its children were killed",
+                timeout.as_secs()
+            ),
+            is_error: true,
+            exit_code: None,
+            attachments: Vec::new(),
+        });
+    };
+    let mut output = result?;
+    if output.content.trim().is_empty() && !output.is_error {
+        output.content = format!("git {sub}: ok");
+    }
+    Ok(output)
 }
 
 /// Built-in workspace tools every session registers.
@@ -3069,11 +3138,13 @@ mod tests {
     }
 
     /// After the host is granted, the same call is allowed through and git
-    /// actually runs (here, reaching the recording `core.sshCommand`).
+    /// actually runs (here, reaching the recording `core.sshCommand`, which
+    /// only the host path honours: a confined git's ssh is the broker).
     #[tokio::test]
     async fn git_push_proceeds_once_the_host_is_granted() {
         let (dir, marker) = repo_with_origin("ssh://git@denied.example/o/r.git");
         let (proxy, ctx) = ctx_with_hosts(dir.path(), &[]).await;
+        let ctx = ctx.with_unconfined_shell();
         let args = json!({"subcommand": "push", "args": ["origin", "HEAD:main"]});
         assert!(matches!(
             GitTool.call(&ctx, args.clone()).await,
@@ -3088,7 +3159,10 @@ mod tests {
 
     #[tokio::test]
     async fn git_fetch_from_a_local_file_remote_needs_no_host() {
-        let upstream = tempdir().unwrap();
+        // Not under the system temp directory, which a confined git cannot
+        // read: next to the test binary instead.
+        let exe = std::env::current_exe().unwrap();
+        let upstream = tempfile::tempdir_in(exe.parent().unwrap()).unwrap();
         sh_git(upstream.path(), &["init", "-q", "--bare"]);
         let url = format!("file://{}", upstream.path().display());
         let (dir, _marker) = repo_with_origin(&url);
@@ -3211,8 +3285,9 @@ mod tests {
         assert!(*served.lock().unwrap() >= 1, "the origin was reached");
     }
 
-    /// SSH leaves through the gateway: the user's `core.sshCommand` is kept,
-    /// with the connect helper appended as its ProxyCommand.
+    /// On the host path (an approved unconfined run), SSH leaves through
+    /// the gateway: the user's `core.sshCommand` is kept, with the connect
+    /// helper appended as its ProxyCommand.
     #[cfg(unix)]
     #[tokio::test]
     async fn git_ssh_keeps_the_users_command_and_adds_the_gateway_proxy() {
@@ -3241,6 +3316,7 @@ mod tests {
             ],
         );
         let (_proxy, ctx) = ctx_with_hosts(root, &["allowed.example"]).await;
+        let ctx = ctx.with_unconfined_shell();
 
         let out = GitTool
             .call(&ctx, json!({"subcommand": "fetch", "args": ["origin"]}))

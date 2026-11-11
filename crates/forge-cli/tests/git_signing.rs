@@ -117,7 +117,7 @@ fn a_confined_commit_is_signed_on_the_host_with_the_users_own_key() {
         socket_path: PathBuf::new(),
         control: Some(proxy.shared().clone()),
     });
-    let _registered = forge_tools::register_workspace_egress(&repo, grant);
+    let _registered = forge_tools::register_workspace_egress(&repo, Arc::clone(&grant));
 
     let mut git = confined_git::command_networked(&repo, &[]);
     assert!(git.confined);
@@ -153,4 +153,32 @@ fn a_confined_commit_is_signed_on_the_host_with_the_users_own_key() {
         ],
     );
     assert!(verify.status.success(), "{verify:?}");
+
+    // The agent's `git` tool takes the same route: confined, with the
+    // user's identity and signature.
+    use forge_tools::Tool as _;
+    std::fs::write(repo.join("file.txt"), "hello again\n").unwrap();
+    let session_tmp = forge_tools::SessionTempDir::create("git-signing-test").unwrap();
+    let mut ctx = forge_tools::ToolContext::new(repo.clone())
+        .with_tool_call_id("call-sign")
+        .with_session_tmp(session_tmp);
+    ctx.egress = Some(grant);
+    let out = runtime
+        .block_on(forge_tools::GitTool.call(
+            &ctx,
+            serde_json::json!({"subcommand": "commit", "args": ["-a", "-m", "by the agent"]}),
+        ))
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(!marker.exists(), "the repository's signing program ran");
+    let commit = ok("git", &repo, &["cat-file", "commit", "HEAD"]);
+    assert!(commit.contains("by the agent"), "{commit}");
+    assert!(
+        commit.contains("author Tester <tester@example.test>"),
+        "{commit}"
+    );
+    assert!(
+        commit.contains("gpgsig -----BEGIN SSH SIGNATURE-----"),
+        "{commit}"
+    );
 }

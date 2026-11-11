@@ -183,6 +183,38 @@ impl SignBroker {
     }
 }
 
+/// A broker that signs the way the user signs in `repo`, and the git config
+/// that reaches it, with its wrapper scripts written to `scratch`.
+pub(crate) async fn start_for_repo(
+    repo: &Path,
+    scratch: &Path,
+) -> Option<(SignBroker, Vec<(String, String)>)> {
+    let exe = crate::git_network::helper_exe().ok()?;
+    let repo = repo.to_path_buf();
+    let resolve: Resolve = Arc::new(move || {
+        let repo = repo.clone();
+        Box::pin(async move { crate::git_network::host_signer(&repo).await })
+    });
+    let broker = SignBroker::start(resolve).await.ok()?;
+    let config = broker.git_config(&exe, scratch).ok()?;
+    Some((broker, config))
+}
+
+/// Add settings to the `GIT_CONFIG_COUNT`/`KEY`/`VALUE` variables in `env`,
+/// after the ones already there.
+pub(crate) fn push_git_config(env: &mut Vec<(String, String)>, config: Vec<(String, String)>) {
+    let mut count = match env.iter().position(|(name, _)| name == "GIT_CONFIG_COUNT") {
+        Some(at) => env.remove(at).1.parse().unwrap_or(0),
+        None => 0usize,
+    };
+    for (key, value) in config {
+        env.push((format!("GIT_CONFIG_KEY_{count}"), key));
+        env.push((format!("GIT_CONFIG_VALUE_{count}"), value));
+        count += 1;
+    }
+    env.push(("GIT_CONFIG_COUNT".into(), count.to_string()));
+}
+
 /// Whether `payload` is something git signs: a commit object, a tag object
 /// or a push certificate. The broker signs nothing else, so the user's key
 /// cannot be borrowed to sign an arbitrary file.
@@ -583,6 +615,28 @@ mod tests {
         ] {
             assert_eq!(parse_client_args(format, &args(words)), None, "{words:?}");
         }
+    }
+
+    #[test]
+    fn git_config_is_appended_after_the_settings_already_in_the_environment() {
+        let mut env = vec![
+            (
+                "GIT_CONFIG_KEY_0".to_string(),
+                "credential.helper".to_string(),
+            ),
+            ("GIT_CONFIG_VALUE_0".to_string(), String::new()),
+            ("GIT_CONFIG_COUNT".to_string(), "1".to_string()),
+        ];
+        push_git_config(&mut env, vec![("gpg.program".into(), "/w".into())]);
+        let value = |name: &str| {
+            let found: Vec<_> = env.iter().filter(|(key, _)| key == name).collect();
+            assert_eq!(found.len(), 1, "{name}");
+            found[0].1.clone()
+        };
+        assert_eq!(value("GIT_CONFIG_COUNT"), "2");
+        assert_eq!(value("GIT_CONFIG_KEY_0"), "credential.helper");
+        assert_eq!(value("GIT_CONFIG_KEY_1"), "gpg.program");
+        assert_eq!(value("GIT_CONFIG_VALUE_1"), "/w");
     }
 
     /// A stand-in for gpg: prints its arguments and stdin as the "signature".

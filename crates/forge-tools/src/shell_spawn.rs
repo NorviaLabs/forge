@@ -128,6 +128,18 @@ impl ShellSpawnSpec {
             Some(invocation) => start_ssh_broker(invocation, credential_env_names).await,
             None => None,
         };
+        // Signing, the same way: the key stays outside and a broker signs
+        // what git asks it to. Its wrapper scripts live with the spawn's
+        // other git files.
+        let identity_dir = session_tmp
+            .map(|dir| dir.join("host-identity"))
+            .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
+        let sign_broker = if requested_confined && egress_invocation.is_some() {
+            let _ = std::fs::create_dir_all(&identity_dir);
+            crate::sign_broker::start_for_repo(workspace_root, &identity_dir).await
+        } else {
+            None
+        };
         let command_egress = egress_invocation
             .as_ref()
             .and_then(EgressInvocation::grant)
@@ -143,6 +155,9 @@ impl ShellSpawnSpec {
             policy = policy.with_session_tmp(session_tmp);
         }
         if let Some((broker, _)) = &ssh_broker {
+            policy = policy.with_loopback_port(broker.addr().port());
+        }
+        if let Some((broker, _)) = &sign_broker {
             policy = policy.with_loopback_port(broker.addr().port());
         }
         if requested_confined {
@@ -193,20 +208,55 @@ impl ShellSpawnSpec {
                     .iter()
                     .map(|name| (*name).to_string()),
             );
-            let identity_dir = session_tmp
-                .map(|dir| dir.join("host-identity"))
-                .unwrap_or_else(|| workspace_root.join(".forge-host-identity"));
             let _ = std::fs::create_dir_all(&identity_dir);
+            let mut git_env = crate::credentials::host_identity_env(
+                command_egress,
+                &identity_dir,
+                workspace_root,
+            );
+            if let Some((_, config)) = &sign_broker {
+                crate::sign_broker::push_git_config(&mut git_env, config.clone());
+            }
+            // The user's own `http.proxy` would outrank the proxy
+            // environment and point git past the gateway, at an address the
+            // sandbox does not let it reach.
+            if let Some(invocation) = &egress_invocation {
+                crate::sign_broker::push_git_config(
+                    &mut git_env,
+                    vec![(
+                        "http.proxy".into(),
+                        format!("http://{}", invocation.tcp_addr()),
+                    )],
+                );
+            }
+            // git:// has no proxy support of its own; without this it has
+            // no route out of the sandbox at all.
+            #[cfg(unix)]
+            if let Some(invocation) = &egress_invocation {
+                let wrapper = crate::git_network::helper_exe().ok().and_then(|exe| {
+                    crate::git_network::write_git_proxy_wrapper(
+                        &identity_dir,
+                        &exe,
+                        &invocation.tcp_addr().to_string(),
+                    )
+                    .ok()
+                });
+                if let Some(wrapper) = wrapper {
+                    crate::sign_broker::push_git_config(
+                        &mut git_env,
+                        vec![("core.gitProxy".into(), wrapper)],
+                    );
+                }
+            }
             let confined_env = crate::sandbox::egress_env(&policy)
                 .into_iter()
                 .chain(crate::credentials::isolated_config_env(&identity_dir))
-                .chain(crate::credentials::host_identity_env(
-                    command_egress,
-                    &identity_dir,
-                    workspace_root,
-                ))
+                .chain(git_env)
                 .chain(policy.toolchain_env());
             env_set.extend(confined_env.map(|(name, value)| (name, OsString::from(value))));
+        }
+        if let (Some((broker, _)), Some(invocation)) = (sign_broker, egress_invocation.as_mut()) {
+            invocation.hold(broker);
         }
         if let Some((broker, git_ssh_command)) = ssh_broker {
             if confined {
@@ -357,7 +407,7 @@ mod tests {
                     for name in [
                         "TMPDIR",
                         "XDG_CONFIG_HOME",
-                        "GIT_CONFIG_GLOBAL",
+                        "GIT_CONFIG_COUNT",
                         "CARGO_HOME",
                     ] {
                         assert!(names.iter().any(|n| n == name), "{mode:?}: {name}");
@@ -462,7 +512,7 @@ mod tests {
             let (_, _, names) = decisions(&spec);
             assert!(!names
                 .iter()
-                .any(|n| n.ends_with("_PROXY") || n == "GIT_CONFIG_GLOBAL"));
+                .any(|n| n.ends_with("_PROXY") || n == "GIT_CONFIG_COUNT"));
             assert!(names.iter().any(|n| n == "TMPDIR"));
             seen.push(decisions(&spec));
         }

@@ -1,21 +1,20 @@
 //! Host-side HTTPS identity for confined spawns, keyed off the egress grant.
 //!
-//! Three independent facts about confinement, none of them tool-specific:
+//! Two independent facts about confinement, neither of them tool-specific:
 //!
 //! 1. The CONNECT proxy can reach a host once `host(...)` allows it.
 //! 2. The sandbox cannot open the OS secret store, so HTTPS clients look
 //!    unauthenticated even after a grant.
-//! 3. SSH cannot use an HTTP CONNECT proxy, so `git@host:` remotes have no
-//!    route out.
 //!
 //! A host grant therefore **projects** HTTPS identity for that host into the
-//! spawn: credentials filled on the host via `git credential`, a spawn-local
-//! gitconfig that rewrites SSH remotes to HTTPS, a credential helper that
-//! answers for those hosts, and `{first-label}_TOKEN` so HTTPS CLIs that do
-//! not speak git-credential still authenticate without falling through to the
-//! host secret store. Callers isolate XDG dirs for every confined spawn, not
-//! just commands using a credential. The same grant is what authorized
-//! talking to the host in the first place.
+//! spawn: credentials filled on the host via `git credential`, a credential
+//! helper that answers for those hosts, and `{first-label}_TOKEN` so HTTPS
+//! CLIs that do not speak git-credential still authenticate without falling
+//! through to the host secret store. The user's own git configuration stays
+//! in effect; only the helper list is replaced, through the environment.
+//! Callers isolate XDG dirs for every confined spawn, not just commands using
+//! a credential. The same grant is what authorized talking to the host in
+//! the first place.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -61,27 +60,30 @@ pub fn host_identity_env(
     config_dir: &Path,
     workspace_root: &Path,
 ) -> Vec<(String, String)> {
-    let Some(grant) = grant else {
-        return Vec::new();
-    };
-    let credentials = credentials_for_grant(grant, workspace_root);
-    if credentials.is_empty() {
-        return Vec::new();
+    let credentials = grant
+        .map(|grant| credentials_for_grant(grant, workspace_root))
+        .unwrap_or_default();
+    identity_env(&credentials, config_dir)
+}
+
+fn identity_env(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {
+    let mut env = helper_env(credentials, config_dir);
+    for cred in credentials {
+        if let Some(name) = token_env_name(&cred.host) {
+            env.push((name, cred.password.clone()));
+        }
     }
-    project_identity(&credentials, config_dir)
+    env
 }
 
 /// Environment that keeps XDG-aware command-line clients out of the host's
 /// mutable config, cache, and state trees. The caller applies this to every
 /// confined spawn, rather than maintaining a list of supported CLIs.
 ///
-/// Also points git at a spawn-local global config, for the same reason: git
-/// reads `~/.gitconfig` on startup, which lives outside the sandbox, so a
-/// confined `git status` aborts with "unable to access .../.gitconfig"
-/// before it ever reaches the repository. The empty config written here lets
-/// a confined git start; a host grant later overrides it with the projected
-/// HTTPS-identity config (same path, `host_identity_env`), and without a
-/// grant git just runs with no global configuration.
+/// Git is the exception: the user's own git settings (name, email, aliases,
+/// signing) are read-only input a confined git should see. `~/.gitconfig` is
+/// found as usual; `$XDG_CONFIG_HOME/git`, which the redirect would hide, is
+/// linked into the isolated tree.
 pub fn isolated_config_env(config_dir: &Path) -> Vec<(String, String)> {
     let mut env = Vec::new();
     for (var, dir) in [
@@ -92,19 +94,17 @@ pub fn isolated_config_env(config_dir: &Path) -> Vec<(String, String)> {
         let _ = std::fs::create_dir_all(&dir);
         env.push((var.into(), dir.to_string_lossy().into_owned()));
     }
-    let gitconfig = config_dir.join("gitconfig");
-    if std::fs::write(
-        &gitconfig,
-        "# Written by Forge for a confined spawn.\n\
-         # Keeps git from reading the host's ~/.gitconfig.\n",
-    )
-    .is_ok()
-    {
-        env.push((
-            "GIT_CONFIG_GLOBAL".into(),
-            gitconfig.to_string_lossy().into_owned(),
-        ));
-        env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
+    let user_git = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+        .map(|dir| dir.join("git"));
+    let link = config_dir.join("xdg-config").join("git");
+    if let Some(user_git) = user_git.filter(|dir| dir.is_dir()) {
+        if link.symlink_metadata().is_err() {
+            #[cfg(unix)]
+            let _ = std::os::unix::fs::symlink(user_git, link);
+        }
     }
     env
 }
@@ -279,19 +279,23 @@ pub(crate) fn credential_helper_env(
     config_dir: &Path,
     workspace_root: &Path,
 ) -> Vec<(String, String)> {
+    let credentials = grant
+        .map(|grant| credentials_for_grant(grant, workspace_root))
+        .unwrap_or_default();
+    helper_env(&credentials, config_dir)
+}
+
+fn helper_env(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = vec![
         ("GIT_TERMINAL_PROMPT".into(), "0".into()),
         ("GIT_CONFIG_KEY_0".into(), "credential.helper".into()),
         ("GIT_CONFIG_VALUE_0".into(), String::new()),
     ];
     let mut count = 1;
-    let credentials = grant
-        .map(|grant| credentials_for_grant(grant, workspace_root))
-        .unwrap_or_default();
     let store = config_dir.join("https-credentials");
     let helper = config_dir.join("git-credential-forge");
     if !credentials.is_empty()
-        && write_credential_store(&store, &credentials).is_ok()
+        && write_credential_store(&store, credentials).is_ok()
         && write_credential_helper(&helper).is_ok()
     {
         env.push((
@@ -306,30 +310,6 @@ pub(crate) fn credential_helper_env(
         count = 2;
     }
     env.push(("GIT_CONFIG_COUNT".into(), count.to_string()));
-    env
-}
-
-fn project_identity(credentials: &[HostCredential], config_dir: &Path) -> Vec<(String, String)> {
-    let mut env = vec![("GIT_TERMINAL_PROMPT".into(), "0".into())];
-    let store = config_dir.join("https-credentials");
-    if write_credential_store(&store, credentials).is_ok() {
-        env.push((
-            "FORGE_HOST_CREDENTIALS".into(),
-            store.to_string_lossy().into_owned(),
-        ));
-    }
-    let helper = config_dir.join("git-credential-forge");
-    if write_credential_helper(&helper).is_ok() {
-        if let Some(gitconfig) = write_gitconfig(config_dir, &helper, credentials) {
-            env.push(("GIT_CONFIG_GLOBAL".into(), gitconfig));
-            env.push(("GIT_CONFIG_NOSYSTEM".into(), "1".into()));
-        }
-    }
-    for cred in credentials {
-        if let Some(name) = token_env_name(&cred.host) {
-            env.push((name, cred.password.clone()));
-        }
-    }
     env
 }
 
@@ -392,33 +372,6 @@ done < "$file"
     std::fs::write(path, SCRIPT)
 }
 
-fn write_gitconfig(
-    config_dir: &Path,
-    helper: &Path,
-    credentials: &[HostCredential],
-) -> Option<String> {
-    let path = config_dir.join("gitconfig");
-    let helper = helper.to_str()?;
-    let mut body = String::from(
-        "# Written by Forge for a confined spawn with a host(...) grant.\n\
-         # SSH cannot use the CONNECT proxy; rewrite to HTTPS.\n\
-         [credential]\n\
-         \thelper =\n\
-         [credential]\n",
-    );
-    body.push_str(&format!("\thelper = !sh '{helper}'\n"));
-    for cred in credentials {
-        let host = &cred.host;
-        body.push_str(&format!(
-            "[url \"https://{host}/\"]\n\
-             \tinsteadOf = git@{host}:\n\
-             \tinsteadOf = ssh://git@{host}/\n"
-        ));
-    }
-    std::fs::write(&path, body).ok()?;
-    Some(path.to_string_lossy().into_owned())
-}
-
 fn leading_executable(command: &str) -> &str {
     let token = command
         .split_whitespace()
@@ -470,23 +423,15 @@ mod tests {
         assert!(dir.path().join("xdg-config").is_dir());
     }
 
-    /// A confined git must not read the host's `~/.gitconfig` (it is outside
-    /// the sandbox), so the isolated env points git at a writable spawn-local
-    /// global config instead.
+    /// The user's own git settings stay in effect in a confined spawn: the
+    /// global config is not replaced.
     #[test]
-    fn isolated_config_points_git_at_a_spawn_local_global_config() {
+    fn isolated_config_leaves_the_users_git_config_in_effect() {
         let dir = tempfile::tempdir().unwrap();
         let env = isolated_config_env(dir.path());
-        let global = env
+        assert!(!env
             .iter()
-            .find(|(candidate, _)| candidate == "GIT_CONFIG_GLOBAL")
-            .map(|(_, value)| value)
-            .expect("a confined git needs a readable global config");
-        assert!(global.starts_with(dir.path().to_str().unwrap()));
-        assert!(std::path::Path::new(global).is_file());
-        assert!(env
-            .iter()
-            .any(|(name, value)| name == "GIT_CONFIG_NOSYSTEM" && value == "1"));
+            .any(|(name, _)| name == "GIT_CONFIG_GLOBAL" || name == "GIT_CONFIG_NOSYSTEM"));
     }
 
     #[test]
@@ -494,7 +439,7 @@ mod tests {
         assert_eq!(token_env_name("github.com"), Some("GITHUB_TOKEN".into()));
         assert_eq!(token_env_name("crates.io"), Some("CRATES_TOKEN".into()));
         let dir = tempfile::tempdir().unwrap();
-        let env = project_identity(
+        let env = helper_env(
             &[HostCredential {
                 host: "github.com".into(),
                 username: "oauth2".into(),
@@ -502,10 +447,17 @@ mod tests {
             }],
             dir.path(),
         );
-        assert!(env
-            .iter()
-            .any(|(name, value)| name == "GITHUB_TOKEN" && value == "token"));
-        assert!(!env.iter().any(|(name, _)| name == "GH_TOKEN"));
+        let value = |name: &str| {
+            env.iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        };
+        // The user's helpers are dropped, then Forge's answers.
+        assert_eq!(value("GIT_CONFIG_COUNT"), Some("2"));
+        assert_eq!(value("GIT_CONFIG_VALUE_0"), Some(""));
+        assert!(value("GIT_CONFIG_VALUE_1").unwrap().starts_with("!sh '"));
+        assert!(value("FORGE_HOST_CREDENTIALS").is_some());
+        assert!(!env.iter().any(|(name, _)| name == "GIT_CONFIG_GLOBAL"));
     }
 
     #[test]
@@ -541,25 +493,12 @@ mod tests {
     }
 
     #[test]
-    fn gitconfig_rewrites_ssh_for_each_projected_host() {
-        let dir = tempfile::tempdir().unwrap();
-        let helper = dir.path().join("helper");
-        std::fs::write(&helper, "true").unwrap();
-        let creds = vec![HostCredential {
-            host: "example.com".into(),
-            username: "me".into(),
-            password: "x".into(),
-        }];
-        let gitconfig = write_gitconfig(dir.path(), &helper, &creds).unwrap();
-        let body = std::fs::read_to_string(gitconfig).unwrap();
-        assert!(body.contains("insteadOf = git@example.com:"));
-        assert!(body.contains("insteadOf = ssh://git@example.com/"));
-        assert!(body.contains("https://example.com/"));
-    }
-
-    #[test]
     fn identity_is_not_projected_without_a_grant() {
-        assert!(host_identity_env(None, Path::new("/tmp"), Path::new("/tmp")).is_empty());
+        let dir = tempfile::tempdir().unwrap();
+        let env = host_identity_env(None, dir.path(), dir.path());
+        assert!(!env
+            .iter()
+            .any(|(name, _)| name.ends_with("_TOKEN") || name == "FORGE_HOST_CREDENTIALS"));
     }
 
     #[test]
@@ -578,7 +517,7 @@ mod tests {
     #[test]
     fn projected_env_uses_host_label_tokens_not_a_product_table() {
         let dir = tempfile::tempdir().unwrap();
-        let env = project_identity(
+        let env = identity_env(
             &[HostCredential {
                 host: "example.com".into(),
                 username: "me".into(),

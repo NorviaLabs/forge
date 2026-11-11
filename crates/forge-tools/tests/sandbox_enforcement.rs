@@ -1498,7 +1498,7 @@ async fn a_masked_proxy_refusal_stays_with_the_invocation_that_caused_it() {
 async fn host_grant_projects_git_identity_through_the_sandbox() {
     require_sandbox!();
     let remote_host = "github.com";
-    let remote = "git@github.com:NorviaLabs/forge.git";
+    let remote = "https://github.com/NorviaLabs/forge.git";
     if !host_has_https_credentials(remote_host) {
         eprintln!("SKIP: no HTTPS credentials for {remote_host} on this host");
         return;
@@ -1524,8 +1524,10 @@ async fn host_grant_projects_git_identity_through_the_sandbox() {
         control: Some(proxy.shared().clone()),
     };
 
-    // SSH remotes cannot leave the sandbox; the projected gitconfig must
-    // rewrite them to HTTPS and authenticate with the filled credential.
+    // The keychain is out of the sandbox's reach; the projected helper
+    // answers with the credential filled on the host. (An SSH remote goes
+    // through the SSH broker instead, which needs the real `forge` binary:
+    // see `forge-cli/tests/git_tunnel.rs`.)
     let ls_remote = run_shell_command_with_egress(
         &format!("git ls-remote {remote} HEAD"),
         ws.path(),
@@ -1535,7 +1537,7 @@ async fn host_grant_projects_git_identity_through_the_sandbox() {
     .expect("git ls-remote should spawn");
     assert!(
         !ls_remote.is_error,
-        "SSH remotes must be rewritten to HTTPS through the proxy, got {}",
+        "an HTTPS remote must authenticate through the proxy, got {}",
         ls_remote.content
     );
     assert!(

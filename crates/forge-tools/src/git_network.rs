@@ -551,6 +551,18 @@ pub(crate) async fn route_through_gateway(
     })
 }
 
+/// The per-URL and per-remote proxy settings in effect in the workspace.
+/// Each outranks `http.proxy`, so a git that must use the gateway has to
+/// override every one of them.
+pub(crate) async fn proxy_override_keys(ctx: &ToolContext) -> Result<Vec<String>, ToolError> {
+    LocalRepo {
+        root: &ctx.workspace_root,
+        credential_env_names: &ctx.credential_env_names,
+    }
+    .proxy_keys()
+    .await
+}
+
 /// The Forge executable that provides the hidden helper subcommands.
 pub(crate) fn helper_exe() -> Result<String, String> {
     let exe = match EGRESS_CONNECT_EXE.get() {
@@ -680,11 +692,23 @@ fn git_proxy_command(
     exe: &str,
     connect_addr: &str,
 ) -> std::io::Result<(Option<tempfile::TempDir>, String)> {
-    use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::Builder::new()
         .prefix("forge-git-proxy-")
         .tempdir()?;
-    let path = dir.path().join("git-proxy");
+    let path = write_git_proxy_wrapper(dir.path(), exe, connect_addr)?;
+    Ok((Some(dir), path))
+}
+
+/// Write the git:// proxy wrapper for the gateway at `connect_addr` into
+/// `dir` and return its path, for `core.gitProxy`.
+#[cfg(unix)]
+pub(crate) fn write_git_proxy_wrapper(
+    dir: &Path,
+    exe: &str,
+    connect_addr: &str,
+) -> std::io::Result<String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("git-proxy");
     std::fs::write(
         &path,
         format!(
@@ -694,11 +718,9 @@ fn git_proxy_command(
         ),
     )?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-    let path = path
-        .to_str()
-        .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?
-        .to_string();
-    Ok((Some(dir), path))
+    path.to_str()
+        .map(str::to_string)
+        .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))
 }
 
 /// Without a wrapper script git:// cannot be routed; a program that does not

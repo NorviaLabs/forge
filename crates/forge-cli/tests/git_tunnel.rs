@@ -231,14 +231,15 @@ async fn git_protocol_cannot_bypass_the_gateway_address_check() {
     let (proxy, ctx) = ctx(ws.path(), "*", false).await;
     let _ = proxy.shared().drain_events();
 
-    let out = fetch(&ctx, &format!("git://127.0.0.1:{port}/repo.git"))
+    // A private address is not a host that can be granted, so the denial
+    // names no host.
+    let error = fetch(&ctx, &format!("git://127.0.0.1:{port}/repo.git"))
         .await
-        .unwrap();
-    assert!(out.is_error, "{}", out.content);
+        .unwrap_err();
     assert!(
-        out.content.contains("private address"),
-        "the gateway's reason reaches git's output: {}",
-        out.content
+        matches!(&error, ToolError::SandboxDenied { denied_host: None, content, .. }
+            if content.contains("private address")),
+        "the gateway's reason reaches git's output: {error:?}"
     );
     let all = proxy.shared().drain_events();
     // A CI runner can carry its own git setup (e.g. a credential helper or
@@ -296,26 +297,31 @@ done
 exec sh -c "$command"
 "#;
 
-/// Point the workspace's ssh at [`FAKE_SSH`]; returns the remote-command log.
-fn use_fake_ssh(ws: &Path, scripts: &Path) -> PathBuf {
-    let ssh = scripts.join("fake-ssh");
-    let log = scripts.join("remote-commands.log");
-    std::fs::write(
-        &ssh,
-        FAKE_SSH.replacen(
-            "#!/bin/sh\n",
-            &format!("#!/bin/sh\nFAKE_SSH_LOG='{}'\n", log.display()),
-            1,
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
-    git(
-        ws,
-        &["config", "core.sshCommand", &format!("'{}'", ssh.display())],
-    );
-    git(ws, &["config", "ssh.variant", "ssh"]);
-    log
+/// Make [`FAKE_SSH`] the user's ssh (`GIT_SSH_COMMAND`, a user-level
+/// setting: a repository's own `core.sshCommand` is not honoured for a
+/// confined git); returns the remote-command log. One script and one log for
+/// the whole test process, since the environment is shared.
+fn use_fake_ssh() -> PathBuf {
+    static LOG: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    LOG.get_or_init(|| {
+        let scripts = tempfile::tempdir().unwrap().keep();
+        let ssh = scripts.join("fake-ssh");
+        let log = scripts.join("remote-commands.log");
+        std::fs::write(
+            &ssh,
+            FAKE_SSH.replacen(
+                "#!/bin/sh\n",
+                &format!("#!/bin/sh\nFAKE_SSH_LOG='{}'\n", log.display()),
+                1,
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::env::set_var("GIT_SSH_COMMAND", format!("'{}'", ssh.display()));
+        std::env::set_var("GIT_SSH_VARIANT", "ssh");
+        log
+    })
+    .clone()
 }
 
 /// The far side of the fake ssh: every connection gets `git upload-pack`
@@ -353,7 +359,7 @@ async fn ssh_fetch_runs_through_the_proxy_command_and_gateway() {
     let head = bare_repo(base.path());
     let port = upload_pack_server(base.path().join("repo.git"));
     let ws = workspace();
-    let log = use_fake_ssh(ws.path(), base.path());
+    let log = use_fake_ssh();
     let (proxy, ctx) = ctx(ws.path(), "127.0.0.1", true).await;
 
     let out = fetch(&ctx, &format!("ssh://git@127.0.0.1:{port}/repo.git"))
@@ -379,7 +385,7 @@ async fn ssh_alias_to_an_unpermitted_host_is_refused_by_the_gateway() {
     bare_repo(base.path());
     let port = upload_pack_server(base.path().join("repo.git"));
     let ws = workspace();
-    let log = use_fake_ssh(ws.path(), base.path());
+    let log = use_fake_ssh();
     let (proxy, ctx) = ctx(ws.path(), "forge-alias", true).await;
 
     let error = fetch(&ctx, &format!("ssh://git@forge-alias:{port}/repo.git"))

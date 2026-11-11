@@ -199,8 +199,20 @@ Subdirectories:
   signing program on the host. The broker signs only a commit, a tag or a
   push certificate (`is_git_payload`), takes format, program and key from
   the user's git config with the repository's scopes skipped
-  (`git_network::host_signer`), and does not verify. Confined shells do not
-  get it yet: they run with an empty global git config.
+  (`git_network::host_signer`), and does not verify. Confined shells with
+  a gateway get it too (`shell_spawn.rs`).
+- Git in a confined shell reads the user's own git config (`~/.gitconfig`,
+  and `$XDG_CONFIG_HOME/git` linked into the isolated XDG tree). Forge adds
+  settings through `GIT_CONFIG_*` only: the credential helper list is
+  replaced (`credentials::host_identity_env`), `http.proxy` and
+  `core.gitProxy` point at the gateway, and the signing programs at the
+  broker. There is no SSH-to-HTTPS rewrite any more.
+- The `git` tool runs confined through the shell spawn path
+  (`builtins::run_git_confined`): argument validation and the host
+  pre-check first, then `git <sub> <quoted args>` as a confined shell
+  command, with per-URL proxy settings pointed at `$HTTP_PROXY`. An approved
+  unconfined retry (`ctx.unconfined_shell`) or a host with no sandbox keeps
+  the host path (`route_through_gateway`).
 - Hold-and-ask: a host no rule decides (`EgressPolicy::undecided`) is not
   refused when an asker is set (`EgressShared::set_asker`). The gateway holds
   the connection (`admit`/`admission`, up to `EGRESS_HOLD_TIMEOUT`) and sends a
