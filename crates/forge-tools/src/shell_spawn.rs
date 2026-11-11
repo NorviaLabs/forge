@@ -103,6 +103,7 @@ impl ShellSpawnSpec {
             .as_ref()
             .and_then(EgressInvocation::grant)
             .or(egress);
+        use crate::sandbox::WithEgress as _;
         let mut policy = crate::sandbox::SandboxPolicy::for_workspace(workspace_root)
             .with_command_access(command)
             .with_egress(command_egress);

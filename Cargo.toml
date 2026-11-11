@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/forge-types",
+    "crates/forge-sandbox",
     "crates/forge-config",
     "crates/forge-tools",
     "crates/forge-model",
@@ -63,6 +64,7 @@ fff-query-parser = "0.10.1"
 similar = "3"
 
 forge-types = { path = "crates/forge-types" }
+forge-sandbox = { path = "crates/forge-sandbox" }
 forge-config = { path = "crates/forge-config" }
 forge-tools = { path = "crates/forge-tools" }
 forge-model = { path = "crates/forge-model" }

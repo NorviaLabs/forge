@@ -1,0 +1,11 @@
+[package]
+name = "forge-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OS-level confinement for processes Forge starts"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = { workspace = true }

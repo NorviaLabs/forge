@@ -248,6 +248,7 @@ async fn sandboxed_launch(
     // Same profile as the shell tool: read access to the workspace, system
     // paths and the resolved server executable; network denied except the
     // egress proxy.
+    use forge_tools::sandbox::WithEgress as _;
     let mut policy = SandboxPolicy::for_workspace(workspace)
         .with_command_access(&cfg.command)
         .with_session_tmp(tmp.path())
