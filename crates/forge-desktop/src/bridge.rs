@@ -760,6 +760,12 @@ fn truncate(text: &str, limit: usize) -> String {
 
 /// The IPC shape of one transcript message. `full` skips the snapshot limits;
 /// the detail command re-reads a single message when the operator asks.
+///
+/// An assistant message with nothing to show (a reply that is only tool
+/// calls) has no view: its tool results follow as their own rows, and an
+/// empty one would leave a bare "Forge" heading above them. Whether a
+/// message has a view never depends on `full`, so indexes agree between the
+/// session event and the detail command.
 fn message_view(message: &forge_types::Message, full: bool) -> Option<MessageView> {
     let role = match message.role {
         MessageRole::User => "user",
@@ -767,12 +773,29 @@ fn message_view(message: &forge_types::Message, full: bool) -> Option<MessageVie
         MessageRole::Tool => "tool",
         _ => return None,
     };
-    let text = if full {
-        message.content.clone()
-    } else if message.role == MessageRole::Tool {
-        truncate(&message.content, TOOL_TEXT_LIMIT)
+    // The failure marker tells the model (and resume) that a turn failed.
+    // It is not prose: the operator reads the reason that follows it.
+    let content = match message.role {
+        MessageRole::Assistant => message
+            .content
+            .strip_prefix(forge_core::TURN_FAILED_MARKER)
+            .unwrap_or(&message.content),
+        _ => &message.content,
+    };
+    if message.role == MessageRole::Assistant
+        && content.trim().is_empty()
+        && message
+            .thinking
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+        && message.attachments.is_empty()
+    {
+        return None;
+    }
+    let text = if !full && message.role == MessageRole::Tool {
+        truncate(content, TOOL_TEXT_LIMIT)
     } else {
-        message.content.clone()
+        content.to_string()
     };
     let thinking = message.thinking.as_ref().map(|thinking| {
         if full {
@@ -3666,6 +3689,43 @@ mod tests {
         assert_eq!(projects.workspace().borrow().projects.len(), 1);
         projects.shutdown().await.unwrap();
         let _ = std::fs::remove_dir_all(scratch);
+    }
+
+    /// The page shows what the operator should read: the reason a turn
+    /// failed without its internal marker, and no empty assistant row for a
+    /// reply that was only tool calls.
+    #[test]
+    fn the_transcript_view_hides_the_failure_marker_and_empty_replies() {
+        use forge_types::{Message, MessageRole};
+        let failed = Message::new(
+            MessageRole::Assistant,
+            format!(
+                "{}Forge stopped after repeated denied approvals.",
+                forge_core::TURN_FAILED_MARKER
+            ),
+        );
+        for full in [false, true] {
+            assert_eq!(
+                message_view(&failed, full).unwrap().text,
+                "Forge stopped after repeated denied approvals."
+            );
+        }
+
+        let tool_calls_only = Message::new(MessageRole::Assistant, "");
+        assert!(message_view(&tool_calls_only, false).is_none());
+        assert!(message_view(&tool_calls_only, true).is_none());
+
+        let mut thinking_only = Message::new(MessageRole::Assistant, "");
+        thinking_only.thinking = Some("weighing the options".into());
+        assert!(message_view(&thinking_only, false).is_some());
+
+        // Other roles are untouched: an empty tool result is still a row.
+        assert!(message_view(&Message::new(MessageRole::Tool, ""), false).is_some());
+        let quoted = Message::new(MessageRole::User, forge_core::TURN_FAILED_MARKER);
+        assert_eq!(
+            message_view(&quoted, false).unwrap().text,
+            forge_core::TURN_FAILED_MARKER
+        );
     }
 
     #[test]
