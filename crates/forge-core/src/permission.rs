@@ -62,17 +62,20 @@ impl EgressRuntime {
     }
 }
 
-/// Hosts this workspace may reach, taken from the merged permission files.
+/// Hosts this workspace may reach: the built-in allow-list (code hosts and
+/// package registries) plus the merged permission files.
 ///
-/// Nothing is pre-allowed. A host is reachable only when the personal
-/// `permissions.toml` contains a matching `host(...)` allow (or `host(*)`
-/// for unrestricted network). Repo-committed `allow` rules never loosen
-/// this — same trust split as the HITL path.
+/// Beyond the built-in list a host is reachable only when the personal
+/// `permissions.toml` or the project's grants contain a matching
+/// `host(...)` allow (or `host(*)` for unrestricted network); anything else
+/// is asked about. A personal `deny` wins over the built-in list.
+/// Repo-committed `allow` rules never loosen this — same trust split as the
+/// HITL path.
 pub fn egress_policy_for_workspace(
     workspace: &std::path::Path,
 ) -> forge_tools::egress::EgressPolicy {
     let (permissions, _) = forge_config::load_permissions(workspace);
-    forge_tools::egress::EgressPolicy::from_permissions(&permissions)
+    forge_tools::egress::EgressPolicy::from_permissions(&permissions).with_builtin_hosts()
 }
 
 /// Start the egress proxy for a session.
@@ -421,10 +424,11 @@ mod session_egress_tests {
         status
     }
 
-    /// A session in an empty workspace, with no personal host rules, must
-    /// not pre-allow package registries or GitHub.
+    /// A session in an empty workspace, with no personal host rules, starts
+    /// with the built-in list (package registries and code hosts) and
+    /// nothing else. A personal deny takes a built-in host away.
     #[tokio::test]
-    async fn a_session_does_not_pre_allow_ecosystem_hosts() {
+    async fn a_session_starts_with_the_builtin_hosts_and_nothing_else() {
         let _user = IsolatedUserConfig::new();
         let dir = tempfile::tempdir().unwrap();
         let policy = super::egress_policy_for_workspace(dir.path());
@@ -435,11 +439,17 @@ mod session_egress_tests {
             "github.com",
             "api.github.com",
         ] {
-            assert!(
-                !policy.permits(host),
-                "{host} must stay denied until the user allows it"
-            );
+            assert!(policy.permits(host), "{host} is built in");
         }
+        for host in ["example.com", "pastebin.com", "evil.github.io"] {
+            assert!(!policy.permits(host), "{host} must be asked about");
+        }
+
+        let user_path = forge_config::user_permissions_path().expect("redirected HOME");
+        std::fs::create_dir_all(user_path.parent().unwrap()).unwrap();
+        std::fs::write(&user_path, "deny = [\"host(**.github.com)\"]\n").unwrap();
+        let policy = super::egress_policy_for_workspace(dir.path());
+        assert!(!policy.permits("api.github.com") && policy.permits("crates.io"));
     }
 
     /// Personal `host(...)` allows are the only thing that open the proxy.
@@ -457,7 +467,7 @@ mod session_egress_tests {
         .unwrap();
         let policy = super::egress_policy_for_workspace(dir.path());
         assert!(
-            !policy.permits("crates.io"),
+            !policy.permits("example.org"),
             "a repo-committed host allow must not loosen egress"
         );
 
@@ -467,7 +477,7 @@ mod session_egress_tests {
         let policy = super::egress_policy_for_workspace(dir.path());
         assert!(policy.permits("api.example.com"));
         assert!(policy.permits("example.com"));
-        assert!(!policy.permits("crates.io"));
+        assert!(!policy.permits("example.org"));
     }
 
     /// Applying a personal host policy must replace the empty default, not

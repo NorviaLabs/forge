@@ -100,6 +100,52 @@ fn gh_socket_env(grant: Option<&EgressGrant>, config_dir: &Path) -> Vec<(String,
 /// store, they do not add to it.
 const SYSTEM_ROOTS: &str = "/etc/ssl/cert.pem";
 
+/// Trust-store variables, and whether each replaces the client's roots (the
+/// bundle must then include them) or adds to them.
+const TRUST_VARIABLES: &[(&str, bool)] = &[
+    ("GIT_SSL_CAINFO", true),
+    ("SSL_CERT_FILE", true),
+    ("CURL_CA_BUNDLE", true),
+    ("REQUESTS_CA_BUNDLE", true),
+    ("CARGO_HTTP_CAINFO", true),
+    ("NODE_EXTRA_CA_CERTS", false),
+    ("DENO_CERT", false),
+];
+
+/// Make the confined process trust the session authority, and have its
+/// endpoint terminate TLS to credentialed and inspected hosts from now on.
+///
+/// Each variable keeps what the user already had it set to (a corporate
+/// bundle), with the authority's certificate appended. `None` when the
+/// authority or the system roots are unavailable; nothing is intercepted
+/// then.
+fn trust_env(
+    endpoint: &crate::egress::EgressShared,
+    config_dir: &Path,
+) -> Option<Vec<(String, String)>> {
+    let authority = endpoint.session_ca_pem()?;
+    let system = std::fs::read_to_string(SYSTEM_ROOTS).ok()?;
+    let mut env = Vec::new();
+    for (name, replaces) in TRUST_VARIABLES {
+        let own = std::env::var_os(name)
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .filter(|content| !content.trim().is_empty());
+        let base = match (own, replaces) {
+            (Some(own), _) => own,
+            (None, true) => system.clone(),
+            (None, false) => String::new(),
+        };
+        let bundle = config_dir.join(format!("forge-ca-{}.pem", name.to_ascii_lowercase()));
+        std::fs::write(&bundle, format!("{base}\n{authority}")).ok()?;
+        env.push((name.to_string(), bundle.to_str()?.to_string()));
+    }
+    // Cargo's built-in git ignores these variables; the git CLI does not,
+    // and it also gets the SSH broker and the credential helper.
+    env.push(("CARGO_NET_GIT_FETCH_WITH_CLI".into(), "true".into()));
+    endpoint.enable_interception()?;
+    Some(env)
+}
+
 /// Keep the credentials out of the sandbox: the gateway supplies each one
 /// itself, and the confined process gets a placeholder plus the session
 /// authority's certificate so it accepts the gateway's TLS.
@@ -116,17 +162,7 @@ fn behind_the_gateway(
     let Some(endpoint) = grant.and_then(|grant| grant.control.as_ref()) else {
         return (credentials, Vec::new());
     };
-    if credentials.is_empty() {
-        return (credentials, Vec::new());
-    }
-    let bundle = config_dir.join("forge-ca-bundle.pem");
-    let written = endpoint
-        .session_ca_pem()
-        .zip(std::fs::read_to_string(SYSTEM_ROOTS).ok())
-        .is_some_and(|(authority, roots)| {
-            std::fs::write(&bundle, format!("{roots}\n{authority}")).is_ok()
-        });
-    let Some(bundle) = bundle.to_str().filter(|_| written) else {
+    let Some(mut env) = trust_env(endpoint, config_dir) else {
         return (credentials, Vec::new());
     };
     let shielded = credentials
@@ -141,16 +177,6 @@ fn behind_the_gateway(
     let Some(shielded) = shielded else {
         return (credentials, Vec::new());
     };
-    let mut env: Vec<(String, String)> = [
-        "GIT_SSL_CAINFO",
-        "SSL_CERT_FILE",
-        "CURL_CA_BUNDLE",
-        "REQUESTS_CA_BUNDLE",
-        "NODE_EXTRA_CA_CERTS",
-    ]
-    .into_iter()
-    .map(|name| (name.to_string(), bundle.to_string()))
-    .collect();
     env.extend(gh_socket_env(grant, config_dir));
     (shielded, env)
 }
@@ -240,7 +266,9 @@ fn credentials_for_grant(grant: &EgressGrant, workspace_root: &Path) -> Vec<Host
         let Some(host) = apex_host(&pattern) else {
             continue;
         };
-        if out.iter().any(|c: &HostCredential| c.host == host) {
+        if out.iter().any(|c: &HostCredential| c.host == host)
+            || crate::egress::is_builtin_registry(&host)
+        {
             continue;
         }
         if let Some(cred) = fill_https_credential(&host, workspace_root) {

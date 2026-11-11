@@ -230,6 +230,16 @@ Subdirectories:
   (rules `remote_write(target)`), else it is held and asked through the same
   `HostAsk` channel with `write: Some(summary)` and `host` set to the
   target. With no asker it is refused.
+- Built-in allow-list (`EgressPolicy::with_builtin_hosts`, applied by
+  `forge_core::egress_policy_for_workspace`): `BUILTIN_CODE_HOSTS`
+  (github.com, gitlab.com, bitbucket.org, with subdomains) and
+  `BUILTIN_REGISTRY_HOSTS`. A deny rule wins. Code hosts are `inspected`:
+  an endpoint whose client trusts the authority terminates TLS to them even
+  without a credential, and then refuses any `Authorization`
+  (`Identity::Anonymous`). Registries are tunnelled. Every confined spawn
+  with a live endpoint now gets the trust variables (`credentials::trust_env`,
+  each keeping the user's own bundle if set) and
+  `CARGO_NET_GIT_FETCH_WITH_CLI=true`.
 - `gh` cannot trust the authority (Go on macOS uses the system verifier
   only), so `GH_CONFIG_DIR` points it at a config with `http_unix_socket`
   set to the invocation's Unix socket. That socket alone accepts origin-form

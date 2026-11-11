@@ -63,6 +63,55 @@ pub struct EgressPolicy {
     writes: Vec<String>,
 }
 
+/// Code hosts allowed by default, with every subdomain. They accept
+/// authenticated writes, so the gateway inspects requests to them (see
+/// [`inspected`]) instead of tunnelling blindly.
+pub const BUILTIN_CODE_HOSTS: &[&str] = &["github.com", "gitlab.com", "bitbucket.org"];
+
+/// Package registries and download hosts allowed by default: what a build
+/// fetches its dependencies from. Tunnelled, not inspected.
+pub const BUILTIN_REGISTRY_HOSTS: &[&str] = &[
+    "**.githubusercontent.com",
+    "registry.npmjs.org",
+    "registry.yarnpkg.com",
+    "nodejs.org",
+    "pypi.org",
+    "files.pythonhosted.org",
+    "crates.io",
+    "static.crates.io",
+    "index.crates.io",
+    "static.rust-lang.org",
+    "proxy.golang.org",
+    "sum.golang.org",
+    "rubygems.org",
+    "index.rubygems.org",
+    "repo.maven.apache.org",
+    "repo1.maven.org",
+    "plugins.gradle.org",
+    "services.gradle.org",
+];
+
+/// Whether `host` is a built-in code host or one of its subdomains: a host
+/// whose requests the gateway reads, so that only the user's own identity
+/// is used there.
+pub fn inspected(host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    BUILTIN_CODE_HOSTS.iter().any(|code_host| {
+        host == *code_host
+            || host
+                .strip_suffix(code_host)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+    })
+}
+
+/// Whether `host` is allowed only as a built-in registry: nothing Forge
+/// looks a credential up for.
+pub fn is_builtin_registry(host: &str) -> bool {
+    BUILTIN_REGISTRY_HOSTS
+        .iter()
+        .any(|pattern| pattern.trim_start_matches("**.") == host)
+}
+
 pub const SANDBOX_DENIED_REASON: &str = "Forge Sandbox Denied";
 
 /// Reason phrase when a permitted name resolves to a non-public address.
@@ -313,6 +362,19 @@ impl EgressPolicy {
         policy
     }
 
+    /// Add the built-in allow-list: the code hosts and registries a build
+    /// needs, so ordinary work does not start with a question. A deny rule
+    /// still wins over it.
+    pub fn with_builtin_hosts(mut self) -> Self {
+        for host in BUILTIN_CODE_HOSTS {
+            self.allow(format!("**.{host}"));
+        }
+        for pattern in BUILTIN_REGISTRY_HOSTS {
+            self.allow(*pattern);
+        }
+        self
+    }
+
     /// Let writes to `target` through without asking.
     pub fn allow_write(&mut self, target: impl Into<String>) -> &mut Self {
         let target = target.into().trim().trim_matches('/').to_ascii_lowercase();
@@ -539,6 +601,15 @@ impl EgressShared {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         )
+    }
+
+    /// The session authority's certificate, PEM, for a client of this
+    /// endpoint that will be told to trust it. From now on this endpoint
+    /// terminates TLS to credentialed and inspected hosts.
+    pub fn enable_interception(&self) -> Option<String> {
+        let pem = self.intercept.ca_pem()?;
+        self.intercepting.store(true, Ordering::Relaxed);
+        Some(pem)
     }
 
     /// The session authority's certificate, PEM.
@@ -1413,13 +1484,18 @@ where
             return Ok(());
         };
         let secret = shared.intercept.secret_for(&host);
+        let identity = match &secret {
+            Some(secret) => Identity::Supply(secret),
+            None if inspected(&host) => Identity::Anonymous,
+            None => Identity::Unchecked,
+        };
         return forward_with_credentials(
             reader,
             write_half,
             upstream,
             upstream_addr,
             &head,
-            secret.as_ref(),
+            identity,
             &attempt,
         )
         .await;
@@ -1431,9 +1507,11 @@ where
         && port == 443
         && shared.intercepting.load(Ordering::Relaxed)
     {
-        if let Some(secret) = shared.intercept.secret_for(&host) {
+        let secret = shared.intercept.secret_for(&host);
+        if secret.is_some() || inspected(&host) {
             let client = tokio::io::join(reader, write_half);
-            return serve_terminated(client, upstream, upstream_addr, &secret, &attempt).await;
+            return serve_terminated(client, upstream, upstream_addr, secret.as_ref(), &attempt)
+                .await;
         }
     }
     let (upstream_read, mut upstream_write) = tokio::io::split(upstream);
@@ -1500,7 +1578,7 @@ async fn serve_terminated<C>(
     mut client: C,
     upstream: TcpStream,
     upstream_addr: SocketAddr,
-    secret: &crate::tls_intercept::Secret,
+    secret: Option<&crate::tls_intercept::Secret>,
     attempt: &Attempt<'_>,
 ) -> io::Result<()>
 where
@@ -1553,10 +1631,27 @@ where
         upstream,
         upstream_addr,
         &head,
-        Some(secret),
+        match secret {
+            Some(secret) => Identity::Supply(secret),
+            None => Identity::Anonymous,
+        },
         attempt,
     )
     .await
+}
+
+/// Whose credentials a forwarded request may carry.
+#[derive(Clone, Copy)]
+enum Identity<'a> {
+    /// The user's: the placeholder becomes this credential; any other
+    /// credential is refused.
+    Supply(&'a crate::tls_intercept::Secret),
+    /// Nobody's: Forge has no credential for this inspected host, so a
+    /// request that carries one is refused.
+    Anonymous,
+    /// Not Forge's concern: a host that is neither credentialed nor
+    /// inspected.
+    Unchecked,
 }
 
 /// Forward one origin-form request (`head`) to `attempt.host` over the
@@ -1568,7 +1663,7 @@ async fn forward_with_credentials<CR, CW, U>(
     upstream: U,
     upstream_addr: SocketAddr,
     head: &[String],
-    secret: Option<&crate::tls_intercept::Secret>,
+    identity: Identity<'_>,
     attempt: &Attempt<'_>,
 ) -> io::Result<()>
 where
@@ -1585,9 +1680,20 @@ where
         failed("malformed request".into());
         return respond(&mut client_write, 400, "Bad Request", "").await;
     };
-    let headers = match secret {
-        Some(secret) => crate::tls_intercept::supply_credentials(secret, headers),
-        None => Ok((
+    let secret = match identity {
+        Identity::Supply(secret) => Some(secret),
+        _ => None,
+    };
+    let headers = match identity {
+        Identity::Supply(secret) => crate::tls_intercept::supply_credentials(secret, headers),
+        Identity::Anonymous
+            if headers
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case("authorization")) =>
+        {
+            Err(crate::tls_intercept::ForeignCredentials)
+        }
+        Identity::Anonymous | Identity::Unchecked => Ok((
             headers
                 .into_iter()
                 .map(|(name, value)| (name.to_string(), value.to_string()))
@@ -3281,6 +3387,41 @@ mod tests {
             Admission::RefusedByUser
         );
         answering.await.unwrap();
+    }
+
+    #[test]
+    fn the_builtin_list_allows_code_hosts_and_registries_and_a_deny_still_wins() {
+        let policy = EgressPolicy::new().with_builtin_hosts();
+        for host in [
+            "github.com",
+            "api.github.com",
+            "objects.githubusercontent.com",
+            "registry.npmjs.org",
+            "crates.io",
+            "pypi.org",
+        ] {
+            assert!(policy.permits(host), "{host}");
+        }
+        for host in [
+            "example.com",
+            "github.com.evil.test",
+            "npmjs.org",
+            "pastebin.com",
+        ] {
+            assert!(!policy.permits(host), "{host}");
+        }
+        let file = forge_config::PermissionsFile {
+            deny: vec!["host(**.github.com)".into()],
+            ..Default::default()
+        };
+        let policy = EgressPolicy::from_permissions(&file).with_builtin_hosts();
+        assert!(!policy.permits("github.com") && policy.permits("crates.io"));
+
+        // Code hosts are inspected; registries and look-alikes are not.
+        assert!(inspected("github.com") && inspected("API.github.com"));
+        assert!(!inspected("githubusercontent.com") && !inspected("notgithub.com"));
+        assert!(is_builtin_registry("crates.io") && is_builtin_registry("githubusercontent.com"));
+        assert!(!is_builtin_registry("github.com"));
     }
 
     #[test]
