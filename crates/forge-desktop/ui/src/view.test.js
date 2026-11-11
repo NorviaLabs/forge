@@ -9,7 +9,10 @@ import {
   windowRange,
   projectStatus,
   prunable,
+  clearShown,
   defaultView,
+  keepDraft,
+  shownMessages,
   diffSide,
   dirtyAnywhere,
   dirtyIn,
@@ -38,7 +41,15 @@ test("a default view is a fresh record with nothing open", () => {
     scroll: 0,
     pinned: true,
     expanded: [],
+    attachment: null,
+    clearedFrom: 0,
+    messageCount: null,
+    messageDetails: {},
+    questionDrafts: {},
+    approvalDrafts: {},
   });
+  assert.notEqual(first.questionDrafts, second.questionDrafts, "records must not share drafts");
+  assert.notEqual(first.messageDetails, second.messageDetails);
   assert.notEqual(first, second);
   assert.notEqual(first.tabs, second.tabs, "records must not share the tab list");
   assert.notEqual(first.expanded, second.expanded, "records must not share open folders");
@@ -239,4 +250,41 @@ test("streamed markdown splits at blank lines outside code fences", () => {
   const before = streamSegments("One\n\nTwo");
   const after = streamSegments("One\n\nTwo and more");
   assert.equal(before[0], after[0]);
+});
+
+test("a session shows its transcript without what /clear hid, with expansions kept", () => {
+  const record = defaultView();
+  const transcript = ["a", "b", "c", "d"].map((text) => ({ role: "assistant", text }));
+  assert.deepEqual(shownMessages(record, transcript.slice(0, 2)).map((m) => m.text), ["a", "b"]);
+  assert.equal(record.messageCount, 2);
+
+  // /clear hides what the backend holds, not what happens to be on screen.
+  clearShown(record, 0);
+  assert.equal(record.clearedFrom, 2);
+  assert.deepEqual(shownMessages(record, transcript).map((m) => m.text), ["c", "d"]);
+
+  // An expanded message is addressed by its place in the full transcript,
+  // so it stays expanded after the next snapshot and after another /clear.
+  record.messageDetails[3] = { text: "d in full", thinking: "why" };
+  const shown = shownMessages(record, transcript);
+  assert.deepEqual(shown[1], { role: "assistant", text: "d in full", thinking: "why" });
+  assert.equal(shown[0], transcript[2], "untouched messages are passed through");
+});
+
+test("/clear before any snapshot hides what is on screen", () => {
+  const record = defaultView();
+  clearShown(record, 3);
+  assert.equal(record.clearedFrom, 3);
+});
+
+test("a draft is kept per request and forgotten once it is empty", () => {
+  const first = defaultView(), second = defaultView();
+  keepDraft(first.questionDrafts, "call-1", { answer: "half" });
+  keepDraft(first.approvalDrafts, "call-1", "a note");
+  assert.deepEqual(first.questionDrafts, { "call-1": { answer: "half" } });
+  assert.deepEqual(second.questionDrafts, {}, "another session's record is untouched");
+  keepDraft(first.questionDrafts, "call-1", null);
+  keepDraft(first.approvalDrafts, "call-1", "");
+  assert.deepEqual(first.questionDrafts, {});
+  assert.deepEqual(first.approvalDrafts, {});
 });

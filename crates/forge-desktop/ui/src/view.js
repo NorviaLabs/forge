@@ -14,7 +14,45 @@ export function defaultView() {
     pinned: true,
     // Folders open in the Files tree; restored with the session (D9).
     expanded: [],
+    // The open file, if any, sent with the next prompt: `{ path, line }`.
+    attachment: null,
+    // `/clear` hides the transcript up to this index; the model keeps its
+    // context.
+    clearedFrom: 0,
+    // The full transcript's length at the last snapshot; null before one.
+    messageCount: null,
+    // Full text of messages the operator expanded, by transcript index,
+    // re-applied after each snapshot so an update does not collapse them.
+    messageDetails: {},
+    // Half-written answers to pending requests, by call id.
+    questionDrafts: {},
+    approvalDrafts: {},
   };
+}
+
+// The transcript as this session shows it: without what `/clear` hid, and
+// with the messages the operator expanded still expanded. Records the full
+// length so a later `/clear` hides exactly what the backend holds.
+export function shownMessages(record, messages) {
+  record.messageCount = messages.length;
+  const from = record.clearedFrom;
+  return messages.slice(from).map((message, index) => {
+    const full = record.messageDetails[from + index];
+    return full ? { ...message, text: full.text, thinking: full.thinking } : message;
+  });
+}
+
+// `/clear`: hide everything received so far. `shown` is the number of
+// messages on screen, used only before the first snapshot.
+export function clearShown(record, shown) {
+  record.clearedFrom = record.messageCount ?? shown;
+}
+
+// Keeps a half-written answer for a pending request, or forgets it when
+// `draft` is empty (answered or dismissed).
+export function keepDraft(drafts, callId, draft) {
+  if (draft) drafts[callId] = draft;
+  else delete drafts[callId];
 }
 
 // Returns the record for a session, creating one in place when it is absent.

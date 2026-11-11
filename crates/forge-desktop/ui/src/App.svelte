@@ -21,7 +21,7 @@
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
   import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
-  import { attentionLabel, flattenTree, foldersToLoad, projectStatus, prunable } from "./view.js";
+  import { attentionLabel, clearShown, flattenTree, foldersToLoad, keepDraft, projectStatus, prunable, shownMessages } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
   import {
@@ -112,8 +112,6 @@
   let screenAnnouncement = $state("");
   let approval = $state(null);
   let question = $state(null);
-  let questionDrafts = $state({});
-  let approvalDrafts = $state({});
   let approveAll = $state(false);
   let thinking = $state(false);
   let imageInput = $state(false);
@@ -139,14 +137,6 @@
   let filesError = $state("");
   let status = $state({ branch: "", files: [] });
   let lastTurnFiles = $state([]);
-  // The open file, if any, sent with the next prompt; per session like drafts.
-  let fileAttachments = $state({});
-  // `/clear` is view-only in the TUI: the model keeps its context.
-  let clearedFrom = $state({});
-  // Full text of messages the operator expanded, re-applied after each
-  // snapshot so a background update does not collapse them.
-  let messageDetails = $state({});
-  const fullMessageCount = {};
 
   let creating = $state(false);
   let pendingClose = $state("");
@@ -332,7 +322,7 @@
         { id: "editor:replace", group: "Editor", label: "Find and replace in current file", action: () => filesPane?.showNavigation("replace") },
         { id: "editor:line", group: "Editor", label: "Jump to line in current file", detail: "⌘/Ctrl L", action: () => filesPane?.showNavigation("line") },
       );
-      const attached = fileAttachments[sessionId]?.path === editing.path;
+      const attached = currentView.attachment?.path === editing.path;
       items.push({
         id: "editor:attach",
         group: "Editor",
@@ -514,15 +504,10 @@
   function applySession(event) {
     sessionId = event.session_id;
     turnState = event.turn_state;
-    fullMessageCount[event.session_id] = event.messages.length;
     promptHistory = event.messages.filter((message) => message.role === "user" && message.text.trim())
       .map((message) => message.text).slice(-500);
     skillDescriptions = event.skill_descriptions ?? [];
-    const from = clearedFrom[event.session_id] ?? 0;
-    messages = event.messages.slice(from).map((message, index) => {
-      const full = messageDetails[`${event.session_id}:${from + index}`];
-      return full ? { ...message, text: full.text, thinking: full.thinking } : message;
-    });
+    messages = shownMessages(viewFor(views, event.session_id), event.messages);
     approval = event.pending_approval;
     question = event.pending_question ?? null;
     approveAll = event.approve_all;
@@ -574,7 +559,7 @@
       if (!snapshot || snapshot.session_id !== sessionId) return;
       const questionId = snapshot.pending_question?.call_id ?? "";
       const approvalId = snapshot.pending_approval?.call_id ?? "";
-      const localTotal = messages.length + (clearedFrom[sessionId] ?? 0);
+      const localTotal = messages.length + currentView.clearedFrom;
       const remoteLast = snapshot.messages[snapshot.messages.length - 1];
       const localLast = messages[messages.length - 1];
       const transcriptMoved = snapshot.messages.length !== localTotal
@@ -1039,16 +1024,10 @@
   }
 
   function toggleFileAttachment(tab) {
-    const id = sessionId;
-    if (fileAttachments[id]?.path === tab.path) {
-      const { [id]: _, ...rest } = fileAttachments;
-      fileAttachments = rest;
-      return;
-    }
-    fileAttachments = {
-      ...fileAttachments,
-      [id]: { path: tab.path, line: Math.max(0, filesPane?.cursorLine() ?? 0) },
-    };
+    const record = viewFor(views, sessionId);
+    record.attachment = record.attachment?.path === tab.path
+      ? null
+      : { path: tab.path, line: Math.max(0, filesPane?.cursorLine() ?? 0) };
   }
 
   async function send(text, images = [], targetSession = sessionId) {
@@ -1060,7 +1039,7 @@
         return true;
       }
     }
-    const attachment = fileAttachments[targetSession] ?? null;
+    const attachment = views[targetSession]?.attachment ?? null;
     // Show the operator's line before the supervisor's snapshot arrives.
     // The next SessionUpdated replaces this local copy with the real message.
     const localId = `local:${Date.now()}:${Math.random().toString(36).slice(2)}`;
@@ -1100,10 +1079,7 @@
       if (targetSession === sessionId && turnState === "running") turnState = previousTurnState;
       stopping = false;
     }
-    if (ok && attachment) {
-      const { [targetSession]: _, ...rest } = fileAttachments;
-      fileAttachments = rest;
-    }
+    if (ok && attachment && views[targetSession]) views[targetSession].attachment = null;
     return ok;
   }
 
@@ -1149,10 +1125,12 @@
   async function expandMessage(index) {
     const target = sessionId;
     try {
-      const absolute = (clearedFrom[target] ?? 0) + index;
+      const record = viewFor(views, target);
+      // Bound before the request: a `/clear` while it is in flight must
+      // not shift which message this is.
+      const absolute = record.clearedFrom + index;
       const full = await invoke("message_detail", { sessionId: target, index: absolute });
-      const key = `${target}:${absolute}`;
-      messageDetails = { ...messageDetails, [key]: full };
+      record.messageDetails[absolute] = full;
       if (target === sessionId) {
         messages = messages.map((message, at) =>
           at === index ? { ...message, text: full.text, thinking: full.thinking } : message);
@@ -1164,7 +1142,7 @@
 
   function clearTranscript() {
     if (!sessionId) return;
-    clearedFrom = { ...clearedFrom, [sessionId]: fullMessageCount[sessionId] ?? messages.length };
+    clearShown(viewFor(views, sessionId), messages.length);
     messages = [];
   }
 
@@ -2082,15 +2060,8 @@
           <QuestionCard
             {question}
             onAnswer={answerQuestion}
-            savedDrafts={questionDrafts[`${sessionId}:${question.call_id}`] ?? null}
-            onDrafts={(drafts) => {
-              const key = `${sessionId}:${question.call_id}`;
-              if (drafts) questionDrafts = { ...questionDrafts, [key]: drafts };
-              else {
-                const { [key]: _, ...rest } = questionDrafts;
-                questionDrafts = rest;
-              }
-            }}
+            savedDrafts={currentView.questionDrafts[question.call_id] ?? null}
+            onDrafts={(drafts) => keepDraft(viewFor(views, sessionId).questionDrafts, question.call_id, drafts)}
           />
         {/if}
 
@@ -2098,15 +2069,8 @@
           <ApprovalCard
             {approval}
             onDecide={decide}
-            savedDraft={approvalDrafts[`${sessionId}:${approval.call_id}`] ?? null}
-            onDraft={(draft) => {
-              const key = `${sessionId}:${approval.call_id}`;
-              if (draft) approvalDrafts = { ...approvalDrafts, [key]: draft };
-              else {
-                const { [key]: _, ...rest } = approvalDrafts;
-                approvalDrafts = rest;
-              }
-            }}
+            savedDraft={currentView.approvalDrafts[approval.call_id] ?? null}
+            onDraft={(draft) => keepDraft(viewFor(views, sessionId).approvalDrafts, approval.call_id, draft)}
           />
         {/if}
       </div>
@@ -2119,11 +2083,8 @@
         commands={composerCommands}
         history={promptHistory}
         {imageInput}
-        attachment={fileAttachments[sessionId] ?? null}
-        onRemoveAttachment={() => {
-          const { [sessionId]: _, ...rest } = fileAttachments;
-          fileAttachments = rest;
-        }}
+        attachment={currentView.attachment}
+        onRemoveAttachment={() => { viewFor(views, sessionId).attachment = null; }}
         onSend={send}
         onStop={stop}
         drawerOpen={currentView.drawerOpen && !!shells[sessionId]}
