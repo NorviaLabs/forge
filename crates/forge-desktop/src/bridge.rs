@@ -1019,11 +1019,8 @@ impl DesktopState {
     pub async fn project_for(
         &self,
         session_id: SessionId,
-    ) -> Result<forge_session::OpenProjectRef, String> {
-        self.projects
-            .project_of(session_id)
-            .await
-            .map_err(|error| error.to_string())
+    ) -> Result<forge_session::OpenProjectRef, SessionFailure> {
+        Ok(self.projects.project_of(session_id).await?)
     }
 
     /// Put another open project on screen.
@@ -1731,6 +1728,76 @@ impl From<forge_session::ProjectError> for ProjectFailure {
     }
 }
 
+/// Why a session command failed, in a shape the page can act on. The wire
+/// shape matches [`ProjectFailure`]'s `kind` and `message`.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SessionFailure {
+    /// `unknown_session` (no open project knows the id: the page drops the
+    /// row), `shutting_down` (the project closed underneath the command) or
+    /// `error`.
+    pub kind: &'static str,
+    pub message: String,
+}
+
+impl From<forge_session::TargetError> for SessionFailure {
+    fn from(error: forge_session::TargetError) -> Self {
+        use forge_session::TargetError;
+        let kind = match &error {
+            TargetError::UnknownSession(_) => "unknown_session",
+            TargetError::ShuttingDown => "shutting_down",
+            TargetError::Supervisor(forge_session::RepositorySupervisorError::Closed) => {
+                "shutting_down"
+            }
+            _ => "error",
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<forge_session::RepositorySupervisorError> for SessionFailure {
+    fn from(error: forge_session::RepositorySupervisorError) -> Self {
+        let kind = match &error {
+            forge_session::RepositorySupervisorError::Closed => "shutting_down",
+            _ => "error",
+        };
+        Self {
+            kind,
+            message: error.to_string(),
+        }
+    }
+}
+
+impl From<String> for SessionFailure {
+    fn from(message: String) -> Self {
+        Self {
+            kind: "error",
+            message,
+        }
+    }
+}
+
+/// For the commands that still act on the selection and report a string.
+impl From<SessionFailure> for String {
+    fn from(failure: SessionFailure) -> Self {
+        failure.message
+    }
+}
+
+impl From<&str> for SessionFailure {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl From<tokio::task::JoinError> for SessionFailure {
+    fn from(error: tokio::task::JoinError) -> Self {
+        error.to_string().into()
+    }
+}
+
 /// Put a project on screen, opening it first if it is closed.
 #[tauri::command]
 pub async fn project_switch(
@@ -1874,7 +1941,7 @@ pub async fn submit_prompt(
     session_id: SessionId,
     text: String,
     attachment: Option<crate::workspace::PromptAttachment>,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     if text.trim().is_empty() {
         return Err("prompt is empty".into());
@@ -1889,7 +1956,7 @@ pub async fn submit_prompt(
                 crate::workspace::attachment_text(&root, &attachment)
             })
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(SessionFailure::from)??;
             format!("{context}\n\n{text}")
         }
         None => text,
@@ -1903,13 +1970,13 @@ pub async fn submit_prompt(
         .submit(SupervisorCommand::SubmitPrompt { session_id, text })
         // Fire and forget: the outcome arrives on the event channel.
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
 pub async fn stop_turn(state: State<'_, DesktopState>) -> Result<DesktopEvent, String> {
     let session_id = selected_session(&state).await?;
-    stop_session(state, session_id).await
+    stop_session(state, session_id).await.map_err(String::from)
 }
 
 /// Image bytes, not page-supplied filesystem paths, enter at this boundary.
@@ -1920,7 +1987,7 @@ pub async fn submit_images(
     text: String,
     images: Vec<String>,
     attachment: Option<crate::workspace::PromptAttachment>,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     if selected_session(&state).await? != session_id {
         return Err("Session changed; paste the image again in the intended session".into());
@@ -1928,8 +1995,7 @@ pub async fn submit_images(
     let root = {
         let snapshot = project
             .snapshot(session_id)
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .ok_or("Session is gone")?;
         if !snapshot
             .details
@@ -1949,7 +2015,7 @@ pub async fn submit_images(
                 crate::workspace::attachment_text(&attach_root, &attachment)
             })
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(SessionFailure::from)??;
             format!("{context}\n\n{text}")
         }
         None => text,
@@ -1957,7 +2023,7 @@ pub async fn submit_images(
     let attachments =
         tokio::task::spawn_blocking(move || crate::workspace::store_images(&root, &images))
             .await
-            .map_err(|error| error.to_string())??;
+            .map_err(SessionFailure::from)??;
     project
         .handle
         .command(SupervisorCommand::SubmitPromptWithAttachments {
@@ -1970,7 +2036,7 @@ pub async fn submit_images(
             attachments,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Create a session (its own managed worktree) and select it. The roster
@@ -2001,15 +2067,14 @@ pub async fn create_session(
 pub async fn select_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<DesktopEvent, String> {
+) -> Result<DesktopEvent, SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::SelectSession {
             session_id: Some(session_id),
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     selected_snapshot(&project, Some(session_id))
         .await
         .ok_or_else(|| "the selected session is gone".into())
@@ -2021,13 +2086,13 @@ pub async fn select_session(
 pub async fn archive_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::ArchiveSession { session_id })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Attach an existing linked worktree as a session. The supervisor owns the
@@ -2084,13 +2149,12 @@ pub async fn remove_worktree(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     discard_dirty: bool,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     let record = {
         project
             .session_records()
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .into_iter()
             .find(|record| record.session_id == session_id)
             .ok_or("that session no longer exists")?
@@ -2107,8 +2171,7 @@ pub async fn remove_worktree(
         project
             .handle
             .command(SupervisorCommand::ArchiveSession { session_id })
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
     }
     project
         .handle
@@ -2116,15 +2179,13 @@ pub async fn remove_worktree(
             session_id,
             discard_dirty,
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     // A dirty worktree leaves the session retained instead of removed: say so
     // rather than reporting a cleanup that never happened.
     let lifecycle = {
         project
             .session_records()
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .into_iter()
             .find(|record| record.session_id == session_id)
             .map(|record| record.lifecycle)
@@ -2186,18 +2247,17 @@ async fn pending_hitl(
     state: &DesktopState,
     session_id: SessionId,
     call_id: &str,
-) -> Result<HitlPayload, String> {
+) -> Result<HitlPayload, SessionFailure> {
     let project = state.project_for(session_id).await?;
     let snapshot = project
         .snapshot(session_id)
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
         .ok_or_else(|| "the session is gone".to_string())?;
     snapshot
         .session
         .pending_hitl
         .filter(|payload| payload.call_id == call_id)
-        .ok_or_else(|| Refusal::NotPending.to_string())
+        .ok_or_else(|| Refusal::NotPending.to_string().into())
 }
 
 /// Answer with a typed grant: run once, remember the pattern, open a host,
@@ -2413,13 +2473,12 @@ pub async fn continue_turn(state: State<'_, DesktopState>) -> Result<(), String>
 pub async fn stop_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<DesktopEvent, String> {
+) -> Result<DesktopEvent, SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::StopTurn { session_id })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     selected_snapshot(&project, Some(session_id))
         .await
         .ok_or_else(|| "the stopped session is gone".into())
@@ -2430,15 +2489,14 @@ pub async fn stop_session(
 pub async fn close_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     // The window always needs a selected session to resume from; closing the
     // last one would strand the durable row with no conversation to replace.
     let active = {
         project
             .snapshots()
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .into_iter()
             .filter(|snapshot| snapshot.task.lifecycle == forge_session::SessionLifecycle::Active)
             .count()
@@ -2452,7 +2510,7 @@ pub async fn close_session(
         .handle
         .command(SupervisorCommand::CloseSession { session_id })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Durable sessions in the selected workspace that this process has closed.
@@ -2529,7 +2587,7 @@ pub async fn fork_session(state: State<'_, DesktopState>) -> Result<(), String> 
 pub async fn resume_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     let current = selected_session(&state).await?;
     project
@@ -2539,7 +2597,7 @@ pub async fn resume_session(
             session_id,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -2547,7 +2605,7 @@ pub async fn rename_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     label: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     let label = label.trim().to_string();
     if label.is_empty() {
@@ -2557,7 +2615,7 @@ pub async fn rename_session(
         .handle
         .command(SupervisorCommand::RenameSession { session_id, label })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Pin a session to a slot, or unpin it with no slot.
@@ -2566,7 +2624,7 @@ pub async fn pin_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     slot: Option<u8>,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
@@ -2576,7 +2634,7 @@ pub async fn pin_session(
             swap: false,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Remove one queued prompt, bound to the id the page showed.
@@ -2587,7 +2645,7 @@ pub async fn cancel_queued(
     queue_id: u64,
     source: QueueSource,
     position: usize,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
@@ -2602,7 +2660,7 @@ pub async fn cancel_queued(
             }),
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Compact the selected session's context now.
@@ -2640,7 +2698,7 @@ pub async fn cancel_background(
     session_id: SessionId,
     task_id: u64,
     run_id: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     let run_id: forge_core::BackgroundRunId = run_id
         .trim()
@@ -2654,7 +2712,7 @@ pub async fn cancel_background(
             run_id,
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Decide a child agent's pending approval from the tasks view.
@@ -2667,13 +2725,12 @@ pub async fn resolve_child_approval(
     call_id: String,
     request_id: String,
     confirmed: bool,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     let request = {
         project
             .snapshot(session_id)
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .and_then(|snapshot| snapshot.details)
             .and_then(|details| {
                 details
@@ -2703,7 +2760,7 @@ pub async fn resolve_child_approval(
             },
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// A read-only view of one background child's saved transcript.
@@ -2713,13 +2770,12 @@ pub async fn child_transcript(
     session_id: SessionId,
     task_id: u64,
     child_session_id: SessionId,
-) -> Result<Vec<MessageView>, String> {
+) -> Result<Vec<MessageView>, SessionFailure> {
     let project = state.project_for(session_id).await?;
     let journal = {
         let child = project
             .snapshot(session_id)
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .and_then(|snapshot| snapshot.details)
             .and_then(|details| {
                 details
@@ -2732,10 +2788,7 @@ pub async fn child_transcript(
         if child != child_session_id {
             return Err("That child session changed; reopen the task".into());
         }
-        project
-            .journal_dir()
-            .await
-            .map_err(|error| error.to_string())?
+        project.journal_dir().await?
     };
     let transcript = forge_session::replayed_transcript(&journal, child_session_id, 1)
         .await
@@ -2754,12 +2807,11 @@ pub async fn message_detail(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     index: usize,
-) -> Result<MessageView, String> {
+) -> Result<MessageView, SessionFailure> {
     let project = state.project_for(session_id).await?;
     let snapshot = project
         .snapshot(session_id)
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
         .ok_or("That session is no longer live")?;
     snapshot
         .transcript
@@ -2767,21 +2819,20 @@ pub async fn message_detail(
         .iter()
         .filter_map(|message| message_view(message, true))
         .nth(index)
-        .ok_or_else(|| "that message is no longer in the transcript".to_string())
+        .ok_or_else(|| "that message is no longer in the transcript".into())
 }
 
 /// One session's workspace root, by id.
 async fn workspace_of(
     state: &DesktopState,
     session_id: SessionId,
-) -> Result<std::path::PathBuf, String> {
+) -> Result<std::path::PathBuf, SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .snapshot(session_id)
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
         .map(|snapshot| snapshot.session.workspace_root)
-        .ok_or_else(|| "the session is gone".to_string())
+        .ok_or_else(|| "the session is gone".into())
 }
 
 /// The active session's workspace root. Kept for callers that truly need the
@@ -2789,7 +2840,7 @@ async fn workspace_of(
 #[allow(dead_code)]
 async fn active_workspace(state: &DesktopState) -> Result<std::path::PathBuf, String> {
     let session_id = selected_session(state).await?;
-    workspace_of(state, session_id).await
+    workspace_of(state, session_id).await.map_err(String::from)
 }
 
 /// One folder of a session's workspace (`""` is the root). The tree loads a
@@ -2799,11 +2850,11 @@ pub async fn list_dir(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<crate::workspace::DirListing, String> {
+) -> Result<crate::workspace::DirListing, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::list_dir(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Files in a session's workspace whose path fuzzily matches `query`, best
@@ -2813,14 +2864,14 @@ pub async fn find_files(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     query: String,
-) -> Result<Vec<crate::workspace::FoundFile>, String> {
+) -> Result<Vec<crate::workspace::FoundFile>, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     let indexes = state.indexes.clone();
     tokio::task::spawn_blocking(move || {
         crate::workspace::find(&*indexes.for_root(&root)?, &query, 50)
     })
-    .await
-    .map_err(|error| error.to_string())?
+    .await?
+    .map_err(SessionFailure::from)
 }
 
 /// One UTF-8 file from a session's workspace.
@@ -2829,11 +2880,11 @@ pub async fn read_file(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<crate::workspace::FileContents, String> {
+) -> Result<crate::workspace::FileContents, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::read(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// An image as a size-capped data URL, for the file pane and transcript chips.
@@ -2842,11 +2893,11 @@ pub async fn read_image(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<crate::workspace::ImageContents, String> {
+) -> Result<crate::workspace::ImageContents, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::read_image(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Branch and changed files for a session's workspace.
@@ -2854,11 +2905,11 @@ pub async fn read_image(
 pub async fn git_status(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<crate::workspace::WorkspaceStatus, String> {
+) -> Result<crate::workspace::WorkspaceStatus, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::status(&root))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// The worktree diff of one file, with untracked files shown as additions.
@@ -2868,7 +2919,7 @@ pub async fn git_diff(
     session_id: SessionId,
     path: String,
     side: Option<crate::workspace::DiffSide>,
-) -> Result<crate::workspace::FileDiff, String> {
+) -> Result<crate::workspace::FileDiff, SessionFailure> {
     let side = side.unwrap_or_default();
     if side == crate::workspace::DiffSide::LastTurn {
         let cards = last_turn_cards(&state, session_id).await?;
@@ -2885,8 +2936,8 @@ pub async fn git_diff(
     }
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::diff(&root, &path, side))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// The files the most recent assistant turn wrote, read from the transcript's
@@ -2894,12 +2945,11 @@ pub async fn git_diff(
 async fn last_turn_cards(
     state: &DesktopState,
     session_id: SessionId,
-) -> Result<Vec<(String, Vec<String>)>, String> {
+) -> Result<Vec<(String, Vec<String>)>, SessionFailure> {
     let project = state.project_for(session_id).await?;
     let snapshot = project
         .snapshot(session_id)
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
         .ok_or("No live session to review")?;
     let model = forge_transcript::ConversationModel::from_messages(
         snapshot.transcript.messages(),
@@ -2931,7 +2981,7 @@ async fn last_turn_cards(
 pub async fn git_last_turn_files(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, SessionFailure> {
     Ok(last_turn_cards(&state, session_id)
         .await?
         .into_iter()
@@ -2945,11 +2995,11 @@ pub async fn git_operation(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     operation: crate::workspace::GitOperation,
-) -> Result<String, String> {
+) -> Result<String, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::git_operation(&root, operation))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Create an empty file in a session's workspace.
@@ -2958,11 +3008,11 @@ pub async fn create_file(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::create_file(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -2970,11 +3020,11 @@ pub async fn create_dir(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::create_dir(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Rename or move a path inside a session's workspace.
@@ -2984,11 +3034,11 @@ pub async fn rename_path(
     session_id: SessionId,
     from: String,
     to: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::rename(&root, &from, &to))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Delete one file or empty directory.
@@ -2997,11 +3047,11 @@ pub async fn delete_path(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::delete(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Content search across a session's workspace, through its index.
@@ -3010,14 +3060,14 @@ pub async fn search_files(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     query: String,
-) -> Result<Vec<crate::workspace::SearchHit>, String> {
+) -> Result<Vec<crate::workspace::SearchHit>, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     let indexes = state.indexes.clone();
     tokio::task::spawn_blocking(move || {
         crate::workspace::search(&*indexes.for_root(&root)?, &query)
     })
-    .await
-    .map_err(|error| error.to_string())?
+    .await?
+    .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3025,11 +3075,11 @@ pub async fn git_stage(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::stage(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3037,11 +3087,11 @@ pub async fn git_unstage(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::unstage(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Commit what is staged.
@@ -3050,22 +3100,22 @@ pub async fn git_commit(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     message: String,
-) -> Result<String, String> {
+) -> Result<String, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::commit(&root, &message))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
 pub async fn git_branches(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::branches(&root))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3073,11 +3123,11 @@ pub async fn git_switch_branch(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     name: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::switch_branch(&root, &name))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3085,11 +3135,11 @@ pub async fn git_create_branch(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     name: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::create_branch(&root, &name))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3097,11 +3147,11 @@ pub async fn git_merge_branch(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     name: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::merge_branch(&root, &name))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3110,11 +3160,11 @@ pub async fn git_rename_branch(
     session_id: SessionId,
     from: String,
     to: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::rename_branch(&root, &from, &to))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// One selectable model route, with the reasoning levels it accepts.
@@ -3284,7 +3334,7 @@ pub async fn github_create_pr(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     issue_number: u64,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
@@ -3293,7 +3343,7 @@ pub async fn github_create_pr(
             issue_number,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Re-read the linked pull request's checks and review state.
@@ -3302,7 +3352,7 @@ pub async fn github_refresh_pr(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     issue_number: u64,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
@@ -3311,7 +3361,7 @@ pub async fn github_refresh_pr(
             issue_number,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Queue the agent's next turn from the linked pull request's failed checks.
@@ -3320,7 +3370,7 @@ pub async fn github_apply_feedback(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     issue_number: u64,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
     project
         .handle
@@ -3329,7 +3379,7 @@ pub async fn github_apply_feedback(
             issue_number,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3422,13 +3472,13 @@ pub async fn write_file(
     text: String,
     fingerprint: String,
     crlf: bool,
-) -> Result<crate::workspace::FileContents, String> {
+) -> Result<crate::workspace::FileContents, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || {
         crate::workspace::write(&root, &path, &text, &fingerprint, crlf)
     })
-    .await
-    .map_err(|error| error.to_string())?
+    .await?
+    .map_err(SessionFailure::from)
 }
 
 /// Tell the backend whether the page holds unsaved editor buffers, so a
@@ -3458,11 +3508,11 @@ pub fn quit_app(app: tauri::AppHandle) {
 pub async fn github_issues(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<serde_json::Value>, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::github::issues(&root))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3471,11 +3521,11 @@ pub async fn github_details(
     session_id: SessionId,
     issue_number: Option<u64>,
     pr_number: Option<u64>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::github::details(&root, issue_number, pr_number))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3484,7 +3534,7 @@ pub async fn github_logs(
     session_id: SessionId,
     run_id: u64,
     job_id: Option<u64>,
-) -> Result<serde_json::Value, String> {
+) -> Result<serde_json::Value, SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || {
         let logs = forge_workspace::gh::ci_logs(
@@ -3496,8 +3546,8 @@ pub async fn github_logs(
         .map_err(|error| error.to_string())?;
         Ok(serde_json::json!({ "text": escape_invisible(&logs.text), "truncated": logs.truncated }))
     })
-    .await
-    .map_err(|error| error.to_string())?
+    .await?
+    .map_err(|error: String| error.into())
 }
 
 /// Discard the working-tree change to one tracked file.
@@ -3506,11 +3556,11 @@ pub async fn git_restore(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     path: String,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::restore(&root, &path))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Reverse-apply one working-tree hunk. The index is the position in the
@@ -3521,11 +3571,11 @@ pub async fn git_discard_hunk(
     session_id: SessionId,
     path: String,
     hunk_index: usize,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     tokio::task::spawn_blocking(move || crate::workspace::discard_hunk(&root, &path, hunk_index))
-        .await
-        .map_err(|error| error.to_string())?
+        .await?
+        .map_err(SessionFailure::from)
 }
 
 /// Open (or restart) the active session's interactive shell.
@@ -3536,13 +3586,14 @@ pub async fn shell_open(
     session_id: SessionId,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     let root = workspace_of(&state, session_id).await?;
     state
         .shells
         .open(session_id, &root, cols, rows, move |event| {
             channel.send(event).is_ok()
         })
+        .map_err(SessionFailure::from)
 }
 
 /// Keystrokes from the page, as UTF-8.
@@ -3551,8 +3602,11 @@ pub async fn shell_write(
     state: State<'_, DesktopState>,
     session_id: SessionId,
     data: String,
-) -> Result<(), String> {
-    state.shells.write(session_id, data.as_bytes())
+) -> Result<(), SessionFailure> {
+    state
+        .shells
+        .write(session_id, data.as_bytes())
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
@@ -3561,15 +3615,18 @@ pub async fn shell_resize(
     session_id: SessionId,
     cols: u16,
     rows: u16,
-) -> Result<(), String> {
-    state.shells.resize(session_id, cols, rows)
+) -> Result<(), SessionFailure> {
+    state
+        .shells
+        .resize(session_id, cols, rows)
+        .map_err(SessionFailure::from)
 }
 
 #[tauri::command]
 pub async fn shell_close(
     state: State<'_, DesktopState>,
     session_id: SessionId,
-) -> Result<(), String> {
+) -> Result<(), SessionFailure> {
     state.shells.close(session_id);
     Ok(())
 }
@@ -3577,6 +3634,42 @@ pub async fn shell_close(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_failure_names_what_the_page_can_act_on() {
+        use forge_session::{RepositorySupervisorError, TargetError};
+        let id = SessionId::from_u128(7);
+        let unknown = SessionFailure::from(TargetError::UnknownSession(id));
+        assert_eq!(unknown.kind, "unknown_session");
+        assert_eq!(unknown.message, "that session no longer exists");
+        assert_eq!(
+            SessionFailure::from(TargetError::ShuttingDown).kind,
+            "shutting_down"
+        );
+        assert_eq!(
+            SessionFailure::from(RepositorySupervisorError::Closed).kind,
+            "shutting_down"
+        );
+        assert_eq!(
+            SessionFailure::from(TargetError::Supervisor(RepositorySupervisorError::Closed)).kind,
+            "shutting_down"
+        );
+        // Everything else is shown as its message.
+        let plain = SessionFailure::from("Session is gone");
+        assert_eq!(
+            (plain.kind, plain.message.as_str()),
+            ("error", "Session is gone")
+        );
+        assert_eq!(
+            SessionFailure::from(RepositorySupervisorError::NoActor(id)).kind,
+            "error"
+        );
+        // The wire shape the page reads.
+        assert_eq!(
+            serde_json::to_value(&unknown).unwrap(),
+            serde_json::json!({"kind": "unknown_session", "message": "that session no longer exists"})
+        );
+    }
 
     #[test]
     fn stream_events_pass_through_as_json() {

@@ -1,6 +1,7 @@
 <script>
   import { onDestroy, onMount } from "svelte";
-  import { Channel, invoke } from "@tauri-apps/api/core";
+  import { Channel } from "@tauri-apps/api/core";
+  import { invoke } from "../ipc.js";
   import { Terminal } from "@xterm/xterm";
   import { FitAddon } from "@xterm/addon-fit";
   import "@xterm/xterm/css/xterm.css";

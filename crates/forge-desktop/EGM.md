@@ -56,7 +56,13 @@ themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
     project knows is an error, never the project on screen); every other
     command uses `active()`. Reads go through `OpenProjectRef`'s methods
     (`snapshot`, `snapshots`, `session_records`, `selected_session_id`,
-    `journal_dir`); the supervisor lock is private to `forge-session`. Provider changes reload every open project. `subscribe`
+    `journal_dir`); the supervisor lock is private to `forge-session`.
+    A command that takes `session_id` returns `SessionFailure { kind,
+    message }`: `unknown_session` (no open project knows the id; the page
+    forgets the row), `shutting_down` (the project closed underneath it; the
+    page stays quiet) or `error`. The page calls the backend only through
+    `ui/src/ipc.js`, which turns a `{ kind, message }` rejection into a
+    `CommandFailure` (`ui/src/failure.js`) that still prints as its message. Provider changes reload every open project. `subscribe`
     follows the on-screen project (a switch sends `ProjectSwitched`, then the
     roster, selection and session) and forwards `Workspace` (every project's
     sessions, pending requests and run slots) and `AttentionNew { count,

@@ -1,6 +1,8 @@
 <script>
   import { onMount, tick } from "svelte";
-  import { Channel, invoke } from "@tauri-apps/api/core";
+  import { Channel } from "@tauri-apps/api/core";
+  import { invoke } from "./ipc.js";
+  import { failureAction } from "./failure.js";
   import { listen } from "@tauri-apps/api/event";
   import Conversation from "./lib/Conversation.svelte";
   import Composer from "./lib/Composer.svelte";
@@ -797,7 +799,13 @@
       if (["resume_session", "close_session", "archive_session", "remove_worktree"].includes(name)) loadResumable();
       return true;
     } catch (cause) {
-      error = String(cause);
+      const action = failureAction(cause);
+      // A session no open project knows: its row is stale, so drop it
+      // instead of reporting an error the operator cannot act on.
+      if (action === "forget") {
+        resumable = resumable.filter((row) => row.session_id !== invokeArgs?.sessionId);
+        loadResumable();
+      } else if (action === "show") error = String(cause);
       return false;
     } finally { if (mutatesGit) gitBusy = false; }
   }

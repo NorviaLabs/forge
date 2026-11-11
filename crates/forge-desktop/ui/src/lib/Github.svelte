@@ -1,6 +1,6 @@
 <script>
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from "../ipc.js";
   import Markdown from "../Markdown.svelte";
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
