@@ -3639,7 +3639,11 @@ async fn run_one_inner(
         Ok(_) if session.active_task.lifecycle == TaskLifecycle::Waiting => {
             SupervisorTurnState::Waiting
         }
-        Ok(_) => SupervisorTurnState::Completed,
+        // The turn loop returns `Ok` for a turn the evaluator failed, too
+        // (a command that exited non-zero, a denied call the work needed, no
+        // final answer): the session's lifecycle says how it ended.
+        Ok(_) => ended_turn_state(session.active_task.lifecycle)
+            .unwrap_or(SupervisorTurnState::Completed),
         // A continue sent while the session waits on a request changes
         // nothing: it is still waiting.
         Err(LoopError::AwaitingHitl) => SupervisorTurnState::Waiting,
@@ -5875,10 +5879,14 @@ mod tests {
                 .unwrap();
         }
         for (session_id, label) in [(primary_id, "primary"), (managed_id, "managed")] {
+            // The approved `git reset` fails in this fixture (the workspace
+            // is not a repository), so the evaluator fails the turn after
+            // its final answer, and the row says so.
             let done = wait_for_task_state(&handle, session_id, |snapshot| {
-                snapshot.task.turn_state == SupervisorTurnState::Completed
+                snapshot.task.turn_state == SupervisorTurnState::Failed
             })
             .await;
+            assert_eq!(done.session.lifecycle, TaskLifecycle::Failed);
             assert!(done.transcript.messages().iter().any(|message| message
                 .content
                 .contains(&format!("{label} interaction complete"))));

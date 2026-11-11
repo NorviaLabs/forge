@@ -5047,8 +5047,12 @@ async fn mcp_tool_schemas_defer_and_promote_search_tools_once_budget_exceeded() 
     );
 }
 
+/// An approved call that fails is answered like any other: the model sees
+/// why it failed, and the journal holds that one result. Without the message
+/// the next step found the call unanswered, told the model only that it
+/// "did not complete", and journalled a second result for the same call.
 #[tokio::test]
-async fn exec_only_tool_failure_is_journalled_without_a_tool_message() {
+async fn exec_only_tool_failure_reaches_the_model_as_the_calls_result() {
     let dir = tempdir().unwrap();
     let mut s = idle_session(dir.path()).await;
     let before = s.messages.len();
@@ -5059,12 +5063,28 @@ async fn exec_only_tool_failure_is_journalled_without_a_tool_message() {
         name: "no_such_tool".into(),
         arguments: json!({}),
     };
-    // A failing call must not surface as tool output in the conversation,
-    // but it still has to be journalled for replay.
     s.run_one_tool_exec_only(&call, &mut budget).await.unwrap();
 
-    assert_eq!(s.messages.len(), before);
-    assert!(s.journal.last_seq().await.unwrap() > 0);
+    assert_eq!(s.messages.len(), before + 1);
+    let result = s.messages.last().unwrap();
+    assert_eq!(result.role, MessageRole::Tool);
+    assert_eq!(result.tool_call_id.as_deref(), Some("c1"));
+    assert!(
+        result.content.contains("no_such_tool"),
+        "{}",
+        result.content
+    );
+    let state = s.journal.replay(s.session_id).await.unwrap();
+    assert!(state.tool_results.contains_key("c1"));
+    assert_eq!(
+        state
+            .messages
+            .iter()
+            .filter(|message| message.tool_call_id.as_deref() == Some("c1"))
+            .count(),
+        1,
+        "replay yields one result for the call"
+    );
 }
 
 #[tokio::test]

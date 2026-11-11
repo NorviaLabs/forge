@@ -46,13 +46,13 @@ async function send(text) {
 }
 
 // Answer the scripted approval `callId` with the button `label`, then wait
-// for the turn to finish with the scripted `answer`.
-async function decide(prompt, callId, label, answer) {
+// for the turn to end as `ends` with the scripted `answer`.
+async function decide(prompt, callId, label, answer, ends) {
   await send(prompt);
   if (!(await waitFor(() => approvalFor(callId), 20000))) return false;
   button(approvalFor(callId), label).click();
   return waitFor(
-    () => turnState() === "completed" && said(answer) && approvalFor(callId) === null,
+    () => turnState() === ends && said(answer) && approvalFor(callId) === null,
     20000,
   );
 }
@@ -290,8 +290,10 @@ export async function runSelfTest(params, sessionId) {
 
   // 2. The approval journey: approve once, deny, then Stop during a held
   //    model call. Rust checks the effects on disk independently.
-  results.approved_turn_completed = await decide("approve journey", "approve-me", "Run once", "after approve");
-  results.denied_turn_completed = await decide("deny journey", "deny-me", "Don't run", "after deny");
+  results.approved_turn_completed = await decide("approve journey", "approve-me", "Run once", "after approve", "completed");
+  // A turn whose only action was refused did not do its work: the model
+  // still answers, and the turn is shown as failed, not completed.
+  results.denied_turn_failed = await decide("deny journey", "deny-me", "Don't run", "after deny", "failed");
   const stopResult = await stopDuringHold();
   results.stopped_during_hold = stopResult.stopped;
   results.optimistic_prompt_visible = stopResult.optimistic;

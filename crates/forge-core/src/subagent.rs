@@ -1134,6 +1134,11 @@ fn subagent_background_status(
             summary: last_assistant_text(&child.messages),
         },
         TaskLifecycle::Cancelled => BackgroundTaskStatus::Cancelled,
+        // Cancelled before the run began (while it waited for its turn to
+        // write): no attempt started, so the lifecycle never left `Ready`.
+        TaskLifecycle::Ready if matches!(result, Err(LoopError::Cancelled)) => {
+            BackgroundTaskStatus::Cancelled
+        }
         // A `Failed` lifecycle is normally reached via a plain `Ok` return
         // (the completion evaluator inside `apply_model_response` decided
         // the turn failed and called `finalize_turn_failure` itself — no

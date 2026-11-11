@@ -1531,10 +1531,12 @@ impl AgentSession {
                     .append_tool_result(self.session_id, &result_call, &output)
                     .await?;
                 self.remember_tool_result(&result_call, &output);
-                if unconfined {
-                    self.messages
-                        .push(Message::from_tool_output(&result_call, &output));
-                }
+                // The model must see why the call it asked for failed. With
+                // no message here the next step found the call unanswered,
+                // told the model only that it "did not complete", and
+                // journalled a second result for the same call.
+                self.messages
+                    .push(Message::from_tool_output(&result_call, &output));
             }
         }
         Ok(())
