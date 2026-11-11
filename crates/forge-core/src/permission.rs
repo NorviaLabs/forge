@@ -11,7 +11,10 @@
 /// addressing nothing, and every network call inside the sandbox fails in a
 /// way that looks like a broken network rather than a dropped proxy.
 pub struct EgressRuntime {
-    _proxy: forge_tools::egress::EgressProxy,
+    /// `None` when the session's own listener could not start. The policy
+    /// and the grant still exist, so every tool is still held to the policy;
+    /// see [`start_egress_with_shared`].
+    _proxy: Option<forge_tools::egress::EgressProxy>,
     grant: std::sync::Arc<forge_tools::sandbox::EgressGrant>,
     shared: forge_tools::egress::EgressShared,
 }
@@ -47,8 +50,9 @@ impl EgressRuntime {
 
     /// The gateway's loopback TCP listener (`127.0.0.1`, ephemeral port), for
     /// in-process and host-side callers that route through the gateway.
-    pub fn tcp_addr(&self) -> std::net::SocketAddr {
-        self._proxy.tcp_addr()
+    /// `None` when the session's listener could not start.
+    pub fn tcp_addr(&self) -> Option<std::net::SocketAddr> {
+        self._proxy.as_ref().map(|proxy| proxy.tcp_addr())
     }
 
     /// Take every connection event recorded for this session, oldest first,
@@ -101,26 +105,59 @@ pub async fn start_egress_with_shared(
 ) -> Option<EgressRuntime> {
     use forge_tools::egress::EgressProxy;
 
-    let mut proxy = EgressProxy::start_with_shared(shared).await.ok()?;
-
     // The socket lives outside the workspace: inside it, the agent could
     // delete or replace the thing carrying its own traffic, and `.forge` is
-    // read-only in the sandbox anyway.
+    // read-only in the sandbox anyway. Only Linux routes through it (its
+    // network namespace has no loopback route to the host); on macOS the
+    // sandbox reaches the loopback port, and binding a socket there only
+    // added a way to fail: the per-user temp path can exceed the 104-byte
+    // limit on a socket address.
     let socket_path = std::env::temp_dir().join(format!("forge-egress-{session_id}.sock"));
-    proxy
-        .serve_on_unix_socket(&socket_path, forge_tools::egress::EgressPolicy::new())
-        .await
-        .ok()?;
+    let proxy = match EgressProxy::start_with_shared(shared.clone()).await {
+        Ok(mut proxy) => {
+            let socket = if cfg!(target_os = "linux") {
+                proxy
+                    .serve_on_unix_socket(&socket_path, forge_tools::egress::EgressPolicy::new())
+                    .await
+            } else {
+                Ok(())
+            };
+            match socket {
+                Ok(()) => Some(proxy),
+                Err(error) => {
+                    tracing::warn!(%error, "egress socket could not be bound");
+                    None
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "egress proxy could not start");
+            None
+        }
+    };
 
-    Some(EgressRuntime {
+    // A session whose listener failed still gets a grant carrying the live
+    // policy. Without one, `web_fetch` and the `git` tool read "no grant" as
+    // "no policy" and reached any host directly. With it they check the
+    // policy as usual, and each call's own endpoint either starts or fails
+    // the call: nothing falls back to an unfiltered connection.
+    Some(runtime_for(shared, proxy, socket_path))
+}
+
+fn runtime_for(
+    shared: forge_tools::egress::EgressShared,
+    proxy: Option<forge_tools::egress::EgressProxy>,
+    socket_path: std::path::PathBuf,
+) -> EgressRuntime {
+    EgressRuntime {
         grant: std::sync::Arc::new(forge_tools::sandbox::EgressGrant {
-            proxy_port: proxy.addr().port(),
+            proxy_port: proxy.as_ref().map_or(0, |proxy| proxy.addr().port()),
             socket_path,
-            control: Some(proxy.shared().clone()),
+            control: Some(shared.clone()),
         }),
-        shared: proxy.shared().clone(),
+        shared,
         _proxy: proxy,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -143,16 +180,47 @@ mod egress_runtime_tests {
         };
         let grant = runtime.grant();
         assert!(grant.proxy_port > 0, "the port must be real");
-        assert!(
-            grant.socket_path.exists(),
-            "the socket must exist while the session holds the proxy"
-        );
+        if cfg!(target_os = "linux") {
+            assert!(
+                grant.socket_path.exists(),
+                "the socket must exist while the session holds the proxy"
+            );
+        }
         assert!(
             tokio::net::TcpStream::connect(("127.0.0.1", grant.proxy_port))
                 .await
                 .is_ok(),
             "the proxy must accept connections"
         );
+    }
+
+    /// A session whose listener could not start is still held to its policy:
+    /// the grant carries the live policy, so `web_fetch` and the `git` tool
+    /// refuse a host that was not allowed instead of treating "no proxy" as
+    /// "no policy", and a host granted later is honoured.
+    #[tokio::test]
+    async fn a_session_without_a_listener_still_enforces_its_policy() {
+        let shared = forge_tools::egress::EgressShared::new(
+            forge_tools::egress::EgressPolicy::new(),
+            Default::default(),
+        );
+        let runtime = runtime_for(shared, None, std::path::PathBuf::from("/nonexistent"));
+        let grant = runtime.grant();
+        assert!(
+            grant.control.is_some(),
+            "the policy must travel with the grant"
+        );
+        assert!(!grant.permits_host("example.com"));
+        runtime.grant_host("example.com");
+        assert!(grant.permits_host("example.com"));
+        assert!(runtime.tcp_addr().is_none());
+
+        // A call's own endpoint is started from the grant, not from the
+        // session listener, so tools keep working through the policy.
+        let gateway = forge_tools::egress::CallGateway::start(Some(&grant), Some("call-1"))
+            .await
+            .expect("a per-call endpoint starts without the session listener");
+        assert!(gateway.is_some());
     }
 
     /// The gateway's loopback TCP listener is exposed on the runtime and its
@@ -167,7 +235,7 @@ mod egress_runtime_tests {
         else {
             return;
         };
-        let addr = runtime.tcp_addr();
+        let addr = runtime.tcp_addr().expect("the listener started");
         assert!(addr.ip().is_loopback(), "{addr}");
         assert_eq!(addr.port(), runtime.grant().proxy_port);
         let status = connect_status(addr.port(), "crates.io:443").await;
@@ -190,8 +258,9 @@ mod egress_runtime_tests {
     }
 
     /// Dropping the session must not leave a socket behind for the next one to
-    /// collide with.
+    /// collide with. Only Linux binds one.
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn dropping_the_runtime_removes_the_socket() {
         let Some(runtime) = start_egress(
             uuid::Uuid::new_v4(),
@@ -509,7 +578,7 @@ mod session_egress_tests {
             return;
         };
         assert!(runtime.grant().proxy_port > 0);
-        assert!(runtime.grant().socket_path.exists());
+        assert!(cfg!(not(target_os = "linux")) || runtime.grant().socket_path.exists());
     }
 
     /// The grant has to actually reach the command. Everything upstream can be
@@ -636,13 +705,12 @@ mod propagation_contract {
         };
         assert_ne!(ga.socket_path, gb.socket_path, "sockets must not collide");
         assert_ne!(ga.proxy_port, gb.proxy_port, "ports must not collide");
-        assert!(ga.socket_path.exists() && gb.socket_path.exists());
-
-        let b_socket = gb.socket_path.clone();
         drop(a);
         assert!(
-            b_socket.exists(),
-            "one session ending must not remove another's socket"
+            tokio::net::TcpStream::connect(("127.0.0.1", gb.proxy_port))
+                .await
+                .is_ok(),
+            "one session ending must not stop another's proxy"
         );
     }
 

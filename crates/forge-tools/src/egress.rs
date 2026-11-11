@@ -755,7 +755,10 @@ impl EgressInvocation {
         let sequence = NEXT_INVOCATION_SOCKET.fetch_add(1, Ordering::Relaxed);
         let socket_path =
             std::path::Path::new("/tmp").join(format!("f{}-{sequence}.sock", std::process::id()));
-        proxy.serve_on_unix_socket_inner(&socket_path).await?;
+        // Only the Linux sandbox routes through the socket.
+        if cfg!(target_os = "linux") {
+            proxy.serve_on_unix_socket_inner(&socket_path).await?;
+        }
         let grant = crate::sandbox::EgressGrant {
             proxy_port: proxy.addr().port(),
             socket_path,
