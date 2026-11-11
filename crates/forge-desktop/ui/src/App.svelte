@@ -317,7 +317,7 @@
         label: closed ? `${session.label} (closed)` : session.label,
         detail: closed ? "resume" : session.turn_state,
         action: () =>
-          closed ? command("resume_session", { sessionId: session.session_id }) : selectSession(session.session_id),
+          closed ? command("resume_session", { sessionId: session.session_id, currentSessionId: sessionId }) : selectSession(session.session_id),
       };
     });
     // Editor items act on the mounted FilePane, which only the Files screen has.
@@ -570,7 +570,7 @@
     if (!booted || !sessionId || syncing) return;
     syncing = true;
     try {
-      const snapshot = await invoke("current_session");
+      const snapshot = await invoke("current_session", { sessionId });
       if (!snapshot || snapshot.session_id !== sessionId) return;
       const questionId = snapshot.pending_question?.call_id ?? "";
       const approvalId = snapshot.pending_approval?.call_id ?? "";
@@ -766,14 +766,6 @@
     }
   }
 
-  const WORKSPACE_COMMANDS = new Set([
-    "list_dir", "find_files", "read_file", "read_image", "git_status", "git_diff", "git_last_turn_files",
-    "write_file", "create_file", "create_dir", "rename_path", "delete_path", "search_files",
-    "git_stage", "git_unstage", "git_commit", "git_branches", "git_switch_branch",
-    "git_create_branch", "git_merge_branch", "git_rename_branch", "git_restore", "git_discard_hunk",
-    "github_issues", "github_details", "github_logs",
-  ]);
-
   async function command(name, args) {
     const mutatesGit = name.startsWith("git_");
     if (mutatesGit && gitBusy) { error = "Wait for the current Git operation to finish."; return false; }
@@ -783,10 +775,8 @@
       error = "Save or close unsaved files before changing this session.";
       return false;
     }
-    let invokeArgs = args;
-    if (WORKSPACE_COMMANDS.has(name) && sessionId && !invokeArgs?.sessionId) {
-      invokeArgs = { sessionId, ...(invokeArgs ?? {}) };
-    }
+    // Every session command names its session; nothing is filled in here.
+    const invokeArgs = args;
     if (mutatesGit) gitBusy = true;
     try {
       const result = await invoke(name, invokeArgs);
@@ -795,7 +785,7 @@
         onEvent({ type: "selected", session_id: result.session_id });
         onEvent(result);
       }
-      if (name === "stop_session" || name === "stop_turn") onEvent(result);
+      if (name === "stop_session") onEvent(result);
       if (["resume_session", "close_session", "archive_session", "remove_worktree"].includes(name)) loadResumable();
       return true;
     } catch (cause) {
@@ -812,7 +802,7 @@
 
   async function loadResumable() {
     try {
-      resumable = await invoke("list_resumable_sessions");
+      resumable = sessionId ? await invoke("list_resumable_sessions", { sessionId }) : [];
     } catch {
       resumable = [];
     }
@@ -1037,7 +1027,7 @@
     let present = live();
     if (prunable(ids, sessionOwner, projectId, present).length) {
       try {
-        resumable = await invoke("list_resumable_sessions");
+        resumable = sessionId ? await invoke("list_resumable_sessions", { sessionId }) : [];
       } catch {
         return;
       }
@@ -1124,11 +1114,11 @@
   }
 
   async function decide(callId, decision, note, confirmed) {
-    await command("decide_approval", { callId, decision, note, confirmed });
+    await command("decide_approval", { sessionId, callId, decision, note, confirmed });
   }
 
   async function answerQuestion(callId, answers, skip) {
-    await command("answer_question", { callId, answers, skip });
+    await command("answer_question", { sessionId, callId, answers, skip });
   }
 
   async function toggleApproveAll() {
@@ -1136,24 +1126,24 @@
       approveAllPending = true;
       return;
     }
-    await command("set_approve_all", { on: false });
+    await command("set_approve_all", { sessionId, on: false });
   }
 
   async function confirmApproveAll() {
     approveAllPending = false;
-    await command("set_approve_all", { on: true });
+    await command("set_approve_all", { sessionId, on: true });
   }
 
   async function continueTurn() {
-    await command("continue_turn");
+    await command("continue_turn", { sessionId });
   }
 
   async function compactContext() {
-    await command("compact_context");
+    await command("compact_context", { sessionId });
   }
 
   async function toggleThinking() {
-    await command("set_thinking", { enabled: !thinking });
+    await command("set_thinking", { sessionId, enabled: !thinking });
   }
 
   async function expandMessage(index) {
@@ -1239,7 +1229,7 @@
   }
 
   async function forkSession() {
-    await command("fork_session");
+    await command("fork_session", { sessionId });
   }
 
   async function startRename(session) {
@@ -1272,7 +1262,7 @@
   }
 
   async function createPath(kind, path) {
-    const ok = await command(kind === "file" ? "create_file" : "create_dir", { path });
+    const ok = await command(kind === "file" ? "create_file" : "create_dir", { sessionId, path });
     if (ok) {
       refreshFiles();
       if (kind === "file") openFile(path);
@@ -1288,7 +1278,7 @@
     const target = pathTarget;
     pathTarget = null;
     if (!target || !target.value.trim() || target.value === target.path) return;
-    const ok = await command("rename_path", { from: target.path, to: target.value.trim() });
+    const ok = await command("rename_path", { sessionId, from: target.path, to: target.value.trim() });
     if (ok) {
       closePathTabs(target.path);
       refreshFiles();
@@ -1303,7 +1293,7 @@
     const entry = deleteTarget;
     deleteTarget = null;
     if (!entry) return;
-    const ok = await command("delete_path", { path: entry.path });
+    const ok = await command("delete_path", { sessionId, path: entry.path });
     if (ok) {
       closePathTabs(entry.path);
       refreshFiles();
@@ -1320,11 +1310,11 @@
   }
 
   async function stagePath(path) {
-    if (await command("git_stage", { path })) refreshFiles();
+    if (await command("git_stage", { sessionId, path })) refreshFiles();
   }
 
   async function unstagePath(path) {
-    if (await command("git_unstage", { path })) refreshFiles();
+    if (await command("git_unstage", { sessionId, path })) refreshFiles();
   }
 
   // One click from a fully unstaged tree: stage each path in order and stop
@@ -1446,7 +1436,7 @@
   async function switchBranch(name) {
     if (dirtyTabs()) { branchesError = "Save or close unsaved files before switching branches."; return; }
     branchesError = "";
-    const ok = await command("git_switch_branch", { name });
+    const ok = await command("git_switch_branch", { sessionId, name });
     if (ok) {
       // Another branch's files replace this one's; tabs would point at
       // content that no longer exists.
@@ -1459,7 +1449,7 @@
 
   async function mergeBranch(name) {
     branchesError = "";
-    const ok = await command("git_merge_branch", { name });
+    const ok = await command("git_merge_branch", { sessionId, name });
     if (ok) await reloadBranches();
     else { branchesError = error; refreshFiles(); }
   }
@@ -1467,7 +1457,7 @@
   async function createBranch(name) {
     if (dirtyTabs()) { branchesError = "Save or close unsaved files before creating a branch."; return; }
     branchesError = "";
-    if (await command("git_create_branch", { name })) {
+    if (await command("git_create_branch", { sessionId, name })) {
       for (const tab of [...currentView.tabs]) {
         removeTab(tab.id);
       }
@@ -1477,7 +1467,7 @@
 
   async function renameBranch(from, to) {
     branchesError = "";
-    if (await command("git_rename_branch", { from, to })) await reloadBranches();
+    if (await command("git_rename_branch", { sessionId, from, to })) await reloadBranches();
     else branchesError = error;
   }
 
@@ -1618,7 +1608,7 @@
 
   async function applyModel(modelId, profileId, effort) {
     try {
-      await invoke("set_model", { modelId, profileId, effort });
+      await invoke("set_model", { sessionId, modelId, profileId, effort });
       pickerOpen = false;
       return true;
     } catch (cause) {
@@ -1837,7 +1827,7 @@
 
   async function loadThemes() {
     try {
-      themes = await invoke("list_themes");
+      themes = await invoke("list_themes", { sessionId: sessionId || null });
     } catch {}
     finally {
       themeReady = true;
@@ -1994,7 +1984,7 @@
     onPin={pinSession}
     onStop={stopSession}
     onClose={closeSession}
-    onResume={(session) => { railOpen = false; command("resume_session", { sessionId: session.session_id }); }}
+    onResume={(session) => { railOpen = false; command("resume_session", { sessionId: session.session_id, currentSessionId: sessionId }); }}
     onHelp={() => (helpOpen = true)}
   />
 
@@ -2228,7 +2218,7 @@
         onDetails={() => { sessionMenu = null; detailsOpen = true; }}
         onToggleApproveAll={toggleApproveAll}
         onToggleThinking={toggleThinking}
-        onClearApprovals={() => command("clear_approvals")}
+        onClearApprovals={() => command("clear_approvals", { sessionId })}
         onContinue={continueTurn}
         onCompact={compactContext}
         onStopSession={() => activeSession && stopSession(activeSession)}
@@ -2582,7 +2572,7 @@
     {/key}
   {/if}
   {#if detailsOpen}
-    {#key sessionId}<Details onClose={() => (detailsOpen = false)} />{/key}
+    {#key sessionId}<Details {sessionId} onClose={() => (detailsOpen = false)} />{/key}
   {/if}
   {#if helpOpen}
     <Help bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (helpOpen = false)} onProviders={() => { helpOpen = false; providersOpen = true; }} onGithub={supportsGit ? () => { helpOpen = false; githubOpen = true; } : null} />

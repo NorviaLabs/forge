@@ -1779,13 +1779,6 @@ impl From<String> for SessionFailure {
     }
 }
 
-/// For the commands that still act on the selection and report a string.
-impl From<SessionFailure> for String {
-    fn from(failure: SessionFailure) -> Self {
-        failure.message
-    }
-}
-
 impl From<&str> for SessionFailure {
     fn from(message: &str) -> Self {
         message.to_string().into()
@@ -1924,17 +1917,6 @@ async fn selected_snapshot(
     Some(session_event(&snapshot))
 }
 
-/// The session the operator currently has selected; the prompt, stop and
-/// approval commands target it.
-async fn selected_session(state: &DesktopState) -> Result<SessionId, String> {
-    state
-        .active()
-        .selected_session_id()
-        .await
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "no session is selected".to_string())
-}
-
 #[tauri::command]
 pub async fn submit_prompt(
     state: State<'_, DesktopState>,
@@ -1945,9 +1927,6 @@ pub async fn submit_prompt(
     let project = state.project_for(session_id).await?;
     if text.trim().is_empty() {
         return Err("prompt is empty".into());
-    }
-    if selected_session(&state).await? != session_id {
-        return Err("the selected session changed; send the prompt again".into());
     }
     let text = match attachment {
         Some(attachment) => {
@@ -1973,12 +1952,6 @@ pub async fn submit_prompt(
         .map_err(SessionFailure::from)
 }
 
-#[tauri::command]
-pub async fn stop_turn(state: State<'_, DesktopState>) -> Result<DesktopEvent, String> {
-    let session_id = selected_session(&state).await?;
-    stop_session(state, session_id).await.map_err(String::from)
-}
-
 /// Image bytes, not page-supplied filesystem paths, enter at this boundary.
 #[tauri::command]
 pub async fn submit_images(
@@ -1989,9 +1962,6 @@ pub async fn submit_images(
     attachment: Option<crate::workspace::PromptAttachment>,
 ) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
-    if selected_session(&state).await? != session_id {
-        return Err("Session changed; paste the image again in the intended session".into());
-    }
     let root = {
         let snapshot = project
             .snapshot(session_id)
@@ -2201,18 +2171,15 @@ pub async fn remove_worktree(
 
 async fn resolve(
     state: &DesktopState,
+    session_id: SessionId,
     call_id: String,
     decision: HitlDecision,
-) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(state).await?;
-    let pending = {
-        project
-            .snapshot(session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .and_then(|snapshot| snapshot.session.pending_hitl)
-    };
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    let pending = project
+        .snapshot(session_id)
+        .await?
+        .and_then(|snapshot| snapshot.session.pending_hitl);
     check_decision(pending.as_ref(), &call_id, &decision).map_err(|refusal| refusal.to_string())?;
     project
         .handle
@@ -2226,20 +2193,28 @@ async fn resolve(
             feedback: None,
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Approve the displayed request once. Refused for privileged requests
 /// (sandbox escalation, network grant), which need the native confirmation
 /// (M2); broad grants (always-allow, approve-all) have no command at all.
 #[tauri::command]
-pub async fn approve_once(state: State<'_, DesktopState>, call_id: String) -> Result<(), String> {
-    resolve(&state, call_id, HitlDecision::Approve).await
+pub async fn approve_once(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    call_id: String,
+) -> Result<(), SessionFailure> {
+    resolve(&state, session_id, call_id, HitlDecision::Approve).await
 }
 
 #[tauri::command]
-pub async fn deny(state: State<'_, DesktopState>, call_id: String) -> Result<(), String> {
-    resolve(&state, call_id, HitlDecision::Deny).await
+pub async fn deny(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    call_id: String,
+) -> Result<(), SessionFailure> {
+    resolve(&state, session_id, call_id, HitlDecision::Deny).await
 }
 
 /// The pending request the page is acting on, by id.
@@ -2269,13 +2244,13 @@ async fn pending_hitl(
 #[tauri::command]
 pub async fn decide_approval(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     call_id: String,
     decision: String,
     note: Option<String>,
     confirmed: bool,
-) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     let payload = pending_hitl(&state, session_id, &call_id).await?;
     let chosen = approval_options(&payload)
         .into_iter()
@@ -2301,7 +2276,7 @@ pub async fn decide_approval(
         "allow_host_for_session" => GrantDecision::AllowHostForSession,
         "allow_host_always" => GrantDecision::AllowHostAlways,
         "approve_all" => GrantDecision::ApproveAll,
-        other => return Err(format!("unknown decision `{other}`")),
+        other => return Err(format!("unknown decision `{other}`").into()),
     };
     project
         .handle
@@ -2312,32 +2287,37 @@ pub async fn decide_approval(
             actor: "desktop".into(),
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Turn approve-all on or off for the selected session. Session scoped and
 /// never persisted; the sandbox still prompts for an unconfined retry.
 #[tauri::command]
-pub async fn set_approve_all(state: State<'_, DesktopState>, on: bool) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+pub async fn set_approve_all(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    on: bool,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .submit(SupervisorCommand::SetApproveAll { session_id, on })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Forget every remembered pattern for the selected session.
 #[tauri::command]
-pub async fn clear_approvals(state: State<'_, DesktopState>) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+pub async fn clear_approvals(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .submit(SupervisorCommand::ClearSessionApprovals { session_id })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// One answer to one `ask_user_question` item.
@@ -2411,17 +2391,16 @@ pub fn build_answers(
 #[tauri::command]
 pub async fn answer_question(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     call_id: String,
     answers: Vec<AnswerInput>,
     skip: bool,
-) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     let pending = {
         project
             .snapshot(session_id)
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .and_then(|snapshot| snapshot.session.pending_question)
     };
     let pending = pending
@@ -2442,7 +2421,7 @@ pub async fn answer_question(
             actor: "desktop".into(),
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// The selected session's live snapshot, used to resync after the window
@@ -2450,22 +2429,24 @@ pub async fn answer_question(
 #[tauri::command]
 pub async fn current_session(
     state: State<'_, DesktopState>,
-) -> Result<Option<DesktopEvent>, String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+    session_id: SessionId,
+) -> Result<Option<DesktopEvent>, SessionFailure> {
+    let project = state.project_for(session_id).await?;
     Ok(selected_snapshot(&project, Some(session_id)).await)
 }
 
 /// Resume the selected session's stopped or interrupted turn.
 #[tauri::command]
-pub async fn continue_turn(state: State<'_, DesktopState>) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+pub async fn continue_turn(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .submit(SupervisorCommand::ContinueTurn { session_id })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Stop one session's turn, whether or not it is the selected one.
@@ -2513,27 +2494,18 @@ pub async fn close_session(
         .map_err(SessionFailure::from)
 }
 
-/// Durable sessions in the selected workspace that this process has closed.
-/// They are not live rows; resuming one replaces the selected conversation.
+/// Durable sessions in `session_id`'s workspace that this process has
+/// closed. They are not live rows; resuming one replaces that conversation.
 #[tauri::command]
 pub async fn list_resumable_sessions(
     state: State<'_, DesktopState>,
-) -> Result<Vec<SessionRow>, String> {
-    let project = state.active();
-    let Some(selected) = project
-        .selected_session_id()
-        .await
-        .map_err(|error| error.to_string())?
-    else {
-        return Ok(Vec::new());
-    };
-    let snapshots = project
-        .snapshots()
-        .await
-        .map_err(|error| error.to_string())?;
+    session_id: SessionId,
+) -> Result<Vec<SessionRow>, SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    let snapshots = project.snapshots().await?;
     let Some(active) = snapshots
         .iter()
-        .find(|snapshot| snapshot.task.session_id == selected)
+        .find(|snapshot| snapshot.task.session_id == session_id)
     else {
         return Ok(Vec::new());
     };
@@ -2572,14 +2544,16 @@ fn same_workspace(left: &std::path::Path, right: &std::path::Path) -> bool {
 
 /// Fork the selected session into a new branch of the same worktree.
 #[tauri::command]
-pub async fn fork_session(state: State<'_, DesktopState>) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+pub async fn fork_session(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .command(SupervisorCommand::ForkSession { session_id })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Switch to another durable session, closing nothing.
@@ -2587,13 +2561,13 @@ pub async fn fork_session(state: State<'_, DesktopState>) -> Result<(), String> 
 pub async fn resume_session(
     state: State<'_, DesktopState>,
     session_id: SessionId,
+    current_session_id: SessionId,
 ) -> Result<(), SessionFailure> {
     let project = state.project_for(session_id).await?;
-    let current = selected_session(&state).await?;
     project
         .handle
         .command(SupervisorCommand::ResumeSession {
-            current_session_id: current,
+            current_session_id,
             session_id,
         })
         .await
@@ -2665,21 +2639,26 @@ pub async fn cancel_queued(
 
 /// Compact the selected session's context now.
 #[tauri::command]
-pub async fn compact_context(state: State<'_, DesktopState>) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+pub async fn compact_context(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .submit(SupervisorCommand::CompactContext { session_id })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Turn extended thinking on or off for the selected session.
 #[tauri::command]
-pub async fn set_thinking(state: State<'_, DesktopState>, enabled: bool) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+pub async fn set_thinking(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    enabled: bool,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     project
         .handle
         .submit(SupervisorCommand::SetThinking {
@@ -2687,7 +2666,7 @@ pub async fn set_thinking(state: State<'_, DesktopState>, enabled: bool) -> Resu
             enabled,
         })
         .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Stop one run of a background task. Scoping by `run_id` keeps a late click
@@ -2833,14 +2812,6 @@ async fn workspace_of(
         .await?
         .map(|snapshot| snapshot.session.workspace_root)
         .ok_or_else(|| "the session is gone".into())
-}
-
-/// The active session's workspace root. Kept for callers that truly need the
-/// current selection; workspace-mutating commands should take `session_id`.
-#[allow(dead_code)]
-async fn active_workspace(state: &DesktopState) -> Result<std::path::PathBuf, String> {
-    let session_id = selected_session(state).await?;
-    workspace_of(state, session_id).await.map_err(String::from)
 }
 
 /// One folder of a session's workspace (`""` is the root). The tree loads a
@@ -3233,14 +3204,15 @@ pub async fn list_models() -> Result<Vec<ModelOption>, String> {
 
 /// Provider setup never sends a secret through the webview.
 #[tauri::command]
-pub async fn session_details(state: State<'_, DesktopState>) -> Result<serde_json::Value, String> {
-    let project = state.active();
-    let id = selected_session(&state).await?;
+pub async fn session_details(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<serde_json::Value, SessionFailure> {
+    let project = state.project_for(session_id).await?;
     let details = {
         project
-            .snapshot(id)
-            .await
-            .map_err(|error| error.to_string())?
+            .snapshot(session_id)
+            .await?
             .and_then(|snapshot| snapshot.details)
             .ok_or("Session details unavailable")?
     };
@@ -3262,7 +3234,7 @@ pub async fn session_details(state: State<'_, DesktopState>) -> Result<serde_jso
                 "Thinking": report.thinking_in_context_est, "Tool schemas": report.tool_schema_tokens_est,
             }
         })
-    }).await.map_err(|error| error.to_string())
+    }).await.map_err(SessionFailure::from)
 }
 
 /// Provider setup never sends a secret through the webview.
@@ -3279,8 +3251,14 @@ pub async fn list_providers() -> Result<Vec<crate::providers::ProviderView>, Str
 #[tauri::command]
 pub async fn list_themes(
     state: State<'_, DesktopState>,
+    session_id: Option<SessionId>,
 ) -> Result<Vec<crate::themes::ThemeView>, String> {
-    let workspace = active_workspace(&state).await.ok();
+    // A session's workspace can carry its own themes; before one is on
+    // screen only the user-level ones are listed.
+    let workspace = match session_id {
+        Some(session_id) => workspace_of(&state, session_id).await.ok(),
+        None => None,
+    };
     tokio::task::spawn_blocking(move || crate::themes::list(workspace.as_deref()))
         .await
         .map_err(|error| error.to_string())
@@ -3443,12 +3421,12 @@ pub async fn add_model(
 #[tauri::command]
 pub async fn set_model(
     state: State<'_, DesktopState>,
+    session_id: SessionId,
     model_id: String,
     profile_id: String,
     effort: Option<String>,
-) -> Result<(), String> {
-    let project = state.active();
-    let session_id = selected_session(&state).await?;
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
     // The supervisor derives the model's capabilities with the switch.
     project
         .handle
@@ -3459,7 +3437,7 @@ pub async fn set_model(
             reasoning_effort: effort,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(SessionFailure::from)
 }
 
 /// Save an edited file back into a session's workspace. Refused if the file

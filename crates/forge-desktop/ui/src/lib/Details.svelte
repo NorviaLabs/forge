@@ -3,14 +3,14 @@
   import { invoke } from "../ipc.js";
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
-  let { onClose } = $props();
+  let { sessionId, onClose } = $props();
   let details = $state(null);
   let loading = $state(false);
   let error = $state("");
   async function refresh() {
     loading = true;
     error = "";
-    try { details = await invoke("session_details"); }
+    try { details = await invoke("session_details", { sessionId }); }
     catch (cause) { error = String(cause); }
     finally { loading = false; }
   }

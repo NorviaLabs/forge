@@ -26,7 +26,7 @@
     busy = true;
     error = "";
     try {
-      const result = await invoke(command, args);
+      const result = await invoke(command, { sessionId, ...args });
       if (command === "github_issues") issues = result;
       else if (command === "github_details") { details = result; logs = null; }
       else logs = result;

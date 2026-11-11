@@ -43,10 +43,12 @@ themes are `themes/forge-dark.toml` and `themes/forge-light.toml`.
     installed theme listing, model switching, per-session PTYs, transcript
     detail (`message_detail`) and
     quit. Approvals always send `expected_call_id`; child approvals also send
-    `request_id`. Prompt, stop, approval and workspace commands resolve
-    their session from the supervisor's current selection, not from a copy
-    in the page. Selecting publishes the id, then Rust sends that session's
-    `Session` snapshot behind it.
+    `request_id`. Every session command takes `session_id` from the page;
+    none reads the supervisor's current selection, which only decides what
+    `subscribe` forwards. `tests/config.rs` enforces this: a command without
+    `session_id` must be listed in `SESSIONLESS_COMMANDS` (project, provider
+    and app commands). Selecting publishes the id, then Rust sends that
+    session's `Session` snapshot behind it.
   - It is permanent (no versioned protocol replaces it). Projects: one
     `ProjectService` holds every open project. `DesktopState.projects` is its
     handle and `active` the project on screen. A command with `session_id`

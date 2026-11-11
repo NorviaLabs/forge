@@ -246,3 +246,64 @@ fn release_ui_bundle_has_no_self_test_code() {
     assert!(!release.contains("not_a_forge_command"));
     assert!(!release.contains("selftest"));
 }
+
+/// Commands that act on a project, the providers or the app, not on one
+/// session. Everything else must name its session.
+const SESSIONLESS_COMMANDS: &[&str] = &[
+    "trust_status",
+    "trust_workspace",
+    "choose_folder",
+    "list_projects",
+    "open_project",
+    "subscribe",
+    "project_switch",
+    "project_add",
+    "project_trust",
+    "project_close",
+    "project_remove",
+    "project_relocate",
+    // These two start a session in the project on screen.
+    "create_session",
+    "attach_worktree",
+    "list_models",
+    "list_providers",
+    "connect_provider",
+    "disconnect_provider",
+    "import_provider_login",
+    "save_custom_provider",
+    "update_custom_provider",
+    "remove_custom_provider",
+    "add_model",
+    "set_unsaved",
+    "quit_app",
+];
+
+/// A session command that reads "the selected session" from the backend can
+/// land on a session the operator is not looking at. Every bridge command
+/// therefore takes `session_id` from the page, unless it is listed above.
+#[test]
+fn every_session_command_names_its_session() {
+    let source = std::fs::read_to_string(crate_dir().join("src/bridge.rs")).unwrap();
+    let mut sessionless = BTreeSet::new();
+    let mut commands = 0;
+    for (start, _) in source.match_indices("#[tauri::command]") {
+        let rest = &source[start..];
+        let name_start = rest.find("fn ").expect("a command is a function") + 3;
+        let name_end = name_start + rest[name_start..].find('(').unwrap();
+        let body_start = rest.find("{\n").unwrap();
+        commands += 1;
+        if !rest[name_end..body_start].contains("session_id:") {
+            sessionless.insert(rest[name_start..name_end].to_string());
+        }
+    }
+    assert!(commands > 60, "the scan found only {commands} commands");
+    let expected: BTreeSet<String> = SESSIONLESS_COMMANDS
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    assert_eq!(
+        sessionless, expected,
+        "a command without `session_id` must be project-, provider- or app-level and listed in \
+         SESSIONLESS_COMMANDS; a session command takes its session from the page"
+    );
+}
