@@ -6862,13 +6862,11 @@ mod tests {
             first
         );
         let task_actor = actor(&supervisor.state, owner).await.unwrap();
-        let legacy = task_actor
-            .session
-            .lock()
-            .await
-            .enqueue_task("restored instruction")
-            .await
-            .unwrap();
+        // Held until the legacy item is cancelled: the 200ms ticker hands a
+        // session's own queue to the durable one and starts a driver, which
+        // would run `next`, but it skips a session it cannot lock.
+        let mut session = task_actor.session.lock().await;
+        let legacy = session.enqueue_task("restored instruction").await.unwrap();
 
         for stale in [first, sibling] {
             let error = handle
@@ -6889,26 +6887,25 @@ mod tests {
             control.queued_prompts(sibling_owner).await.unwrap(),
             vec![(sibling, "sibling".into())]
         );
-        assert_eq!(
-            task_actor
-                .session
-                .lock()
-                .await
-                .queue()
-                .visible()
-                .next()
-                .unwrap()
-                .id,
-            legacy.id
-        );
-        handle
-            .command(SupervisorCommand::CancelQueuedPrompt {
-                session_id: owner,
-                one_based: 1,
-                expected_queue_id: Some(QueuedPromptId::Session(legacy.id)),
-            })
-            .await
-            .unwrap();
+        assert_eq!(session.queue().visible().next().unwrap().id, legacy.id);
+        // Sent while the lock is still held, so the command loop defers it as
+        // contended. It retries deferred work before it polls the ticker
+        // again, so releasing the lock cannot let the ticker go first.
+        let cancel = tokio::spawn({
+            let handle = handle.clone();
+            async move {
+                handle
+                    .command(SupervisorCommand::CancelQueuedPrompt {
+                        session_id: owner,
+                        one_based: 1,
+                        expected_queue_id: Some(QueuedPromptId::Session(legacy.id)),
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        drop(session);
+        cancel.await.unwrap().unwrap();
         assert!(task_actor.session.lock().await.queue().is_empty());
         assert_eq!(control.queued_prompts(owner).await.unwrap().len(), 1);
         handle

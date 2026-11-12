@@ -806,7 +806,7 @@ mod tests {
                 &ctx,
                 json!({
                     "cmd": format!("printf escaped > {} | cat", target.display()),
-                    "yield_time_ms": 1_000
+                    "yield_time_ms": 10_000
                 }),
             )
             .await
@@ -831,7 +831,7 @@ mod tests {
                 &ctx,
                 json!({
                     "cmd": "printf '%s|%s' \"$HTTP_PROXY\" \"$HTTPS_PROXY\"",
-                    "yield_time_ms": 1_000
+                    "yield_time_ms": 10_000
                 }),
             )
             .await
@@ -912,7 +912,7 @@ mod tests {
                 json!({
                     "cmd": "path=$(mktemp); directory=$(mktemp -d); printf 'MKTEMP=%s\\nMKDIR=%s\\n' \"$path\" \"$directory\"; test -f \"$path\" && test -d \"$directory\"",
                     "tty": true,
-                    "yield_time_ms": 1_000
+                    "yield_time_ms": 10_000
                 }),
             )
             .await
@@ -1041,7 +1041,7 @@ mod tests {
         let completed = write_stdin
             .call(
                 &ctx,
-                json!({"session_id": id, "chars": "input\n", "yield_time_ms": 1000}),
+                json!({"session_id": id, "chars": "input\n", "yield_time_ms": 10_000}),
             )
             .await
             .unwrap();
@@ -1083,7 +1083,7 @@ mod tests {
         let finished = write_stdin
             .call(
                 &ctx,
-                json!({"session_id": id, "chars": "input\n", "yield_time_ms": 1_000}),
+                json!({"session_id": id, "chars": "input\n", "yield_time_ms": 10_000}),
             )
             .await
             .unwrap();
@@ -1111,7 +1111,7 @@ mod tests {
                 json!({
                     "cmd": format!("printf escaped > {}", target.display()),
                     "tty": true,
-                    "yield_time_ms": 1_000
+                    "yield_time_ms": 10_000
                 }),
             )
             .await

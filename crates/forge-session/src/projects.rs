@@ -1134,20 +1134,28 @@ mod tests {
     /// shutdown carries on by itself and frees the lock when it finishes.
     #[tokio::test]
     async fn a_close_that_times_out_still_releases_the_lock_when_shutdown_finishes() {
-        // No shutdown finishes in zero time, so every close here times out.
+        // A zero timeout makes the close give up unless the spawned shutdown
+        // already finished before the timer fired, which it sometimes does:
+        // `sleep(0)` only fires on the timer's next tick. That close is
+        // correct too, so close and reopen until one gives up.
         let f = fixture_with(Duration::ZERO, |_| {});
         let root = folder(&f, "api");
         forge_config::grant_trust_at(&f.trust_store, &root).unwrap();
         let project = f.handle.add(root).await.unwrap();
-        f.handle.open(project.id).await.unwrap();
-
-        let notices = f.handle.close(project.id, true).await.unwrap();
-        assert!(
-            notices
+        let mut timed_out = false;
+        for _ in 0..50 {
+            f.handle.open(project.id).await.unwrap();
+            let notices = f.handle.close(project.id, true).await.unwrap();
+            if notices
                 .iter()
-                .any(|notice| notice.contains("still being stopped")),
-            "{notices:?}"
-        );
+                .any(|notice| notice.contains("still being stopped"))
+            {
+                timed_out = true;
+                break;
+            }
+            assert!(notices.is_empty(), "{notices:?}");
+        }
+        assert!(timed_out, "no close gave up waiting in 50 attempts");
 
         let reopened = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
