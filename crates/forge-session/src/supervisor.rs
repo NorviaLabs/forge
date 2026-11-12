@@ -7228,14 +7228,16 @@ mod tests {
             two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
         let control = &supervisor.state.control;
         let task_actor = actor(&supervisor.state, owner).await.unwrap();
-        task_actor
-            .session
-            .lock()
-            .await
+        // Locked until the session is archived: the 200ms ticker skips a
+        // session it cannot lock, and would otherwise run the result as a
+        // turn before the archive lands.
+        let mut session = task_actor.session.lock().await;
+        session
             .enqueue_task("Background task 'build' finished")
             .await
             .unwrap();
         control.archive(owner).await.unwrap();
+        drop(session);
         let mut events = handle.subscribe();
 
         handle.command(SupervisorCommand::Refresh).await.unwrap();
@@ -8166,8 +8168,10 @@ mod tests {
             1
         );
 
-        // Follow-up. The turn must reach the model and complete — bounded, so
-        // a stall fails the test instead of hanging the suite.
+        // Follow-up. The turn must reach the model and complete. The wait is
+        // bounded by `wait_for_task_state`, which fails a stall with the
+        // state it was stuck in; a tighter bound here starved under a full
+        // parallel test run without any stall.
         handle
             .command(SupervisorCommand::SubmitPrompt {
                 session_id,
@@ -8175,27 +8179,26 @@ mod tests {
             })
             .await
             .unwrap();
-        let follow_up = async {
-            wait_for_task_state(&handle, session_id, |snapshot| {
-                snapshot.task.turn_state == SupervisorTurnState::Completed
-                    && snapshot
-                        .transcript
-                        .messages()
-                        .iter()
-                        .filter(|m| m.role == forge_types::MessageRole::User)
-                        .count()
-                        == 2
-            })
-            .await
-        };
-        let follow_up = tokio::time::timeout(std::time::Duration::from_secs(8), follow_up)
-            .await
-            .expect("follow-up turn stalled after a queue-yielding turn: bug reproduced");
-        assert!(follow_up
-            .transcript
-            .messages()
-            .iter()
-            .any(|m| m.content.contains("follow-up answer")));
+        //
+        // The queued background result is handed to the prompt queue by the
+        // supervisor's ticker, so it may run as its own turn before or after
+        // the follow-up. Either order is correct; what must hold is that the
+        // follow-up is answered.
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            let messages = snapshot.transcript.messages();
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                && messages
+                    .iter()
+                    .position(|m| {
+                        m.role == forge_types::MessageRole::User && m.content == "follow-up"
+                    })
+                    .is_some_and(|at| {
+                        messages[at + 1..]
+                            .iter()
+                            .any(|m| m.role == forge_types::MessageRole::Assistant)
+                    })
+        })
+        .await;
 
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
@@ -10553,16 +10556,33 @@ mod tests {
                 .await
                 .unwrap();
         }
-        for entry in std::fs::read_dir(&journal).unwrap() {
-            let path = entry.unwrap().path();
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(&managed_id.to_string()))
-            {
-                std::fs::remove_file(path).unwrap();
+        // The dropped session may still be finishing its journal (a temp
+        // file renamed into place), so a file can vanish mid-sweep or appear
+        // after it. Sweep until a pass, after a pause, finds nothing.
+        let mut quiet_passes = 0;
+        for _ in 0..100 {
+            let mut removed = false;
+            for entry in std::fs::read_dir(&journal).unwrap() {
+                let path = entry.unwrap().path();
+                if path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(&managed_id.to_string()))
+                {
+                    match std::fs::remove_file(path) {
+                        Ok(()) => removed = true,
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => panic!("{error}"),
+                    }
+                }
             }
+            quiet_passes = if removed { 0 } else { quiet_passes + 1 };
+            if quiet_passes == 2 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+        assert_eq!(quiet_passes, 2, "the managed journal kept being rewritten");
 
         let bootstrap = RepositoryBootstrap::acquire(&cfg).await.unwrap();
         let (supervisor, handle) = bootstrap.open_with_primary(&cfg, primary).await.unwrap();

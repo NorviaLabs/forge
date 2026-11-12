@@ -1234,7 +1234,12 @@ mod tests {
     fn cache_handles_missing_malformed_clear_and_ttl_clamp() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("nested").join("catalog.toml");
-        let cache = ModelCatalogCache::new(path.clone()).with_ttl(0);
+        // A zero TTL is clamped to one second. Freshness is checked in whole
+        // seconds, so a one-second TTL would make `is_fresh` straight after
+        // `put` fail whenever the two straddle a second boundary: the flow
+        // below uses a TTL no test run outlasts.
+        assert_eq!(ModelCatalogCache::new(path.clone()).with_ttl(0).ttl_secs, 1);
+        let cache = ModelCatalogCache::new(path.clone()).with_ttl(60);
 
         assert_eq!(cache.path(), path.as_path());
         assert_eq!(cache.get_cached("openai"), Vec::<String>::new());

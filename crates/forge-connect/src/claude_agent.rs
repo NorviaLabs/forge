@@ -351,12 +351,28 @@ fn probe_io(child: &mut Child, timeout: Duration) -> Result<Probe, ProbeError> {
             }
         }
     });
+    // A Claude Code that exits at once (not installed properly, a startup
+    // error) closes its stdin before the request is written. Its stderr
+    // says why; the broken pipe does not.
+    let exited = |child: &mut Child, stderr_text: std::thread::JoinHandle<String>| {
+        let _ = child.wait();
+        let stderr = stderr_text.join().unwrap_or_default();
+        let detail = stderr.trim();
+        failed(&if detail.is_empty() {
+            "Claude Code exited before it started".to_string()
+        } else {
+            format!("Claude Code exited before it started: {detail}")
+        })
+    };
     {
         let stdin = child.stdin.as_mut().ok_or_else(|| failed("no stdin"))?;
         let line = probe_initialize(REQUEST_ID).to_string();
-        writeln!(stdin, "{line}")
-            .and_then(|()| stdin.flush())
-            .map_err(|error| failed(&format!("could not write to Claude Code: {error}")))?;
+        if let Err(error) = writeln!(stdin, "{line}").and_then(|()| stdin.flush()) {
+            if error.kind() == std::io::ErrorKind::BrokenPipe {
+                return Err(exited(child, stderr_text));
+            }
+            return Err(failed(&format!("could not write to Claude Code: {error}")));
+        }
     }
     let deadline = Instant::now() + timeout;
     loop {
@@ -391,14 +407,7 @@ fn probe_io(child: &mut Child, timeout: Duration) -> Result<Probe, ProbeError> {
                 )));
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = child.wait();
-                let stderr = stderr_text.join().unwrap_or_default();
-                let detail = stderr.trim();
-                return Err(failed(&if detail.is_empty() {
-                    "Claude Code exited before it started".to_string()
-                } else {
-                    format!("Claude Code exited before it started: {detail}")
-                }));
+                return Err(exited(child, stderr_text));
             }
         }
     }
@@ -537,6 +546,20 @@ mod tests {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        let error = probe_child(child, Duration::from_secs(10)).unwrap_err();
+        assert!(error.to_string().contains("boom"), "{error}");
+
+        // Already gone before the request is written: the write breaks the
+        // pipe, and the error still carries what Claude Code said.
+        let mut child = Command::new(&silent)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        while child.try_wait().unwrap().is_none() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let error = probe_child(child, Duration::from_secs(10)).unwrap_err();
         assert!(error.to_string().contains("boom"), "{error}");
     }
