@@ -86,7 +86,7 @@ mod openai {
             eprintln!("skipping: this host denies binding a listener");
             return;
         };
-        let error = verify_api_key("sk-0123456789abcdef0123", &base).unwrap_err();
+        let error = verify_api_key("placeholder-test-key", &base).unwrap_err();
         assert!(
             matches!(error, VerifyError::Status { status: 302, .. }),
             "{error:?}"

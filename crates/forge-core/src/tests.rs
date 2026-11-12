@@ -3689,7 +3689,7 @@ async fn session_paused_on_args_probe(
             tool_calls: vec![ToolCall {
                 id: "secret-call".into(),
                 name: "args_probe".into(),
-                arguments: json!({"api_key": "sk-live-123", "repo": "forge"}),
+                arguments: json!({"api_key": "placeholder-key-123", "repo": "forge"}),
             }],
             usage: None,
             thinking: None,
@@ -3722,7 +3722,7 @@ async fn approved_hitl_call_executes_the_original_unredacted_arguments() {
 
     assert_eq!(
         seen.lock().unwrap().clone(),
-        Some(json!({"api_key": "sk-live-123", "repo": "forge"})),
+        Some(json!({"api_key": "placeholder-key-123", "repo": "forge"})),
         "approval must execute the original call, not the redacted display copy"
     );
     assert!(s.turn.pending_hitl_calls.is_empty());

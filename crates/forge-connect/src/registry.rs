@@ -1464,7 +1464,7 @@ mod tests {
             },
             ProviderDetails {
                 title: "t".into(),
-                api_key_env: vec!["sk-live-secret-value".into()],
+                api_key_env: vec!["placeholder-secret-value".into()],
                 ..ProviderDetails::default()
             },
             ProviderDetails {
@@ -1486,7 +1486,7 @@ mod tests {
                 Some(&details),
             )
             .unwrap_err();
-            assert!(!err.contains("sk-live"), "{err}");
+            assert!(!err.contains("placeholder-secret-value"), "{err}");
             assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         }
         let details = ProviderDetails {
