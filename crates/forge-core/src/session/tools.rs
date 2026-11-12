@@ -144,8 +144,17 @@ impl PendingToolExecution {
             mut budget,
             prepared,
         } = self;
-        let tool_ctx = tool_ctx.with_tool_call_id(call.id.as_str());
+        let mut tool_ctx = tool_ctx.with_tool_call_id(call.id.as_str());
         let tool_name = call.name.clone();
+        // A program the user trusted for this project runs outside the
+        // sandbox from the start, when the command is one simple invocation
+        // of it. Decided from the call, never from what a run printed.
+        let trusted = (!tool_ctx.unconfined_shell)
+            .then(|| trusted_program(&tool_ctx, &call))
+            .flatten();
+        if trusted.is_some() {
+            tool_ctx = tool_ctx.with_unconfined_shell();
+        }
         let unconfined = tool_ctx.unconfined_shell;
         let pre_edit = pre_edit_snapshot(&tool_ctx, &call).await;
         let pre_git = git_pre_state(&tool_ctx, &call).await;
@@ -164,6 +173,11 @@ impl PendingToolExecution {
                 .call(&tool_ctx, &call.name, call.arguments.clone(), &mut budget)
                 .await
         };
+        if let (Some(program), Ok(output)) = (&trusted, result.as_mut()) {
+            output.content.push_str(&format!(
+                "\n\n[Forge] Ran outside the sandbox: `{program}` is trusted for this project."
+            ));
+        }
         if let (Some(before), Ok(output)) = (settings_before, result.as_mut()) {
             let after = forge_tools::sandbox::git::execution_settings(&tool_ctx.workspace_root);
             let changed = forge_tools::sandbox::git::changed_settings(&before, &after);
@@ -186,6 +200,20 @@ impl PendingToolExecution {
             result,
         }
     }
+}
+
+/// The trusted program `call` runs, when it is a shell call whose command is
+/// one simple invocation of a program the user trusted for this project.
+fn trusted_program(tool_ctx: &ToolContext, call: &ToolCall) -> Option<String> {
+    if !matches!(call.name.as_str(), "bash" | "exec_command") {
+        return None;
+    }
+    let command = super::grant::shell_command(&call.arguments)?;
+    let program = forge_tools::sandbox::trustable_program(command)?;
+    forge_config::project_trusted_programs(&tool_ctx.workspace_root)
+        .iter()
+        .any(|trusted| trusted == program)
+        .then(|| program.to_string())
 }
 
 /// The model's explanation when approve-all meets the sandbox's boundary.
@@ -551,37 +579,6 @@ impl AgentSession {
                     execution.result = Err(ToolError::Execution(format!(
                             "command still failed after an approved unconfined attempt; not requesting sandbox approval again: {content}"
                         )));
-                } else if denied_host.is_none()
-                    && !parallel
-                    && self.governance.session_escalation_allows(&call)
-                {
-                    // The operator already let this command pattern run
-                    // outside the sandbox for the session: rerun it unconfined
-                    // instead of asking again. An unconfined run is never
-                    // sandbox-denied, so this cannot loop.
-                    self.audit_escalation_grant(
-                        Some(&call.id),
-                        Some(&call.name),
-                        None,
-                        "remembered",
-                    );
-                    self.events.push(TurnEvent {
-                        kind: "unconfined_retry".into(),
-                        detail: call.name.clone(),
-                    });
-                    let budget = std::mem::take(&mut execution.budget);
-                    return Ok(ModelResponseApplication::Execute(Box::new(
-                        PendingToolApplication {
-                            executions: vec![PendingToolExecution {
-                                call,
-                                tools: self.tools.clone(),
-                                tool_ctx: self.tool_ctx.clone().with_unconfined_shell(),
-                                budget,
-                                prepared: None,
-                            }],
-                            remaining: pending,
-                        },
-                    )));
                 } else if self.approve_all() {
                     // Approve-all never asks and never widens the sandbox:
                     // the command fails at the wall and the model is told

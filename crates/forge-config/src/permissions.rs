@@ -126,6 +126,9 @@ struct ProjectHosts {
     /// Write targets (`host/owner/repo`, or a host) allowed for the project.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     writes: Vec<String>,
+    /// Programs the user let run outside the sandbox in this project.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    trusted_programs: Vec<String>,
     /// Whether the project's own remotes have been recorded in `writes`.
     /// Done once: a remote that appears later is asked about.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -202,6 +205,7 @@ pub fn append_project_host(workspace: &Path, host: &str) -> std::io::Result<()> 
                 path: key,
                 hosts: Vec::new(),
                 writes: Vec::new(),
+                trusted_programs: Vec::new(),
                 remotes_recorded: false,
             });
             file.projects.len() - 1
@@ -270,6 +274,7 @@ fn update_project_writes_in(
                 path: key,
                 hosts: Vec::new(),
                 writes: Vec::new(),
+                trusted_programs: Vec::new(),
                 remotes_recorded: false,
             });
             file.projects.len() - 1
@@ -279,6 +284,37 @@ fn update_project_writes_in(
         write_project_hosts(&path, &file)?;
     }
     Ok(())
+}
+
+/// Programs the user let run outside the sandbox in the project `workspace`
+/// belongs to.
+pub fn project_trusted_programs(workspace: &Path) -> Vec<String> {
+    let Some(path) = project_hosts_path() else {
+        return Vec::new();
+    };
+    let key = project_key(workspace);
+    read_project_hosts(&path)
+        .map(|file| {
+            file.projects
+                .into_iter()
+                .filter(|project| project.path == key)
+                .flat_map(|project| project.trusted_programs)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Let `program` run outside the sandbox in the project `workspace` belongs
+/// to, from now on.
+pub fn append_trusted_program(workspace: &Path, program: &str) -> std::io::Result<()> {
+    let program = program.trim().to_string();
+    update_project_writes(workspace, |project| {
+        let new = !project.trusted_programs.contains(&program);
+        if new {
+            project.trusted_programs.push(program);
+        }
+        new
+    })
 }
 
 /// Allow writes to `target` for the project `workspace` belongs to, from
@@ -478,6 +514,17 @@ mod tests {
                 "remote_write(github.com/o/fork)"
             ]
         );
+    }
+
+    #[test]
+    fn a_trusted_program_is_kept_per_project() {
+        let _user = IsolatedUserConfig::new();
+        let project = TempDir::new().unwrap();
+        let other = TempDir::new().unwrap();
+        append_trusted_program(project.path(), "docker").unwrap();
+        append_trusted_program(project.path(), "docker").unwrap();
+        assert_eq!(project_trusted_programs(project.path()), ["docker"]);
+        assert!(project_trusted_programs(other.path()).is_empty());
     }
 
     /// Registering a project with no remotes still records it, so a remote

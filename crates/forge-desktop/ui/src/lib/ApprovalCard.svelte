@@ -116,7 +116,9 @@
           ? "This opens network access the sandbox refused."
           : confirm.decision === "approve_all"
             ? "Every review prompt in this session will be approved automatically. The sandbox stays on."
-            : "This command runs outside the filesystem sandbox."}
+            : confirm.decision === "trust_program"
+              ? "This program will run outside the sandbox in this project from now on, without asking."
+              : "This command runs outside the filesystem sandbox."}
       </p>
       <p class="detail">{confirm.help}</p>
       <div class="actions">

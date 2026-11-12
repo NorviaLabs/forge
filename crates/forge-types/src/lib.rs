@@ -1016,6 +1016,7 @@ pub enum GrantDecision {
     /// Run this call once. Not offered for a denied host.
     AllowOnce,
     /// Remember the call's suggested pattern for the rest of the session.
+    /// Not for a sandbox escalation: leaving the sandbox is never a pattern.
     AllowPatternForSession,
     /// Remember the call's suggested pattern for the session and write it to
     /// the personal permissions file.
@@ -1025,9 +1026,13 @@ pub enum GrantDecision {
     /// As [`Self::AllowHostForSession`], and write `host(...)` to the personal
     /// permissions file.
     AllowHostAlways,
-    /// Turn on session approve-all, then approve this call (granting a denied
-    /// host for the session). Never offered for a sandbox escalation.
+    /// Turn on session approve-all, then approve this call. Never offered
+    /// for a sandbox escalation.
     ApproveAll,
+    /// Run this call outside the sandbox, and from now on run every simple
+    /// invocation of its program outside the sandbox in this project without
+    /// asking. Only for a sandbox escalation of a simple command.
+    TrustProgram,
 }
 
 impl GrantDecision {
@@ -1046,6 +1051,7 @@ impl GrantDecision {
             Self::AllowHostForSession => "allow_host_for_session",
             Self::AllowHostAlways => "allow_host_always",
             Self::ApproveAll => "approve_all",
+            Self::TrustProgram => "trust_program",
         }
     }
 }

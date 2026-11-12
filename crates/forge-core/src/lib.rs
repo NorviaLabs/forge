@@ -52,7 +52,8 @@ pub use session::compaction::{
     compact_tokens, CompletedContextCompaction, PendingContextCompaction,
 };
 pub use session::grant::{
-    pattern_grant_eligible, validate_grant_decision, AppliedGrant, GrantOutcome, GrantRejection,
+    pattern_grant_eligible, trustable_program, validate_grant_decision, AppliedGrant, GrantOutcome,
+    GrantRejection,
 };
 pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,

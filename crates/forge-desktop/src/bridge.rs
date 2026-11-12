@@ -412,13 +412,19 @@ pub fn approval_options(payload: &HitlPayload) -> Vec<ApprovalOption> {
                 "Retries this command outside the filesystem sandbox. That can run destructive commands.",
                 true,
             ));
-            options.push(option(
-                "allow_pattern_for_session",
-                "Allow this kind of call outside the sandbox this session".into(),
-                "",
-                "Later matching calls run unconfined until the session ends. Never saved.",
-                true,
-            ));
+            if let Some(program) = forge_core::trustable_program(payload) {
+                options.push(option(
+                    "trust_program",
+                    format!("Always run {program} outside the sandbox in this project"),
+                    &format!("trusted program {program}"),
+                    &format!(
+                        "A full escape: every single {program} command in this project runs \
+                         unconfined without asking, including ones you have not seen. Saved \
+                         for this project."
+                    ),
+                    true,
+                ));
+            }
         }
         ApprovalKind::Governance => {
             options.push(option(
@@ -2369,6 +2375,7 @@ pub async fn decide_approval(
         "allow_host_for_session" => GrantDecision::AllowHostForSession,
         "allow_host_always" => GrantDecision::AllowHostAlways,
         "approve_all" => GrantDecision::ApproveAll,
+        "trust_program" => GrantDecision::TrustProgram,
         other => return Err(format!("unknown decision `{other}`").into()),
     };
     project

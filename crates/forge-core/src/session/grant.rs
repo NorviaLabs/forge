@@ -25,9 +25,13 @@ pub enum GrantRejection {
     /// Approve-all never covers leaving the sandbox.
     #[error("approve-all never approves running a command outside the sandbox")]
     ApproveAllEscalation,
-    /// Running outside the sandbox is remembered for the session at most.
-    #[error("running outside the sandbox is never saved; allow it for this session instead")]
-    PersistentEscalation,
+    /// Leaving the sandbox is never a pattern: one command, or a trusted
+    /// program.
+    #[error("running outside the sandbox is approved per command or by trusting its program")]
+    EscalationPattern,
+    /// Only one simple invocation of a bare program can be trusted.
+    #[error("only a single simple command can have its program trusted; approve it once instead")]
+    NotTrustable,
 }
 
 /// The grant a resolved decision applied, for a frontend to report.
@@ -39,6 +43,8 @@ pub enum AppliedGrant {
     Host { pattern: String },
     /// `pattern` was remembered as a session allow rule.
     Pattern { pattern: String },
+    /// `program` may run outside the sandbox in this project from now on.
+    Program { program: String },
 }
 
 /// What [`AgentSession::apply_grant_decision`] did.
@@ -87,15 +93,20 @@ pub fn validate_grant_decision(
                 Err(GrantRejection::NoDeniedHost)
             }
         }
-        GrantDecision::AllowPatternAlways if kind == ApprovalKind::SandboxEscalation => {
-            Err(GrantRejection::PersistentEscalation)
+        GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways
+            if kind == ApprovalKind::SandboxEscalation =>
+        {
+            Err(GrantRejection::EscalationPattern)
+        }
+        GrantDecision::TrustProgram => {
+            if kind == ApprovalKind::SandboxEscalation && trustable_program(payload).is_some() {
+                Ok(())
+            } else {
+                Err(GrantRejection::NotTrustable)
+            }
         }
         GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways => {
-            let remembers = matches!(
-                kind,
-                ApprovalKind::Governance | ApprovalKind::SandboxEscalation
-            );
-            if remembers && pattern_grant_eligible(payload) {
+            if kind == ApprovalKind::Governance && pattern_grant_eligible(payload) {
                 Ok(())
             } else {
                 Err(GrantRejection::NoSessionPattern)
@@ -106,6 +117,24 @@ pub fn validate_grant_decision(
         }
         GrantDecision::ApproveAll => Ok(()),
     }
+}
+
+/// The program a sandbox escalation's command runs, when trusting it could
+/// cover the command (see [`forge_tools::sandbox::trustable_program`]).
+pub fn trustable_program(payload: &HitlPayload) -> Option<String> {
+    if !matches!(payload.tool.as_str(), "bash" | "exec_command") {
+        return None;
+    }
+    let command = shell_command(&payload.args_redacted)?;
+    forge_tools::sandbox::trustable_program(command).map(str::to_string)
+}
+
+/// The command line of a shell tool call's arguments.
+pub(crate) fn shell_command(arguments: &serde_json::Value) -> Option<&str> {
+    arguments
+        .get("command")
+        .or_else(|| arguments.get("cmd"))
+        .and_then(serde_json::Value::as_str)
 }
 
 /// The `ToolCall` a payload displays, for pattern suggestion and matching.
@@ -182,22 +211,20 @@ impl AgentSession {
                 self.grant_egress_host_for(&pattern, Some(call_id), "approval");
                 outcome.grant = AppliedGrant::Host { pattern };
             }
-            GrantDecision::AllowPatternForSession
-                if payload.kind() == ApprovalKind::SandboxEscalation =>
-            {
-                let pattern = self
-                    .governance
-                    .allow_suggested_escalation_for_session(&payload_call(&payload))
-                    .ok_or_else(|| {
-                        LoopError::Other(GrantRejection::NoSessionPattern.to_string())
-                    })?;
+            GrantDecision::TrustProgram => {
+                let program = trustable_program(&payload).expect("validated: trustable");
+                outcome.persist_error =
+                    forge_config::append_trusted_program(&self.tool_ctx.workspace_root, &program)
+                        .err()
+                        .map(|error| error.to_string());
                 self.audit_escalation_grant(
                     Some(call_id),
                     Some(&payload.tool),
-                    Some(&pattern),
+                    Some(&format!("trusted program {program}")),
                     "approval",
                 );
-                outcome.grant = AppliedGrant::Pattern { pattern };
+                outcome.persisted_rule = Some(format!("trusted program {program}"));
+                outcome.grant = AppliedGrant::Program { program };
             }
             GrantDecision::AllowPatternForSession | GrantDecision::AllowPatternAlways => {
                 let pattern = self
@@ -295,6 +322,7 @@ mod tests {
             GrantDecision::AllowHostForSession,
             GrantDecision::AllowHostAlways,
             GrantDecision::ApproveAll,
+            GrantDecision::TrustProgram,
         ]
         .into_iter()
         .filter(|decision| validate_grant_decision(payload, decision).is_ok())
@@ -324,26 +352,37 @@ mod tests {
         );
     }
 
+    /// Leaving the sandbox is approved one command at a time, or by trusting
+    /// the program of a simple command; never by a pattern.
     #[test]
-    fn a_sandbox_escalation_is_remembered_for_the_session_at_most() {
-        let mut escalation = payload(serde_json::json!({"command": "cargo build"}));
+    fn a_sandbox_escalation_is_one_command_or_a_trusted_program() {
+        let mut escalation = payload(serde_json::json!({"command": "docker build ."}));
         escalation.sandbox_escalation = true;
         assert_eq!(
             accepts(&escalation),
-            [
-                "deny",
-                "deny_with_note",
-                "allow_once",
-                "allow_pattern_for_session"
-            ]
+            ["deny", "deny_with_note", "allow_once", "trust_program"]
         );
-        assert_eq!(
-            validate_grant_decision(&escalation, &GrantDecision::AllowPatternAlways),
-            Err(GrantRejection::PersistentEscalation)
-        );
+        assert_eq!(trustable_program(&escalation).as_deref(), Some("docker"));
+        for decision in [
+            GrantDecision::AllowPatternForSession,
+            GrantDecision::AllowPatternAlways,
+        ] {
+            assert_eq!(
+                validate_grant_decision(&escalation, &decision),
+                Err(GrantRejection::EscalationPattern)
+            );
+        }
         assert_eq!(
             validate_grant_decision(&escalation, &GrantDecision::ApproveAll),
             Err(GrantRejection::ApproveAllEscalation)
+        );
+
+        let mut compound = payload(serde_json::json!({"command": "docker build . && sh x"}));
+        compound.sandbox_escalation = true;
+        assert_eq!(accepts(&compound), ["deny", "deny_with_note", "allow_once"]);
+        assert_eq!(
+            validate_grant_decision(&compound, &GrantDecision::TrustProgram),
+            Err(GrantRejection::NotTrustable)
         );
     }
 

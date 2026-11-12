@@ -1140,47 +1140,57 @@ async fn a_session_grant_does_not_authorize_unconfined_execution() {
     assert!(session.pending_hitl().is_some());
 }
 
-/// "Allow this session" on a sandbox escalation remembers the command
-/// pattern: the next matching denial reruns unconfined without a prompt.
-/// It is never offered as a persistent rule.
-#[tokio::test]
-async fn a_session_escalation_grant_reruns_matching_denials_unconfined() {
-    let dir = tempdir().unwrap();
-    let mut session = sandbox_denied_session(dir.path()).await;
-    let first = run_sandbox_denied_call(&mut session).await;
-    assert!(matches!(
-        first,
-        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
-    ));
-    assert!(session.pending_hitl().unwrap().sandbox_escalation);
+/// A "bash" that the sandbox stops, and that succeeds outside it.
+struct WallBashTool;
 
-    let error = session
-        .decide_hitl(GrantDecision::AllowPatternAlways, "test")
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("never saved"), "{error}");
-    assert!(session.pending_hitl().is_some());
+#[async_trait]
+impl forge_tools::Tool for WallBashTool {
+    fn name(&self) -> &str {
+        "bash"
+    }
 
-    let outcome = session
-        .decide_hitl(GrantDecision::AllowPatternForSession, "test")
-        .await
-        .unwrap();
-    assert_eq!(
-        outcome.grant,
-        AppliedGrant::Pattern {
-            pattern: "sandbox_denied".into()
+    fn description(&self) -> &str {
+        "Denied by the sandbox while confined"
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+            "additionalProperties": false
+        })
+    }
+
+    fn side_effect_class(&self) -> SideEffectClass {
+        SideEffectClass::Exec
+    }
+
+    async fn call(
+        &self,
+        ctx: &ToolContext,
+        _args: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        if ctx.unconfined_shell {
+            Ok(ToolOutput::success("ran unconfined"))
+        } else {
+            Err(ToolError::SandboxDenied {
+                content: "Operation not permitted".into(),
+                reason: "blocked by the sandbox".into(),
+                denied_host: None,
+            })
         }
-    );
-    assert!(session.pending_hitl().is_none());
+    }
+}
 
-    // Same turn, a later call of the same shape.
+async fn run_bash(session: &mut AgentSession, id: &str, command: &str) -> ModelResponseApplication {
     let application = session
         .begin_model_response_application(ModelResponse {
             text: String::new(),
             tool_calls: vec![ToolCall {
-                id: "call-sandbox-denied-2".into(),
-                name: "sandbox_denied".into(),
-                arguments: json!({}),
+                id: id.into(),
+                name: "bash".into(),
+                arguments: json!({ "command": command }),
             }],
             usage: None,
             thinking: None,
@@ -1188,36 +1198,83 @@ async fn a_session_escalation_grant_reruns_matching_denials_unconfined() {
         .await
         .unwrap();
     let ModelResponseApplication::Execute(pending) = application else {
-        panic!("tool should begin execution");
+        panic!("the call should run");
     };
-    let denied = pending.execute().await;
-    let ModelResponseApplication::Execute(retry) =
-        session.finish_tool_application(denied).await.unwrap()
-    else {
-        panic!("a remembered escalation must rerun instead of prompting");
-    };
-    let rerun = retry.execute().await;
-    let finished = session.finish_tool_application(rerun).await.unwrap();
-    assert!(
-        !matches!(
-            finished,
-            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
-        ),
-        "no second prompt"
-    );
-    assert!(session.pending_hitl().is_none());
-    assert!(session
-        .messages
-        .iter()
-        .any(|message| message.content.contains("approved retry ran unconfined")));
-    assert!(session
-        .events
-        .iter()
-        .any(|event| event.kind == "unconfined_retry"));
+    session
+        .finish_tool_application(pending.execute().await)
+        .await
+        .unwrap()
 }
 
-/// Without any grant the prompt still happens — the fix must not turn a
-/// sandbox denial into a silent unconfined run.
+/// Trusting a program (D8) runs later simple invocations of it outside the
+/// sandbox from the start, without asking. A compound command is not
+/// covered, and leaving the sandbox is never a session pattern.
+#[tokio::test]
+async fn a_trusted_program_runs_outside_the_sandbox_and_nothing_else_does() {
+    let _user = crate::permission::test_env::IsolatedUserConfig::new();
+    let dir = tempdir().unwrap();
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(WallBashTool));
+    let mut session = AgentSession::create(
+        base_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.append_user_message("build it").await.unwrap();
+
+    let first = run_bash(&mut session, "call-1", "docker build .").await;
+    assert!(matches!(
+        first,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let error = session
+        .decide_hitl(GrantDecision::AllowPatternForSession, "test")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("per command"), "{error}");
+    let outcome = session
+        .decide_hitl(GrantDecision::TrustProgram, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.grant,
+        AppliedGrant::Program {
+            program: "docker".into()
+        }
+    );
+    assert!(session.pending_hitl().is_none());
+
+    run_bash(&mut session, "call-2", "docker ps -a").await;
+    assert!(
+        session.pending_hitl().is_none(),
+        "a trusted program is not asked about"
+    );
+    let second = session
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call-2"))
+        .expect("the trusted call ran");
+    assert!(
+        second.content.starts_with("ran unconfined"),
+        "{}",
+        second.content
+    );
+    assert!(second
+        .content
+        .contains("`docker` is trusted for this project"));
+
+    let third = run_bash(&mut session, "call-3", "docker ps && id").await;
+    assert!(
+        matches!(
+            third,
+            ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+        ),
+        "a compound command is not covered by the trust"
+    );
+}
+
 #[tokio::test]
 async fn a_sandbox_denial_without_a_grant_still_prompts() {
     let dir = tempdir().unwrap();

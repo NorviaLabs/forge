@@ -364,20 +364,17 @@ mod egress_runtime_tests {
 }
 
 #[cfg(test)]
-mod session_egress_tests {
-    use super::start_egress;
-    use crate::*;
-
+pub(crate) mod test_env {
     /// Serializes tests that redirect `HOME` / `XDG_CONFIG_HOME` so they
     /// cannot race with each other. Restores the environment on drop.
-    struct IsolatedUserConfig {
+    pub(crate) struct IsolatedUserConfig {
         _lock: std::sync::MutexGuard<'static, ()>,
-        _home: tempfile::TempDir,
+        _home: std::path::PathBuf,
         saved: Vec<(String, Option<String>)>,
     }
 
     impl IsolatedUserConfig {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
             let _lock = ENV_LOCK
                 .get_or_init(|| std::sync::Mutex::new(()))
@@ -387,9 +384,11 @@ mod session_egress_tests {
             for key in ["HOME", "XDG_CONFIG_HOME"] {
                 saved.push((key.to_string(), std::env::var(key).ok()));
             }
-            let home = tempfile::TempDir::new().unwrap();
+            // Kept for the life of the process: tests running at the same
+            // time read `HOME` too, and must never find it deleted.
+            let home = tempfile::TempDir::new().unwrap().keep();
             std::env::remove_var("XDG_CONFIG_HOME");
-            std::env::set_var("HOME", home.path());
+            std::env::set_var("HOME", &home);
             Self {
                 _lock,
                 _home: home,
@@ -408,6 +407,14 @@ mod session_egress_tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod session_egress_tests {
+    use super::start_egress;
+    use crate::*;
+
+    use super::test_env::IsolatedUserConfig;
 
     async fn connect_status(port: u16, target: &str) -> String {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
