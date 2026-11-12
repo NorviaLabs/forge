@@ -134,6 +134,17 @@ fn filesystem_explanation(line: &str) -> String {
 /// Extract an absolute path only when the diagnostic names one explicitly.
 /// Relative shell operands are deliberately left out: guessing their base
 /// would make a denial explanation less trustworthy than the original error.
+/// The last absolute path a command's output reports the sandbox refused,
+/// if any. Only ever a proposal: the user sees it on the approval card and
+/// decides; nothing is granted from output on its own.
+pub fn denied_path(output: &str) -> Option<String> {
+    output
+        .lines()
+        .filter(|line| FILESYSTEM.iter().any(|marker| line.contains(marker)))
+        .filter_map(denied_resource)
+        .next_back()
+}
+
 pub(crate) fn denied_resource(line: &str) -> Option<String> {
     let marker = FILESYSTEM
         .iter()

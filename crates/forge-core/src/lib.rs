@@ -160,6 +160,10 @@ pub struct AgentSession {
     /// Holds git that Forge itself runs on this workspace (the Push, Pull
     /// and Fetch buttons) to this session's egress policy.
     egress_registration: Option<forge_tools::WorkspaceEgress>,
+    /// Directories outside the workspace this session's commands may write,
+    /// because the user allowed them for the session. Registered on the
+    /// first such grant.
+    write_grants: Option<forge_tools::write_grants::SessionWriteGrants>,
     /// `Some` only for a subagent session — flipped by the parent's
     /// `BackgroundTaskRegistry::cancel`, checked in
     /// `run_model_step_with_stream`'s streaming poll loop. `None` for the

@@ -475,6 +475,75 @@ pub struct SandboxPolicy {
     tool_cache: Option<PathBuf>,
 }
 
+/// Whether `dir` may be granted to sandboxed commands for writing (D5,
+/// D8): `Err` says why not.
+///
+/// Never a directory whose contents something later runs outside the
+/// sandbox, holds credentials or holds Forge's own configuration: not the
+/// home directory or anything above it, no `PATH` directory, no launch
+/// agents, no credential store, no system directory, and no directory
+/// containing one of those.
+pub fn grantable_write_dir(dir: &Path) -> Result<PathBuf, String> {
+    let dir = dir
+        .canonicalize()
+        .map_err(|error| format!("{} cannot be resolved: {error}", dir.display()))?;
+    if !dir.is_dir() {
+        return Err(format!("{} is not a directory", dir.display()));
+    }
+    let home = env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| resolved(&home));
+    let mut protected: Vec<PathBuf> = [
+        "/System",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/private/etc",
+        "/Library",
+        "/Applications",
+        "/opt",
+    ]
+    .iter()
+    .map(|path| resolved(Path::new(path)))
+    .collect();
+    if let Some(path) = env::var_os("PATH") {
+        protected.extend(
+            env::split_paths(&path)
+                .filter(|dir| dir.is_absolute())
+                .map(|dir| resolved(&dir)),
+        );
+    }
+    if let Some(home) = &home {
+        if dir == *home || home.starts_with(&dir) {
+            return Err("the home directory and the directories above it are never granted".into());
+        }
+        protected.extend(HOME_SECRETS.iter().map(|name| resolved(&home.join(name))));
+        for name in [
+            "Library/LaunchAgents",
+            "Library/Application Support/forge",
+            "Library/Preferences",
+            ".config/forge",
+            ".local/bin",
+            ".cargo/bin",
+            "bin",
+        ] {
+            protected.push(resolved(&home.join(name)));
+        }
+    }
+    if let Some(hit) = protected
+        .iter()
+        .find(|protected| dir.starts_with(protected) || protected.starts_with(&dir))
+    {
+        return Err(format!(
+            "{} is or contains {}, which is never granted to sandboxed commands",
+            dir.display(),
+            hit.display()
+        ));
+    }
+    Ok(dir)
+}
+
 /// Locations under the home directory that hold credentials or shell
 /// history. A confined process can never read them, whatever it was asked to
 /// run: reading one and sending it out is the attack the sandbox exists to
@@ -3029,6 +3098,48 @@ mod relay_tests {
             assert!(env
                 .iter()
                 .any(|(key, value)| { *key == name && *value == scratch.path() }));
+        }
+    }
+}
+
+#[cfg(test)]
+mod grant_tests {
+    use super::grantable_write_dir;
+    use std::path::Path;
+
+    #[test]
+    fn only_ordinary_directories_can_be_granted_for_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(grantable_write_dir(dir.path()).is_ok());
+        assert!(grantable_write_dir(&dir.path().join("missing")).is_err());
+        let file = dir.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(grantable_write_dir(&file).is_err());
+
+        let home = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap();
+        for refused in [
+            Path::new("/"),
+            Path::new("/usr/local"),
+            Path::new("/etc"),
+            home.as_path(),
+            &home.join(".ssh"),
+            &home.join("Library"),
+            &home.join("Library/LaunchAgents"),
+        ] {
+            if refused.exists() {
+                assert!(
+                    grantable_write_dir(refused).is_err(),
+                    "{} must be refused",
+                    refused.display()
+                );
+            }
+        }
+        if let Some(path) = std::env::var_os("PATH") {
+            for entry in std::env::split_paths(&path).filter(|entry| entry.is_dir()) {
+                assert!(grantable_write_dir(&entry).is_err(), "{}", entry.display());
+            }
         }
     }
 }

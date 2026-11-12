@@ -5314,6 +5314,7 @@ mod tests {
                 failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
+                denied_path: None,
             });
             snapshot.clone()
         };
@@ -7803,6 +7804,7 @@ mod tests {
                         failure: None,
                         sandbox_escalation: false,
                         denied_host: None,
+                        denied_path: None,
                     },
                 }),
                 decision: HitlDecision::Approve,
@@ -10822,6 +10824,7 @@ mod tests {
                         failure: None,
                         sandbox_escalation: false,
                         denied_host: None,
+                        denied_path: None,
                     },
                 }),
                 decision: HitlDecision::Deny,

@@ -23,6 +23,9 @@ pub(crate) struct TurnState {
     /// keyed by call id. The HITL payload only carries redacted arguments for
     /// display, so approval must execute this copy instead.
     pub(crate) pending_hitl_calls: HashMap<String, ToolCall>,
+    /// Sandbox escalations answered by granting a directory: their approved
+    /// re-run stays confined.
+    pub(crate) path_granted_calls: HashSet<String>,
 }
 
 impl TurnState {
@@ -37,6 +40,7 @@ impl TurnState {
             approved_retry_calls: HashMap::new(),
             retry_requests: HashMap::new(),
             pending_hitl_calls: HashMap::new(),
+            path_granted_calls: HashSet::new(),
         }
     }
 
@@ -50,6 +54,7 @@ impl TurnState {
         self.approved_retry_calls.clear();
         self.retry_requests.clear();
         self.pending_hitl_calls.clear();
+        self.path_granted_calls.clear();
     }
 
     pub(crate) fn calls(&self) -> &[ToolCall] {

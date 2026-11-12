@@ -203,6 +203,7 @@ mod tests {
                 failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
+                denied_path: None,
             },
         }
     }

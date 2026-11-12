@@ -180,6 +180,10 @@ impl ShellSpawnSpec {
             .with_command_access(command)
             .with_egress(command_egress)
             .with_git_open();
+        // Directories the user let sandboxed commands write (D8).
+        for dir in crate::write_grants::write_grants_for(workspace_root) {
+            policy = policy.with_write_path(dir);
+        }
         if let Some(session_tmp) = session_tmp {
             policy = policy.with_session_tmp(session_tmp);
         }

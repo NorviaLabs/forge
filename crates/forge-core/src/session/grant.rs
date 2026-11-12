@@ -29,6 +29,9 @@ pub enum GrantRejection {
     /// program.
     #[error("running outside the sandbox is approved per command or by trusting its program")]
     EscalationPattern,
+    /// A directory grant on a prompt that named no grantable directory.
+    #[error("this approval has no directory to allow")]
+    NoDeniedPath,
     /// Only one simple invocation of a bare program can be trusted.
     #[error("only a single simple command can have its program trusted; approve it once instead")]
     NotTrustable,
@@ -45,6 +48,8 @@ pub enum AppliedGrant {
     Pattern { pattern: String },
     /// `program` may run outside the sandbox in this project from now on.
     Program { program: String },
+    /// Sandboxed commands may write `dir`.
+    Directory { dir: String },
 }
 
 /// What [`AgentSession::apply_grant_decision`] did.
@@ -97,6 +102,13 @@ pub fn validate_grant_decision(
             if kind == ApprovalKind::SandboxEscalation =>
         {
             Err(GrantRejection::EscalationPattern)
+        }
+        GrantDecision::AllowPathForSession | GrantDecision::AllowPathAlways => {
+            if kind == ApprovalKind::SandboxEscalation && payload.denied_path.is_some() {
+                Ok(())
+            } else {
+                Err(GrantRejection::NoDeniedPath)
+            }
         }
         GrantDecision::TrustProgram => {
             if kind == ApprovalKind::SandboxEscalation && trustable_program(payload).is_some() {
@@ -211,6 +223,39 @@ impl AgentSession {
                 self.grant_egress_host_for(&pattern, Some(call_id), "approval");
                 outcome.grant = AppliedGrant::Host { pattern };
             }
+            GrantDecision::AllowPathForSession | GrantDecision::AllowPathAlways => {
+                let path = payload
+                    .denied_path
+                    .clone()
+                    .expect("validated: a denied path");
+                // Checked again now: the payload may be old.
+                let dir = forge_tools::write_grants::grant_for_denied_path(&path)
+                    .map_err(LoopError::Other)?;
+                if matches!(decision, GrantDecision::AllowPathAlways) {
+                    outcome.persist_error =
+                        forge_config::append_project_write_dir(&self.tool_ctx.workspace_root, &dir)
+                            .err()
+                            .map(|error| error.to_string());
+                    outcome.persisted_rule = Some(format!("write {}", dir.display()));
+                }
+                self.write_grants
+                    .get_or_insert_with(|| {
+                        forge_tools::write_grants::SessionWriteGrants::register(
+                            &self.tool_ctx.workspace_root,
+                        )
+                    })
+                    .grant(dir.clone());
+                self.audit_escalation_grant(
+                    Some(call_id),
+                    Some(&payload.tool),
+                    Some(&format!("write {}", dir.display())),
+                    "approval",
+                );
+                self.turn.path_granted_calls.insert(payload.call_id.clone());
+                outcome.grant = AppliedGrant::Directory {
+                    dir: dir.display().to_string(),
+                };
+            }
             GrantDecision::TrustProgram => {
                 let program = trustable_program(&payload).expect("validated: trustable");
                 outcome.persist_error =
@@ -309,6 +354,7 @@ mod tests {
             failure: None,
             sandbox_escalation: false,
             denied_host: None,
+            denied_path: None,
         }
     }
 
@@ -323,6 +369,8 @@ mod tests {
             GrantDecision::AllowHostAlways,
             GrantDecision::ApproveAll,
             GrantDecision::TrustProgram,
+            GrantDecision::AllowPathForSession,
+            GrantDecision::AllowPathAlways,
         ]
         .into_iter()
         .filter(|decision| validate_grant_decision(payload, decision).is_ok())

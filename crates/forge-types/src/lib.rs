@@ -973,6 +973,11 @@ pub struct HitlPayload {
     /// rather than an unconfined retry. `None` for MCP and filesystem HITL.
     #[serde(default)]
     pub denied_host: Option<String>,
+    /// For a sandbox escalation: the directory outside the workspace the
+    /// command was refused writing, when one can be granted (D8). The card
+    /// then offers to let sandboxed commands write it and re-run confined.
+    #[serde(default)]
+    pub denied_path: Option<String>,
 }
 
 /// What a pending approval is asking for, which decides the choices a
@@ -1029,6 +1034,11 @@ pub enum GrantDecision {
     /// Turn on session approve-all, then approve this call. Never offered
     /// for a sandbox escalation.
     ApproveAll,
+    /// Let sandboxed commands write the payload's `denied_path` until the
+    /// session ends, and re-run the call confined.
+    AllowPathForSession,
+    /// As [`Self::AllowPathForSession`], kept for the project.
+    AllowPathAlways,
     /// Run this call outside the sandbox, and from now on run every simple
     /// invocation of its program outside the sandbox in this project without
     /// asking. Only for a sandbox escalation of a simple command.
@@ -1052,6 +1062,8 @@ impl GrantDecision {
             Self::AllowHostAlways => "allow_host_always",
             Self::ApproveAll => "approve_all",
             Self::TrustProgram => "trust_program",
+            Self::AllowPathForSession => "allow_path_for_session",
+            Self::AllowPathAlways => "allow_path_always",
         }
     }
 }
@@ -1195,6 +1207,7 @@ mod tests {
                 failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
+                denied_path: None,
             },
         };
         assert_eq!(approval.request_id(), "r1");

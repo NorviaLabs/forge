@@ -412,6 +412,36 @@ pub fn approval_options(payload: &HitlPayload) -> Vec<ApprovalOption> {
                 "Retries this command outside the filesystem sandbox. That can run destructive commands.",
                 true,
             ));
+            if let Some(dir) = payload
+                .denied_path
+                .as_deref()
+                .and_then(|path| forge_tools::write_grants::grant_for_denied_path(path).ok())
+            {
+                let dir = dir.display().to_string();
+                // Widening by one named directory comes first: the command
+                // stays in the sandbox.
+                options.insert(
+                    0,
+                    option(
+                        "allow_path_for_session",
+                        format!("Allow writing {dir} this session"),
+                        &format!("write {dir}"),
+                        "The sandbox stays on; the command reruns inside it with this one \
+                         directory writable. You will be asked again next session.",
+                        true,
+                    ),
+                );
+                options.insert(
+                    1,
+                    option(
+                        "allow_path_always",
+                        format!("Always allow writing {dir} in this project"),
+                        &format!("write {dir}"),
+                        "The sandbox stays on. Saved for this project, outside the workspace.",
+                        true,
+                    ),
+                );
+            }
             if let Some(program) = forge_core::trustable_program(payload) {
                 options.push(option(
                     "trust_program",
@@ -2376,6 +2406,8 @@ pub async fn decide_approval(
         "allow_host_always" => GrantDecision::AllowHostAlways,
         "approve_all" => GrantDecision::ApproveAll,
         "trust_program" => GrantDecision::TrustProgram,
+        "allow_path_for_session" => GrantDecision::AllowPathForSession,
+        "allow_path_always" => GrantDecision::AllowPathAlways,
         other => return Err(format!("unknown decision `{other}`").into()),
     };
     project
@@ -4099,7 +4131,25 @@ mod tests {
             failure: None,
             sandbox_escalation,
             denied_host: denied_host.map(str::to_string),
+            denied_path: None,
         }
+    }
+
+    #[test]
+    fn a_refused_directory_is_offered_before_leaving_the_sandbox() {
+        let dir = std::env::temp_dir().join(format!("forge-grant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let resolved = dir.canonicalize().unwrap();
+        let mut escalation = payload(true, None);
+        escalation.denied_path = Some(resolved.join("cache.bin").display().to_string());
+        let options = approval_options(&escalation);
+        let decisions: Vec<&str> = options.iter().map(|o| o.decision.as_str()).collect();
+        assert_eq!(
+            &decisions[..3],
+            ["allow_path_for_session", "allow_path_always", "allow_once"]
+        );
+        assert!(options[0].label.contains(&resolved.display().to_string()));
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

@@ -156,12 +156,14 @@ impl AgentSession {
 
         self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
+        // A directory grant widened the sandbox: the call re-runs inside it.
+        let path_granted = self.turn.path_granted_calls.remove(&payload.call_id);
         let sandbox_escalation = payload.sandbox_escalation;
         if let Some(pending) = self
             .begin_hitl_execution_with_options(
                 &call,
                 &mut budget,
-                sandbox_escalation,
+                sandbox_escalation && !path_granted,
                 !sandbox_escalation,
             )
             .await?
@@ -195,11 +197,13 @@ impl AgentSession {
         self.ensure_approved_tool_allowed(&call).await?;
         self.clear_hitl_wait_and_resume().await?;
         let mut budget = ValidationBudget::with_default_max();
+        // A directory grant widened the sandbox: the call re-runs inside it.
+        let path_granted = self.turn.path_granted_calls.remove(&payload.call_id);
         let sandbox_escalation = payload.sandbox_escalation;
         self.begin_hitl_execution_with_options(
             &call,
             &mut budget,
-            sandbox_escalation,
+            sandbox_escalation && !path_granted,
             !sandbox_escalation,
         )
         .await

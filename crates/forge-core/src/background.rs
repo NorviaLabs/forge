@@ -1255,6 +1255,7 @@ mod tests {
                 failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
+                denied_path: None,
             },
         };
         control.track_hitl(
@@ -1296,6 +1297,7 @@ mod tests {
                 failure: None,
                 sandbox_escalation: false,
                 denied_host: None,
+                denied_path: None,
             },
         };
         let pending = Arc::new(Mutex::new(Some(request.clone())));

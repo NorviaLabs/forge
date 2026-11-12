@@ -116,6 +116,8 @@
           ? "This opens network access the sandbox refused."
           : confirm.decision === "approve_all"
             ? "Every review prompt in this session will be approved automatically. The sandbox stays on."
+            : confirm.decision === "allow_path_for_session" || confirm.decision === "allow_path_always"
+              ? "Sandboxed commands will be able to write this directory. The sandbox stays on."
             : confirm.decision === "trust_program"
               ? "This program will run outside the sandbox in this project from now on, without asking."
               : "This command runs outside the filesystem sandbox."}

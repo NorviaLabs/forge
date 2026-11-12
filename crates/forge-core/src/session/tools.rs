@@ -1006,6 +1006,7 @@ impl AgentSession {
                         failure: None,
                         sandbox_escalation: false,
                         denied_host: None,
+                        denied_path: None,
                     };
                     self.journal
                         .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
@@ -1613,6 +1614,18 @@ impl AgentSession {
                 .pending_hitl_calls
                 .insert(call.id.clone(), call.clone());
         }
+        // A directory the command was refused writing, offered as a grant
+        // when it may be granted. Read from the output, so it is only a
+        // proposal the user sees and decides on.
+        let denied_path = denied_host
+            .is_none()
+            .then(|| {
+                failure
+                    .as_deref()
+                    .and_then(forge_tools::sandbox::denied_path)
+            })
+            .flatten()
+            .filter(|path| forge_tools::write_grants::grant_for_denied_path(path).is_ok());
         let payload = HitlPayload {
             call_id: call.id.clone(),
             tool: call.name.clone(),
@@ -1621,6 +1634,7 @@ impl AgentSession {
             failure,
             sandbox_escalation: denied_host.is_none(),
             denied_host: denied_host.clone(),
+            denied_path,
         };
         self.journal
             .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())

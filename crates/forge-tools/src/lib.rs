@@ -13,6 +13,7 @@ pub mod sign_broker;
 pub mod ssh_broker;
 mod tls_intercept;
 pub mod write_gate;
+pub mod write_grants;
 #[doc(hidden)]
 pub use git_network::set_egress_connect_exe;
 pub use own_git::{

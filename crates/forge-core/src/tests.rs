@@ -1206,6 +1206,65 @@ async fn run_bash(session: &mut AgentSession, id: &str, command: &str) -> ModelR
         .unwrap()
 }
 
+/// A write refused outside the workspace offers that one directory (D8):
+/// granting it re-runs the same command still inside the sandbox, and it
+/// succeeds there.
+#[tokio::test]
+async fn granting_a_refused_directory_reruns_the_command_confined() {
+    if forge_tools::sandbox::availability().is_err() {
+        return;
+    }
+    let dir = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let target = outside.path().canonicalize().unwrap().join("out.txt");
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(forge_tools::BashTool));
+    let mut session = AgentSession::create(
+        no_gov_cfg(dir.path()),
+        Arc::new(MockModelClient::script(vec![])),
+        tools,
+    )
+    .await
+    .unwrap();
+    session.append_user_message("write it").await.unwrap();
+    // The second write is to a directory nobody grants: after the grant
+    // it is still refused, which shows the re-run is confined.
+    let elsewhere = tempdir().unwrap();
+    let other = elsewhere.path().canonicalize().unwrap().join("other.txt");
+    let command = format!(
+        "echo written > '{}' && touch '{}'",
+        target.display(),
+        other.display()
+    );
+    let first = run_bash(&mut session, "call-write", &command).await;
+    assert!(matches!(
+        first,
+        ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
+    ));
+    let payload = session.pending_hitl().unwrap().clone();
+    assert!(payload.sandbox_escalation);
+    assert_eq!(
+        payload.denied_path.as_deref(),
+        Some(target.to_str().unwrap()),
+        "{payload:?}"
+    );
+    assert!(!target.exists());
+    assert!(!other.exists());
+
+    let outcome = session
+        .decide_hitl(GrantDecision::AllowPathForSession, "test")
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.grant,
+        AppliedGrant::Directory {
+            dir: target.parent().unwrap().display().to_string()
+        }
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "written\n");
+    assert!(!other.exists(), "the re-run left the sandbox");
+}
+
 /// Trusting a program (D8) runs later simple invocations of it outside the
 /// sandbox from the start, without asking. A compound command is not
 /// covered, and leaving the sandbox is never a session pattern.
