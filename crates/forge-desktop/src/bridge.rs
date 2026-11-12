@@ -403,13 +403,6 @@ pub fn approval_options(payload: &HitlPayload) -> Vec<ApprovalOption> {
                 "Writes the rule to your personal permissions file. Kept next session.",
                 true,
             ));
-            options.push(option(
-                "approve_all",
-                "Trust all commands for this session".into(),
-                "",
-                "Approves review prompts and network requests until the session ends. The sandbox stays on.",
-                true,
-            ));
         }
         ApprovalKind::SandboxEscalation => {
             options.push(option(
@@ -453,7 +446,7 @@ pub fn approval_options(payload: &HitlPayload) -> Vec<ApprovalOption> {
                 "approve_all",
                 "Trust all commands for this session".into(),
                 "",
-                "Approves review prompts and network requests until the session ends. The sandbox stays on.",
+                "Approves review prompts until the session ends without asking. The sandbox stays on: what needs to leave it fails.",
                 false,
             ));
         }

@@ -1534,7 +1534,7 @@ async fn a_grant_decision_is_validated_then_grants_the_host_and_retries() {
     assert_eq!(
         outcome.grant,
         AppliedGrant::Host {
-            pattern: "**.github.com".into()
+            pattern: "api.github.com".into()
         }
     );
     assert!(outcome.persisted_rule.is_none());
@@ -1653,7 +1653,7 @@ async fn a_host_grant_and_retry_leave_an_ordered_durable_audit_trail() {
     assert_eq!(rows[1].detail["outcome"], "sandbox_denied");
     assert_eq!(rows[1].detail["denied_host"], "api.github.com");
     assert_eq!(rows[2].detail["kind"], "network_host");
-    assert_eq!(rows[3].detail["pattern"], "**.github.com");
+    assert_eq!(rows[3].detail["pattern"], "api.github.com");
     assert_eq!(rows[3].detail["scope"], "session");
     assert_eq!(rows[4].detail["decision"], "allow_host_for_session");
     assert_eq!(rows[4].detail["actor"], "test");
@@ -3678,10 +3678,10 @@ async fn approve_all_auto_approves_hitl_and_keeps_the_tool_confined() {
     );
 }
 
-/// Approve-all answers review prompts; leaving the sandbox is a different
-/// decision and still needs its own approval.
+/// Approve-all never asks and never widens the sandbox (D10): a command
+/// that needs to leave it fails at the wall, and the model is told why.
 #[tokio::test]
-async fn approve_all_still_prompts_before_running_outside_the_sandbox() {
+async fn approve_all_fails_at_the_sandbox_wall_without_asking() {
     let dir = tempdir().unwrap();
     let mut session = sandbox_denied_session(dir.path()).await;
     session.set_workspace_trusted(true);
@@ -3689,28 +3689,31 @@ async fn approve_all_still_prompts_before_running_outside_the_sandbox() {
 
     let application = run_sandbox_denied_call(&mut session).await;
 
-    assert!(matches!(
+    assert!(!matches!(
         application,
         ModelResponseApplication::Finished(ApplyOutcome::Hitl(_))
     ));
-    let payload = session
-        .pending_hitl()
-        .expect("a sandbox escalation must prompt under approve-all");
-    assert!(payload.sandbox_escalation);
+    assert!(session.pending_hitl().is_none(), "approve-all never asks");
+    let result = session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == MessageRole::Tool)
+        .expect("the call has a result");
     assert!(
-        !session
-            .messages
-            .iter()
-            .any(|message| message.role == MessageRole::Tool
-                && message.content.contains("ran unconfined")),
-        "nothing may run unconfined before the operator approves"
+        result
+            .content
+            .contains("Approve-all does not widen the sandbox"),
+        "{}",
+        result.content
     );
+    assert!(!result.content.contains("ran unconfined"));
 }
 
-/// Under approve-all a denied host is granted for the session and the same
-/// call re-runs, still confined, without a prompt.
+/// Under approve-all a denied host is not granted: the call fails at the
+/// wall instead of being re-run, and nothing is asked.
 #[tokio::test]
-async fn approve_all_grants_a_denied_host_and_retries_confined() {
+async fn approve_all_does_not_grant_a_denied_host() {
     let dir = tempdir().unwrap();
     let mut tools = ToolRegistry::new();
     tools.register(Arc::new(NetworkDeniedOnceTool::new()));
@@ -3741,16 +3744,8 @@ async fn approve_all_grants_a_denied_host_and_retries_confined() {
     let ModelResponseApplication::Execute(pending) = application else {
         panic!("tool should begin execution");
     };
-    let application = session
-        .finish_tool_application(pending.execute().await)
-        .await
-        .unwrap();
-    let ModelResponseApplication::Execute(retry) = application else {
-        panic!("approve-all should re-run the call after granting the host");
-    };
-    assert!(session.pending_hitl().is_none());
     session
-        .finish_tool_application(retry.execute().await)
+        .finish_tool_application(pending.execute().await)
         .await
         .unwrap();
 
@@ -3760,8 +3755,13 @@ async fn approve_all_grants_a_denied_host_and_retries_confined() {
         .iter()
         .rev()
         .find(|message| message.tool_call_id.as_deref() == Some("call-host"))
-        .expect("the confined retry should record a result");
-    assert_eq!(result.content, "retried confined after host grant");
+        .expect("the call should record a result");
+    assert!(
+        result.content.contains("is not allowed") && result.content.contains("Approve-all"),
+        "{}",
+        result.content
+    );
+    assert!(!result.content.contains("retried confined after host grant"));
 }
 
 #[tokio::test]

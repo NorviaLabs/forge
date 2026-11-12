@@ -2373,8 +2373,8 @@
         <h2 id="approve-all-title">Auto-approve review prompts?</h2>
         <p>
           Every review prompt in this session is approved without being shown.
-          The filesystem sandbox and network rules still apply, and privileged
-          host or sandbox requests are not auto-approved.
+          The sandbox stays on and nothing is asked: a command that needs a host
+          or a path outside it fails, and the agent is told why.
         </p>
         <div class="dialog-actions">
           <button class="btn danger" type="button" onclick={confirmApproveAll}>Auto-approve</button>

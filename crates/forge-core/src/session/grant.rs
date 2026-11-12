@@ -159,18 +159,13 @@ impl AgentSession {
                     ));
                 }
                 self.audit_approve_all(call_id);
-                if let Some(host) = payload.denied_host.as_deref() {
-                    let pattern = forge_tools::egress::suggest_host_pattern(host);
-                    self.grant_egress_host_for(&pattern, Some(call_id), "approve_all");
-                    outcome.grant = AppliedGrant::Host { pattern };
-                }
             }
             GrantDecision::AllowHostForSession | GrantDecision::AllowHostAlways => {
                 let host = payload
                     .denied_host
                     .as_deref()
                     .expect("validated: a host grant has a denied host");
-                let pattern = forge_tools::egress::suggest_host_pattern(host);
+                let pattern = forge_tools::egress::host_grant_pattern(host);
                 if matches!(decision, GrantDecision::AllowHostAlways) {
                     let rule = forge_tools::egress::host_allow_rule(host);
                     outcome.persist_error = forge_config::append_user_allow_rule(&rule)

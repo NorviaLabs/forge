@@ -223,11 +223,13 @@ async fn receive(inner: Weak<Inner>, mut asks: mpsc::UnboundedReceiver<HostAsk>)
         {
             let mut pending = lock(&inner.pending);
             if let Some(ask) = ask {
-                // Approve-all never asks. Refusing here leaves the command to
-                // the path it already had: it fails, and the session grants
-                // the host and runs it again.
+                // Approve-all never asks and never widens the sandbox: the
+                // connection is refused like any host no rule allows, and
+                // the command fails at the wall.
                 if inner.approve_all.load(Ordering::Acquire) {
-                    let _ = ask.reply.send(HostAnswer::Deny);
+                    // Nobody is asked, and nobody refused: the host is simply
+                    // not allowed, as if no one were there to ask.
+                    drop(ask.reply);
                 } else if let Some(existing) =
                     pending.iter_mut().find(|p| p.question.host == ask.host)
                 {

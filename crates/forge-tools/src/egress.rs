@@ -2425,29 +2425,14 @@ async fn serve_unix(client: UnixStream, shared: EgressShared) -> io::Result<()> 
     serve(client, shared, true).await
 }
 
-/// Family pattern for a denied host, used as `host(...)` in permissions.toml.
-///
-/// `api.github.com` and `github.com` both become `**.github.com` so one grant
-/// covers every client of that apex.
-pub fn suggest_host_pattern(host: &str) -> String {
-    let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
-    if host.parse::<std::net::IpAddr>().is_ok() || !host.contains('.') {
-        return host;
-    }
-    let labels: Vec<&str> = host.split('.').filter(|label| !label.is_empty()).collect();
-    if labels.len() >= 2 {
-        format!(
-            "**.{}.{}",
-            labels[labels.len() - 2],
-            labels[labels.len() - 1]
-        )
-    } else {
-        host
-    }
+/// The grant for a denied host: exactly that host, as the approval card
+/// names it. A grant for one host never opens its siblings.
+pub fn host_grant_pattern(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
 }
 
 pub fn host_allow_rule(host: &str) -> String {
-    format!("host({})", suggest_host_pattern(host))
+    format!("host({})", host_grant_pattern(host))
 }
 
 /// Split a CONNECT target into the host to authorize and the port to dial.
@@ -3041,13 +3026,16 @@ mod tests {
     }
 
     #[test]
-    fn a_github_api_host_suggests_the_apex_family() {
-        assert_eq!(suggest_host_pattern("api.github.com"), "**.github.com");
-        assert_eq!(suggest_host_pattern("github.com"), "**.github.com");
-        assert_eq!(suggest_host_pattern("uploads.github.com"), "**.github.com");
-        assert_eq!(host_allow_rule("api.github.com"), "host(**.github.com)");
-        assert_eq!(suggest_host_pattern("127.0.0.1"), "127.0.0.1");
-        assert_eq!(suggest_host_pattern("localhost"), "localhost");
+    fn a_host_grant_is_exactly_the_denied_host() {
+        assert_eq!(host_grant_pattern("API.github.com."), "api.github.com");
+        assert_eq!(host_grant_pattern("github.com"), "github.com");
+        assert_eq!(
+            host_grant_pattern("uploads.github.com"),
+            "uploads.github.com"
+        );
+        assert_eq!(host_allow_rule("api.github.com"), "host(api.github.com)");
+        assert_eq!(host_grant_pattern("127.0.0.1"), "127.0.0.1");
+        assert_eq!(host_grant_pattern("localhost"), "localhost");
     }
 
     #[test]

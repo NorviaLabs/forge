@@ -101,7 +101,7 @@ async fn run_headless_in(
                 }
                 ApprovalKind::NetworkHost => {
                     let host = payload.denied_host.as_deref().unwrap_or_default();
-                    if granted_hosts.insert(forge_tools::egress::suggest_host_pattern(host)) {
+                    if granted_hosts.insert(forge_tools::egress::host_grant_pattern(host)) {
                         GrantDecision::AllowHostForSession
                     } else {
                         GrantDecision::DenyWithNote(
