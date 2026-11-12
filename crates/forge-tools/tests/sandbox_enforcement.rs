@@ -824,7 +824,17 @@ async fn installed_toolchains_start_confined_without_being_named() {
         )
         .await
         .unwrap_or_else(|error| {
-            panic!("{name} must start inside the confined toolchain surface: {error}")
+            // The raw output and where the binary really lives: a toolchain
+            // installed behind a symlink is the usual reason it is missing.
+            let resolved: Vec<_> = std::env::split_paths(&path)
+                .map(|dir| dir.join(name))
+                .filter(|candidate| candidate.is_file())
+                .map(|candidate| (candidate.clone(), candidate.canonicalize()))
+                .collect();
+            panic!(
+                "{name} must start inside the confined toolchain surface: {error:?}\n\
+                 resolved: {resolved:?}"
+            )
         });
         assert!(
             !out.is_error,
