@@ -22,6 +22,8 @@
   import BranchPicker from "./lib/BranchPicker.svelte";
   import TrustScreen from "./lib/TrustScreen.svelte";
   import Providers from "./lib/Providers.svelte";
+  import Agents from "./lib/Agents.svelte";
+  import { agentNotice } from "./agents.js";
   import Github from "./lib/Github.svelte";
   import Details from "./lib/Details.svelte";
   import Help from "./lib/Help.svelte";
@@ -158,6 +160,7 @@
   let pendingClose = $state("");
   let pickerOpen = $state(false);
   let providersOpen = $state(false);
+  let agentsOpen = $state(false);
   let detailsOpen = $state(false);
   let helpOpen = $state(false);
   let settingsOpen = $state(false);
@@ -273,6 +276,8 @@
     action();
   }
   const waitNote = $derived(waitingNote(snapshot));
+  // Custom agent files that did not load, until the operator dismisses them.
+  const agentNote = $derived(agentNotice(snapshot.agentWarnings, currentView.agentWarningsDismissed));
   // Context is shown only once it needs a decision: at 70% the operator can
   // compact before the session does it for them.
   const contextPercent = $derived(Math.round(Math.min(Math.max(info.contextUsage ?? 0, 0), 1) * 100));
@@ -502,7 +507,8 @@
         action: openGithub,
       },
       { id: "action:status", group: "Actions", label: "Token, cost, tool and skill details…", action: () => (detailsOpen = true) },
-      { id: "action:settings", group: "Actions", label: "Settings: theme, sound, providers, GitHub…", action: () => (settingsOpen = true) },
+      { id: "action:agents", group: "Actions", label: "Custom agents", action: () => (agentsOpen = true) },
+      { id: "action:settings", group: "Actions", label: "Settings: theme, sound, providers, agents, GitHub…", action: () => (settingsOpen = true) },
       { id: "action:help", group: "Actions", label: "Help and shortcuts…", action: () => (helpOpen = true) },
       { id: "git:fetch", group: "Git", label: "Fetch upstream", action: () => performGitOperation({ kind: "fetch" }) },
       { id: "git:pull", group: "Git", label: "Pull upstream…", action: () => requestGitOperation({ kind: "pull" }) },
@@ -2058,6 +2064,26 @@
         </button>
       </div>
     {/if}
+    {#if agentNote}
+      <div class="agent-note" role="status">
+        <Icon name="alert" size={14} />
+        <div class="agent-note-text">
+          <strong>{agentNote.title}</strong>
+          <ul>
+            {#each agentNote.lines as line, index (index)}<li>{line}</li>{/each}
+          </ul>
+        </div>
+        <button type="button" class="btn" onclick={() => (agentsOpen = true)}>Review agents</button>
+        <button
+          type="button"
+          class="icon-btn"
+          aria-label="Dismiss agent warnings"
+          onclick={() => (currentView.agentWarningsDismissed = agentNote.key)}
+        >
+          <Icon name="close" size={12} />
+        </button>
+      </div>
+    {/if}
 
     {#if currentView.screen === "session"}
       {#key sessionId}
@@ -2649,6 +2675,9 @@
   {#if providersOpen}
     <Providers onClose={() => (providersOpen = false)} onChanged={async () => { models = await invoke("list_models"); }} />
   {/if}
+  {#if agentsOpen}
+    <Agents onClose={() => (agentsOpen = false)} />
+  {/if}
   {#if detailsOpen}
     {#key sessionId}<Details {sessionId} onClose={() => (detailsOpen = false)} />{/key}
   {/if}
@@ -2656,7 +2685,7 @@
     <Help onClose={() => (helpOpen = false)} onSettings={() => { helpOpen = false; settingsOpen = true; }} />
   {/if}
   {#if settingsOpen}
-    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (settingsOpen = false)} onProviders={() => { settingsOpen = false; providersOpen = true; }} />
+    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (settingsOpen = false)} onProviders={() => { settingsOpen = false; providersOpen = true; }} onAgents={() => { settingsOpen = false; agentsOpen = true; }} />
   {/if}
   {#if newSessionOpen}
     <div class="modal">
@@ -2955,6 +2984,28 @@
     flex: 1;
     overflow-wrap: anywhere;
   }
+
+  /* Custom agent files that did not load: a warning, not an error. The
+     session itself runs normally. */
+  .agent-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    width: calc(100% - 68px);
+    max-width: 720px;
+    margin: 12px auto 0;
+    padding: 8px 8px 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--secondary);
+    font-size: var(--text-sm);
+  }
+  .agent-note > :global(svg) { flex: none; margin-top: 2px; color: var(--warning); }
+  .agent-note-text { flex: 1; min-width: 0; }
+  .agent-note-text strong { color: var(--text); font-weight: 600; }
+  .agent-note-text ul { margin: 4px 0 0; padding-left: 16px; overflow-wrap: anywhere; }
+  .agent-note .btn { height: 24px; padding: 0 8px; flex: none; }
 
   /* Dialogs: one shell for every confirmation the page asks. */
   .modal {

@@ -683,6 +683,7 @@ mod propagation_contract {
                     prompt: "work".into(),
                     mode: forge_tools::AgentMode::Writer,
                     tool_allowlist: None,
+                    profile: Default::default(),
                 },
             )
             .await

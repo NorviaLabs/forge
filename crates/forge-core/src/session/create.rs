@@ -38,14 +38,18 @@ impl AgentSession {
         context.config = self.context.config.clone();
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut messages = state.messages;
-        restore_system_message(
-            &mut messages,
-            assemble_system_prompt(
-                &context.load_agents_md(),
-                context.load_skills().as_slice(),
-                session_tmp.path(),
-            ),
+        let custom_agents = crate::custom_agents::load_custom_agents(
+            &context.workspace,
+            self.user_agents_dir.as_deref(),
+            &self.tools,
         );
+        let mut system = assemble_system_prompt(
+            &context.load_agents_md(),
+            context.load_skills().as_slice(),
+            session_tmp.path(),
+        );
+        crate::custom_agents::append_agents_section(&mut system, &custom_agents.agents);
+        restore_system_message(&mut messages, system);
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume");
         }
@@ -85,6 +89,10 @@ impl AgentSession {
             .with_credential_env_names(credential_env_names);
         self.tool_ctx.egress = self.egress.as_ref().map(|runtime| runtime.grant());
         self.context = context;
+        // The replayed transcript's system prompt was just built with this
+        // section; record it rather than swapping it in again.
+        self.agents_section = custom_agents.section.clone();
+        self.set_custom_agents_loaded(&custom_agents);
         self.token_usage = token_usage;
         self.journaled_tool_results = journaled_tool_results;
         self.last_prompt_wire = None;
@@ -174,7 +182,13 @@ impl AgentSession {
         let agents = context.load_agents_md();
         let skills = context.load_skills();
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
-        let system = assemble_system_prompt(&agents, skills.as_slice(), session_tmp.path());
+        let custom_agents = crate::custom_agents::load_custom_agents(
+            &loop_cfg.workspace,
+            loop_cfg.user_agents_dir.as_deref(),
+            &tools,
+        );
+        let mut system = assemble_system_prompt(&agents, skills.as_slice(), session_tmp.path());
+        crate::custom_agents::append_agents_section(&mut system, &custom_agents.agents);
 
         // Start the session's egress proxy. `None` leaves the network off,
         // which is the safe direction: a command that needs it then fails with
@@ -246,6 +260,13 @@ impl AgentSession {
             auto_compaction_retry_at: None,
             canonical_user_turns: 0,
             canonical_user_messages: Vec::new(),
+            tool_limit: None,
+            child_profile: None,
+            custom_agent_warnings: Arc::new(custom_agents.warnings.clone()),
+            child_model_resolver: None,
+            user_agents_dir: loop_cfg.user_agents_dir.clone(),
+            agents_section: custom_agents.section.clone(),
+            agents_project_root: Some(custom_agents.project_root.clone()),
         })
     }
 
@@ -268,14 +289,18 @@ impl AgentSession {
         let context = ContextEngine::new(loop_cfg.workspace.clone(), session_id);
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
         let mut messages = state.messages.clone();
-        restore_system_message(
-            &mut messages,
-            assemble_system_prompt(
-                &context.load_agents_md(),
-                context.load_skills().as_slice(),
-                session_tmp.path(),
-            ),
+        let custom_agents = crate::custom_agents::load_custom_agents(
+            &loop_cfg.workspace,
+            loop_cfg.user_agents_dir.as_deref(),
+            &tools,
         );
+        let mut system = assemble_system_prompt(
+            &context.load_agents_md(),
+            context.load_skills().as_slice(),
+            session_tmp.path(),
+        );
+        crate::custom_agents::append_agents_section(&mut system, &custom_agents.agents);
+        restore_system_message(&mut messages, system);
         for incomplete in &state.incomplete_intents {
             warn!(call_id = %incomplete, "incomplete tool intent on resume");
         }
@@ -348,6 +373,13 @@ impl AgentSession {
             auto_compaction_retry_at: None,
             canonical_user_turns: 0,
             canonical_user_messages: state.user_messages.clone(),
+            tool_limit: None,
+            child_profile: None,
+            custom_agent_warnings: Arc::new(custom_agents.warnings.clone()),
+            child_model_resolver: None,
+            user_agents_dir: loop_cfg.user_agents_dir.clone(),
+            agents_section: custom_agents.section.clone(),
+            agents_project_root: Some(custom_agents.project_root.clone()),
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());
@@ -376,6 +408,7 @@ impl AgentSession {
             enable_context_lifecycle: self.enable_context,
             enable_governance: self.enable_gov,
             agents: self.coordinator.config().into(),
+            user_agents_dir: self.user_agents_dir.clone(),
         };
         let mut fork = Self::create(loop_cfg, self.model.clone(), (*self.tools).clone()).await?;
         fork.active_model = self.active_model.clone();
@@ -383,6 +416,7 @@ impl AgentSession {
         fork.reasoning_effort = self.reasoning_effort.clone();
         fork.thinking_enabled = self.thinking_enabled;
         fork.governance = self.governance.clone();
+        fork.child_model_resolver = self.child_model_resolver.clone();
         fork.context.config = self.context.config.clone();
         fork.context.goal = self.context.goal.clone();
         fork.compaction_policy = self.compaction_policy;
@@ -402,11 +436,19 @@ impl AgentSession {
                 "fork session scratch space is missing".into(),
             ));
         };
-        let system = assemble_system_prompt(
+        let custom_agents = crate::custom_agents::load_custom_agents(
+            fork.workspace_root(),
+            fork.user_agents_dir.as_deref(),
+            &fork.tools,
+        );
+        let mut system = assemble_system_prompt(
             &fork.context.load_agents_md(),
             fork.context.load_skills().as_slice(),
             &session_tmp,
         );
+        crate::custom_agents::append_agents_section(&mut system, &custom_agents.agents);
+        fork.agents_section = custom_agents.section.clone();
+        fork.set_custom_agents_loaded(&custom_agents);
         restore_system_message(&mut messages, system.clone());
         if let Some(first) = messages
             .first_mut()

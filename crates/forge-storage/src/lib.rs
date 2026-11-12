@@ -28,7 +28,8 @@ pub use resolver::{
 pub use worktree::{
     branch_exists, create_detached_session_worktree, create_session_worktree, create_worktree,
     head_is_on_a_branch, list_worktree_records, list_worktrees, main_worktree, materialize_branch,
-    remove_clean_worktree, remove_clean_worktree_if_branch, remove_clean_worktree_if_detached,
-    remove_dirty_worktree, remove_worktree, repair_worktrees, session_branch_slug, worktree_head,
-    worktree_is_dirty, DetachedWorktree, SubagentWorktree, WorktreeError, WorktreeRecord,
+    project_root, remove_clean_worktree, remove_clean_worktree_if_branch,
+    remove_clean_worktree_if_detached, remove_dirty_worktree, remove_worktree, repair_worktrees,
+    session_branch_slug, worktree_head, worktree_is_dirty, DetachedWorktree, SubagentWorktree,
+    WorktreeError, WorktreeRecord,
 };

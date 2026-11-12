@@ -180,6 +180,17 @@ pub(crate) fn remember_model_selection(
     }
 }
 
+/// User-scope custom agents: `<user config dir>/forge/agents`, or
+/// `FORGE_USER_AGENTS_DIR`. Test builds read none, as with the preference
+/// store: a test that wants user agents gives its session a directory.
+fn user_agents_dir() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        None
+    } else {
+        forge_config::agents::user_agents_dir()
+    }
+}
+
 /// Assemble a session from configuration, independent of any frontend.
 pub async fn open_session(cfg: &Config, target: SessionTarget) -> anyhow::Result<OpenedSession> {
     let model: Arc<dyn ModelClient> =
@@ -230,6 +241,7 @@ async fn open_session_with_model(
         enable_context_lifecycle: true,
         enable_governance: true,
         agents: cfg.tools.agents.clone(),
+        user_agents_dir: user_agents_dir(),
     };
 
     let mut session = match target {
@@ -267,6 +279,11 @@ async fn open_session_with_model(
     // stripped by forge-tools, the snapshot adds every generated name and
     // every key name the loaded profiles read (custom `api_key_env` too).
     session.set_route_table(route_table());
+    // A model or effort `spawn_agent` asks for is checked against the same
+    // providers and catalog. The offline mock has neither.
+    if !cfg.model.mock {
+        session.set_child_model_resolver(Arc::new(model_selection::CatalogChildModels::new(cfg)));
+    }
 
     // The project's own remotes are where its pushes go: record them once,
     // so only a push somewhere else asks.

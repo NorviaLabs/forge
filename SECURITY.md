@@ -70,6 +70,7 @@ behaviour:
 |------|--------|
 | `AGENTS.md` | Loaded into the model's system prompt as project instructions |
 | `.agents/skills/*/SKILL.md` | Loaded into the system prompt as skills |
+| `.forge/agents/*.md` | Custom agents: names and descriptions in the system prompt; instructions in a started agent's prompt |
 | `forge.toml` | Project configuration (see the restriction below) |
 
 Keys in a project `forge.toml` that can execute code, redirect a credentialed
@@ -77,6 +78,12 @@ request, or move Forge's authority/data boundary — `[[mcp.servers]]`,
 `model.base_url`, `model.api_key`, `workspace_root`, and `journal` — are **refused**
 from an auto-discovered file and honoured only from your user config or a path
 you name with `--config`. Everything else in that file is applied as written.
+
+Custom agents can only narrow what the session may do. An agent's tool list is
+enforced on top of the session's own policy, its capabilities cap the classes
+of tool it gets, and a caller cannot raise them. An agent without `network`
+gets no network gateway for its commands. Agent files are written by Forge,
+into directories agent-run commands cannot write.
 
 **Content the model reads is not trusted input.** File contents, tool output, web
 results, and output from MCP servers all enter the model's context. Text in any of

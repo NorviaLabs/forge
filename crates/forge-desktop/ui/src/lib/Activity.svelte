@@ -70,6 +70,11 @@
               <span class="task-id mono">#{task.id}</span>
               <span class="task-status"><span class="state-dot {TASK_DOTS[task.status] ?? ""}" aria-hidden="true"></span>{task.status.replaceAll("_", " ")}</span>
             </div>
+            {#if task.agent || task.model}
+              <p class="task-meta small">
+                {#if task.agent}Agent <span class="mono">{task.agent}</span>{/if}{#if task.agent && task.model} · {/if}{#if task.model}<span class="mono">{task.model}</span>{/if}{#if task.effort} · {task.effort} effort{/if}
+              </p>
+            {/if}
             {#if task.detail}<p class="task-detail mono">{task.detail}</p>{/if}
             {#if task.approval}<pre class="task-detail mono">{`${task.approval.tool}\n${task.approval.arguments}`}</pre>{/if}
             <div class="row">
@@ -336,6 +341,15 @@
     margin-left: auto;
     color: var(--muted);
     font-size: var(--text-xs);
+  }
+
+  /* The custom agent a child runs as, and the model it actually runs on. */
+  .task-meta {
+    margin: 0 0 4px;
+    color: var(--secondary);
+    font-size: var(--text-xs);
+    line-height: 16px;
+    overflow-wrap: anywhere;
   }
 
   .task-detail {

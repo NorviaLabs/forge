@@ -4,6 +4,7 @@ mod agent_coordinator;
 mod audit;
 mod background;
 mod completion;
+mod custom_agents;
 mod host_questions;
 mod lifecycle;
 mod model_selection;
@@ -36,6 +37,9 @@ pub use completion::{
     CompletionDecision, CompletionEvaluator, CompletionReason, DefaultCompletionEvaluator,
     EvidenceEntry, EvidenceSummary, ExecutionEvent, ExecutionEvidence, FileEffectExpectation,
     FileEffectKind, GitEffectExpectation, GitEffectKind, TaskExpectation, ToolExpectation,
+};
+pub use custom_agents::{
+    resolve_child_model_shape, ChildModel, ChildModelRequest, ChildModelResolver, ChildProfile,
 };
 /// Compaction vocabulary, re-exported so frontends and tests need only
 /// depend on `forge-core` to drive and inspect it.
@@ -213,6 +217,26 @@ pub struct AgentSession {
     canonical_user_turns: usize,
     /// Canonical user messages retained for session forks and durable titles.
     canonical_user_messages: Vec<String>,
+    /// A child agent's tool limit: the only tools it is offered and may call.
+    /// Enforced independently of governance, and on top of it, so a limit
+    /// only ever narrows what the parent allows. `None` for a top-level
+    /// session and for a child started without a tool list.
+    tool_limit: Option<Arc<std::collections::BTreeSet<String>>>,
+    /// What a child agent was started as (see `custom_agents`). `None` for a
+    /// top-level session.
+    child_profile: Option<custom_agents::ChildProfile>,
+    /// Problems found loading the custom agents, for the frontend to show.
+    custom_agent_warnings: Arc<Vec<String>>,
+    /// Validates a model or effort `spawn_agent` asks for. Installed by the
+    /// session's owner; without it only the request's shape is checked.
+    child_model_resolver: Option<Arc<dyn custom_agents::ChildModelResolver>>,
+    /// Where user-scope custom agents live (`LoopConfig::user_agents_dir`).
+    user_agents_dir: Option<PathBuf>,
+    /// The `# Agents` text at the end of the system prompt, so a refresh can
+    /// swap it when the agents change. Empty for a child agent.
+    agents_section: String,
+    /// The project root custom agents are read for, once known.
+    agents_project_root: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -244,6 +268,8 @@ impl CtxTokensFingerprint {
 
 #[cfg(test)]
 mod compaction_tests;
+#[cfg(test)]
+mod custom_agents_tests;
 #[cfg(all(test, unix))]
 mod mcp_egress_tests;
 #[cfg(test)]

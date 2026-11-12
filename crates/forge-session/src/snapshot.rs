@@ -63,6 +63,9 @@ pub struct SessionSnapshot {
     pub completion_tokens: u64,
     pub prompt_cache_hits: u64,
     pub prompt_cache_writes: u64,
+    /// Custom agent files that were skipped, and listed tools an agent cannot
+    /// have. Read when the session started or resumed.
+    pub agent_warnings: Vec<String>,
 }
 
 /// A wait that has no card of its own: the session is parked until the
@@ -114,6 +117,7 @@ impl SessionSnapshot {
             completion_tokens: session.token_usage.completion_tokens,
             prompt_cache_hits: session.token_usage.prompt_cache_hits,
             prompt_cache_writes: session.token_usage.prompt_cache_writes,
+            agent_warnings: session.custom_agent_warnings(),
         }
     }
 
@@ -152,6 +156,7 @@ impl Default for SessionSnapshot {
             completion_tokens: 0,
             prompt_cache_hits: 0,
             prompt_cache_writes: 0,
+            agent_warnings: Vec::new(),
         }
     }
 }
@@ -665,6 +670,35 @@ mod tests {
         assert_eq!(snapshot.prompt_tokens, 0);
         assert_eq!(snapshot.completion_tokens, 0);
         assert_eq!(snapshot.workspace_root(), dir.path());
+    }
+
+    /// A custom agent file that did not load reaches the frontend as a
+    /// warning on the session, which is otherwise normal.
+    #[tokio::test]
+    async fn capture_carries_custom_agent_warnings() {
+        let dir = tempdir().unwrap();
+        let agents = dir.path().join(".forge/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("broken.md"), "not an agent").unwrap();
+        std::fs::write(
+            agents.join("ok.md"),
+            "---\nname: ok\ndescription: Fine.\nmode: [read-only]\ntools: [read_file]\n---\n",
+        )
+        .unwrap();
+        let session = session_with(vec![], dir.path()).await;
+        let snapshot = SessionSnapshot::capture(&session);
+        assert_eq!(
+            snapshot.agent_warnings.len(),
+            1,
+            "{:?}",
+            snapshot.agent_warnings
+        );
+        assert!(snapshot.agent_warnings[0].contains("broken.md"));
+        assert_eq!(snapshot.lifecycle, TaskLifecycle::Ready);
+
+        let clean = tempdir().unwrap();
+        let session = session_with(vec![], clean.path()).await;
+        assert!(SessionSnapshot::capture(&session).agent_warnings.is_empty());
     }
 
     /// The snapshot must carry the pending approval through, since that is

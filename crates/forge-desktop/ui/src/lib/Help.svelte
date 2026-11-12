@@ -36,7 +36,7 @@
     <p>Shells run your own commands without the agent sandbox. Each session has one shell: Terminal in the top bar shows it as a drawer under the conversation, Focus terminal fills the window, and hiding it or switching sessions keeps it running. Stop terminal or <code>exit</code> ends it; the next open starts a fresh shell.</p>
     <p>Image paste supports PNG, JPEG, GIF and WebP, up to four files of 5 MiB each. Images are saved under workspace <code>.forge/attachments</code>.</p>
     </div>
-    <footer class="actions"><span class="foot-note">Theme, sound and providers are in Settings.</span><button class="link" type="button" onclick={onSettings}>Open Settings</button></footer>
+    <footer class="actions"><span class="foot-note">Theme, sound, providers and custom agents are in Settings.</span><button class="link" type="button" onclick={onSettings}>Open Settings</button></footer>
   </div>
 </div>
 

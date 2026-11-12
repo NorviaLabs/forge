@@ -974,6 +974,21 @@ impl AgentSession {
         }
         let call = forge_tools::canonicalize_tool_call(call.clone());
         self.turn.record_call(call.clone());
+        // A child agent's tool limit holds before anything else, including
+        // the tools below that bypass governance.
+        if !self.tool_within_limit(&call.name) {
+            let agent = self
+                .child_profile()
+                .and_then(|profile| profile.agent.as_deref())
+                .map(|agent| format!("the agent `{agent}`"))
+                .unwrap_or_else(|| "this agent".into());
+            let output = ToolOutput::denied(format!(
+                "`{}` is not one of the tools {agent} was given",
+                call.name
+            ));
+            self.record_denied_tool(&call, output).await?;
+            return Ok(ToolExecutionStart::Finished(None));
+        }
         if call.name == "request_unconfined_retry" {
             if !validated {
                 self.tools
@@ -1203,22 +1218,31 @@ impl AgentSession {
                     serde_json::from_value(call.arguments.clone()).map_err(|error| {
                         LoopError::Other(format!("invalid spawn_agent arguments: {error}"))
                     })?;
-                let task_id = self
-                    .spawn_subagent(SubagentSpec {
-                        role: args.task_name,
-                        prompt: args.message,
-                        mode: args.mode,
-                        tool_allowlist: args.tool_allowlist,
-                    })
-                    .await?;
+                let spec = self.subagent_spec_for(args)?;
+                let agent = spec.profile.agent.clone();
+                let task_id = self.spawn_subagent(spec).await?;
                 let agent_id = self
                     .background()
                     .get(task_id)
                     .and_then(|task| task.child_session_id)
                     .ok_or_else(|| LoopError::Other("spawned agent has no session id".into()))?;
-                ToolOutput::success(
-                    json!({"agent_id": agent_id.to_string(), "status": "running"}).to_string(),
-                )
+                let mut started = json!({"agent_id": agent_id.to_string(), "status": "running"});
+                if let Some(agent) = agent {
+                    started["agent"] = json!(agent);
+                }
+                if let Some(child) = self
+                    .background()
+                    .get(task_id)
+                    .and_then(|task| task.child.as_ref())
+                {
+                    if let Some(model) = &child.model {
+                        started["model"] = json!(model);
+                    }
+                    if let Some(effort) = &child.reasoning_effort {
+                        started["reasoning_effort"] = json!(effort);
+                    }
+                }
+                ToolOutput::success(started.to_string())
             }
             "send_message" => {
                 let args: AgentMessageArgs = serde_json::from_value(call.arguments.clone())

@@ -44,6 +44,10 @@ pub struct LoopConfig {
     pub enable_context_lifecycle: bool,
     pub enable_governance: bool,
     pub agents: forge_config::AgentConfig,
+    /// Where user-scope custom agents live. `None`, the default, reads no
+    /// user agents, so a session built for a test never sees the developer's
+    /// own; the session's owner sets the real directory.
+    pub user_agents_dir: Option<PathBuf>,
 }
 
 impl Default for LoopConfig {
@@ -54,6 +58,7 @@ impl Default for LoopConfig {
             enable_context_lifecycle: true,
             enable_governance: true,
             agents: forge_config::AgentConfig::default(),
+            user_agents_dir: None,
         }
     }
 }

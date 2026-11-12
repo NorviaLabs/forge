@@ -30,7 +30,6 @@ fn get_writer_gate(root: &Path) -> Arc<Semaphore> {
 
 use forge_context::compaction::{CompactionPolicy, CompactionTelemetry, SessionContextState};
 use forge_durable::Journal;
-use forge_governance::AclPolicy;
 use forge_storage::RuntimeStorage;
 use forge_tools::ToolContext;
 use forge_types::{
@@ -63,9 +62,12 @@ pub struct SubagentSpec {
     /// Explicit scheduling mode. Omitted at the tool boundary defaults to Writer.
     pub mode: AgentMode,
     /// `None` inherits the parent's full tool registry and governance ACL.
-    /// `Some(names)` replaces the child's ACL with an allow-list of exactly
-    /// those tool names, narrowing (not widening) what it can call.
+    /// `Some(names)` limits the child to those tools, on top of the parent's
+    /// governance, so it narrows and never widens what the child can call.
     pub tool_allowlist: Option<Vec<String>>,
+    /// A named custom agent's instructions, network and model, and any model
+    /// or effort the caller chose. Journaled in the child's journal.
+    pub profile: crate::ChildProfile,
 }
 
 /// What a finished (or cancelled/failed) subagent reports back to its
@@ -102,22 +104,16 @@ impl AgentSession {
         let agents = context.load_agents_md();
         let skills = context.load_skills();
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
-        let system = assemble_system_prompt(&agents, skills.as_slice(), session_tmp.path());
+        let mut system = assemble_system_prompt(&agents, skills.as_slice(), session_tmp.path());
+        crate::custom_agents::append_role_section(&mut system, &spec.profile);
 
-        // Same HITL/governance policy as the parent by default (per product
-        // decision: a subagent can legitimately pause on an approval prompt,
-        // same as the main session) — narrowed only if `tool_allowlist` asks
-        // for it.
-        let mut governance = self.governance.clone();
-        if let Some(allowlist) = &spec.tool_allowlist {
-            let mut acl = AclPolicy::new();
-            for name in allowlist {
-                acl.allow(name.clone());
-            }
-            governance.acl = acl;
-        }
+        // Same HITL/governance policy as the parent (per product decision: a
+        // subagent can legitimately pause on an approval prompt, same as the
+        // main session). `tool_allowlist` becomes the child's tool limit,
+        // applied on top of this policy below, so it can only narrow it.
+        let governance = self.governance.clone();
 
-        Ok(AgentSession {
+        let mut child = AgentSession {
             session_id,
             coordinator: self.coordinator.clone(),
             messages: vec![Message {
@@ -182,7 +178,29 @@ impl AgentSession {
             auto_compaction_retry_at: None,
             canonical_user_turns: 0,
             canonical_user_messages: Vec::new(),
-        })
+            tool_limit: None,
+            child_profile: None,
+            custom_agent_warnings: Default::default(),
+            child_model_resolver: None,
+            user_agents_dir: self.user_agents_dir.clone(),
+            agents_section: String::new(),
+            agents_project_root: None,
+        };
+        child.apply_child_profile(spec.tool_allowlist.clone(), &spec.profile);
+        let journaled = crate::custom_agents::JournaledProfile {
+            tool_limit: spec.tool_allowlist.clone(),
+            mode: Some(spec.mode),
+            profile: spec.profile.clone(),
+        };
+        child
+            .journal
+            .append_agent_profile(
+                session_id,
+                serde_json::to_value(&journaled)
+                    .map_err(|error| LoopError::Other(error.to_string()))?,
+            )
+            .await?;
+        Ok(child)
     }
 
     /// Reconstruct a subagent's `AgentSession` from its OWN existing journal
@@ -190,11 +208,13 @@ impl AgentSession {
     /// `interrupt_orphaned_subagent_task` and `restore_finished_subagent_task`
     /// to reopen a child without running a turn. Shares the
     /// parent's `Arc<ToolRegistry>`/`Arc<dyn ModelClient>`/governance, same
-    /// as `create_child`. Note: the original `SubagentSpec.tool_allowlist`
-    /// isn't itself journaled (only `role` is, via `SubagentSpawned`), so a
-    /// resumed subagent always gets the parent's un-narrowed governance —
-    /// a documented limitation, not a silent one.
-    async fn resume_child(
+    /// as `create_child`. What the child was started as — its tool limit,
+    /// network, model and a named agent's instructions — is replayed from
+    /// the `AgentProfile` event `create_child` wrote to the child's journal,
+    /// so the restrictions survive a restart. A child journaled before
+    /// profiles existed has none, and runs under the parent's governance as
+    /// it did then.
+    pub(crate) async fn resume_child(
         &self,
         session_id: SessionId,
         workspace: PathBuf,
@@ -206,11 +226,17 @@ impl AgentSession {
 
         let context = forge_context::ContextEngine::new(workspace.clone(), session_id);
         let session_tmp = forge_tools::SessionTempDir::create(session_id)?;
-        let system = assemble_system_prompt(
+        let journaled = state.agent_profile.clone().and_then(|profile| {
+            serde_json::from_value::<crate::custom_agents::JournaledProfile>(profile).ok()
+        });
+        let mut system = assemble_system_prompt(
             &context.load_agents_md(),
             context.load_skills().as_slice(),
             session_tmp.path(),
         );
+        if let Some(journaled) = &journaled {
+            crate::custom_agents::append_role_section(&mut system, &journaled.profile);
+        }
         let system_message = Message {
             outcome: Default::default(),
             role: MessageRole::System,
@@ -299,7 +325,17 @@ impl AgentSession {
             auto_compaction_retry_at: None,
             canonical_user_turns: 0,
             canonical_user_messages: state.user_messages.clone(),
+            tool_limit: None,
+            child_profile: None,
+            custom_agent_warnings: Default::default(),
+            child_model_resolver: None,
+            user_agents_dir: self.user_agents_dir.clone(),
+            agents_section: String::new(),
+            agents_project_root: None,
         };
+        if let Some(journaled) = journaled {
+            child.apply_child_profile(journaled.tool_limit, &journaled.profile);
+        }
         child.reconcile_incomplete_intents(&incomplete).await?;
         // Deliberately no `mark_interrupted_if_stale()` here — this only
         // reconstructs the child's state; callers decide. Neither caller runs
@@ -397,6 +433,11 @@ impl AgentSession {
             mode: None,
             workspace: child.workspace_root().to_path_buf(),
             branch: None,
+            agent: child
+                .child_profile()
+                .and_then(|profile| profile.agent.clone()),
+            model: Some(child.model_selection().model).filter(|model| !model.is_empty()),
+            reasoning_effort: child.model_selection().reasoning_effort,
         };
         self.tasks
             .background
@@ -683,8 +724,12 @@ impl AgentSession {
         };
 
         self.tasks.background.mark_running(task_id);
+        let child_selection = child.model_selection();
         let metadata = BackgroundChildExecution {
             mode: Some(spec.mode),
+            agent: spec.profile.agent.clone(),
+            model: Some(child_selection.model).filter(|model| !model.is_empty()),
+            reasoning_effort: child_selection.reasoning_effort,
             workspace: child_workspace.clone(),
             branch: worktree
                 .as_ref()
@@ -1344,6 +1389,7 @@ mod tests {
                 prompt: "inspect".into(),
                 mode: AgentMode::ReadOnly,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1447,6 +1493,7 @@ mod tests {
                 prompt: "run the risky command".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1520,6 +1567,7 @@ mod tests {
                 prompt: "run the risky command".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1579,6 +1627,7 @@ mod tests {
                 prompt: "do the thing".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1628,6 +1677,7 @@ mod tests {
                 prompt: "do the thing".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1710,6 +1760,7 @@ mod tests {
                 prompt: "fix the tests".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap_err();
@@ -1729,6 +1780,7 @@ mod tests {
                 prompt: "fix the failing tests".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1766,6 +1818,7 @@ mod tests {
             prompt: "do the work".into(),
             mode: AgentMode::Writer,
             tool_allowlist: None,
+            profile: Default::default(),
         };
 
         let first = s.spawn_subagent(writer("first")).await.unwrap();
@@ -1798,6 +1851,7 @@ mod tests {
                 prompt: "go".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1824,6 +1878,7 @@ mod tests {
                 prompt: "look around".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1865,6 +1920,7 @@ mod tests {
                 prompt: "go".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1887,6 +1943,7 @@ mod tests {
                 prompt: "go".into(),
                 mode: AgentMode::Writer,
                 tool_allowlist: None,
+                profile: Default::default(),
             })
             .await
             .unwrap();
@@ -1914,6 +1971,7 @@ mod tests {
                     prompt: "go".into(),
                     mode: AgentMode::Writer,
                     tool_allowlist: None,
+                    profile: Default::default(),
                 },
             )
             .await
@@ -1946,6 +2004,7 @@ mod tests {
                     prompt: "go".into(),
                     mode: AgentMode::Writer,
                     tool_allowlist: None,
+                    profile: Default::default(),
                 },
             )
             .await
@@ -1978,11 +2037,17 @@ mod tests {
         );
     }
 
+    /// An allow-list limits the child to those tools on top of the parent's
+    /// governance: a tool the parent's ACL denies stays denied even when the
+    /// list names it. (It used to replace the ACL, which could widen it.)
     #[tokio::test]
-    async fn tool_allowlist_replaces_the_childs_acl() {
+    async fn tool_allowlist_narrows_the_childs_tools_and_never_widens_them() {
         let dir = TempDir::new().unwrap();
         init_repo(dir.path()).await;
-        let s = session_with_script(dir.path(), vec![]).await;
+        let mut s = session_with_script(dir.path(), vec![]).await;
+        let mut acl = forge_governance::AclPolicy::allow_all();
+        acl.deny("bash".into());
+        s.set_governance(forge_governance::Governance::default().with_acl(acl));
 
         let cancel = CancellationToken::new();
         let child = s
@@ -1994,22 +2059,33 @@ mod tests {
                     role: "scoped".into(),
                     prompt: "go".into(),
                     mode: AgentMode::Writer,
-                    tool_allowlist: Some(vec!["read_file".into()]),
+                    tool_allowlist: Some(vec!["read_file".into(), "bash".into()]),
+                    profile: Default::default(),
                 },
             )
             .await
             .unwrap();
 
+        let offered: Vec<String> = child
+            .tools_for_model()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(offered, vec!["read_file".to_string()]);
         let principal = forge_types::Principal::local_dev();
-        assert!(child.governance.acl.is_allowed(
-            &principal,
-            "read_file",
-            forge_types::SideEffectClass::Meta
-        ));
         assert!(!child.governance.acl.is_allowed(
             &principal,
             "bash",
             forge_types::SideEffectClass::Exec
         ));
+        assert!(
+            child.governance.acl.is_allowed(
+                &principal,
+                "edit",
+                forge_types::SideEffectClass::Write
+            ),
+            "the child keeps the parent's policy, not a rebuilt one"
+        );
+        assert!(!child.tool_within_limit("edit"));
     }
 }

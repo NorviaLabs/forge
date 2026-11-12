@@ -95,6 +95,11 @@ pub struct BackgroundChildExecution {
     pub mode: Option<forge_tools::AgentMode>,
     pub workspace: PathBuf,
     pub branch: Option<String>,
+    /// The custom agent the child runs as, if any.
+    pub agent: Option<String>,
+    /// The model and reasoning effort the child actually runs on.
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
 }
 
 /// One immutable request published by the child that owns it. The nonce

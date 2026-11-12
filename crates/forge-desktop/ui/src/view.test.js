@@ -50,6 +50,7 @@ test("a default view is a fresh record with nothing open", () => {
     messageDetails: {},
     questionDrafts: {},
     approvalDrafts: {},
+    agentWarningsDismissed: "",
     files: { listings: {}, status: { branch: "", files: [] }, lastTurnFiles: [], loading: false, loaded: false, error: "", request: 0 },
   });
   assert.notEqual(first.files, second.files, "records must not share a workspace");

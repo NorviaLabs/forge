@@ -29,6 +29,7 @@ export function emptySnapshot() {
     info: { workspace: "", branch: "", model: "", contextUsage: 0, queued: 0 },
     githubIssue: null,
     githubPr: "",
+    agentWarnings: [],
   };
 }
 
@@ -66,6 +67,7 @@ export function snapshotFrom(event, record) {
     },
     githubIssue: event.github_issue_number ?? null,
     githubPr: event.github_pr_url ?? "",
+    agentWarnings: event.agent_warnings ?? [],
   };
 }
 

@@ -1,13 +1,13 @@
 <script>
-  // App settings: how Forge looks and sounds, and the model providers it
-  // connects to. Help holds only help.
+  // App settings: how Forge looks and sounds, the model providers it
+  // connects to, and the custom agents it can start. Help holds only help.
   import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
   import { invoke } from "../ipc.js";
   import { grantGroups, projectName, withoutGrant } from "../grants.js";
 
-  let { onClose, onProviders, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
+  let { onClose, onProviders, onAgents, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
 
   // What sandboxed commands were allowed "always", per project.
   let grants = $state(null);
@@ -58,6 +58,15 @@
           <span class="note">Sign in, add a key, or add a custom provider.</span>
         </span>
         <button class="link" type="button" onclick={onProviders}>Manage</button>
+      </div>
+
+      <h3>Agents</h3>
+      <div class="row">
+        <span class="what">
+          <span>Custom agents</span>
+          <span class="note">Specialists the model can start by name, in this project or in all of yours.</span>
+        </span>
+        <button class="link" type="button" aria-label="Manage custom agents" onclick={onAgents}>Manage</button>
       </div>
 
       <h3>Sandbox permissions</h3>

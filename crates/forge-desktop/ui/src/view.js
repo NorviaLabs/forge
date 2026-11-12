@@ -27,6 +27,9 @@ export function defaultView() {
     // Half-written answers to pending requests, by call id.
     questionDrafts: {},
     approvalDrafts: {},
+    // The custom agent warnings the operator dismissed, joined; the notice
+    // returns when they change.
+    agentWarningsDismissed: "",
     // The session's workspace as last fetched. A reply always lands on the
     // record of the session it was asked for, so one that arrives after the
     // operator has moved on is simply not on screen.

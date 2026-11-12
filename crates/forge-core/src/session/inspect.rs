@@ -51,7 +51,7 @@ impl AgentSession {
 
     pub fn list_tools(&self) -> Vec<String> {
         let desc = self.tools.list_descriptors();
-        if self.enable_gov {
+        let names = if self.enable_gov {
             self.governance
                 .filter_tools((*desc).clone())
                 .into_iter()
@@ -59,7 +59,20 @@ impl AgentSession {
                 .collect()
         } else {
             self.tools.names()
-        }
+        };
+        names
+            .into_iter()
+            .filter(|name| self.tool_within_limit(name))
+            .collect()
+    }
+
+    /// Every registered tool with its side-effect class, before governance
+    /// or a tool limit. What a custom agent's `tools` list can name.
+    pub fn tool_classes(&self) -> Vec<(String, SideEffectClass)> {
+        self.tools
+            .name_classes()
+            .map(|(name, class)| (name.to_string(), class))
+            .collect()
     }
 
     /// How many tools this session would expose to the model.
@@ -76,7 +89,13 @@ impl AgentSession {
                     self.governance
                         .acl
                         .is_allowed(&self.governance.principal, name, *class)
+                        && self.tool_within_limit(name)
                 })
+                .count()
+        } else if self.tool_limit.is_some() {
+            self.tools
+                .name_classes()
+                .filter(|(name, _)| self.tool_within_limit(name))
                 .count()
         } else {
             self.tools.len()

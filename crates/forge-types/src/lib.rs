@@ -675,6 +675,11 @@ pub enum JournalEventType {
     /// journal under its own `SessionId`.
     SubagentSpawned,
     SubagentFinished,
+    /// What a child agent was started as — a named custom agent's
+    /// instructions, its tool limit, whether it has network, and the model it
+    /// runs on — appended to the *child's* own journal when it is created, so
+    /// a resumed child keeps the same restrictions.
+    AgentProfile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

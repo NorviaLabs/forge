@@ -271,6 +271,10 @@ pub enum SupervisorCommand {
     /// Rebuild the routing snapshot after a provider definition change (a
     /// custom profile, a user override, or a manual model was saved).
     ReloadProviders,
+    /// Re-read the custom agents' warnings after an agent was saved or
+    /// deleted, so a fixed file stops being reported. Idle sessions take it
+    /// now; a busy one at its next open. System prompts are not rebuilt.
+    RefreshAgents,
     Refresh,
     Shutdown,
 }
@@ -3160,6 +3164,14 @@ async fn execute_command(
                 }
             }
         }
+        SupervisorCommand::RefreshAgents => {
+            for task_actor in state.actors.read().await.values() {
+                if let Ok(mut session) = try_session(task_actor) {
+                    session.refresh_custom_agents();
+                    refresh_actor(&state, task_actor, &session).await?;
+                }
+            }
+        }
         SupervisorCommand::Refresh => {
             poll_background_tasks(&state).await;
             let _ = state
@@ -5798,6 +5810,63 @@ mod tests {
             .unwrap();
         // The shared supervisor client and each actor's client.
         assert!(route_table_sets.load(Ordering::SeqCst) - before >= 3);
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Fixing or deleting a broken agent file in Settings clears the warning
+    /// in sessions that are already open.
+    #[tokio::test]
+    async fn refreshing_agents_updates_open_sessions_warnings() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("project");
+        let agents = workspace.join(".forge/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("broken.md"), "not an agent").unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let session = tracking_session(&cfg, model.clone()).await;
+        assert_eq!(session.custom_agent_warnings().len(), 1);
+        let session_id = session.session_id;
+        let task = task_for(session_id, "first", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: Some(1),
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 2, cfg, model)
+                .await
+                .unwrap();
+
+        std::fs::remove_file(agents.join("broken.md")).unwrap();
+        handle
+            .command(SupervisorCommand::RefreshAgents)
+            .await
+            .unwrap();
+        let snapshot = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.agent_warnings.is_empty()
+        })
+        .await;
+        assert!(snapshot.session.agent_warnings.is_empty());
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -10843,6 +10912,7 @@ mod tests {
             },
             SupervisorCommand::ClearSessionApprovals { session_id: id },
             SupervisorCommand::ReloadProviders,
+            SupervisorCommand::RefreshAgents,
             SupervisorCommand::Refresh,
         ];
         assert!(inline.iter().all(|command| {

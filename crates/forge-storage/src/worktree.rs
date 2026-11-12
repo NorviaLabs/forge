@@ -77,6 +77,22 @@ pub fn main_worktree(workspace: &Path) -> Result<PathBuf, WorktreeError> {
         .ok_or_else(|| WorktreeError::ListFailed("git returned no worktrees".into()))
 }
 
+/// The project `workspace` belongs to: the main worktree of a Git project,
+/// including when `workspace` is one of its linked worktrees (a managed
+/// session, a child agent), otherwise the folder itself. The same rule as
+/// `forge-session`'s `ProjectTopology::root`, without its errors: a lookup
+/// that fails falls back to `workspace`, so a caller always gets a folder.
+/// Project-scoped data every session of a project must share (custom agents
+/// in `.forge/agents`) is resolved against this.
+pub fn project_root(workspace: &Path) -> PathBuf {
+    match crate::detect_repo_info(workspace).topology {
+        crate::GitTopology::Normal | crate::GitTopology::LinkedWorktree => {
+            main_worktree(workspace).unwrap_or_else(|_| workspace.to_path_buf())
+        }
+        crate::GitTopology::Bare | crate::GitTopology::NotAGitRepo => workspace.to_path_buf(),
+    }
+}
+
 /// Create a user-visible managed session worktree and branch from
 /// `source_worktree`'s committed `HEAD`.
 ///
@@ -517,6 +533,39 @@ mod tests {
     use forge_test_support::init_repo_with_commit as init_repo;
     use std::process::Command as StdCommand;
     use tempfile::TempDir;
+
+    /// Every checkout of a project resolves to the same root: the main
+    /// worktree for a repository and its linked worktrees, the folder itself
+    /// outside Git.
+    #[test]
+    fn project_root_is_the_main_worktree_from_any_checkout() {
+        let repo = TempDir::new().unwrap();
+        init_repo(repo.path());
+        let main = repo.path().canonicalize().unwrap();
+        let linked = repo.path().join(".forge/local/worktrees/session-1");
+        // Plain git: this is about resolution, not Forge's worktree creation.
+        let status = StdCommand::new("git")
+            .arg("-C")
+            .arg(repo.path())
+            .args(["worktree", "add", "-q", "--detach"])
+            .arg(&linked)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        std::fs::create_dir_all(repo.path().join("src")).unwrap();
+
+        assert_eq!(project_root(repo.path()).canonicalize().unwrap(), main);
+        assert_eq!(
+            project_root(&repo.path().join("src"))
+                .canonicalize()
+                .unwrap(),
+            main
+        );
+        assert_eq!(project_root(&linked).canonicalize().unwrap(), main);
+
+        let plain = TempDir::new().unwrap();
+        assert_eq!(project_root(plain.path()), plain.path());
+    }
 
     #[test]
     fn sanitize_label_keeps_only_safe_characters() {

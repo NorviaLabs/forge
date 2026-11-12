@@ -21,6 +21,9 @@ impl AgentSession {
         if self.active_task.lifecycle == TaskLifecycle::Waiting {
             return Err(LoopError::AwaitingHitl);
         }
+        // Agents saved or edited since the last turn are what the model sees
+        // for this one.
+        self.refresh_custom_agents();
         let mut content = text.to_string();
         let attachments = self.freeze_attachments(&mut content, attachments);
         // Reconcile a dangling tool call from the previous attempt *before* the
@@ -93,6 +96,7 @@ impl AgentSession {
             // Not offered to a subagent: see `SUBAGENT_CANNOT_NEST`.
             visible.retain(|tool| !matches!(tool.name.as_str(), "spawn_agent" | "background_run"));
         }
+        visible.retain(|tool| self.tool_within_limit(&tool.name));
         self.defer_mcp_tool_schemas(visible)
     }
 

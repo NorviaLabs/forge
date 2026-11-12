@@ -110,4 +110,11 @@ flowchart TB
 4. `forge-model` connects to model providers; `forge-mcp` connects external MCP servers; workspace tools operate on the repository through `forge-workspace` and `forge-search`.
 5. `forge-durable` and `forge-storage` preserve resumable session state under repository-local `.forge/local/` storage (or the configured application-data fallback).
 
+Custom agents span the layers: `forge-config::agents` owns the file format,
+both scopes, validation and the capability rules; `forge-core::custom_agents`
+lists agents in the system prompt, turns `spawn_agent` into a child's tool
+limit, network and model, and journals that profile in the child's journal;
+`forge-session` validates a requested model against the providers and catalog;
+`forge-desktop` exposes list/save/delete commands to Settings.
+
 `forge-types` is the shared contract layer. `forge-test-support` is intentionally omitted from the runtime diagram because it is test-only infrastructure.

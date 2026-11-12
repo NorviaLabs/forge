@@ -1,5 +1,6 @@
 //! Configuration: TOML + env overrides.
 
+pub mod agents;
 mod permissions;
 mod theme;
 mod trust;

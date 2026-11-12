@@ -11,6 +11,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 dirs = { workspace = true }
 forge-types = { workspace = true }
+serde_yaml = { workspace = true }
 
 [features]
 # Reads FORGE_FAKE_PROVIDER_SCRIPT into `model.mock_script`. Never enabled in

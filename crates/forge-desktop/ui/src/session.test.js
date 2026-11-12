@@ -199,3 +199,12 @@ test("the snapshot carries the wait reason", () => {
   assert.deepEqual(snapshotFrom(event, { clearedFrom: 0, messageDetails: {} }).waitingOn, { kind: "reply", detail: "" });
   assert.equal(snapshotFrom({ ...event, waiting_on: undefined }, { clearedFrom: 0, messageDetails: {} }).waitingOn, null);
 });
+
+test("a session snapshot carries its custom agent warnings", () => {
+  const page = { sessionId: "a", views: {}, sessions: [row("a")], lastTurn: "", snapshot: emptySnapshot(), attention: {}, sessionOwner: {} };
+  assert.deepEqual(emptySnapshot().agentWarnings, []);
+  applyEvent(page, session("a", { agent_warnings: ["Skipped project agent file /p/x.md: bad"] }));
+  assert.deepEqual(page.snapshot.agentWarnings, ["Skipped project agent file /p/x.md: bad"]);
+  applyEvent(page, session("a"));
+  assert.deepEqual(page.snapshot.agentWarnings, [], "an older backend sends none");
+});

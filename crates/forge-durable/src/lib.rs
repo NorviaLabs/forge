@@ -93,6 +93,10 @@ pub struct ReplayState {
     pub context_state: Option<Value>,
     /// How many `ContextCompacted` events this journal holds.
     pub compaction_count: u64,
+    /// The most recent `AgentProfile` payload: what this session was started
+    /// as when it is a child agent. Opaque here for the same reason as
+    /// `context_state`: `forge-core` owns the schema.
+    pub agent_profile: Option<Value>,
 }
 
 impl ReplayState {
@@ -117,6 +121,7 @@ impl ReplayState {
             last_cache_transport: None,
             context_state: None,
             compaction_count: 0,
+            agent_profile: None,
         }
     }
 }
@@ -143,6 +148,9 @@ struct ReplayCheckpoint {
     last_cache_transport: Option<String>,
     context_state: Option<Value>,
     compaction_count: u64,
+    /// Absent from checkpoints written before agent profiles existed.
+    #[serde(default)]
+    agent_profile: Option<Value>,
 }
 
 impl ReplayCheckpoint {
@@ -165,6 +173,7 @@ impl ReplayCheckpoint {
             last_cache_transport: state.last_cache_transport.clone(),
             context_state: state.context_state.clone(),
             compaction_count: state.compaction_count,
+            agent_profile: state.agent_profile.clone(),
         }
     }
 
@@ -189,6 +198,7 @@ impl ReplayCheckpoint {
             last_cache_transport: self.last_cache_transport,
             context_state: self.context_state,
             compaction_count: self.compaction_count,
+            agent_profile: self.agent_profile,
         }
     }
 }
@@ -384,6 +394,17 @@ impl Journal {
             json!({ "session_id": session_id }),
         )
         .await
+    }
+
+    /// Record what a child agent was started as. See
+    /// [`JournalEventType::AgentProfile`].
+    pub async fn append_agent_profile(
+        &self,
+        session_id: SessionId,
+        profile: Value,
+    ) -> Result<u64, JournalError> {
+        self.append(session_id, JournalEventType::AgentProfile, profile)
+            .await
     }
 
     pub async fn append_user_message(
@@ -1089,6 +1110,9 @@ impl Journal {
                         }
                     }
                 }
+                JournalEventType::AgentProfile => {
+                    state.agent_profile = Some(payload.clone());
+                }
                 JournalEventType::SubagentSpawned => {
                     if let (Some(id), Some(workspace)) = (
                         payload.get("task_id").and_then(|v| v.as_u64()),
@@ -1539,6 +1563,57 @@ mod tests {
             "only post-checkpoint events are materialized"
         );
         assert_eq!(state.last_seq, 257);
+    }
+
+    /// A child's agent profile replays, survives a checkpoint taken after it,
+    /// and a checkpoint written before the field existed still loads.
+    #[tokio::test]
+    async fn agent_profile_replays_and_survives_checkpoints() {
+        let dir = tempdir().unwrap();
+        let sid = new_session_id();
+        let journal = Journal::open(dir.path(), sid).await.unwrap();
+        journal.append_session_created(sid).await.unwrap();
+        assert_eq!(journal.replay(sid).await.unwrap().agent_profile, None);
+
+        let profile = json!({"agent": "code-reviewer", "tool_limit": ["read_file"]});
+        journal
+            .append_agent_profile(sid, profile.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            journal.replay(sid).await.unwrap().agent_profile,
+            Some(profile.clone())
+        );
+
+        for index in 0..254 {
+            journal
+                .append_user_message(sid, &format!("message {index}"))
+                .await
+                .unwrap();
+        }
+        wait_for_checkpoint(&journal, sid, 256).await;
+        journal.append_user_message(sid, "tail").await.unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.events.len(), 1, "replayed from the checkpoint");
+        assert_eq!(state.agent_profile, Some(profile));
+
+        // A checkpoint from before agent profiles: no such key at all.
+        let row = sqlx::query("SELECT payload FROM replay_checkpoints WHERE session_id = ?")
+            .bind(sid.to_string())
+            .fetch_one(&journal.pool)
+            .await
+            .unwrap();
+        let mut old: Value = serde_json::from_str(&row.get::<String, _>("payload")).unwrap();
+        old.as_object_mut().unwrap().remove("agent_profile");
+        sqlx::query("UPDATE replay_checkpoints SET payload = ? WHERE session_id = ?")
+            .bind(old.to_string())
+            .bind(sid.to_string())
+            .execute(&journal.pool)
+            .await
+            .unwrap();
+        let state = journal.replay(sid).await.unwrap();
+        assert_eq!(state.events.len(), 1, "the old checkpoint was still used");
+        assert_eq!(state.agent_profile, None);
     }
 
     #[tokio::test]

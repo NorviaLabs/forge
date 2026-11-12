@@ -464,11 +464,84 @@ Depending on configuration, the agent can use tools for:
 - inspecting Git status and diffs;
 - fast file and content search;
 - coordinating isolated child agents and reviewing their status;
+- starting [custom agents](#custom-agents) by name;
 - configured MCP tools.
 
 Tool arguments are validated before execution, and shell commands are confined
 by the OS sandbox rather than judged for danger beforehand. Forge does not
 treat model output as trusted input.
+
+## Custom agents
+
+A custom agent is a specialist the model can start by name: a description of
+when to use it, the capabilities and tools it gets, and instructions. Create,
+edit and delete them in **Settings → Custom agents → Manage** (or `Custom agents` in
+the command palette). Forge writes the files; you never need to edit them by
+hand.
+
+Each agent is one markdown file, `<name>.md`, in one of two places:
+
+- **Project** — `<project>/.forge/agents/`, for the project on screen. A Git
+  project's agents live in its main checkout, so every session (each in its
+  own worktree) sees them. Forge writes them only in a trusted project. Whether
+  they are committed and shared depends on your `.gitignore`.
+- **User** — `<user config dir>/forge/agents/` (macOS: `~/Library/Application
+  Support/forge/agents`), for all your projects. `FORGE_USER_AGENTS_DIR`
+  points it elsewhere.
+
+A project agent overrides a user agent with the same name; Settings shows both,
+marked. Neither directory is writable by agent-run commands: the sandbox keeps
+`.forge` read-only and never exposes Forge's own config directory for writing.
+
+```markdown
+---
+name: code-reviewer
+description: Reviews the current diff for correctness, risk and missing tests.
+mode:
+- read-only
+tools:
+- read_file
+- grep
+---
+
+You are a careful code reviewer. Report findings as a list.
+```
+
+- `name` — 1–64 lowercase letters, digits and single hyphens; the file name.
+- `description` — what the model reads to decide when to use the agent.
+- `mode` — a list of capabilities. Reading is always allowed:
+
+  | Capability | Adds | Runs |
+  |---|---|---|
+  | `read-only` | nothing; must be the only value | alongside other agents, in the session's workspace |
+  | `write` | `edit`, `write_file`, `apply_patch`, `git` | in its own worktree, one writer at a time |
+  | `exec` | `bash`, `exec_command`, `write_stdin` | in its own worktree; its commands have **no network** unless `network` is listed |
+  | `network` | `web_fetch` and network MCP tools; with `exec`, the session's network gateway for its commands | |
+
+  `exec` without `write` removes the file-editing tools, but the agent's shell
+  commands can still change files in its own worktree.
+- `tools` — an explicit allow-list. The agent gets only listed tools its
+  capabilities allow, and never more than the session itself may use. It can
+  never start further agents or background jobs.
+- The body — instructions added to the agent's system prompt when it starts.
+
+The model sees every agent's name, capabilities and description (never the
+instructions) and starts one with `spawn_agent` and `agent: "<name>"`. Ask for
+a model or reasoning effort in your prompt ("use the code-reviewer agent on
+anthropic/… at high effort") and the model passes `model` and
+`reasoning_effort`; Forge checks both against your providers and the model's
+supported levels. The agent's card in **Activity** shows the agent, model and
+effort it actually runs on. An agent's file is read again each time it
+starts, and open sessions pick up new, edited and deleted agents from their
+next message (at once when you save in Settings); the list in the system
+prompt is rewritten only when it changed.
+
+A file that cannot be loaded never breaks a session: it is skipped, the
+session shows a notice saying which file and why, and Settings lists it under
+**Couldn't load**, where you can fix its text or delete it. A listed tool that
+does not exist or that the capabilities do not allow is dropped with a
+warning. A child agent's instructions, tool limit, network and model are saved
+with it, so it keeps them after a restart.
 
 ## Sessions and resume
 

@@ -258,6 +258,12 @@ fn release_ui_bundle_has_no_self_test_code() {
 const SESSIONLESS_COMMANDS: &[&str] = &[
     "sandbox_grants",
     "revoke_sandbox_grant",
+    "list_agents",
+    "save_agent",
+    "delete_agent",
+    "read_agent_source",
+    "save_agent_source",
+    "list_agent_tools",
     "trust_status",
     "trust_workspace",
     "choose_folder",

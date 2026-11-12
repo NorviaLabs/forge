@@ -86,6 +86,9 @@ pub enum DesktopEvent {
         /// The issue this session was created for, when it is issue-linked.
         github_issue_number: Option<u64>,
         github_pr_url: Option<String>,
+        /// Custom agent files that were skipped, and listed tools an agent
+        /// cannot have.
+        agent_warnings: Vec<String>,
     },
     /// The sessions the supervisor owns, in switcher order.
     Roster {
@@ -594,6 +597,11 @@ pub struct BackgroundView {
     pub awaiting_approval: bool,
     pub child_session_id: Option<SessionId>,
     pub approval: Option<ApprovalView>,
+    /// For a child agent: the custom agent it runs as, and the model and
+    /// effort it actually runs on.
+    pub agent: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -718,6 +726,16 @@ fn background_views(
                 awaiting_approval,
                 child_session_id: task.child_session_id,
                 approval: task.pending_approval.as_ref().map(child_approval_view),
+                agent: task
+                    .child
+                    .as_ref()
+                    .and_then(|child| child.agent.as_deref())
+                    .map(escape_invisible),
+                model: task.child.as_ref().and_then(|child| child.model.clone()),
+                effort: task
+                    .child
+                    .as_ref()
+                    .and_then(|child| child.reasoning_effort.clone()),
             }
         })
         .collect()
@@ -985,6 +1003,12 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
         queued: snapshot.session.queue_len + snapshot.queued_prompts.len(),
         github_issue_number: snapshot.task.github_issue_number,
         github_pr_url: snapshot.task.github_pr_url.clone(),
+        agent_warnings: snapshot
+            .session
+            .agent_warnings
+            .iter()
+            .map(|warning| escape_invisible(warning))
+            .collect(),
     }
 }
 
@@ -1113,6 +1137,32 @@ impl DesktopState {
     /// Put another open project on screen.
     pub fn switch_to(&self, project: forge_session::OpenProjectRef) {
         self.active.send_replace(project);
+    }
+
+    /// The project on screen, for its custom agents.
+    fn agent_project(&self) -> crate::agents::ProjectScope {
+        let project = self.active().project;
+        crate::agents::ProjectScope {
+            trusted: forge_config::is_trusted(&project.root),
+            name: project.name,
+            root: project.root,
+        }
+    }
+
+    /// An agent was saved or deleted: open sessions re-read their agent
+    /// warnings. User agents reach every project, so every open project does.
+    async fn refresh_agents(&self) {
+        let Ok(open) = self.projects.open_projects().await else {
+            return;
+        };
+        for project in open {
+            // Best-effort: the file is already saved, and a session that
+            // misses this refresh reads the agents again when it reopens.
+            let _ = project
+                .handle
+                .command(SupervisorCommand::RefreshAgents)
+                .await;
+        }
     }
 
     /// Provider credentials and definitions are user-level: every open
@@ -3427,6 +3477,86 @@ pub fn revoke_sandbox_grant(
         ProjectGrantKind::WriteDir | ProjectGrantKind::TrustedProgram => {}
     }
     Ok(())
+}
+
+/// Custom agents of the project on screen and of the user, with the files
+/// that did not load.
+#[tauri::command]
+pub async fn list_agents(
+    state: State<'_, DesktopState>,
+) -> Result<crate::agents::AgentsView, String> {
+    let project = state.agent_project();
+    tokio::task::spawn_blocking(move || crate::agents::list(&project, &project.dirs()))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Create an agent, or edit the one `previous` names, in the project on
+/// screen or the user's scope.
+#[tauri::command]
+pub async fn save_agent(
+    state: State<'_, DesktopState>,
+    agent: crate::agents::AgentInput,
+    scope: forge_config::agents::AgentScope,
+    previous: Option<forge_config::agents::AgentRef>,
+) -> Result<crate::agents::AgentView, String> {
+    let project = state.agent_project();
+    let saved = tokio::task::spawn_blocking(move || {
+        crate::agents::save(&project, &project.dirs(), agent, scope, previous)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    state.refresh_agents().await;
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn delete_agent(
+    state: State<'_, DesktopState>,
+    agent: forge_config::agents::AgentRef,
+) -> Result<(), String> {
+    let project = state.agent_project();
+    tokio::task::spawn_blocking(move || crate::agents::delete(&project, &project.dirs(), &agent))
+        .await
+        .map_err(|error| error.to_string())??;
+    state.refresh_agents().await;
+    Ok(())
+}
+
+/// The raw text of an agent file, to repair one that did not load.
+#[tauri::command]
+pub async fn read_agent_source(
+    state: State<'_, DesktopState>,
+    agent: forge_config::agents::AgentRef,
+) -> Result<String, String> {
+    let project = state.agent_project();
+    tokio::task::spawn_blocking(move || crate::agents::read_source(&project.dirs(), &agent))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// Save repaired agent file text. It must be a valid agent.
+#[tauri::command]
+pub async fn save_agent_source(
+    state: State<'_, DesktopState>,
+    scope: forge_config::agents::AgentScope,
+    previous: Option<forge_config::agents::AgentRef>,
+    text: String,
+) -> Result<crate::agents::AgentView, String> {
+    let project = state.agent_project();
+    let saved = tokio::task::spawn_blocking(move || {
+        crate::agents::save_source(&project, &project.dirs(), scope, previous, &text)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    state.refresh_agents().await;
+    Ok(saved)
+}
+
+/// The built-in tools an agent can be given, for the editor's checklist.
+#[tauri::command]
+pub fn list_agent_tools() -> Vec<crate::agents::AgentToolView> {
+    crate::agents::tools()
 }
 
 /// Installed themes, from the same built-ins and drop-in directories as the

@@ -9,20 +9,51 @@ use crate::{Tool, ToolContext, ToolError};
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SpawnAgentArgs {
-    /// Human-readable label for the child agent.
-    pub task_name: String,
+    /// Human-readable label for the child agent. Required unless `agent` is
+    /// set, in which case it defaults to the agent's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_name: Option<String>,
     /// First instruction sent to the child agent.
     pub message: String,
-    /// Scheduling mode. Read-only agents may share the workspace concurrently;
-    /// writers are serialized. Omitted values are writers for safety.
+    /// Name of a custom agent listed under "# Agents" in the system prompt.
+    /// Its instructions, capabilities and tools apply: `mode` is ignored, and
+    /// `tool_allowlist` can only narrow its tools further.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Scheduling mode for an agent started without `agent`. Read-only agents
+    /// may share the workspace concurrently; writers are serialized. Omitted
+    /// values are writers for safety.
     #[serde(default)]
     pub mode: AgentMode,
-    /// Optional allow-list that narrows the child's inherited tool policy.
+    /// Optional allow-list that narrows the child's tools. It never widens
+    /// what this session may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_allowlist: Option<Vec<String>>,
+    /// Model for the child, as `<provider>/<model>`. Set it only when the user
+    /// asked for a specific model; omit it to use this session's model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Reasoning effort for the child (`minimal`, `low`, `medium`, `high`,
+    /// `xhigh` or `max`, as the model supports). Set it only when the user
+    /// asked for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+impl SpawnAgentArgs {
+    /// The label shown for the child: `task_name`, else the agent's name.
+    pub fn label(&self) -> Option<String> {
+        self.task_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.agent.as_deref().map(str::trim))
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentMode {
     ReadOnly,
@@ -135,7 +166,7 @@ macro_rules! orchestration_tool {
 orchestration_tool!(
     SpawnAgentTool,
     "spawn_agent",
-    "Start a child agent without waiting. Read-only agents share the workspace concurrently; writers are serialized.",
+    "Start a child agent without waiting. Pass `agent` to start a custom agent listed under '# Agents'; otherwise give `task_name` and `mode`. Read-only agents share the workspace concurrently; writers are serialized. Pass `model` or `reasoning_effort` only when the user asked for them.",
     SpawnAgentArgs
 );
 orchestration_tool!(
@@ -196,6 +227,32 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(read_only.mode, AgentMode::ReadOnly));
+    }
+
+    #[test]
+    fn a_named_agent_needs_no_task_name_and_takes_model_and_effort() {
+        let tool = SpawnAgentTool;
+        let args = json!({
+            "agent": "code-reviewer",
+            "message": "Review the diff",
+            "model": "anthropic/claude-test",
+            "reasoning_effort": "high"
+        });
+        validate_args(tool.name(), &tool.input_schema(), &args).unwrap();
+        let parsed: SpawnAgentArgs = serde_json::from_value(args).unwrap();
+        assert_eq!(parsed.agent.as_deref(), Some("code-reviewer"));
+        assert_eq!(parsed.label().as_deref(), Some("code-reviewer"));
+        assert_eq!(parsed.model.as_deref(), Some("anthropic/claude-test"));
+        assert_eq!(parsed.reasoning_effort.as_deref(), Some("high"));
+
+        let named: SpawnAgentArgs = serde_json::from_value(json!({
+            "agent": "code-reviewer", "task_name": "review-pr-12", "message": "go"
+        }))
+        .unwrap();
+        assert_eq!(named.label().as_deref(), Some("review-pr-12"));
+        let unnamed: SpawnAgentArgs =
+            serde_json::from_value(json!({"task_name": "  ", "message": "go"})).unwrap();
+        assert_eq!(unnamed.label(), None);
     }
 
     #[test]
