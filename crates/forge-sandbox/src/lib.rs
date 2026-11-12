@@ -1636,6 +1636,12 @@ fn bubblewrap_invocation_for(
         .toolchain_read_paths
         .iter()
         .chain(policy.toolchain_executable_paths.iter())
+        // Everything outside the masks is already visible through the
+        // read-only root. Rebinding it is not just redundant: binding a path
+        // that is a symlink (`/usr/bin/go` -> the tool cache, alternatives)
+        // makes bwrap fail with "Can't create file at ...", and the whole
+        // command with it.
+        .filter(|path| is_under_bwrap_mask(path))
     {
         let path = path.to_str()?.to_string();
         let path_ref = Path::new(&path);
@@ -1799,6 +1805,14 @@ fn bubblewrap_invocation_for(
     }
 
     Some((bwrap.to_string(), args))
+}
+
+/// Whether `path` lies under one of the trees the bubblewrap invocation
+/// masks with a tmpfs, and so must be bound back to be visible.
+fn is_under_bwrap_mask(path: &Path) -> bool {
+    ["/run", "/tmp", "/home", "/root"]
+        .iter()
+        .any(|mask| path.starts_with(mask))
 }
 
 fn masked_home_root(path: &Path) -> Option<&'static Path> {
@@ -2693,6 +2707,31 @@ mod bubblewrap_tests {
             args.windows(2)
                 .any(|w| w[0] == "--ro-bind-try" && w[1] == exe),
             "the executable must be rebound read-only: {args:?}"
+        );
+    }
+
+    /// A toolchain outside the masks is already visible, and is not bound
+    /// again: `/usr/bin/go` is a symlink on GitHub's runners, and binding a
+    /// symlink made bwrap refuse to start the command at all.
+    #[test]
+    fn toolchains_outside_the_masks_are_not_rebound() {
+        let ws = workspace();
+        let mut policy = SandboxPolicy::for_workspace(ws.path());
+        policy.toolchain_executable_paths = vec![
+            PathBuf::from("/usr/bin/go"),
+            PathBuf::from("/home/forge-user/.local/bin/gh"),
+        ];
+        let Some((_, args)) = bubblewrap_invocation("sh", "go version", &policy) else {
+            return;
+        };
+        assert!(
+            !args.iter().any(|arg| arg == "/usr/bin/go"),
+            "a visible toolchain must not be rebound: {args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--ro-bind-try" && w[1] == "/home/forge-user/.local/bin/gh"),
+            "a toolchain under a mask is still rebound"
         );
     }
 
