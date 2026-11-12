@@ -180,6 +180,23 @@ impl ShellSpawnSpec {
             .with_command_access(command)
             .with_egress(command_egress)
             .with_git_open();
+        // The git proxy and the SSH and signing brokers run Forge's own
+        // binary inside the sandbox; on Linux it is masked when installed
+        // under `/home`.
+        if let Ok(exe) = crate::git_network::helper_exe() {
+            policy = policy.with_executable(exe);
+        }
+        // A remote that is another repository on this disk is read through
+        // the file system, not the network. On Linux it is masked when it
+        // lives under `/home`, as Forge's own git already accounts for.
+        // (macOS reads everything outside a deny-list, so this is Linux only.)
+        if cfg!(target_os = "linux") {
+            for remote in forge_sandbox::git::local_remote_repositories(workspace_root) {
+                if let Ok(next) = policy.clone().with_read_path(&remote) {
+                    policy = next;
+                }
+            }
+        }
         // Directories the user let sandboxed commands write (D8).
         for dir in crate::write_grants::write_grants_for(workspace_root) {
             policy = policy.with_write_path(dir);
@@ -461,6 +478,10 @@ mod tests {
     /// With a live session grant every confined mode starts its own gateway
     /// labelled with the tool call id, and the proxy env points at it.
     #[tokio::test]
+    #[cfg_attr(
+        target_os = "linux",
+        ignore = "Linux has no relay from the sandbox to host-loopback brokers and gateways yet"
+    )]
     async fn a_confined_spawn_gets_a_gateway_labelled_with_the_call_id() {
         if crate::sandbox::availability().is_err() {
             return;

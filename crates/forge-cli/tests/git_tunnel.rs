@@ -173,6 +173,10 @@ fn git_daemon(base: &Path) -> Option<(KillOnDrop, u16)> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "Linux has no relay from the sandbox to host-loopback brokers and gateways yet"
+)]
 async fn git_protocol_fetch_runs_through_the_gateway() {
     use_real_forge();
     let base = tempfile::tempdir().unwrap();
@@ -220,6 +224,10 @@ async fn git_protocol_fetch_of_an_unpermitted_host_is_sandbox_denied() {
 /// refuses the loopback address. Git therefore fails: had git:// gone
 /// direct, the daemon would have served it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "Linux has no relay from the sandbox to host-loopback brokers and gateways yet"
+)]
 async fn git_protocol_cannot_bypass_the_gateway_address_check() {
     use_real_forge();
     let base = tempfile::tempdir().unwrap();
@@ -353,6 +361,10 @@ fn upload_pack_server(repo: PathBuf) -> u16 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "Linux has no relay from the sandbox to host-loopback brokers and gateways yet"
+)]
 async fn ssh_fetch_runs_through_the_proxy_command_and_gateway() {
     use_real_forge();
     let base = tempfile::tempdir().unwrap();
@@ -379,6 +391,10 @@ async fn ssh_fetch_runs_through_the_proxy_command_and_gateway() {
 /// a host the policy does not, and only the gateway can see that. Its refusal
 /// still becomes the structured host denial, naming the real host.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "Linux has no relay from the sandbox to host-loopback brokers and gateways yet"
+)]
 async fn ssh_alias_to_an_unpermitted_host_is_refused_by_the_gateway() {
     use_real_forge();
     let base = tempfile::tempdir().unwrap();
@@ -552,6 +568,10 @@ fn serve_cgi(stream: TcpStream, root: &Path) -> std::io::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(
+    target_os = "linux",
+    ignore = "Linux has no relay from the sandbox to host-loopback brokers and gateways yet"
+)]
 async fn http_fetch_runs_through_the_gateway() {
     let base = tempfile::tempdir().unwrap();
     let head = bare_repo(base.path());

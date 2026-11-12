@@ -370,6 +370,10 @@ Inside the sandbox a command can:
   the Forge process, and commits and tags are signed by a broker with your
   own git signing setup.
 
+  On Linux the brokers and the per-command gateway are not yet reachable
+  from inside the sandbox, so confined git over SSH, `git://` or the
+  gateway, and commit signing, do not work there yet.
+
 When a command is refused something outside that boundary, the card offers,
 most narrow first:
 

@@ -84,6 +84,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # WebKitGTK pulls in bubblewrap, but unlike the `test` job this one
+      # deliberately leaves Ubuntu's AppArmor user-namespace restriction in
+      # place: that is what a stock Ubuntu 24.04 desktop looks like, and
+      # Forge must detect it (sandbox `CannotApply`) rather than break git.
       - name: Install WebKitGTK and Xvfb
         if: runner.os == 'Linux'
         run: |

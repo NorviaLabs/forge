@@ -338,7 +338,7 @@ fn remove_clean_worktree_inner(
     // cleanup race where the path is rebound between the first ownership
     // check and the destructive `git worktree remove` call.
     verify_worktree_binding(repo_root, worktree_path, expected)?;
-    let output = forge_sandbox::git::command_writing(repo_root, &[worktree_path])
+    let output = forge_sandbox::git::command_removing_worktree(repo_root, worktree_path)
         .args(["worktree", "remove"])
         .arg(worktree_path)
         .output()?;
@@ -427,7 +427,7 @@ pub fn create_worktree(
 /// uncommitted changes in it — the branch itself is untouched (not deleted),
 /// so committed work is never lost, only the working-directory checkout.
 pub fn remove_worktree(repo_root: &Path, worktree_path: &Path) -> Result<(), WorktreeError> {
-    let output = forge_sandbox::git::command_writing(repo_root, &[worktree_path])
+    let output = forge_sandbox::git::command_removing_worktree(repo_root, worktree_path)
         .args(["worktree", "remove", "--force"])
         .arg(worktree_path)
         .output()?;

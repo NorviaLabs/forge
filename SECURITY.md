@@ -127,6 +127,9 @@ Out of scope:
   command's reach; it does not make an untrusted build safe to run.
 - On Linux, keep `bubblewrap` and `socat` installed — without them Forge cannot
   confine anything and drops to asking about every command.
+  bubblewrap also needs unprivileged user namespaces: Ubuntu 24.04 restricts
+  them through AppArmor by default (`kernel.apparmor_restrict_unprivileged_userns`),
+  and Forge then reports that the host refused to apply confinement.
 - Read the command in the approval prompt before accepting it.
 - Keep provider credentials in your user config or environment, not in a project
   `forge.toml`.

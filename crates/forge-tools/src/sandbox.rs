@@ -138,9 +138,19 @@ fn filesystem_explanation(line: &str) -> String {
 /// if any. Only ever a proposal: the user sees it on the approval card and
 /// decides; nothing is granted from output on its own.
 pub fn denied_path(output: &str) -> Option<String> {
+    denied_path_on(output, cfg!(target_os = "linux"))
+}
+
+/// On Linux a path outside the boundary does not exist inside the sandbox,
+/// so the refusal reads as a missing file, not a denial.
+fn denied_path_on(output: &str, linux: bool) -> Option<String> {
+    const MISSING: [&str; 2] = ["No such file or directory", "Directory nonexistent"];
     output
         .lines()
-        .filter(|line| FILESYSTEM.iter().any(|marker| line.contains(marker)))
+        .filter(|line| {
+            FILESYSTEM.iter().any(|marker| line.contains(marker))
+                || (linux && MISSING.iter().any(|marker| line.contains(marker)))
+        })
         .filter_map(denied_resource)
         .next_back()
 }
@@ -155,9 +165,11 @@ pub(crate) fn denied_resource(line: &str) -> Option<String> {
         .chain(line[marker..].split_whitespace());
     candidates
         .filter_map(|token| {
+            // GNU tools quote the path and then add the colon
+            // (`'/tmp/x':`), BSD tools do not (`/tmp/x:`): trim both
+            // together so neither leaves a stray quote on the path.
             let token = token
-                .trim_matches(|character| matches!(character, '\'' | '"' | '`' | ',' | ';'))
-                .trim_end_matches(':');
+                .trim_matches(|character| matches!(character, '\'' | '"' | '`' | ',' | ';' | ':'));
             token.starts_with('/').then(|| token.to_string())
         })
         .next_back()
@@ -254,6 +266,37 @@ fn mentions_path_outside(output: &str, workspace_root: &Path) -> bool {
 #[cfg(test)]
 mod denial_tests {
     use super::*;
+
+    /// On Linux the boundary reads as a missing file, so that is where the
+    /// directory to propose for a grant comes from; on macOS only a denial
+    /// names it.
+    /// GNU coreutils quotes the path before the colon; the quote must not
+    /// end up in the path.
+    #[test]
+    fn a_quoted_gnu_path_is_extracted_without_its_quote() {
+        let line = "touch: cannot touch '/home/u/out/escaped': No such file or directory";
+        assert_eq!(
+            denied_resource(line).as_deref(),
+            Some("/home/u/out/escaped")
+        );
+        let bsd = "touch: /tmp/out/escaped: Operation not permitted";
+        assert_eq!(denied_resource(bsd).as_deref(), Some("/tmp/out/escaped"));
+    }
+
+    #[test]
+    fn a_linux_missing_path_is_proposed_for_a_grant() {
+        let output = "bash: line 1: /tmp/out/x.txt: No such file or directory";
+        assert_eq!(
+            denied_path_on(output, true).as_deref(),
+            Some("/tmp/out/x.txt")
+        );
+        assert_eq!(denied_path_on(output, false), None);
+        let denied = "touch: /tmp/out/x.txt: Operation not permitted";
+        assert_eq!(
+            denied_path_on(denied, false).as_deref(),
+            Some("/tmp/out/x.txt")
+        );
+    }
 
     #[test]
     fn launch_services_permission_denial_requires_approval() {

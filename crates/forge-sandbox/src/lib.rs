@@ -306,10 +306,10 @@ pub fn availability() -> Result<(), Unavailable> {
         };
     }
     if cfg!(target_os = "linux") {
-        return if bwrap_path().is_some() {
-            Ok(())
-        } else {
-            Err(Unavailable::MissingDependency("bubblewrap"))
+        return match bwrap_path() {
+            None => Err(Unavailable::MissingDependency("bubblewrap")),
+            Some(bwrap) if bwrap_applicable(bwrap) => Ok(()),
+            Some(_) => Err(Unavailable::CannotApply),
         };
     }
     Err(Unavailable::UnsupportedPlatform)
@@ -342,6 +342,39 @@ fn seatbelt_applicable() -> bool {
 /// a process gets confined, so resolving it through an environment variable the
 /// agent could influence would put the boundary in reach of the thing it is
 /// meant to contain.
+/// Whether bubblewrap can actually create the sandbox's namespaces.
+///
+/// The binary existing is not enough: Ubuntu 24.04 restricts unprivileged
+/// user namespaces through AppArmor, and WebKitGTK installs bwrap there as a
+/// dependency. bwrap then fails at spawn ("loopback: Failed RTM_NEWADDR"), so
+/// every confined command, Forge's own local git included, failed with an
+/// unrelated error. Probed once with the namespaces the real wrapper uses and
+/// cached, like [`seatbelt_applicable`].
+fn bwrap_applicable(bwrap: &str) -> bool {
+    static APPLICABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *APPLICABLE.get_or_init(|| {
+        std::process::Command::new(bwrap)
+            .args([
+                "--ro-bind",
+                "/",
+                "/",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "--unshare-net",
+                "--",
+                "true",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+}
+
 fn bwrap_path() -> Option<&'static str> {
     ["/usr/bin/bwrap", "/bin/bwrap", "/usr/local/bin/bwrap"]
         .into_iter()
@@ -807,6 +840,19 @@ impl SandboxPolicy {
             rustup_home: access.rustup_home,
             ..self
         }
+    }
+
+    /// Also let the process read and run one executable file, such as
+    /// Forge's own binary, whose helper subcommands (the git proxy, the SSH
+    /// and signing brokers) run inside the sandbox. On Linux `/home` is
+    /// masked, so a Forge installed under it is otherwise not there at all.
+    /// Call after [`Self::with_command_access`], which replaces this list.
+    pub fn with_executable(mut self, path: impl AsRef<Path>) -> Self {
+        add_existing_path(
+            &mut self.toolchain_executable_paths,
+            path.as_ref().to_path_buf(),
+        );
+        self
     }
 
     /// Child environment that sends package managers' writes to the tool
@@ -1672,6 +1718,19 @@ fn bubblewrap_invocation_for(
     for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root), policy.git_writable) {
         let path = path.to_str()?.to_string();
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
+    }
+
+    // Paths the caller named explicitly come last, so they hold even inside
+    // a carve-out above (Forge keeps managed worktrees under `.forge/`), as
+    // they do in the Seatbelt profile. Each is bound exactly: a grant opens
+    // what was granted, not its parent. A path that does not exist yet is
+    // skipped rather than widened to its parent, so creating it fails
+    // closed; callers name the directory something is created in.
+    for path in &policy.extra_write_paths {
+        if path.is_dir() {
+            let path = path.to_str()?.to_string();
+            args.extend(["--bind".into(), path.clone(), path]);
+        }
     }
 
     // A long-lived argv payload (an MCP server) must not outlive Forge: if
@@ -2576,6 +2635,65 @@ mod bubblewrap_tests {
                  workspace inside {home} would be hidden"
             );
         }
+    }
+
+    /// Paths named with `with_write_path` hold inside the read-only
+    /// `.forge` carve-out, as they do in the Seatbelt profile, and are bound
+    /// exactly. A path that does not exist yet is not widened to its parent.
+    #[test]
+    fn extra_write_paths_are_bound_after_the_readonly_carve_out() {
+        let ws = workspace();
+        let worktrees = ws.path().join(".forge/local/worktrees");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        let missing = ws.path().join(".forge/local/not-yet");
+        let policy = SandboxPolicy::for_workspace(ws.path())
+            .with_write_path(&worktrees)
+            .with_write_path(&missing);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return;
+        };
+        let worktrees = worktrees.canonicalize().unwrap();
+        let worktrees = worktrees.to_str().unwrap();
+        let forge = Path::new(worktrees).parent().unwrap().parent().unwrap();
+        let carve = args
+            .windows(2)
+            .position(|w| w[0] == "--ro-bind-try" && Path::new(&w[1]) == forge)
+            .expect(".forge is carved back to read-only");
+        let bind = args
+            .windows(3)
+            .position(|w| w[0] == "--bind" && w[1] == worktrees && w[2] == worktrees)
+            .expect("the named write path is bound writable");
+        assert!(bind > carve, "the write path must come after the carve-out");
+        assert!(
+            !args.iter().any(|arg| arg.ends_with("not-yet")),
+            "a missing write path is skipped, not bound: {args:?}"
+        );
+        assert!(
+            !args
+                .windows(2)
+                .any(|w| w[0] == "--bind" && Path::new(&w[1]) == forge.join("local")),
+            "a missing write path is not widened to its parent"
+        );
+    }
+
+    #[test]
+    fn an_executable_under_home_is_reexposed_after_command_access() {
+        let ws = workspace();
+        let home = tempfile::tempdir().unwrap();
+        let exe = home.path().join("forge");
+        std::fs::write(&exe, "").unwrap();
+        let policy = SandboxPolicy::for_workspace(ws.path())
+            .with_command_access("true")
+            .with_executable(&exe);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return;
+        };
+        let exe = exe.to_str().unwrap();
+        assert!(
+            args.windows(2)
+                .any(|w| w[0] == "--ro-bind-try" && w[1] == exe),
+            "the executable must be rebound read-only: {args:?}"
+        );
     }
 
     #[test]

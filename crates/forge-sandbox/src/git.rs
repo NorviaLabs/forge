@@ -22,8 +22,9 @@ pub fn command(repo: &Path) -> Command {
     command_writing(repo, &[])
 }
 
-/// As [`command`], also allowed to write `also`: the directory a worktree is
-/// created in, or the worktree being removed.
+/// As [`command`], also allowed to write `also`: existing directories, such
+/// as the one a worktree is created in. To remove a worktree, use
+/// [`command_removing_worktree`].
 pub fn command_writing(repo: &Path, also: &[&Path]) -> Command {
     let args = vec!["-C".to_string(), repo.to_string_lossy().into_owned()];
     let wrapped = availability().ok().and_then(|()| {
@@ -37,6 +38,14 @@ pub fn command_writing(repo: &Path, also: &[&Path]) -> Command {
     let mut command = Command::new(program);
     command.args(args);
     command
+}
+
+/// `git -C <repo>` for `git worktree remove <worktree>`. Deleting the
+/// worktree's own directory is a write to its parent, and on Linux a bind
+/// mount of the worktree itself could not be removed, so the parent is what
+/// is opened.
+pub fn command_removing_worktree(repo: &Path, worktree: &Path) -> Command {
+    command_writing(repo, &[worktree.parent().unwrap_or(worktree)])
 }
 
 /// Whether `repo` has Git LFS objects (`<git dir>/lfs` exists). Checking
@@ -472,7 +481,7 @@ mod tests {
         let elsewhere = tempfile::tempdir().unwrap();
         let worktree = elsewhere.path().join("wt");
 
-        let out = command_writing(repo.path(), &[&worktree])
+        let out = command_writing(repo.path(), &[elsewhere.path()])
             .args(["worktree", "add", "-q", "-b", "side"])
             .arg(&worktree)
             .output()
@@ -485,7 +494,7 @@ mod tests {
             assert!(out.status.success(), "{args:?}: {out:?}");
         }
 
-        let out = command_writing(repo.path(), &[&worktree])
+        let out = command_removing_worktree(repo.path(), &worktree)
             .args(["worktree", "remove"])
             .arg(&worktree)
             .output()
@@ -509,7 +518,7 @@ mod tests {
             .unwrap();
         assert!(out.status.success(), "{out:?}");
 
-        let out = command_writing(repo.path(), &[&worktree])
+        let out = command_removing_worktree(repo.path(), &worktree)
             .args(["worktree", "remove", "--force"])
             .arg(&worktree)
             .output()
