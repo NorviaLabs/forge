@@ -11,7 +11,7 @@ use std::sync::Arc;
 use forge_config::McpServerConfig;
 use forge_durable::AuditKind;
 use forge_model::MockModelClient;
-use forge_tools::egress::{EgressPolicy, EgressShared};
+use forge_tools::egress::{EgressPolicy, EgressShared, HostAnswer, HostAsk};
 use forge_tools::ToolRegistry;
 use forge_types::{GrantDecision, ModelResponse, SideEffectClass, ToolCall};
 use serde_json::json;
@@ -295,4 +295,49 @@ async fn an_mcp_call_that_tolerates_a_refusal_does_not_prompt() {
         .find(|row| row.kind == AuditKind::ToolResult)
         .unwrap();
     assert_eq!(result_row.detail["outcome"], "ok");
+}
+
+/// With someone to ask (the desktop's host card), a sandboxed MCP server's
+/// connection to an unknown host is held and put to the user under the
+/// server's label, and allowing it lets the same call carry on: no failure,
+/// no host-grant prompt, nothing run twice.
+#[tokio::test]
+async fn an_mcp_server_reaching_an_unknown_host_is_held_and_asked() {
+    let dir = tempdir().unwrap();
+    let Some((mut session, _manager)) = session_with_sandboxed_server(dir.path()).await else {
+        return;
+    };
+    let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel::<HostAsk>();
+    let control = session
+        .egress_grant()
+        .and_then(|grant| grant.control.clone())
+        .expect("the session gateway");
+    control.set_asker(Some(asker));
+    let answered = tokio::spawn(async move {
+        let ask = asks
+            .recv()
+            .await
+            .expect("the held connection is asked about");
+        let seen = (ask.host.clone(), ask.label.clone(), ask.write.clone());
+        let _ = ask.reply.send(HostAnswer::AllowOnce);
+        seen
+    });
+    request_mcp_call(&mut session, "call-mcp", "mcp:fixture:fetch").await;
+    session
+        .decide_hitl(GrantDecision::AllowOnce, "test")
+        .await
+        .unwrap();
+
+    let (host, label, write) = answered.await.unwrap();
+    assert_eq!(host, "127.0.0.1");
+    assert!(
+        label
+            .as_deref()
+            .is_some_and(|label| label.contains("call-mcp") || label.starts_with("mcp:fixture")),
+        "{label:?}"
+    );
+    assert_eq!(write, None);
+    assert!(session.pending_hitl().is_none(), "no host-grant prompt");
+    let result = tool_result(&session, "call-mcp").expect("the call finished");
+    assert!(result.contains("status=200"), "{result}");
 }

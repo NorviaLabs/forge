@@ -323,7 +323,22 @@ id = "my-tools"
 transport = "stdio"
 command = "my-mcp-server"
 args = ["--stdio"]
+env_vars = ["MY_TOOLS_TOKEN"]   # passed through from Forge's environment
+
+[mcp.servers.env]
+LOG_LEVEL = "info"
 ```
+
+Every server runs in the same sandbox as shell commands: it reads the disk
+minus the secrets deny-list, writes only its own temp directory (and the
+workspace with `sandbox_workspace = "read_write"`), and reaches the network
+only through Forge's gateway, which asks you about a host it does not know.
+`sandbox_read_paths` adds directories it may read. `sandbox = false` runs a
+server as an ordinary process.
+
+A server never inherits Forge's environment. It gets `PATH`, `HOME`, the user,
+locale and terminal variables, plus what its `env` sets and the names its
+`env_vars` lists, so an API key reaches only the server you give it to.
 
 Project-discovered configuration is intentionally restricted: settings that
 could execute code or redirect credentialed requests are not accepted from an

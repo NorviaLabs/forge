@@ -4,6 +4,7 @@ mod permissions;
 mod theme;
 mod trust;
 
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -153,12 +154,13 @@ pub struct McpServerConfig {
     /// them (or when it's unset and every tool is admitted by default).
     #[serde(default)]
     pub disabled_tools: Option<Vec<String>>,
-    /// Run this server inside the same OS sandbox as the shell tool
-    /// (Seatbelt on macOS, bubblewrap on Linux): network denied except the
-    /// session egress proxy, filesystem limited to the workspace and system
-    /// paths. Opt-in (`false` by default) so existing setups keep working;
-    /// when `true` and the host cannot confine, the server is not started.
-    #[serde(default)]
+    /// Run this server inside the same OS sandbox as the shell tool: the
+    /// network only through the session gateway (an unknown host is put to
+    /// the user), reads limited by the deny-list, writes limited to its own
+    /// temp directory and, with `sandbox_workspace = "read_write"`, the
+    /// workspace. On by default; when the host cannot confine, the server is
+    /// not started. `false` runs it as an ordinary process.
+    #[serde(default = "default_mcp_sandbox")]
     pub sandbox: bool,
     /// Workspace access for a sandboxed server. Ignored unless `sandbox` is
     /// set. Defaults to `read_only`.
@@ -171,6 +173,16 @@ pub struct McpServerConfig {
     /// whole home directory is refused when the server starts.
     #[serde(default, deserialize_with = "deserialize_sandbox_read_paths")]
     pub sandbox_read_paths: Vec<PathBuf>,
+    /// Environment variables set for the server. A server starts with a
+    /// cleaned environment (path, home, user, locale, terminal), never
+    /// Forge's own, so API keys and tokens reach only the server they are
+    /// given to.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// Names of variables passed through from Forge's environment, for a
+    /// value that should not be written into the config.
+    #[serde(default)]
+    pub env_vars: Vec<String>,
 }
 
 /// Expand and validate one `sandbox_read_paths` entry against `home`.
@@ -238,6 +250,10 @@ pub enum McpSandboxWorkspace {
     ReadWrite,
 }
 
+fn default_mcp_sandbox() -> bool {
+    true
+}
+
 fn default_mcp_side_effect_class() -> SideEffectClass {
     SideEffectClass::Exec
 }
@@ -256,9 +272,11 @@ impl Default for McpServerConfig {
             side_effect_class: default_mcp_side_effect_class(),
             enabled_tools: None,
             disabled_tools: None,
-            sandbox: false,
+            sandbox: default_mcp_sandbox(),
             sandbox_workspace: McpSandboxWorkspace::default(),
             sandbox_read_paths: Vec::new(),
+            env: BTreeMap::new(),
+            env_vars: Vec::new(),
         }
     }
 }
@@ -1185,17 +1203,17 @@ disabled_tools = ["send_message"]
     }
 
     #[test]
-    fn mcp_server_sandbox_fields_default_off_and_read_only() {
+    fn mcp_server_sandbox_fields_default_on_and_read_only() {
         let cfg: ConfigFile = parse(
             r#"
 [[mcp.servers]]
 id = "plain"
 command = "plain-mcp"
+sandbox = false
 
 [[mcp.servers]]
 id = "boxed"
 command = "boxed-mcp"
-sandbox = true
 
 [[mcp.servers]]
 id = "writer"
@@ -1208,13 +1226,37 @@ sandbox_workspace = "read_write"
         cfg.apply(&mut config, ConfigScope::Trusted);
         let servers = &config.mcp.servers;
         assert_eq!(servers.len(), 3);
-        assert!(!servers[0].sandbox, "sandboxing is opt-in");
+        assert!(!servers[0].sandbox, "sandboxing can be turned off");
         assert_eq!(servers[0].sandbox_workspace, McpSandboxWorkspace::ReadOnly);
-        assert!(servers[1].sandbox);
+        assert!(servers[1].sandbox, "sandboxing is on by default");
         assert_eq!(servers[1].sandbox_workspace, McpSandboxWorkspace::ReadOnly);
         assert!(servers[2].sandbox);
         assert_eq!(servers[2].sandbox_workspace, McpSandboxWorkspace::ReadWrite);
-        assert!(!McpServerConfig::default().sandbox);
+        assert!(McpServerConfig::default().sandbox);
+    }
+
+    #[test]
+    fn mcp_server_env_and_passed_through_names_parse() {
+        let cfg: ConfigFile = parse(
+            r#"
+[[mcp.servers]]
+id = "github"
+command = "github-mcp"
+env_vars = ["GITHUB_TOKEN"]
+
+[mcp.servers.env]
+LOG_LEVEL = "debug"
+"#,
+        );
+        let mut config = Config::default();
+        cfg.apply(&mut config, ConfigScope::Trusted);
+        let server = &config.mcp.servers[0];
+        assert_eq!(server.env_vars, ["GITHUB_TOKEN"]);
+        assert_eq!(
+            server.env.get("LOG_LEVEL").map(String::as_str),
+            Some("debug")
+        );
+        assert!(McpServerConfig::default().env.is_empty());
     }
 
     #[test]

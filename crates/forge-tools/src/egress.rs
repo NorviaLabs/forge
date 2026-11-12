@@ -826,12 +826,18 @@ impl EgressShared {
             return true;
         }
         let host = host.trim().trim_end_matches('.').to_ascii_lowercase();
+        // A host the user allowed once is named exactly too.
         self.policy
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .allow_patterns()
             .iter()
             .any(|pattern| pattern == &host)
+            || self
+                .once
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&host)
     }
 
     /// Replace the host policy in place. Every listener on this state (and

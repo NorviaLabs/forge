@@ -143,18 +143,17 @@ async fn spawn_retrying_text_file_busy(
     command: &str,
     args: &[String],
     current_dir: Option<&Path>,
-    extra_env: &[(String, String)],
+    env: &[(String, String)],
 ) -> Result<Child, std::io::Error> {
     const ETXTBSY: i32 = 26;
     const MAX_ATTEMPTS: u32 = 5;
     for attempt in 1..=MAX_ATTEMPTS {
         let mut child_command = Command::new(command);
-        // The environment is inherited in full — servers commonly need API
-        // keys from it. `extra_env` only *adds* (the egress proxy variables
-        // for a sandboxed server).
+        // Exactly `env`, nothing inherited (see `server_env`).
         child_command
             .args(args)
-            .envs(extra_env.iter().map(|(k, v)| (k, v)))
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -181,6 +180,49 @@ async fn spawn_retrying_text_file_busy(
     unreachable!("loop always returns by the final attempt")
 }
 
+/// Variables a server gets from Forge's environment without asking: what a
+/// program needs to find itself, its home and its locale. Nothing that
+/// carries a secret.
+const BASE_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "TERM",
+    "TZ",
+    "TMPDIR",
+];
+
+/// The whole environment a server starts with: [`BASE_ENV`], the names its
+/// config passes through (`env_vars`), the values its config sets (`env`),
+/// then `launch` (the sandbox's own variables, which win). Forge's own
+/// environment, with whatever API keys and tokens it holds, is never handed
+/// over wholesale: a key reaches only the server it is given to.
+fn server_env(
+    cfg: &McpServerConfig,
+    inherited: impl Fn(&str) -> Option<String>,
+    launch: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    let mut env = std::collections::BTreeMap::new();
+    for name in BASE_ENV
+        .iter()
+        .copied()
+        .chain(cfg.env_vars.iter().map(String::as_str))
+    {
+        if let Some(value) = inherited(name) {
+            env.insert(name.to_string(), value);
+        }
+    }
+    env.extend(cfg.env.clone());
+    env.extend(launch);
+    env.into_iter().collect()
+}
+
 /// What to spawn for a sandboxed server, plus the endpoint and temp
 /// directory that must outlive it.
 struct SandboxedLaunch {
@@ -205,9 +247,8 @@ pub fn mcp_egress_label(server_id: &str) -> String {
 /// shares its state here (see [`McpManager::with_egress_shared`]), a host the
 /// user grants for the session — or persistently — reaches MCP traffic on the
 /// next CONNECT, and each connection is recorded in the session's egress
-/// event log labelled `mcp:<server>`. A CONNECT to a host the policy does not
-/// permit fails (403 from the proxy); prompting for MCP host grants is future
-/// work.
+/// event log labelled `mcp:<server>`. A host no rule decides is held and put
+/// to the user, as for a shell command; a denied one fails (403).
 async fn start_mcp_egress(egress: &EgressShared, server_id: &str) -> Option<EgressInvocation> {
     match EgressInvocation::start_for_shared(egress, Some(&mcp_egress_label(server_id))).await {
         Ok(invocation) => Some(invocation),
@@ -408,8 +449,8 @@ impl McpStdioClient {
                 None,
             )
         };
-        let mut child =
-            spawn_retrying_text_file_busy(&program, &args, workspace, &extra_env).await?;
+        let env = server_env(cfg, |name| std::env::var(name).ok(), extra_env);
+        let mut child = spawn_retrying_text_file_busy(&program, &args, workspace, &env).await?;
         let stdin = child
             .stdin
             .take()
@@ -1168,8 +1209,104 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_server_gets_a_cleaned_environment_and_only_the_variables_it_is_given() {
+        let forge_env = |name: &str| -> Option<String> {
+            match name {
+                "PATH" => Some("/usr/bin".into()),
+                "HOME" => Some("/Users/u".into()),
+                "OPENAI_API_KEY" => Some("forge-secret".into()),
+                "GITHUB_TOKEN" => Some("gh-token".into()),
+                _ => None,
+            }
+        };
+        let mut cfg = McpServerConfig {
+            env_vars: vec!["GITHUB_TOKEN".into()],
+            ..Default::default()
+        };
+        cfg.env.insert("LOG_LEVEL".into(), "debug".into());
+        cfg.env.insert("TMPDIR".into(), "/config/tmp".into());
+        let env: std::collections::HashMap<_, _> = server_env(
+            &cfg,
+            forge_env,
+            vec![("TMPDIR".into(), "/sandbox/tmp".into())],
+        )
+        .into_iter()
+        .collect();
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
+        assert_eq!(env.get("HOME").map(String::as_str), Some("/Users/u"));
+        assert_eq!(
+            env.get("GITHUB_TOKEN").map(String::as_str),
+            Some("gh-token")
+        );
+        assert_eq!(env.get("LOG_LEVEL").map(String::as_str), Some("debug"));
+        assert!(!env.contains_key("OPENAI_API_KEY"), "{env:?}");
+        assert_eq!(
+            env.get("TMPDIR").map(String::as_str),
+            Some("/sandbox/tmp"),
+            "the sandbox's own variables win"
+        );
+    }
+
+    /// The real spawn: a variable in Forge's environment does not reach the
+    /// server unless its config names it.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_server_process_does_not_see_forge_secrets() {
+        use std::os::unix::fs::PermissionsExt;
+        // A name unique to this test, so no other test races on it.
+        std::env::set_var("FORGE_TEST_MCP_SECRET", "leaked");
+        let directory = tempfile::tempdir().unwrap();
+        let script = directory.path().join("mcp-server.sh");
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"capabilities":{}}}'
+      ;;
+    *'"method":"tools/call"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"secret=%s given=%s"}]}}\n' "$id" "${FORGE_TEST_MCP_SECRET:-none}" "${GIVEN:-none}"
+      ;;
+  esac
+done
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+        let mut cfg = fixture_cfg(&directory);
+        cfg.env.insert("GIVEN".into(), "yes".into());
+        let client = McpStdioClient::spawn(&cfg).await.unwrap();
+        let report = client
+            .call_tool_attributed("env", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
+        assert!(report.contains("secret=none"), "{report}");
+        assert!(report.contains("given=yes"), "{report}");
+
+        cfg.env_vars = vec!["FORGE_TEST_MCP_SECRET".into()];
+        let client = McpStdioClient::spawn(&cfg).await.unwrap();
+        let report = client
+            .call_tool_attributed("env", json!({}), None)
+            .await
+            .result
+            .unwrap()
+            .content;
+        assert!(
+            report.contains("secret=leaked"),
+            "passed through by name: {report}"
+        );
     }
 
     #[test]
@@ -1450,6 +1587,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
             ..Default::default()
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
@@ -1608,6 +1746,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
             ..Default::default()
         };
         let client = McpStdioClient::spawn(&cfg).await.unwrap();
@@ -1629,6 +1768,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
             ..Default::default()
         };
         match McpStdioClient::spawn(&cfg).await {
@@ -1656,6 +1796,7 @@ done
             side_effect_class: SideEffectClass::Exec,
             enabled_tools: None,
             disabled_tools: None,
+            sandbox: false,
             ..Default::default()
         };
 
@@ -1697,6 +1838,7 @@ done
                     side_effect_class: SideEffectClass::Exec,
                     enabled_tools: None,
                     disabled_tools: None,
+                    sandbox: false,
                     ..Default::default()
                 }],
                 None,
@@ -2386,6 +2528,7 @@ done
         let bare = McpServerConfig {
             command: "node".into(),
             args: vec!["--stdio".into()],
+            sandbox: false,
             ..Default::default()
         };
         assert!(server_install_dirs(&bare, workspace.path()).is_empty());
