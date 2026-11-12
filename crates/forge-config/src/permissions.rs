@@ -143,7 +143,7 @@ struct ProjectHosts {
 /// itself, or, for a managed session worktree
 /// (`<project>/.forge/local/worktrees/<name>`), the project it was made
 /// from, so a host allowed in one session holds in the next.
-fn project_key(workspace: &Path) -> PathBuf {
+pub fn project_key(workspace: &Path) -> PathBuf {
     let workspace = workspace
         .canonicalize()
         .unwrap_or_else(|_| workspace.to_path_buf());
@@ -408,6 +408,105 @@ fn record(targets: &[String]) -> impl FnOnce(&mut ProjectHosts) -> bool + '_ {
     }
 }
 
+/// Everything the user allowed "always" for one project.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectGrants {
+    /// The project's key in the grant file (see [`project_key`]).
+    pub project: PathBuf,
+    pub hosts: Vec<String>,
+    /// Push and other write targets (`host/owner/repo`, or a host),
+    /// including the project's own remotes recorded when it was added.
+    pub writes: Vec<String>,
+    pub write_dirs: Vec<PathBuf>,
+    pub trusted_programs: Vec<String>,
+}
+
+/// One kind of stored grant, for [`revoke_project_grant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectGrantKind {
+    Host,
+    Write,
+    WriteDir,
+    TrustedProgram,
+}
+
+/// Every project with something allowed, in file order.
+pub fn all_project_grants() -> std::io::Result<Vec<ProjectGrants>> {
+    match project_hosts_path() {
+        Some(path) => all_project_grants_in(&path),
+        None => Ok(Vec::new()),
+    }
+}
+
+pub fn all_project_grants_in(path: &Path) -> std::io::Result<Vec<ProjectGrants>> {
+    Ok(read_project_hosts(path)?
+        .projects
+        .into_iter()
+        .map(|project| ProjectGrants {
+            project: project.path,
+            hosts: project.hosts,
+            writes: project.writes,
+            write_dirs: project.write_dirs,
+            trusted_programs: project.trusted_programs,
+        })
+        .filter(|grants| {
+            !(grants.hosts.is_empty()
+                && grants.writes.is_empty()
+                && grants.write_dirs.is_empty()
+                && grants.trusted_programs.is_empty())
+        })
+        .collect())
+}
+
+/// Take back one stored grant of `project` (its key, as
+/// [`all_project_grants`] lists it). `false` when it was not there. A
+/// recorded remote that is taken back is not recorded again: its next push
+/// is asked about.
+pub fn revoke_project_grant(
+    project: &Path,
+    kind: ProjectGrantKind,
+    value: &str,
+) -> std::io::Result<bool> {
+    let path = project_hosts_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no platform config directory available",
+        )
+    })?;
+    revoke_project_grant_in(&path, project, kind, value)
+}
+
+pub fn revoke_project_grant_in(
+    path: &Path,
+    project: &Path,
+    kind: ProjectGrantKind,
+    value: &str,
+) -> std::io::Result<bool> {
+    let mut file = read_project_hosts(path)?;
+    let Some(entry) = file.projects.iter_mut().find(|entry| entry.path == project) else {
+        return Ok(false);
+    };
+    let removed = match kind {
+        ProjectGrantKind::Host => remove(&mut entry.hosts, |host| host == value),
+        ProjectGrantKind::Write => remove(&mut entry.writes, |target| target == value),
+        ProjectGrantKind::WriteDir => remove(&mut entry.write_dirs, |dir| dir == Path::new(value)),
+        ProjectGrantKind::TrustedProgram => {
+            remove(&mut entry.trusted_programs, |program| program == value)
+        }
+    };
+    if removed {
+        write_project_hosts(path, &file)?;
+    }
+    Ok(removed)
+}
+
+fn remove<T>(items: &mut Vec<T>, matches: impl Fn(&T) -> bool) -> bool {
+    let before = items.len();
+    items.retain(|item| !matches(item));
+    items.len() != before
+}
+
 /// Append an `allow` pattern to the personal permissions file, creating it
 /// (and its parent directory) if it doesn't exist yet. Used by the "always
 /// allow this pattern going forward" approval decision. A no-op if the
@@ -449,6 +548,48 @@ fn append_allow_rule(path: &Path, pattern: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_stored_grant_is_listed_and_taken_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("project-hosts.toml");
+        let project = tempfile::tempdir().unwrap();
+        let key = project_key(project.path());
+        record_project_remotes_in(&path, project.path(), &["github.com/o/r".into()]).unwrap();
+        update_project_writes_in(&path, project.path(), |entry| {
+            entry.hosts.push("api.example.com".into());
+            entry.write_dirs.push(PathBuf::from("/opt/cache"));
+            entry.trusted_programs.push("docker".into());
+            true
+        })
+        .unwrap();
+
+        let grants = all_project_grants_in(&path).unwrap();
+        assert_eq!(
+            grants,
+            [ProjectGrants {
+                project: key.clone(),
+                hosts: vec!["api.example.com".into()],
+                writes: vec!["github.com/o/r".into()],
+                write_dirs: vec![PathBuf::from("/opt/cache")],
+                trusted_programs: vec!["docker".into()],
+            }]
+        );
+
+        for (kind, value) in [
+            (ProjectGrantKind::Host, "api.example.com"),
+            (ProjectGrantKind::Write, "github.com/o/r"),
+            (ProjectGrantKind::WriteDir, "/opt/cache"),
+            (ProjectGrantKind::TrustedProgram, "docker"),
+        ] {
+            assert!(revoke_project_grant_in(&path, &key, kind, value).unwrap());
+            assert!(!revoke_project_grant_in(&path, &key, kind, value).unwrap());
+        }
+        assert!(all_project_grants_in(&path).unwrap().is_empty());
+        // A taken-back remote is not recorded again.
+        record_project_remotes_in(&path, project.path(), &["github.com/o/r".into()]).unwrap();
+        assert!(all_project_grants_in(&path).unwrap().is_empty());
+    }
+
     use super::*;
     use tempfile::TempDir;
 

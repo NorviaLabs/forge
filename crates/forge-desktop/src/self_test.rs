@@ -67,6 +67,7 @@ struct PageResults {
     #[serde(default)]
     editor_debug: String,
     theme_switches: bool,
+    sandbox_permissions_listed: bool,
     slash_command_ran: bool,
     optimistic_prompt_visible: bool,
     rendered_markdown: bool,
@@ -181,6 +182,10 @@ impl Probe {
                         page.editor_navigation_and_reload,
                     ),
                     ("theme_switches", page.theme_switches),
+                    (
+                        "sandbox_permissions_listed",
+                        page.sandbox_permissions_listed,
+                    ),
                     ("slash_command_ran", page.slash_command_ran),
                     ("optimistic_prompt_visible", page.optimistic_prompt_visible),
                     ("rendered_markdown", page.rendered_markdown),

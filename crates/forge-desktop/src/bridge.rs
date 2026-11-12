@@ -3396,6 +3396,39 @@ pub async fn list_providers() -> Result<Vec<crate::providers::ProviderView>, Str
         .map_err(|error| error.to_string())?
 }
 
+/// Everything allowed "always" in each project: hosts, push targets,
+/// folders sandboxed commands may write, and programs that run outside the
+/// sandbox.
+#[tauri::command]
+pub fn sandbox_grants() -> Result<Vec<forge_config::ProjectGrants>, String> {
+    forge_config::all_project_grants().map_err(|error| error.to_string())
+}
+
+/// Take back one stored grant. A host or push target also leaves the open
+/// sessions of that project at once; folders and trusted programs are read
+/// on every command, so they stop at the next one.
+#[tauri::command]
+pub fn revoke_sandbox_grant(
+    project: std::path::PathBuf,
+    kind: forge_config::ProjectGrantKind,
+    value: String,
+) -> Result<(), String> {
+    use forge_config::ProjectGrantKind;
+    use forge_tools::egress::{revoke_live_project_grant, LiveGrant};
+    forge_config::revoke_project_grant(&project, kind, &value)
+        .map_err(|error| error.to_string())?;
+    match kind {
+        ProjectGrantKind::Host => {
+            revoke_live_project_grant(&project, LiveGrant::Host(&value));
+        }
+        ProjectGrantKind::Write => {
+            revoke_live_project_grant(&project, LiveGrant::Write(&value));
+        }
+        ProjectGrantKind::WriteDir | ProjectGrantKind::TrustedProgram => {}
+    }
+    Ok(())
+}
+
 /// Installed themes, from the same built-ins and drop-in directories as the
 /// terminal. The page resolves `system` itself because only it can observe the
 /// OS preference.

@@ -432,10 +432,9 @@ pub struct SandboxPolicy {
     /// route to the host's loopback, so a TCP port is unreachable from inside;
     /// a Unix socket is a filesystem object and a bind-mount still reaches it.
     egress_socket: Option<PathBuf>,
-    /// When true, `.git` is writable except for `.git/hooks`. Default is
-    /// false: git is the recovery mechanism. Only spawns that run git or a
-    /// git frontend opt in — a host grant alone must not lift the carve-out
-    /// for every command in the session.
+    /// When true, the whole git dir is writable, hooks and config included
+    /// (see [`Self::with_git_open`]). Default is false: a bare policy keeps
+    /// git read-only.
     git_writable: bool,
     /// Git administrative directories that live *outside* the workspace root
     /// because the workspace is a linked worktree (`git worktree add`) — the
@@ -461,9 +460,6 @@ pub struct SandboxPolicy {
     /// The user's home directory, which the read deny-list is built from.
     /// `None` (no `HOME`) leaves no home-relative rule to write.
     home: Option<PathBuf>,
-    /// With `git_writable`, also open the parts of a git dir that decide
-    /// what git executes (`hooks`, `config`). See [`Self::with_git_open`].
-    git_metadata_writable: bool,
     /// Further loopback ports the process may connect to, besides the egress
     /// proxy: the SSH broker a confined git speaks to.
     extra_loopback_ports: Vec<u16>,
@@ -679,7 +675,6 @@ impl SandboxPolicy {
                 .map(PathBuf::from)
                 .filter(|home| home.is_absolute()),
             tool_cache: None,
-            git_metadata_writable: false,
             extra_write_paths: Vec::new(),
             extra_loopback_ports: Vec::new(),
         }
@@ -692,7 +687,6 @@ impl SandboxPolicy {
     /// as whatever wrote it.
     pub fn with_git_open(mut self) -> Self {
         self.git_writable = true;
-        self.git_metadata_writable = true;
         self
     }
 
@@ -933,17 +927,6 @@ impl SandboxPolicy {
         Ok(self)
     }
 
-    /// Permit writes under `.git` for this spawn only. `.git/hooks` stays
-    /// read-only regardless — see [`Self::readonly_subpaths_of`].
-    ///
-    /// Linked-worktree metadata is mounted read-only in the default policy so
-    /// repository-aware clients can resolve the checkout; this opts into
-    /// writes for Git mutation commands while preserving the hooks carve-out.
-    pub fn with_git_writable(mut self) -> Self {
-        self.git_writable = true;
-        self
-    }
-
     /// Grant one writable scratch directory. Callers that need a toolchain to
     /// have somewhere to write should create a session-scoped directory and
     /// point `TMPDIR` at it, rather than widening the policy.
@@ -1034,44 +1017,15 @@ impl SandboxPolicy {
 
     /// Paths that stay read-only even though they sit inside the writable
     /// root, resolved against `root`.
-    fn readonly_subpaths_of(
-        root: &Path,
-        git_writable: bool,
-        metadata_writable: bool,
-    ) -> Vec<PathBuf> {
+    fn readonly_subpaths_of(root: &Path, git_writable: bool) -> Vec<PathBuf> {
         let mut paths = Vec::new();
-        if git_writable && metadata_writable {
-            // The whole git dir is open: see `with_git_open`.
-        } else if git_writable {
-            // Refs and objects have to move for a push to happen. Hooks and
-            // config do not, and they are the parts of `.git` that decide
-            // what git *executes*: a hook, or a config key naming a program
-            // (`core.hooksPath`, `core.fsmonitor`, filter and merge drivers),
-            // runs with the user's full privileges the next time git runs
-            // *outside* the sandbox. Publishing never needs to write either,
-            // so the carve-out stops short of them.
-            //
-            // A linked worktree's `.git` is a gitdir pointer *file*, not a
-            // directory, so `.git/hooks` cannot exist there and must not be
-            // bound (bwrap would refuse the ENOTDIR). Its real hooks and
-            // config live in the common git dir, which the linked-gitdirs
-            // handling already carves back read-only.
-            let git = root.join(".git");
-            if git.is_dir() {
-                paths.extend(GIT_EXECUTABLE_METADATA.iter().map(|name| git.join(name)));
-            }
-        } else {
+        if !git_writable {
             paths.push(root.join(".git"));
         }
         paths.push(root.join(".forge"));
         paths
     }
 }
-
-/// The parts of a git dir that decide what git executes: hooks, and the config
-/// whose keys can name programs. A confined git spawn may write the rest of
-/// the git dir, but never these.
-const GIT_EXECUTABLE_METADATA: &[&str] = &["hooks", "config"];
 
 /// Resolve the git administrative directories of a workspace whose `.git` is a
 /// link file pointing elsewhere — a linked worktree, the shape a managed
@@ -1425,28 +1379,9 @@ pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
     //
     // Derived from the canonical root, not the configured one, for the same
     // reason the root itself is canonicalised.
-    for path in SandboxPolicy::readonly_subpaths_of(
-        &canonical_root,
-        policy.git_writable,
-        policy.git_metadata_writable,
-    ) {
+    for path in SandboxPolicy::readonly_subpaths_of(&canonical_root, policy.git_writable) {
         let literal = sbpl_literal(&path)?;
         profile.push_str(&format!("(deny file-write* (subpath \"{literal}\"))\n"));
-    }
-
-    // Hooks and config for linked-worktree metadata get the same deny as the
-    // in-workspace carve-out: they decide what git executes, so a confined git
-    // spawn must never be able to write them, even though the rest of the
-    // gitdir is writable. Emitted after the writable allow, so the deny wins.
-    for dir in policy
-        .linked_git_dirs
-        .iter()
-        .filter(|_| !policy.git_metadata_writable)
-    {
-        for name in GIT_EXECUTABLE_METADATA {
-            let path = sbpl_literal(&dir.join(name))?;
-            profile.push_str(&format!("(deny file-write* (subpath \"{path}\"))\n"));
-        }
     }
 
     // Paths the caller named explicitly come last, so they hold even inside
@@ -1698,7 +1633,7 @@ fn bubblewrap_invocation_for(
 
     // A linked worktree's git metadata lives outside the workspace root.
     // It is mounted read-only for repository discovery; git mutation spawns
-    // opt into writable mounts, with hooks carved back to read-only below.
+    // opt into writable mounts.
     for dir in &policy.linked_git_dirs {
         let dir = dir.to_str()?.to_string();
         let bind = if policy.git_writable && policy.workspace_writable {
@@ -1734,26 +1669,9 @@ fn bubblewrap_invocation_for(
     // Carved back out last, because the last matching bind wins: emitted
     // before the workspace bind, these would be overridden and `.git` would be
     // writable.
-    for path in SandboxPolicy::readonly_subpaths_of(
-        Path::new(&root),
-        policy.git_writable,
-        policy.git_metadata_writable,
-    ) {
+    for path in SandboxPolicy::readonly_subpaths_of(Path::new(&root), policy.git_writable) {
         let path = path.to_str()?.to_string();
         args.extend(["--ro-bind-try".into(), path.clone(), path]);
-    }
-
-    // The same last-match-wins rule for the linked metadata's hooks and config:
-    // emitted after the writable bind, or these binds would be overridden.
-    for dir in policy
-        .linked_git_dirs
-        .iter()
-        .filter(|_| !policy.git_metadata_writable)
-    {
-        for name in GIT_EXECUTABLE_METADATA {
-            let path = dir.join(name).to_str()?.to_string();
-            args.extend(["--ro-bind-try".into(), path.clone(), path]);
-        }
     }
 
     // A long-lived argv payload (an MCP server) must not outlive Forge: if
@@ -1990,32 +1908,17 @@ mod tests {
         let ws = workspace();
         let p = SandboxPolicy::for_workspace(ws.path());
         let readonly = |p: &SandboxPolicy| {
-            SandboxPolicy::readonly_subpaths_of(&p.workspace_root, p.git_writable, false)
+            SandboxPolicy::readonly_subpaths_of(&p.workspace_root, p.git_writable)
         };
         assert_eq!(
             readonly(&p),
             vec![ws.path().join(".git"), ws.path().join(".forge")]
         );
-        // A real `.git` directory gets its hooks and config carved read-only.
-        let gitdir = ws.path().join(".git");
-        std::fs::create_dir_all(&gitdir).unwrap();
+        // Opened, the whole git dir is writable, hooks and config included.
+        std::fs::create_dir_all(ws.path().join(".git")).unwrap();
         assert_eq!(
-            readonly(&p.clone().with_git_writable()),
-            vec![
-                gitdir.join("hooks"),
-                gitdir.join("config"),
-                ws.path().join(".forge")
-            ],
-            "a publish spawn must be able to update refs, but never install a hook or rewrite config"
-        );
-        // A linked worktree's `.git` is a gitdir pointer file; it has no hooks
-        // directory to carve, and the common git dir is handled separately.
-        std::fs::remove_dir_all(&gitdir).unwrap();
-        std::fs::write(&gitdir, "gitdir: /tmp/somewhere\n").unwrap();
-        assert_eq!(
-            readonly(&p.clone().with_git_writable()),
-            vec![ws.path().join(".forge")],
-            "a linked worktree must not bind a nonexistent .git/hooks"
+            readonly(&p.clone().with_git_open()),
+            vec![ws.path().join(".forge")]
         );
     }
 
@@ -2048,7 +1951,7 @@ mod tests {
             "repository discovery should read the linked worktree gitdir"
         );
 
-        let policy = plain.clone().with_git_writable();
+        let policy = plain.clone().with_git_open();
         let gitdir = gitdir.canonicalize().unwrap();
         let common = repo.path().join(".git").canonicalize().unwrap();
         assert!(
@@ -2077,13 +1980,13 @@ mod tests {
     fn a_normal_repository_adds_no_linked_git_dirs() {
         let ws = workspace();
         assert!(SandboxPolicy::for_workspace(ws.path())
-            .with_git_writable()
+            .with_git_open()
             .linked_git_dirs
             .is_empty());
     }
 
     #[test]
-    fn seatbelt_profile_reaches_linked_metadata_but_never_its_hooks() {
+    fn seatbelt_profile_opens_linked_metadata_hooks_included() {
         let repo = workspace();
         let gitdir = repo.path().join(".git/worktrees/session-1");
         std::fs::create_dir_all(&gitdir).unwrap();
@@ -2100,7 +2003,7 @@ mod tests {
         )
         .unwrap();
 
-        let policy = SandboxPolicy::for_workspace(ws.path()).with_git_writable();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_git_open();
         let profile = seatbelt_profile(&policy).unwrap();
         let gitdir = gitdir.canonicalize().unwrap().to_str().unwrap().to_string();
         let common = repo
@@ -2125,8 +2028,8 @@ mod tests {
             );
             let hooks = format!("(deny file-write* (subpath \"{dir}/hooks\"))");
             assert!(
-                profile.contains(&hooks),
-                "gitdir hooks must never be writable: {dir}"
+                !profile.contains(&hooks),
+                "an opened git dir has no hooks carve-out: {dir}"
             );
         }
 
@@ -2621,7 +2524,7 @@ mod bubblewrap_tests {
         )
         .unwrap();
 
-        let policy = SandboxPolicy::for_workspace(ws.path()).with_git_writable();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_git_open();
         let Some((_, args)) = bubblewrap_invocation("sh", "git status", &policy) else {
             return; // bwrap not installed on this host; nothing to assert
         };
@@ -2631,17 +2534,10 @@ mod bubblewrap_tests {
         let common_str = common.to_str().unwrap();
 
         for dir in [gitdir_str, common_str] {
-            let bind = args
-                .windows(3)
-                .position(|w| w[0] == "--bind" && w[1] == dir && w[2] == dir)
-                .unwrap_or_else(|| panic!("{dir} must be bound writable"));
-            let hooks = args
-                .iter()
-                .position(|a| a == &format!("{dir}/hooks"))
-                .unwrap_or_else(|| panic!("{dir}/hooks must be carved read-only"));
             assert!(
-                bind < hooks,
-                "the hooks carve-out must follow the writable bind, or it is overridden"
+                args.windows(3)
+                    .any(|w| w[0] == "--bind" && w[1] == dir && w[2] == dir),
+                "{dir} must be bound writable"
             );
         }
     }

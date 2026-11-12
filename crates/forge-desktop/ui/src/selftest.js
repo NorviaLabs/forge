@@ -219,6 +219,7 @@ export async function runSelfTest(params, sessionId) {
   } catch (error) { results.editor_debug = `${error.message}\n${error.stack || ""}`; }
 
   results.theme_switches = false;
+  results.sandbox_permissions_listed = false;
   try {
     document.querySelector('button[aria-label="More"]').click();
     await sleep(50);
@@ -230,6 +231,12 @@ export async function runSelfTest(params, sessionId) {
     select.dispatchEvent(new Event("change", { bubbles: true }));
     await sleep(50);
     results.theme_switches = document.documentElement.dataset.theme === "light" && getComputedStyle(document.body).color === "rgb(20, 23, 28)";
+    // The stored sandbox grants load (read only: nothing is removed here).
+    results.sandbox_permissions_listed = await waitFor(() => {
+      const body = document.querySelector(".settings .body");
+      return body && !body.querySelector('[role="alert"]')
+        && (body.querySelector(".project") || body.textContent.includes("Nothing beyond the defaults."));
+    }, 5000);
     select.value = previous;
     select.dispatchEvent(new Event("change", { bubbles: true }));
     document.querySelector('button[aria-label="Close settings"]').click();

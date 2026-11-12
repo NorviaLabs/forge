@@ -256,6 +256,8 @@ fn release_ui_bundle_has_no_self_test_code() {
 /// Commands that act on a project, the providers or the app, not on one
 /// session. Everything else must name its session.
 const SESSIONLESS_COMMANDS: &[&str] = &[
+    "sandbox_grants",
+    "revoke_sandbox_grant",
     "trust_status",
     "trust_workspace",
     "choose_folder",

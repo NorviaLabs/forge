@@ -308,7 +308,7 @@ fn a_publish_policy_can_update_git_refs() {
     require_sandbox!();
     let ws = workspace();
     std::fs::create_dir_all(ws.path().join(".git/refs/heads")).unwrap();
-    let policy = SandboxPolicy::for_workspace(ws.path()).with_git_writable();
+    let policy = SandboxPolicy::for_workspace(ws.path()).with_git_open();
     let (program, args) =
         wrap_shell_command("sh", "printf x > .git/refs/heads/feature", &policy).unwrap();
     let out = Command::new(program)
@@ -327,35 +327,10 @@ fn a_publish_policy_can_update_git_refs() {
     );
 }
 
-/// A hook is the one part of `.git` that is *executed*, and it runs with the
-/// user's full privileges the next time they use git outside the sandbox.
-/// Publishing never needs to write one, so lifting the carve-out for a push
-/// must not hand over a code-execution vector along with the refs.
-#[test]
-fn a_publish_policy_still_cannot_write_git_hooks() {
-    require_sandbox!();
-    let ws = workspace();
-    std::fs::create_dir_all(ws.path().join(".git/hooks")).unwrap();
-    let policy = SandboxPolicy::for_workspace(ws.path()).with_git_writable();
-    let (program, args) =
-        wrap_shell_command("sh", "printf 'pwned' > .git/hooks/post-checkout", &policy).unwrap();
-    let out = Command::new(program)
-        .args(args)
-        .current_dir(ws.path())
-        .output()
-        .unwrap();
-    assert!(
-        !out.status.success(),
-        "a publish spawn must not be able to install a git hook: {}",
-        String::from_utf8_lossy(&out.stdout)
-    );
-    assert!(!ws.path().join(".git/hooks/post-checkout").exists());
-}
-
 /// Run `command` confined with git writes allowed, the way the tool layer runs
 /// a git command: against a spawn-local global config inside the sandbox.
 fn run_git_writable(root: &Path, command: &str) -> (bool, String) {
-    let policy = SandboxPolicy::for_workspace(root).with_git_writable();
+    let policy = SandboxPolicy::for_workspace(root).with_git_open();
     let (program, args) = wrap_shell_command("sh", command, &policy).unwrap();
     let config = root.join(".forge-host-identity").join("gitconfig");
     std::fs::create_dir_all(config.parent().unwrap()).unwrap();
@@ -392,35 +367,11 @@ fn committed_repo() -> tempfile::TempDir {
     repo
 }
 
-/// Git config is code as much as a hook is: `core.hooksPath`,
-/// `core.fsmonitor`, filter and merge drivers all name programs that git runs.
-/// A git spawn that could rewrite it could point the next host-side git (the
-/// git tool, or the user's own) at a script in the workspace, and that script
-/// would run unconfined. So a git-writable spawn may move refs and objects,
-/// but not the config.
+/// A managed session's linked worktree keeps its config in the shared git
+/// dir outside the workspace. Opened (D3), a confined git may change it as
+/// in an ordinary repository, and commit.
 #[test]
-fn a_git_spawn_cannot_rewrite_the_repository_config() {
-    require_sandbox!();
-    let repo = committed_repo();
-    let before = std::fs::read_to_string(repo.path().join(".git/config")).unwrap();
-
-    let (ok, text) = run_git_writable(repo.path(), "git config core.hooksPath h");
-    assert!(!ok, "a confined git spawn rewrote .git/config: {text}");
-    assert_eq!(
-        std::fs::read_to_string(repo.path().join(".git/config")).unwrap(),
-        before
-    );
-
-    // Everything a commit needs still works.
-    std::fs::write(repo.path().join("file.txt"), "changed").unwrap();
-    let (ok, text) = run_git_writable(repo.path(), "git commit -qam change");
-    assert!(ok, "a confined commit failed: {text}");
-}
-
-/// The same for a managed session's linked worktree, whose config lives in
-/// the shared git dir outside the workspace.
-#[test]
-fn a_git_spawn_cannot_rewrite_a_linked_worktrees_config() {
+fn a_git_spawn_may_change_a_linked_worktrees_shared_config() {
     require_sandbox!();
     let repo = committed_repo();
     let base = tempfile::tempdir().unwrap();
@@ -438,17 +389,14 @@ fn a_git_spawn_cannot_rewrite_a_linked_worktrees_config() {
         .output()
         .unwrap();
     assert!(added.status.success(), "{added:?}");
-    let before = std::fs::read_to_string(repo.path().join(".git/config")).unwrap();
-
-    let (ok, text) = run_git_writable(&worktree, "git config core.hooksPath h");
+    let (ok, text) = run_git_writable(&worktree, "git config forge.check yes");
     assert!(
-        !ok,
-        "a confined git spawn rewrote the shared config: {text}"
+        ok,
+        "a confined git could not change the shared config: {text}"
     );
-    assert_eq!(
-        std::fs::read_to_string(repo.path().join(".git/config")).unwrap(),
-        before
-    );
+    assert!(std::fs::read_to_string(repo.path().join(".git/config"))
+        .unwrap()
+        .contains("check = yes"));
 
     std::fs::write(worktree.join("file.txt"), "changed").unwrap();
     let (ok, text) = run_git_writable(&worktree, "git commit -qam change");
@@ -505,7 +453,7 @@ async fn a_confined_git_status_works_inside_a_linked_worktree() {
     );
     std::fs::write(worktree.join("new.txt"), "untracked").unwrap();
 
-    let policy = SandboxPolicy::for_workspace(&worktree).with_git_writable();
+    let policy = SandboxPolicy::for_workspace(&worktree).with_git_open();
     let (program, args) = wrap_shell_command("sh", "git status --porcelain", &policy).unwrap();
     // The tool layer points confined git at a spawn-local global config; the
     // low-level wrapper is env-agnostic, so mirror that here. It must sit

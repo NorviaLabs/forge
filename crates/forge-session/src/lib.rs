@@ -206,6 +206,8 @@ async fn open_session_with_model(
         forge_core::egress_policy_for_workspace(cfg.workspace_root()),
         Default::default(),
     );
+    // A grant the user takes back in the settings ends here too.
+    egress_state.follow_project_grants(cfg.workspace_root());
     if !cfg.mcp.servers.is_empty() {
         let mut mgr = McpManager::new().with_egress_shared(egress_state.clone());
         let errors = mgr

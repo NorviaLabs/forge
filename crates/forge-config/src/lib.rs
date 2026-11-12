@@ -20,10 +20,11 @@ use thiserror::Error;
 pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub use permissions::{
-    append_project_host, append_project_write, append_project_write_dir, append_trusted_program,
-    append_user_allow_rule, load_permissions, parse_permissions_toml, project_hosts,
-    project_trusted_programs, project_write_dirs, record_project_remotes,
-    record_project_remotes_in, user_permissions_path, workspace_permissions_path, PermissionsFile,
+    all_project_grants, append_project_host, append_project_write, append_project_write_dir,
+    append_trusted_program, append_user_allow_rule, load_permissions, parse_permissions_toml,
+    project_hosts, project_key, project_trusted_programs, project_write_dirs,
+    record_project_remotes, record_project_remotes_in, revoke_project_grant, user_permissions_path,
+    workspace_permissions_path, PermissionsFile, ProjectGrantKind, ProjectGrants,
 };
 pub use theme::{parse_theme_toml, Rgb, SyntaxPalette, ThemeDefinition, ThemePalette};
 pub use trust::{

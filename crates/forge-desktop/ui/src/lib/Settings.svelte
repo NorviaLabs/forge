@@ -1,10 +1,32 @@
 <script>
   // App settings: how Forge looks and sounds, and the model providers it
   // connects to. Help holds only help.
+  import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import { modal } from "../modal.js";
+  import { invoke } from "../ipc.js";
+  import { grantGroups, projectName, withoutGrant } from "../grants.js";
 
   let { onClose, onProviders, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
+
+  // What sandboxed commands were allowed "always", per project.
+  let grants = $state(null);
+  let grantsError = $state("");
+
+  onMount(async () => {
+    try { grants = await invoke("sandbox_grants"); }
+    catch (cause) { grantsError = `Could not read sandbox permissions: ${cause}`; }
+  });
+
+  async function revoke(project, kind, value) {
+    grantsError = "";
+    try {
+      await invoke("revoke_sandbox_grant", { project, kind, value });
+      grants = withoutGrant(grants, project, kind, value);
+    } catch (cause) {
+      grantsError = `Could not remove ${value}: ${cause}`;
+    }
+  }
 </script>
 
 <div class="overlay">
@@ -37,6 +59,25 @@
         </span>
         <button class="link" type="button" onclick={onProviders}>Manage</button>
       </div>
+
+      <h3>Sandbox permissions</h3>
+      <p class="note">What you allowed "always" for each project. Removing one takes effect at once, in open sessions too.</p>
+      {#if grantsError}<p class="note error" role="alert">{grantsError}</p>{/if}
+      {#if grants && grants.length === 0}
+        <p class="note">Nothing beyond the defaults.</p>
+      {/if}
+      {#each grants ?? [] as project (project.project)}
+        <div class="project" title={project.project}>{projectName(project.project)}</div>
+        {#each grantGroups(project) as group (group.kind)}
+          <div class="group">{group.label}</div>
+          {#each group.items as item (item)}
+            <div class="row grant">
+              <span class="value">{item}</span>
+              <button class="link" type="button" aria-label={`Remove ${item} from ${projectName(project.project)}`} onclick={() => revoke(project.project, group.kind, item)}>Remove</button>
+            </div>
+          {/each}
+        {/each}
+      {/each}
     </div>
   </div>
 </div>
@@ -46,7 +87,10 @@
     position: fixed;
     inset: 0;
     display: grid;
-    place-items: center;
+    /* Top-anchored: removing a permission shrinks the dialog, and a centred
+       one would slide the next Remove button under the pointer. */
+    place-items: start center;
+    padding-top: 32px;
     background: color-mix(in srgb, var(--bg-deep) 70%, transparent);
     z-index: 30;
   }
@@ -116,6 +160,40 @@
     color: var(--muted);
     font-size: var(--text-sm);
     line-height: 18px;
+  }
+
+  p.note {
+    margin: 0 0 4px;
+  }
+
+  .error {
+    color: var(--error);
+  }
+
+  .project {
+    margin-top: 10px;
+    font-size: var(--text-md);
+    font-weight: 600;
+  }
+
+  .group {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+
+  .row.grant {
+    min-height: 0;
+    padding: 2px 0 2px 12px;
+  }
+
+  .value {
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   select {

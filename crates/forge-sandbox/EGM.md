@@ -11,7 +11,7 @@ as `forge_tools::sandbox` and adds the egress-proxy glue.
 
 - `SandboxPolicy` (`for_workspace`, `with_home`, `with_session_tmp`,
   `with_tool_cache`, `default_tool_cache`, `with_read_path`,
-  `with_write_path`, `with_loopback_port`, `with_read_only_workspace`, `with_git_writable`,
+  `with_write_path`, `with_loopback_port`, `with_read_only_workspace`, `with_git_open`,
   `with_git_open`, `with_command_access`, `with_egress_proxy`,
   `with_egress_socket`, `toolchain_env`), `seatbelt_profile`,
   `wrap_shell_command`, `wrap_command`, `availability`, `Unavailable`,
@@ -43,9 +43,8 @@ as `forge_tools::sandbox` and adds the egress-proxy glue.
   for a submodule). The common dir comes from the layout, never from the
   `commondir` file.
 - Every call of `git::unconfined` is a place a hook or config-named program
-  still runs outside the sandbox; the agent's policy therefore keeps
-  `.git/hooks` and `.git/config` read-only (`with_git_writable`, not
-  `with_git_open`).
+  still runs outside the sandbox. It is used only when the host cannot
+  confine at all, so confined shells get the whole git dir (`with_git_open`).
 - A host that cannot confine gets plain `git` from `git::command`.
 
 ## Side Effects

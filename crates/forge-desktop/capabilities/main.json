@@ -86,6 +86,8 @@
     "allow-session-details",
     "allow-list-providers",
     "allow-list-themes",
+    "allow-sandbox-grants",
+    "allow-revoke-sandbox-grant",
     "allow-connect-provider",
     "allow-import-provider-login",
     "allow-disconnect-provider",

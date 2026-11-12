@@ -411,6 +411,30 @@ impl EgressPolicy {
         self
     }
 
+    /// Take back an allowed pattern, exactly as it was allowed. A built-in
+    /// pattern stays: it was never the user's to grant.
+    pub fn revoke(&mut self, pattern: &str) -> bool {
+        let pattern = pattern.to_ascii_lowercase();
+        if EgressPolicy::new()
+            .with_builtin_hosts()
+            .allow
+            .contains(&pattern)
+        {
+            return false;
+        }
+        let before = self.allow.len();
+        self.allow.retain(|existing| existing != &pattern);
+        self.allow.len() != before
+    }
+
+    /// Take back a write target, so its next write is asked about.
+    pub fn revoke_write(&mut self, target: &str) -> bool {
+        let target = target.trim().trim_matches('/').to_ascii_lowercase();
+        let before = self.writes.len();
+        self.writes.retain(|existing| existing != &target);
+        self.writes.len() != before
+    }
+
     pub fn deny(&mut self, pattern: impl Into<String>) -> &mut Self {
         self.deny.push(pattern.into().to_ascii_lowercase());
         self
@@ -851,6 +875,17 @@ impl EgressShared {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = policy;
     }
 
+    /// Keep this live state in step with the stored grants of the project
+    /// `workspace` belongs to: a grant the user takes back
+    /// ([`revoke_live_project_grant`]) stops working here at once, not only
+    /// in the next session.
+    pub fn follow_project_grants(&self, workspace: &Path) {
+        let key = forge_config::project_key(workspace);
+        let mut live = live_policies();
+        live.retain(|(_, policy)| policy.strong_count() > 0);
+        live.push((key, Arc::downgrade(&self.policy)));
+    }
+
     /// Let writes to `target` through without asking, for the rest of this
     /// proxy's life.
     pub fn grant_write(&self, target: &str) {
@@ -1002,6 +1037,48 @@ impl EgressShared {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .contains(&name)
     }
+}
+
+type LivePolicies = Vec<(PathBuf, std::sync::Weak<RwLock<EgressPolicy>>)>;
+
+static LIVE_POLICIES: Mutex<LivePolicies> = Mutex::new(Vec::new());
+
+fn live_policies() -> std::sync::MutexGuard<'static, LivePolicies> {
+    LIVE_POLICIES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// What a taken-back project grant was.
+#[derive(Debug, Clone, Copy)]
+pub enum LiveGrant<'a> {
+    Host(&'a str),
+    Write(&'a str),
+}
+
+/// Take `grant` back from every live state following `project` (a key from
+/// the grant file). Returns how many changed.
+pub fn revoke_live_project_grant(project: &Path, grant: LiveGrant<'_>) -> usize {
+    let policies: Vec<_> = {
+        let mut live = live_policies();
+        live.retain(|(_, policy)| policy.strong_count() > 0);
+        live.iter()
+            .filter(|(key, _)| key == project)
+            .filter_map(|(_, policy)| policy.upgrade())
+            .collect()
+    };
+    policies
+        .iter()
+        .filter(|policy| {
+            let mut policy = policy
+                .write()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match grant {
+                LiveGrant::Host(pattern) => policy.revoke(pattern),
+                LiveGrant::Write(target) => policy.revoke_write(target),
+            }
+        })
+        .count()
 }
 
 /// A running CONNECT proxy.
@@ -2490,6 +2567,45 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// A grant taken back in the settings stops working in a session that
+    /// is already running, and only in sessions of that project. Built-in
+    /// hosts stay.
+    #[test]
+    fn a_revoked_project_grant_leaves_live_sessions_of_that_project() {
+        let project = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let policy = || {
+            let mut policy = EgressPolicy::new().with_builtin_hosts();
+            policy.allow("api.example.com");
+            policy.allow_write("github.com/o/r");
+            policy
+        };
+        let session = EgressShared::new(policy(), EgressOptions::default());
+        session.follow_project_grants(project.path());
+        let elsewhere = EgressShared::new(policy(), EgressOptions::default());
+        elsewhere.follow_project_grants(other.path());
+        let key = forge_config::project_key(project.path());
+
+        assert_eq!(
+            revoke_live_project_grant(&key, LiveGrant::Host("api.example.com")),
+            1
+        );
+        assert_eq!(
+            revoke_live_project_grant(&key, LiveGrant::Write("github.com/o/r")),
+            1
+        );
+        assert!(!session.permits_host("api.example.com"));
+        assert!(!session.permits_write("github.com/o/r"));
+        assert!(elsewhere.permits_host("api.example.com"));
+        assert!(elsewhere.permits_write("github.com/o/r"));
+
+        assert_eq!(
+            revoke_live_project_grant(&key, LiveGrant::Host("registry.npmjs.org")),
+            0
+        );
+        assert!(session.permits_host("registry.npmjs.org"));
+    }
+
     use super::*;
 
     async fn connect_status(port: u16, target: &str) -> String {

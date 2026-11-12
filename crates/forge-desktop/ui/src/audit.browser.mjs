@@ -62,7 +62,7 @@ try {
         if (command === "subscribe") { channel = args.channel; return { session_id: "audit", sessions: [session], initial }; }
         if (command === "current_session") return initial;
         if (command === "trust_status") return { workspace: "/fixture", needs_trust: false, error: "" };
-        if (command === "list_themes" || command === "list_resumable_sessions" || command === "git_last_turn_files") return [];
+        if (command === "list_themes" || command === "sandbox_grants" || command === "list_resumable_sessions" || command === "git_last_turn_files") return [];
         if (command === "git_status") return { branch: "main", files: [] };
         if (command === "list_files") return [{ path: "example.rs", is_dir: false, depth: 0 }];
         if (command === "list_models") return models;

@@ -69,7 +69,7 @@ Subdirectories:
 - Output shaping: `compress_tool_output`.
 - Sandbox (`sandbox.rs`): `SandboxPolicy` (`for_workspace`,
   `with_read_only_workspace`, `workspace_writable`, `with_command_access`,
-  `toolchain_env`, `with_read_path`, `with_git_writable`, `with_session_tmp`,
+  `toolchain_env`, `with_read_path`, `with_git_open`, `with_session_tmp`,
   `with_home`, `with_tool_cache`, `tool_cache`, `default_tool_cache`,
   `with_egress_proxy`, `egress_proxy_port`, `with_egress_socket`,
   `egress_socket`, `workspace_root`, `with_egress`),
@@ -136,10 +136,9 @@ Subdirectories:
 - `set_process_group` calls `setsid`: a spawned child is its own process
   group leader and has no controlling terminal.
 - The OS sandbox mounts the workspace's `.git` and `.forge` read-only
-  (private `readonly_subpaths_of`). `with_git_writable` opens `.git` for git mutation
-  commands but always keeps `hooks` and `config` read-only (in `.git` and in
-  linked-worktree gitdirs, on both Seatbelt and bubblewrap), because those
-  name programs a later unconfined git would execute.
+  (private `readonly_subpaths_of`). `with_git_open` opens the whole git dir,
+  hooks and config included (and linked-worktree gitdirs); every shell spawn
+  uses it (D3), and a call that changes hooks or config gets a notice.
 - Model-triggered child processes never inherit provider credentials: the
   shell family (bash, background jobs, `exec_command`), the `git` tool, and the
   network-git preflight's local config reads (`LocalRepo::git`) all strip

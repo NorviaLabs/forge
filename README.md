@@ -346,125 +346,84 @@ untrusted checked-out repository.
 
 ### The sandbox
 
-Every shell command the agent runs is confined by the operating system.
-Confinement is applied at spawn, so it does not depend
-on the agent classifying a command correctly beforehand — forge does not try
-to decide whether `rm -rf` is dangerous, it removes the reach that would make
-it matter.
-
-| Platform | Mechanism |
-| --- | --- |
-| macOS | Seatbelt (`sandbox-exec`), built into the OS |
-| Linux | bubblewrap (`bwrap`) |
-| Windows | WSL2, using the Linux sandbox |
+Every shell command the agent runs, every git Forge runs for you, and every
+MCP server is confined by macOS Seatbelt (`sandbox-exec`). Confinement is
+applied at spawn, so it does not depend on classifying a command correctly
+beforehand: forge does not decide whether `rm -rf` is dangerous, it removes
+the reach that would make it matter. If the OS cannot confine, forge does not
+start.
 
 Inside the sandbox a command can:
 
-- **read** inside your workspace, the per-session temp directory, the shared
-  `/tmp` on macOS (Linux keeps it hidden, because a read-only mount would
-  still expose the Unix sockets there), and the OS-owned paths a process needs to start (system binaries, libraries,
-  frameworks, and standard configuration), plus the read-only runtime paths
-  selected from the command's resolved executable and configured toolchain
-  homes. Everything else user-writable — `~/.ssh`, `~/.aws`, and other home
-  configuration included — is outside that boundary, exactly as it is for
-  `read_file`/`write_file`;
-- **write** only inside your workspace and the per-session temp directory;
-- **use** installed command-line tools without exposing host caches or
-  credentials: Cargo's mutable state is redirected into the per-session temp
-  directory, and XDG-aware clients get session-local config, cache, and state
-  directories;
-- **reach the network** only through the egress proxy described below.
+- **read** the disk except a deny-list of secrets (`~/.ssh`, `~/.aws`,
+  `~/.gnupg`, `~/.config/gh`, `~/.netrc`, keychains, browser profiles, other
+  projects' `.forge/`, …) and personal folders (Documents, Desktop,
+  Downloads, Mail, Messages, iCloud Drive, …). A workspace inside one of them
+  is still readable;
+- **write** the workspace, a per-session temp directory and a shared package
+  cache. `.forge` stays read-only. `.git` is writable, hooks and config
+  included: everything that later runs them is confined too, and a call that
+  changes a hook or the config says so in its output;
+- **reach the network** only through Forge's gateway (below);
+- **use your git identity without holding it**: credentials stay outside. The
+  gateway adds them to requests for code hosts, SSH runs through a broker in
+  the Forge process, and commits and tags are signed by a broker with your
+  own git signing setup.
 
-On macOS, Apple Event sending is denied so sandboxed commands cannot drive
-host GUI apps via `osascript`. Application handoffs through `open` may also
-require approval to retry outside the sandbox.
+When a command is refused something outside that boundary, the card offers,
+most narrow first:
 
-`.git` and `.forge` are read-only: the agent can inspect history but cannot
-rewrite it, and cannot edit the permission rules that govern it.
+- **Allow writing `<folder>`** for this session, or always in this project.
+  The same command runs again, still sandboxed, with only that folder added.
+  Your home folder, folders on your `PATH`, system folders, launch agents,
+  credential folders and Forge's own config are never offered;
+- **Approve command**: this exact command, once, outside the sandbox;
+- **Always run `<program>` outside the sandbox in this project**, offered only
+  for a single simple command such as `docker build .`. It is a full escape
+  for that program; chained commands, paths and `$`-expansion are never
+  covered.
 
-What a command needs from outside that boundary — an SSH key, an installed SDK,
-or unrelated home data — is refused by the OS and escalated to you: forge asks
-before replaying the command unconfined rather than letting a confined process
-reach it. Selected command runtimes remain read-only; their network access
-still requires an explicit personal `host(...)` grant, and `.git` remains
-read-only unless the command is an explicitly approved git operation.
-
-Forge reports a shell-redirection refusal even when a later pipeline stage
-makes the shell exit zero. Network refusals are attributed to the exact command
-that reached the proxy, so a swallowed error cannot trigger a misleading
-approval on the next command. A command that deliberately discards every
-filesystem diagnostic and returns zero is not observable from the portable
-process interface; the write is still blocked, but Forge cannot infer that an
-unconfined retry was intended.
-
-If macOS `open` reports the Launch Services permission error `-54`, Forge
-asks to retry that exact command outside the sandbox. For a failed `bash`
-call whose output does not identify a sandbox denial, the agent can use
-`request_unconfined_retry` with the failed call's ID and a reason. Forge
-recovers the original arguments and asks for approval; the request
-cannot supply a replacement command. Saved command rules and approve-all do
-not authorize removal of the sandbox. The approval prompt can instead allow
-the command's pattern (for example `bash(cargo test *)`) outside the sandbox
-for the rest of the session: later sandbox denials matching it rerun
-unconfined without asking. That grant is never saved to disk. A failed unconfined attempt cannot trigger
-another escalation for the same command during that turn. Retry references
-are consumed once and expire at the end of the turn. After restarting Forge,
-an approval whose original arguments are unavailable must be denied and the
-command issued again; Forge never executes redacted display arguments as a
-sandbox retry.
-
-There is one residual socket gap worth stating plainly. On Linux the sandbox
-still exposes the rest of the host filesystem read-only rather than hiding
-it, and a read-only *mount* does not stop a process connecting to a Unix
-socket — that check looks at the inode, not the mount flag. Forge masks
-`/run`, `/tmp`, and the home trees (`/home`, `/root`), which covers the
-sockets with the worst blast radius: `docker.sock` (root on the host),
-systemd, D-Bus, `$XDG_RUNTIME_DIR` (where ssh-agent and gpg-agent live), and
-`~/.docker`. A pathname socket somewhere else — under `/var` or `/opt` — is
-still reachable from inside the sandbox. A confined command already runs as
-you, so this widens what it can touch rather than crossing a privilege
-boundary. Closing it needs Landlock's `LANDLOCK_ACCESS_FS_RESOLVE_UNIX`,
-which is newer than the kernels forge runs on today; seccomp cannot express
-it. Tracked in issue #392.
-
-If the OS cannot confine — bubblewrap missing, an unsupported platform — forge
-does not start. It prints why on stderr and exits. There is no combination of
-settings that turns oversight off without an enforcement floor in place.
+Approve-all never asks and never widens the sandbox: a command that needs
+more fails, and the agent is told why.
 
 ### Network egress
 
-The sandbox denies network access outright, then reinstates it through a
-filtering proxy reached over a Unix socket. The proxy reads the `CONNECT` host
-each request names and refuses anything not on the allow-list. It does not
-terminate TLS, install a certificate, or see your traffic — it only decides
-where a connection may go.
+The gateway lets through code hosts (github.com, gitlab.com, bitbucket.org)
+and package registries without asking. Any other host is held while you
+decide: allow it once, for the session, or always for the project, or refuse
+it. The command that opened the connection carries on when you allow it;
+nothing is run twice.
 
-The allow-list is empty until you add hosts. Nothing — not crates.io, npm,
-PyPI, or GitHub — is reachable unless a personal `host(...)` allow says so,
-or you grant unrestricted network with `host(*)`. A repo-committed file
-cannot open this; only your personal permissions file can.
+For code hosts the gateway terminates TLS with a per-session certificate
+authority that only confined processes trust, so it can tell a fetch from a
+push. A push, or any other change made with your identity, to a repository
+other than the project's own remotes is asked about first. A token the
+command brought itself is refused.
+
+Everything allowed "always" is listed in **Settings → Sandbox permissions**,
+per project, where each entry can be removed. Removing a host or push target
+also ends it in open sessions.
 
 ### Permission rules
 
 `permissions.toml` can re-prompt a call (`deny`) or skip a prompt that would
 otherwise appear (`allow`). Pattern rules match the actual call — a command
 prefix for shell tools, a path glob for file tools, a host for fetch-style
-tools. `host(...)` rules are different: they feed the egress proxy, not the
-approval prompt. Shell does not prompt by default, so `allow` rules for shell
-do nothing to prompting. MCP still prompts unless allowed:
+tools. `host(...)` rules feed the gateway instead: a host they allow is never
+asked about. Shell does not prompt by default, so `allow` rules for shell do
+nothing to prompting. MCP still prompts unless allowed:
 
 ```toml
 allow = [
   "bash(cargo test *)",
-  "bash(cargo build*)",
-  "host(**.crates.io)",
-  "host(**.github.com)",
+  "host(api.example.com)",
 ]
 deny = ["bash(cargo publish*)"]
 ```
 
-`host(*)` is unrestricted network through the proxy (the filesystem sandbox
-stays on). A `host(...)` deny still wins over a broader allow.
+`host(*)` is unrestricted network through the gateway (the filesystem sandbox
+stays on). A `host(...)` deny wins over a broader allow, the built-in list
+included.
 
 A `deny` entry carves an exception out of a broader `allow` entry (`cargo *`
 allowed, but `cargo publish` still asks); it never blocks a call outright —
@@ -477,43 +436,12 @@ that's still the ACL's job. Two files are read and merged:
   blast radius than a human approved locally. Its `deny` entries are always
   honored, since narrowing approval further is safe regardless of source.
 
-Menu rows (when a prompt appears):
-
-- **Run once** — run this call; ask again next time.
-- **Remember similar commands this session** — remember a generalized
-  family for the rest of the session. The selected row explains what would
-  match (for example `git push …`). Matching commands later run without a
-  prompt; a different family still asks. Not written to `permissions.toml`.
-- **Don't run** — block the call.
-
-When the sandbox blocked a host (for example a CLI talking to
-`api.github.com`), the menu is a host grant instead, and the command is
-retried still confined. A host grant also **projects HTTPS identity**
-for that host into the confined spawn: credentials are filled on the
-host (`git credential`), SSH remotes (`git@host:`) are rewritten to
-HTTPS (SSH cannot use the CONNECT proxy), git-dir writes are allowed
-only for spawns that run `git` itself — and never for `.git/hooks` or
-`.git/config`, which decide what git executes on the host — and HTTPS CLIs
-that read a `{label}_TOKEN`
-environment variable receive one derived from the granted host. Ordinary
-commands still cannot write `.git`. The sandbox cannot open the OS
-secret store, so without projection an HTTPS client prints HTTP 401 /
-"invalid token" and looks like broken auth.
-
-- **Always allow `**.github.com`** — writes `host(**.github.com)` to the
-  personal permissions file so the next session does not ask again.
-- **Allow `**.github.com` this session** — live proxy only.
-- **Don't run** — block the call.
-
 ### Approvals
 
 There is no permission-mode setting. Shell commands and file writes run
-without a prompt: the sandbox is the boundary. MCP tools still prompt,
-because those are separate server processes the sandbox does not confine. A
-`deny` pattern re-prompts even for shell. An ACL deny is a hard block, not a
-prompt.
-
-A host that cannot confine never reaches this policy — Forge refuses to start.
+without a prompt: the sandbox is the boundary. MCP tools prompt by default,
+because a server's tools act through whatever the server was given. A `deny`
+pattern re-prompts even for shell. An ACL deny is a hard block, not a prompt.
 
 ### Approving shell commands
 

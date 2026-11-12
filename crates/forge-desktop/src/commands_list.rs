@@ -81,6 +81,8 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "session_details",
     "list_providers",
     "list_themes",
+    "sandbox_grants",
+    "revoke_sandbox_grant",
     "connect_provider",
     "import_provider_login",
     "disconnect_provider",
