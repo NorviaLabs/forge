@@ -18,7 +18,7 @@ path = "src/main.rs"
 self-test = ["dep:tempfile", "forge-session/fake-provider"]
 
 [build-dependencies]
-tauri-build = { version = "=2.7.3", features = ["isolation"] }
+tauri-build = { version = "=2.7.4", features = ["isolation"] }
 serde_json = "1"
 
 [dependencies]
