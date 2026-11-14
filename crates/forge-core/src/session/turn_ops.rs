@@ -94,7 +94,12 @@ impl AgentSession {
         };
         if self.is_subagent() {
             // Not offered to a subagent: see `SUBAGENT_CANNOT_NEST`.
-            visible.retain(|tool| !matches!(tool.name.as_str(), "spawn_agent" | "background_run"));
+            visible.retain(|tool| {
+                !matches!(
+                    tool.name.as_str(),
+                    "spawn_agent" | "background_run" | "set_model_tier"
+                )
+            });
         }
         visible.retain(|tool| self.tool_within_limit(&tool.name));
         self.defer_mcp_tool_schemas(visible)
@@ -510,6 +515,9 @@ impl AgentSession {
             kind: "turn_failed".into(),
             detail: format!("{category}: {summary}"),
         });
+        self.note_failure_category(category);
+        // Decided now, so the failed turn's record says whether it escalated.
+        self.plan_escalation(category, summary);
         self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)
             .await?;
         let response = ModelResponse {
@@ -535,6 +543,14 @@ impl AgentSession {
     pub async fn mark_cancelled(&mut self) -> Result<(), LoopError> {
         match self.active_task.lifecycle {
             TaskLifecycle::Working | TaskLifecycle::Waiting => {
+                let stopped_by = if self.is_subagent()
+                    && self.coordinator.take_interrupted_by_parent(self.session_id)
+                {
+                    TurnSignalKind::InterruptedByParent
+                } else {
+                    TurnSignalKind::UserCancelled
+                };
+                self.note_cancellation(stopped_by, None);
                 self.transition(TaskLifecycle::Cancelled, TransitionReason::UserCancel)
                     .await?;
                 self.events.push(TurnEvent {
@@ -574,13 +590,59 @@ impl AgentSession {
     /// fresh, corrected action. The marker is visible to the model and survives
     /// resume, unlike a live-only error banner.
     pub async fn mark_model_call_failed(&mut self, detail: &str) -> Result<(), LoopError> {
+        self.fail_turn_with(
+            TurnSignalKind::ModelCallFailed,
+            "model_call_failed",
+            "model call failed",
+            detail,
+        )
+        .await
+    }
+
+    /// End the turn in progress because `error` stopped it, recording why:
+    /// a provider failure is `model_call_failed`, anything else (journal I/O,
+    /// a tool task that panicked, the session's owner failing around the
+    /// turn) is `runtime_error`. A cancellation ends the turn as cancelled.
+    /// A turn waiting on the user keeps waiting: its request can still be
+    /// answered. Every frontend that drives turns calls this on an error, so
+    /// no turn is left open, unrecorded, until the next restart.
+    pub async fn fail_turn_on_error(&mut self, error: &LoopError) -> Result<(), LoopError> {
+        match error {
+            LoopError::Model(_) => self.mark_model_call_failed(&error.to_string()).await,
+            LoopError::Cancelled => self.mark_cancelled().await,
+            // Not an ending: the turn waits on the user.
+            LoopError::AwaitingHitl => Ok(()),
+            _ => {
+                self.fail_turn_with(
+                    TurnSignalKind::RuntimeError,
+                    "runtime_error",
+                    "internal error",
+                    &error.to_string(),
+                )
+                .await
+            }
+        }
+    }
+
+    /// A working attempt failed outside the completion evaluator: a
+    /// transition plus a durable `TURN_FAILED_MARKER` assistant message
+    /// carrying the reason. See [`Self::mark_model_call_failed`].
+    async fn fail_turn_with(
+        &mut self,
+        signal: TurnSignalKind,
+        category: &str,
+        label: &str,
+        detail: &str,
+    ) -> Result<(), LoopError> {
         match self.active_task.lifecycle {
             // Only a working attempt can fail this way; a waiting one has no
             // model call in flight and keeps waiting.
             TaskLifecycle::Working => {
+                self.record_signal(signal, Some(truncate(detail, 200)));
+                self.note_failure_category(category);
                 self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)
                     .await?;
-                let content = format!("{TURN_FAILED_MARKER}model call failed: {detail}");
+                let content = format!("{TURN_FAILED_MARKER}{label}: {detail}");
                 self.messages.push(Message {
                     outcome: Default::default(),
                     role: MessageRole::Assistant,
@@ -594,7 +656,7 @@ impl AgentSession {
                 });
                 self.events.push(TurnEvent {
                     kind: "turn_failed".into(),
-                    detail: format!("model_call_failed: {detail}"),
+                    detail: format!("{category}: {detail}"),
                 });
                 let response = ModelResponse {
                     text: content,
@@ -622,6 +684,13 @@ impl AgentSession {
     /// Interrupted like a bare Running one. Legacy sessions with no terminal metadata stay Interrupted rather
     /// than eternal Working. Completed/Failed/Cancelled are left untouched.
     pub async fn mark_interrupted_if_stale(&mut self) -> Result<(), LoopError> {
+        if matches!(
+            self.active_task.lifecycle,
+            TaskLifecycle::Working | TaskLifecycle::Waiting
+        ) {
+            // A strong-tier retry a restart interrupted is recorded as one.
+            self.recognize_interrupted_escalation_retry();
+        }
         match self.active_task.lifecycle {
             TaskLifecycle::Working => {
                 // No active runtime after reload/resume.

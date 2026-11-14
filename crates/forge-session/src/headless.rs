@@ -57,7 +57,32 @@ pub async fn run_headless(
 }
 
 /// [`run_headless`] on a borrowed session, so the caller can inspect it after.
+///
+/// A run that ends on an error ends its turn too, recorded with why, so a
+/// failed benchmark turn is not left open and unrecorded.
 async fn run_headless_in(
+    session: &mut AgentSession,
+    prompt: &str,
+    policy: ApprovalPolicy,
+) -> anyhow::Result<ModelResponse> {
+    let result = run_headless_turns(session, prompt, policy).await;
+    if let Err(error) = &result {
+        let failed = match error.downcast_ref::<forge_core::LoopError>() {
+            Some(loop_error) => session.fail_turn_on_error(loop_error).await,
+            None => {
+                session
+                    .fail_turn_on_error(&forge_core::LoopError::Other(error.to_string()))
+                    .await
+            }
+        };
+        if let Err(failed) = failed {
+            tracing::warn!(%failed, "could not record the failed headless turn");
+        }
+    }
+    result
+}
+
+async fn run_headless_turns(
     session: &mut AgentSession,
     prompt: &str,
     policy: ApprovalPolicy,
@@ -510,5 +535,59 @@ mod tests {
             "a denied reset must not change the working tree"
         );
         assert!(dir.path().join("tmp/scratch.txt").exists());
+    }
+
+    /// A headless run a provider error stops ends its turn, recorded with
+    /// why, instead of leaving it open until the next open calls it
+    /// interrupted.
+    #[tokio::test]
+    async fn a_provider_error_ends_the_headless_turn_with_its_record() {
+        let dir = tempdir().unwrap();
+        let cfg = LoopConfig {
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("journal"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let model = MockModelClient::stream_error_kind(
+            Vec::new(),
+            forge_model::ModelError::Protocol("unexpected end of stream".into()),
+        );
+        let mut session = AgentSession::create(cfg, Arc::new(model), ToolRegistry::new())
+            .await
+            .unwrap();
+        let error = run_headless_in(&mut session, "hi", ApprovalPolicy::DenyAll)
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("unexpected end of stream"),
+            "{error}"
+        );
+        assert_eq!(
+            session.active_task.lifecycle,
+            forge_types::TaskLifecycle::Failed
+        );
+        let records = session.turn_records().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record.completion_reason, "model_call_failed");
+    }
+
+    /// A run that stops to ask for an approval is waiting, not failed.
+    #[tokio::test]
+    async fn a_headless_run_stopped_for_an_approval_keeps_its_turn_open() {
+        let (mut session, _dir) = session_with(vec![wants_approval()]).await;
+        let error = run_headless_in(&mut session, "clean up", ApprovalPolicy::Ask)
+            .await
+            .unwrap_err();
+        assert!(
+            error.downcast_ref::<ApprovalRequired>().is_some(),
+            "{error}"
+        );
+        assert_eq!(
+            session.active_task.lifecycle,
+            forge_types::TaskLifecycle::Waiting
+        );
+        assert!(session.turn_records().await.unwrap().is_empty());
     }
 }

@@ -18,7 +18,22 @@ impl AgentSession {
     }
 
     /// Apply all execution-facing model state together.
+    ///
+    /// An explicit selection replaces any turn-scoped model tier: the user's
+    /// choice is what the session returns to, not the model the tier
+    /// replaced.
     pub fn set_model_selection(&mut self, selection: crate::ModelExecutionSelection) {
+        // Back on the user's own model and its capabilities first, so nothing
+        // of the tier's model outlives it.
+        self.restore_turn_tier();
+        self.set_model_selection_keeping_tier(selection);
+    }
+
+    /// [`Self::set_model_selection`] for the tier machinery itself.
+    pub(crate) fn set_model_selection_keeping_tier(
+        &mut self,
+        selection: crate::ModelExecutionSelection,
+    ) {
         self.active_model = selection.model;
         self.active_profile_id = selection.profile_id;
         self.reasoning_effort = selection.reasoning_effort;
@@ -238,7 +253,7 @@ impl AgentSession {
 
     /// Use this provider/model id on subsequent completions (e.g. after `/connect`).
     pub fn set_active_model(&mut self, model: impl Into<String>) {
-        let mut selection = self.model_selection();
+        let mut selection = self.base_model_selection();
         selection.model = model.into();
         self.set_model_selection(selection);
     }
@@ -281,7 +296,7 @@ impl AgentSession {
     }
 
     pub fn set_active_profile_id(&mut self, profile_id: impl Into<String>) {
-        let mut selection = self.model_selection();
+        let mut selection = self.base_model_selection();
         selection.profile_id = profile_id.into();
         self.set_model_selection(selection);
     }
@@ -289,7 +304,7 @@ impl AgentSession {
     /// Wire-level reasoning-effort value to send on the next completion, or
     /// `None` to omit the field (model doesn't support it, or effort is Auto).
     pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
-        let mut selection = self.model_selection();
+        let mut selection = self.base_model_selection();
         selection.reasoning_effort = effort;
         self.set_model_selection(selection);
     }
@@ -299,9 +314,12 @@ impl AgentSession {
     }
 
     pub fn set_thinking_enabled(&mut self, enabled: bool) {
+        // Thinking is not part of a tier: the toggle applies now and after
+        // a turn-scoped tier ends, and leaves the tier in place.
+        self.set_base_thinking_enabled(enabled);
         let mut selection = self.model_selection();
         selection.thinking_enabled = enabled;
-        self.set_model_selection(selection);
+        self.set_model_selection_keeping_tier(selection);
     }
 
     pub fn thinking_enabled(&self) -> bool {

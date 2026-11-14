@@ -3595,6 +3595,19 @@ pub async fn connect_provider(
     Ok(message)
 }
 
+/// Build the model tier table for a provider just connected: models.dev is
+/// downloaded if the local copy is stale, and the provider's model list is
+/// refreshed, so its tiers work from the first turn. This is the one wait
+/// tiers ever cost; afterwards the table is kept up to date in the
+/// background. A failure only means tiers stay as they were until then.
+#[tauri::command]
+pub async fn prepare_model_tiers(profile_id: String) -> Result<(), String> {
+    forge_session::prepare_model_tiers(forge_session::TierPaths::user_default(), Some(profile_id))
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn disconnect_provider(
     state: State<'_, DesktopState>,

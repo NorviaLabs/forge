@@ -95,6 +95,7 @@
     "allow-save-agent-source",
     "allow-list-agent-tools",
     "allow-connect-provider",
+    "allow-prepare-model-tiers",
     "allow-import-provider-login",
     "allow-disconnect-provider",
     "allow-add-model",

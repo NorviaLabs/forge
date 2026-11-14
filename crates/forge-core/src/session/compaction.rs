@@ -330,6 +330,15 @@ impl AgentSession {
         context_state.epoch = self.cache_epoch;
         self.context_state = context_state;
         self.compaction.record(record.clone());
+        self.record_signal(
+            crate::TurnSignalKind::ContextCompacted,
+            Some(format!(
+                "{}: {} → {} tokens",
+                record.trigger.as_str(),
+                compact_tokens(record.tokens_before),
+                compact_tokens(record.tokens_after)
+            )),
+        );
         self.events.push(TurnEvent {
             kind: "context_compacted".into(),
             detail: format!(

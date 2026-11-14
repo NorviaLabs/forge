@@ -133,6 +133,10 @@ struct AgentRecord {
     cancel: CancellationToken,
     mailbox: VecDeque<String>,
     actor: Option<mpsc::UnboundedSender<AgentCommand>>,
+    /// The parent interrupted the current run (`send_message` with
+    /// `interrupt`), as opposed to a cancel. Read once by the child when it
+    /// records how its turn ended.
+    interrupted_by_parent: bool,
 }
 
 struct State {
@@ -170,6 +174,7 @@ impl AgentCoordinator {
                 cancel: root_cancel,
                 mailbox: VecDeque::new(),
                 actor: None,
+                interrupted_by_parent: false,
             },
         );
         Self {
@@ -271,6 +276,7 @@ impl AgentCoordinator {
                 cancel,
                 mailbox: VecDeque::new(),
                 actor: None,
+                interrupted_by_parent: false,
             },
         );
         state.revision = state.revision.saturating_add(1);
@@ -416,6 +422,7 @@ impl AgentCoordinator {
             .ok_or(AgentCoordinatorError::NoActor(target))?;
         record.mailbox.push_back(message);
         record.cancel = cancel.clone();
+        record.interrupted_by_parent = false;
         actor
             .send(AgentCommand::Wake {
                 cancel: cancel.clone(),
@@ -437,6 +444,26 @@ impl AgentCoordinator {
         Ok(record.mailbox.drain(..).collect())
     }
 
+    /// The session that spawned `id`, if it is a child.
+    pub fn parent_of(&self, id: SessionId) -> Option<SessionId> {
+        self.state
+            .lock()
+            .unwrap()
+            .records
+            .get(&id)
+            .and_then(|record| record.snapshot.parent_id)
+    }
+
+    /// Whether the parent interrupted `id`'s current run. Clears the flag.
+    pub(crate) fn take_interrupted_by_parent(&self, id: SessionId) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .records
+            .get_mut(&id)
+            .is_some_and(|record| std::mem::take(&mut record.interrupted_by_parent))
+    }
+
     pub fn interrupt(
         &self,
         requester: SessionId,
@@ -446,11 +473,12 @@ impl AgentCoordinator {
         ensure_descendant(&state, requester, target)?;
         let record = state
             .records
-            .get(&target)
+            .get_mut(&target)
             .ok_or(AgentCoordinatorError::NotFound(target))?;
         if record.snapshot.status.is_terminal() {
             return Ok(false);
         }
+        record.interrupted_by_parent = true;
         record.cancel.cancel();
         state.revision = state.revision.saturating_add(1);
         drop(state);

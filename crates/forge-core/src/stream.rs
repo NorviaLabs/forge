@@ -218,7 +218,9 @@ impl AgentSession {
                     .await
                     .map_err(|error| LoopError::Other(format!("model task join: {error}")))?
                     .ok_or(LoopError::Cancelled)?
-                    .map_err(|error| LoopError::Other(error.to_string()))?;
+                    // Kept typed (same text: `Model` is transparent) so the
+                    // turn record can tell a provider failure from others.
+                    .map_err(LoopError::Model)?;
             }
             // `cancel_token` is only ever `Some` for a subagent session (see
             // `AgentSession::cancel_token`'s doc comment); a root turn is

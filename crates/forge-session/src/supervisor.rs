@@ -416,6 +416,9 @@ struct SessionActor {
     /// outside the session lock: they are asked and answered while a turn
     /// holds it. `None` when the session has no gateway.
     host_questions: Option<forge_core::HostQuestions>,
+    /// Signals for the turn in progress, recorded without the session lock a
+    /// running turn holds (a prompt the user sends while it runs).
+    signal_inbox: forge_core::TurnSignalInbox,
 }
 
 /// Whether `workspace` is trusted, using the injected store when present and
@@ -449,6 +452,7 @@ impl SessionActor {
         // to an undecided host instead of refusing it: a supervised session
         // has someone to answer.
         let host_questions = session.host_questions();
+        let signal_inbox = session.turn_signal_inbox();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
@@ -471,7 +475,19 @@ impl SessionActor {
             background_control,
             tools,
             host_questions,
+            signal_inbox,
         }
+    }
+
+    /// The user sent a prompt: if a turn is in progress it will run after
+    /// that turn, and the turn's record says the user spoke during it.
+    fn note_prompt_queued(&self, attachments: usize) {
+        let detail = (attachments > 0).then(|| match attachments {
+            1 => "with 1 attachment".to_string(),
+            n => format!("with {n} attachments"),
+        });
+        self.signal_inbox
+            .record(forge_core::TurnSignalKind::UserMessageQueued, detail);
     }
 
     fn pending_host_questions(&self) -> Vec<forge_core::HostQuestion> {
@@ -2790,6 +2806,9 @@ async fn execute_command(
             // nothing left to run.
             state.control.mark_queued(session_id).await?;
             state.control.enqueue_prompt(session_id, &text).await?;
+            if let Ok(actor) = actor(&state, session_id).await {
+                actor.note_prompt_queued(0);
+            }
             publish_actor(&state, session_id).await?;
             start_prompt_driver(state, session_id).await?;
         }
@@ -2809,12 +2828,16 @@ async fn execute_command(
                     .events
                     .send(SupervisorEvent::Roster(snapshots(&state).await));
             }
+            let attachment_count = attachments.len();
             let attachments = serde_json::to_string(&attachments)
                 .map_err(|error| RepositorySupervisorError::Command(error.to_string()))?;
             state
                 .control
                 .enqueue_prompt_with_attachments(session_id, &text, &attachments)
                 .await?;
+            if let Ok(actor) = actor(&state, session_id).await {
+                actor.note_prompt_queued(attachment_count);
+            }
             publish_actor(&state, session_id).await?;
             start_prompt_driver(state, session_id).await?;
         }
@@ -3153,6 +3176,14 @@ async fn execute_command(
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::ReloadProviders => {
+            // A provider connected, removed or edited: the tier table
+            // rebuilds the providers whose inputs changed, in the background.
+            if !state.cfg.model.mock && !cfg!(test) {
+                let paths = crate::model_tiers::TierPaths::from_config(&state.cfg);
+                if let Some(tiers) = crate::model_tiers::TierTable::for_paths(&paths) {
+                    tiers.maintain_in_background(paths, std::time::Duration::ZERO);
+                }
+            }
             let table = route_table();
             state.model.set_route_table(table.clone());
             for actor in state.actors.read().await.values() {
@@ -3667,6 +3698,9 @@ async fn run_one(
     let session_id = task_actor.snapshot.read().await.task.session_id;
     let queue_id = prompt.as_ref().map(|(queue_id, _)| *queue_id);
     let result = run_one_inner(state.clone(), task_actor.clone(), prompt).await;
+    if let Err(error) = &result {
+        close_turn_after_error(&task_actor, error).await;
+    }
     if result.is_err() {
         // The turn is over however it failed: nothing is left to cancel.
         *task_actor
@@ -3691,6 +3725,21 @@ async fn run_one(
         }
     }
     result
+}
+
+/// The supervisor failed around a turn: publishing it, relaying its stream,
+/// recording how it ended. However it failed, the turn is over, so end it
+/// on the session too — recorded as a runtime error — rather than leave it
+/// open, unrecorded, until the next restart calls it interrupted. A turn
+/// waiting on the user keeps waiting; a turn already ended is left alone.
+async fn close_turn_after_error(task_actor: &SessionActor, error: &RepositorySupervisorError) {
+    let mut session = task_actor.session.lock().await;
+    if session.active_task.lifecycle == TaskLifecycle::Working {
+        let error = LoopError::Other(format!("the turn's supervisor failed: {error}"));
+        if let Err(failed) = session.fail_turn_on_error(&error).await {
+            tracing::warn!(%failed, "could not record a turn the supervisor failed");
+        }
+    }
 }
 
 async fn run_one_inner(
@@ -3779,7 +3828,7 @@ async fn run_one_inner(
             SupervisorTurnState::Cancelled
         }
         Err(error) => {
-            session.mark_model_call_failed(&error.to_string()).await?;
+            session.fail_turn_on_error(error).await?;
             SupervisorTurnState::Failed
         }
     };
@@ -5426,6 +5475,308 @@ mod tests {
             vec![(queued_id, "run after review".into())]
         );
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Panics inside its task: an internal error, not a provider failure.
+    struct PanickingTool;
+
+    impl Tool for PanickingTool {
+        fn name(&self) -> &str {
+            "explode"
+        }
+
+        fn description(&self) -> &str {
+            "Panics"
+        }
+
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object", "additionalProperties": false})
+        }
+
+        fn side_effect_class(&self) -> forge_types::SideEffectClass {
+            forge_types::SideEffectClass::Read
+        }
+
+        fn call<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            _ctx: &'life1 ToolContext,
+            _args: serde_json::Value,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<ToolOutput, ToolError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async move { panic!("tool bug") })
+        }
+    }
+
+    async fn registered_session(
+        control: &RepositoryControl,
+        session: &AgentSession,
+        workspace: &std::path::Path,
+    ) -> RepositorySession {
+        let task = task_for(session.session_id, "errors", workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: session.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        task
+    }
+
+    /// A supervised turn an internal error stops fails as a runtime error,
+    /// not as a provider failure.
+    #[tokio::test]
+    async fn a_supervised_turn_an_internal_error_stops_is_recorded_as_one() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "boom".into(),
+                name: "explode".into(),
+                arguments: json!({}),
+            }],
+            usage: None,
+            thinking: None,
+        }]));
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(PanickingTool));
+        let session = AgentSession::create(loop_cfg.clone(), model, tools.clone())
+            .await
+            .unwrap();
+        let session_id = session.session_id;
+        let task = registered_session(&control, &session, &workspace).await;
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let unused: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, unused)
+                .await
+                .unwrap();
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "go".into(),
+            })
+            .await
+            .unwrap();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Failed
+        })
+        .await;
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+
+        let reopened = AgentSession::resume(
+            loop_cfg,
+            Arc::new(MockModelClient::script(Vec::new())),
+            tools,
+            session_id,
+        )
+        .await
+        .unwrap();
+        let records = reopened.turn_records().await.unwrap();
+        assert_eq!(records.len(), 1, "{records:#?}");
+        assert_eq!(records[0].record.outcome, "failed");
+        assert_eq!(records[0].record.completion_reason, "runtime_error");
+    }
+
+    /// When the supervisor itself fails around a turn, the turn is ended and
+    /// recorded — not left open until the next restart calls it interrupted.
+    /// A turn waiting on the user is left waiting.
+    #[tokio::test]
+    async fn a_turn_the_supervisor_fails_around_is_closed_and_recorded() {
+        let temp = TempDir::new().unwrap();
+        let control = RepositoryControl::open(temp.path()).await.unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let loop_cfg = LoopConfig {
+            workspace: workspace.clone(),
+            journal_dir: temp.path().join("journals"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let mut session = AgentSession::create(loop_cfg, model, ToolRegistry::new())
+            .await
+            .unwrap();
+        session.append_user_message("go").await.unwrap();
+        let task = registered_session(&control, &session, &workspace).await;
+        let actor = SessionActor::new(task, session, Vec::new(), Vec::new(), true);
+
+        close_turn_after_error(&actor, &RepositorySupervisorError::Closed).await;
+
+        let session = actor.session.lock().await;
+        assert_eq!(session.active_task.lifecycle, TaskLifecycle::Failed);
+        let records = session.turn_records().await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].record.completion_reason, "runtime_error");
+        let detail = records[0].record.signals[0]["detail"].as_str().unwrap();
+        assert!(detail.contains("the turn's supervisor failed"), "{detail}");
+        drop(session);
+
+        // Already over: nothing more happens.
+        close_turn_after_error(&actor, &RepositorySupervisorError::Closed).await;
+        let session = actor.session.lock().await;
+        assert_eq!(session.turn_records().await.unwrap().len(), 1);
+    }
+
+    /// A prompt the user sends while a turn runs does not interrupt it: it
+    /// is queued and runs next. The running turn's record says the user
+    /// spoke during it; the queued prompt's own turn does not.
+    #[tokio::test]
+    async fn a_prompt_sent_during_a_turn_is_a_signal_on_that_turn() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: workspace.clone(),
+            workspace_root: Some(workspace.display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "slow".into(),
+                    name: "gated_approval".into(),
+                    arguments: json!({}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text_response("first done"),
+            text_response("second done"),
+        ]));
+        let loop_cfg = LoopConfig {
+            workspace: cfg.workspace_root().to_path_buf(),
+            journal_dir: cfg.journal.path.clone().into(),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(GatedApprovalTool {
+            started: started.clone(),
+            release: release.clone(),
+        }));
+        let session = AgentSession::create(loop_cfg.clone(), model, tools.clone())
+            .await
+            .unwrap();
+        let session_id = session.session_id;
+        let task = task_for(session_id, "queued", &workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let unused: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, unused)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "start the long job".into(),
+            })
+            .await
+            .unwrap();
+        started.notified().await;
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "also check the docs".into(),
+            })
+            .await
+            .unwrap();
+        release.notify_one();
+        wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot
+                .transcript
+                .messages()
+                .iter()
+                .any(|message| message.content == "second done")
+                && snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+
+        let reopened = AgentSession::resume(
+            loop_cfg,
+            Arc::new(MockModelClient::script(Vec::new())),
+            tools,
+            session_id,
+        )
+        .await
+        .unwrap();
+        let records = reopened.turn_records().await.unwrap();
+        assert_eq!(records.len(), 2, "{records:#?}");
+        let kinds = |index: usize| -> Vec<String> {
+            records[index]
+                .record
+                .signals
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|signal| signal["kind"].as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(kinds(0), ["user_message_queued"]);
+        assert!(kinds(1).is_empty(), "{:?}", kinds(1));
+        assert_eq!(records[0].record.outcome, "completed");
     }
 
     /// Two denials in a row stop the turn, and it stays stopped: the

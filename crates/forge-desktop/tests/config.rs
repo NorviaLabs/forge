@@ -282,6 +282,7 @@ const SESSIONLESS_COMMANDS: &[&str] = &[
     "list_models",
     "list_providers",
     "connect_provider",
+    "prepare_model_tiers",
     "disconnect_provider",
     "import_provider_login",
     "save_custom_provider",

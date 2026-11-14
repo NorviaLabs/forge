@@ -45,6 +45,21 @@
     if (!profileId) profileId = providers[0]?.id ?? "";
   }
 
+  // A provider just connected: wait once while Forge prepares its models.
+  // A failure here is not a failed connection; it is retried in the
+  // background.
+  async function prepareModels() {
+    const connected = message;
+    login = null;
+    message = "Preparing models…";
+    try {
+      await invoke("prepare_model_tiers", { profileId });
+    } catch {
+      // Kept up to date in the background.
+    }
+    message = connected;
+  }
+
   async function run(action) {
     if (busy) return;
     busy = true;
@@ -56,8 +71,10 @@
         const channel = new Channel();
         channel.onmessage = (view) => (login = view);
         message = await invoke("connect_provider", { profileId, channel });
+        await prepareModels();
       } else if (action === "importLogin") {
         message = await invoke("import_provider_login", { profileId });
+        await prepareModels();
       } else if (action === "disconnect") {
         message = await invoke("disconnect_provider", { profileId });
       } else if (action === "saveCustom") {

@@ -3,7 +3,9 @@
 //! Split out of `lib.rs`; methods are moved verbatim.
 
 use crate::*;
-use forge_tools::{AgentMessageAction, AgentMessageArgs, SpawnAgentArgs, WaitAgentArgs};
+use forge_tools::{
+    AgentMessageAction, AgentMessageArgs, SetModelTierArgs, SpawnAgentArgs, WaitAgentArgs,
+};
 
 /// Why a subagent cannot start agents or background jobs of its own. What it
 /// started would belong to the child's own registry, which nothing polls: a
@@ -14,8 +16,16 @@ pub(crate) const SUBAGENT_CANNOT_NEST: &str = "a subagent cannot start agents or
      foreground, or report back so the parent can start it";
 
 fn is_agent_tool(name: &str) -> bool {
-    matches!(name, "spawn_agent" | "send_message" | "wait_agent")
+    matches!(
+        name,
+        "spawn_agent" | "send_message" | "wait_agent" | "set_model_tier"
+    )
 }
+
+/// Why a subagent cannot switch its own tier: its tier is chosen by whoever
+/// spawned it, and a failed turn is escalated by the runtime.
+pub(crate) const SUBAGENT_CANNOT_SET_TIER: &str =
+    "a subagent runs on the model tier it was      started with; it cannot switch tiers itself";
 
 fn parse_agent_id(value: &str) -> Result<SessionId, LoopError> {
     value
@@ -529,6 +539,7 @@ impl AgentSession {
                 execution.duration_ms,
                 execution.unconfined,
             );
+            self.note_tool_result(&execution.call, &execution.result);
         }
         if parallel
             && completed
@@ -1220,6 +1231,7 @@ impl AgentSession {
                     })?;
                 let spec = self.subagent_spec_for(args)?;
                 let agent = spec.profile.agent.clone();
+                let tier = spec.profile.tier;
                 let task_id = self.spawn_subagent(spec).await?;
                 let agent_id = self
                     .background()
@@ -1229,6 +1241,9 @@ impl AgentSession {
                 let mut started = json!({"agent_id": agent_id.to_string(), "status": "running"});
                 if let Some(agent) = agent {
                     started["agent"] = json!(agent);
+                }
+                if let Some(tier) = tier {
+                    started["tier"] = json!(tier);
                 }
                 if let Some(child) = self
                     .background()
@@ -1293,6 +1308,31 @@ impl AgentSession {
                         )
                     }
                 }
+            }
+            "set_model_tier" => {
+                if self.is_subagent() {
+                    return Err(LoopError::Other(SUBAGENT_CANNOT_SET_TIER.into()));
+                }
+                let args: SetModelTierArgs = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| {
+                        LoopError::Other(format!("invalid set_model_tier arguments: {error}"))
+                    })?;
+                let resolution = self.switch_turn_tier(args.tier);
+                let mut result = json!({
+                    "tier": resolution.tier,
+                    "model": resolution.model.model,
+                    "basis": resolution.basis,
+                });
+                if let Some(effort) = &resolution.model.reasoning_effort {
+                    result["reasoning_effort"] = json!(effort);
+                }
+                result["note"] = json!(match resolution.basis {
+                    TierBasis::Unavailable => {
+                        "no model or effort for this tier on the current provider; continuing unchanged"
+                    }
+                    _ => "applies from the next step until this turn ends",
+                });
+                ToolOutput::success(result.to_string())
             }
             "wait_agent" => {
                 let args: WaitAgentArgs =
@@ -1541,6 +1581,7 @@ impl AgentSession {
             result,
         } = completed.execution;
         self.audit_tool_result(&call, &result, duration_ms, unconfined);
+        self.note_tool_result(&call, &result);
         // An approved call (a gated MCP tool, or the retry after a host grant)
         // that the gateway refused a host for asks for that host next, as the
         // ungated path does: the approval covered running the call, not the

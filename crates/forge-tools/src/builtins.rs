@@ -1991,6 +1991,7 @@ pub fn default_builtins() -> Vec<std::sync::Arc<dyn Tool>> {
         std::sync::Arc::new(crate::SpawnAgentTool),
         std::sync::Arc::new(crate::SendMessageTool),
         std::sync::Arc::new(crate::WaitAgentTool),
+        std::sync::Arc::new(crate::SetModelTierTool),
         std::sync::Arc::new(crate::skills::LoadSkillTool),
         crate::web_fetch::web_fetch_tool(),
     ];

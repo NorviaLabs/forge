@@ -96,6 +96,14 @@ impl AgentSession {
             .await?;
         let note = feedback.map(str::trim).filter(|note| !note.is_empty());
         self.audit_hitl_resolution(&payload, dec, actor, if approved { None } else { note });
+        self.record_signal(
+            if approved {
+                TurnSignalKind::ApprovalGranted
+            } else {
+                TurnSignalKind::ApprovalDenied
+            },
+            Some(payload.tool.clone()),
+        );
         self.flush_audit().await?;
 
         if !approved {
@@ -191,6 +199,7 @@ impl AgentSession {
             .append_hitl_resume(self.session_id, "approve", actor)
             .await?;
         self.audit_hitl_resolution(&payload, "approve", actor, None);
+        self.record_signal(TurnSignalKind::ApprovalGranted, Some(payload.tool.clone()));
         self.flush_audit().await?;
         self.turn.reset_hitl_denials();
         let call = self.approval_execution_call(&payload)?;

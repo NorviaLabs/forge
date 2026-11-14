@@ -2,12 +2,14 @@
 
 mod git;
 mod image;
+mod tier;
 
 pub use git::is_readonly_git_subcommand;
 pub use image::{
     inspect_image, sample_png_bytes, sniff_allowed_image, ImageInspectError, ImageMeta, ImageRef,
     MAX_IMAGE_BYTES,
 };
+pub use tier::ModelTier;
 
 /// Remove structural protocol control markers from final-answer text before
 /// persistence. Not phrase filtering — only known control envelopes.

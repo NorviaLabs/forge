@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use forge_types::{SideEffectClass, ToolOutput};
+use forge_types::{ModelTier, SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +38,13 @@ pub struct SpawnAgentArgs {
     /// asked for one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Model tier for the child, chosen from this session's provider:
+    /// `fast` for simple, mechanical or high-volume work; `default` for
+    /// ordinary work; `strong` for hard reasoning, subtle bugs or risky
+    /// changes. Omit it to use this session's model. Not combined with
+    /// `model` or `reasoning_effort`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ModelTier>,
 }
 
 impl SpawnAgentArgs {
@@ -113,6 +120,13 @@ impl AgentMessageArgs {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+pub struct SetModelTierArgs {
+    /// `fast` (quicker and cheaper), `default` (the provider's everyday
+    /// model) or `strong` (the most capable model, thinking harder).
+    pub tier: ModelTier,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct WaitAgentArgs {
     /// Maximum time to wait in milliseconds. The coordinator clamps this to
     /// its configured minimum and maximum.
@@ -128,6 +142,7 @@ pub struct WaitAgentArgs {
 pub struct SpawnAgentTool;
 pub struct SendMessageTool;
 pub struct WaitAgentTool;
+pub struct SetModelTierTool;
 
 macro_rules! orchestration_tool {
     ($type:ty, $name:literal, $description:literal, $args:ty) => {
@@ -166,7 +181,7 @@ macro_rules! orchestration_tool {
 orchestration_tool!(
     SpawnAgentTool,
     "spawn_agent",
-    "Start a child agent without waiting. Pass `agent` to start a custom agent listed under '# Agents'; otherwise give `task_name` and `mode`. Read-only agents share the workspace concurrently; writers are serialized. Pass `model` or `reasoning_effort` only when the user asked for them.",
+    "Start a child agent without waiting. Pass `agent` to start a custom agent listed under '# Agents'; otherwise give `task_name` and `mode`. Read-only agents share the workspace concurrently; writers are serialized. Pass `tier` (`fast`, `default` or `strong`) to match the child's model to the difficulty of its task. Pass `model` or `reasoning_effort` only when the user asked for them.",
     SpawnAgentArgs
 );
 orchestration_tool!(
@@ -181,6 +196,12 @@ orchestration_tool!(
     "Wait for the next state change from this agent's descendants and return all of them. Pass `since_revision: 0` to list them without waiting.",
     WaitAgentArgs
 );
+orchestration_tool!(
+    SetModelTierTool,
+    "set_model_tier",
+    "Switch the rest of this turn to a model tier: `fast`, `default` or `strong`. Call it only when the user's message asks for a faster or cheaper model, or for a stronger or more careful one. It applies from your next step until this turn ends; the session then returns to the model the user selected.",
+    SetModelTierArgs
+);
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,9 +214,18 @@ mod tests {
             Box::new(SpawnAgentTool),
             Box::new(SendMessageTool),
             Box::new(WaitAgentTool),
+            Box::new(SetModelTierTool),
         ];
         let names: Vec<_> = tools.iter().map(|tool| tool.name()).collect();
-        assert_eq!(names, vec!["spawn_agent", "send_message", "wait_agent"]);
+        assert_eq!(
+            names,
+            vec![
+                "spawn_agent",
+                "send_message",
+                "wait_agent",
+                "set_model_tier"
+            ]
+        );
         for tool in tools {
             validate_args(
                 tool.name(),
@@ -204,11 +234,43 @@ mod tests {
                     "spawn_agent" => json!({"task_name": "reviewer", "message": "Review the diff"}),
                     "send_message" => json!({"target": "agent-id", "message": "Continue"}),
                     "wait_agent" => json!({"timeout_ms": 1000}),
+                    "set_model_tier" => json!({"tier": "strong"}),
                     _ => unreachable!(),
                 },
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn tiers_are_named_and_unknown_ones_are_rejected() {
+        let spawn: SpawnAgentArgs = serde_json::from_value(json!({
+            "task_name": "fixer",
+            "message": "Fix it",
+            "tier": "fast"
+        }))
+        .unwrap();
+        assert_eq!(spawn.tier, Some(ModelTier::Fast));
+        for tier in ["fast", "default", "strong"] {
+            validate_args(
+                "set_model_tier",
+                &SetModelTierTool.input_schema(),
+                &json!({"tier": tier}),
+            )
+            .unwrap();
+        }
+        assert!(validate_args(
+            "set_model_tier",
+            &SetModelTierTool.input_schema(),
+            &json!({"tier": "turbo"}),
+        )
+        .is_err());
+        assert!(validate_args(
+            "spawn_agent",
+            &SpawnAgentTool.input_schema(),
+            &json!({"task_name": "x", "message": "y", "tier": "turbo"}),
+        )
+        .is_err());
     }
 
     #[test]

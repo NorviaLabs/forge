@@ -67,6 +67,9 @@ pub struct ChildProfile {
     /// A model or effort the caller chose; `None` inherits the parent's.
     #[serde(default)]
     pub model: Option<ChildModel>,
+    /// The model tier the caller asked for, which chose `model`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<forge_types::ModelTier>,
 }
 
 /// The `AgentProfile` journal payload.
@@ -381,17 +384,7 @@ impl AgentSession {
 
     /// Put a child on the model its caller chose.
     pub(crate) fn apply_child_model(&mut self, model: &ChildModel) {
-        let mut selection = self.model_selection();
-        selection.model = model.model.clone();
-        selection.profile_id = model.profile_id.clone();
-        selection.reasoning_effort = model.reasoning_effort.clone();
-        self.set_model_selection(selection);
-        if let Some(window) = model.context_window {
-            self.set_context_window(window, model.output_reserve);
-        }
-        if let Some(image_input) = model.image_input {
-            self.set_image_input_supported(image_input);
-        }
+        self.apply_resolved_model(model);
     }
 
     /// Apply everything a child was started as. Used when it is created and
@@ -426,8 +419,21 @@ impl AgentSession {
         };
         let requested_model = nonempty(&args.model);
         let requested_effort = nonempty(&args.reasoning_effort);
-        let model = if requested_model.is_some() || requested_effort.is_some() {
-            let parent = self.model_selection();
+        let tier = args.tier;
+        if tier.is_some() && (requested_model.is_some() || requested_effort.is_some()) {
+            return Err(LoopError::Other(
+                "pass either `tier` or `model`/`reasoning_effort`, not both".into(),
+            ));
+        }
+        let model = if let Some(tier) = tier {
+            // Resolved on the provider this session is on, from the model the
+            // user chose rather than any tier this turn switched to.
+            let resolution = self.resolve_model_tier(tier, &self.base_model_selection());
+            Some(resolution.model)
+        } else if requested_model.is_some() || requested_effort.is_some() {
+            // Relative to the model the user chose, not a tier this turn
+            // switched to.
+            let parent = self.base_model_selection();
             let request = ChildModelRequest {
                 model: requested_model.as_deref(),
                 reasoning_effort: requested_effort.as_deref(),
@@ -455,6 +461,7 @@ impl AgentSession {
                 tool_allowlist: args.tool_allowlist,
                 profile: ChildProfile {
                     model,
+                    tier,
                     ..ChildProfile::default()
                 },
             });
@@ -490,6 +497,7 @@ impl AgentSession {
                     .filter(|instructions| !instructions.trim().is_empty()),
                 no_network: !definition.network(),
                 model,
+                tier,
             },
         })
     }
@@ -592,6 +600,7 @@ mod tests {
                 instructions: Some("Fix the failing tests.".into()),
                 no_network: true,
                 model: None,
+                tier: None,
             },
         );
         assert!(prompt.contains("custom agent `test-fixer` (capabilities: write, exec)"));
@@ -617,10 +626,12 @@ mod tests {
                     output_reserve: Some(8_000),
                     image_input: Some(true),
                 }),
+                tier: Some(forge_types::ModelTier::Strong),
             },
         };
         let value = serde_json::to_value(&journaled).unwrap();
         assert_eq!(value["agent"], "code-reviewer");
+        assert_eq!(value["tier"], "strong");
         let back: JournaledProfile = serde_json::from_value(value).unwrap();
         assert_eq!(back, journaled);
         // An older or minimal payload still reads.

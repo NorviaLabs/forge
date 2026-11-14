@@ -15,6 +15,7 @@ mod control;
 pub mod headless;
 mod launch;
 mod model_selection;
+pub mod model_tiers;
 mod project;
 mod project_state;
 mod projects;
@@ -31,6 +32,7 @@ pub use control::{
 };
 pub use headless::{run_headless, ApprovalPolicy, ApprovalRequired};
 pub use launch::{config_for_workspace, LaunchError, LaunchPlan, LaunchTarget, Launched};
+pub use model_tiers::{prepare_model_tiers, SyncReport, TierPaths, TierTable};
 pub use project::{LaunchResolution, Project, ProjectId, ProjectRegistry, RegistryError};
 pub use project_state::{AttentionItem, AttentionKind, ProjectState, SessionSummary};
 pub use projects::{
@@ -120,6 +122,32 @@ pub fn route_table() -> forge_model::RouteTable {
         &forge_connect::loaded_registry(),
         &forge_connect::Credentials::shared(),
     )
+}
+
+/// Resolve tiers (`fast`/`default`/`strong`) from the user's tier table, in
+/// memory. Loading the table and the account model lists happens here, when
+/// the session opens; building it happens in the background. Neither is on
+/// the path of a turn. A table that cannot be read leaves tiers changing
+/// nothing, and never stops the session opening.
+async fn install_model_tiers(session: &mut AgentSession, cfg: &Config) {
+    let paths = model_tiers::TierPaths::from_config(cfg);
+    let Some(table) = model_tiers::TierTable::for_paths(&paths) else {
+        return;
+    };
+    if let Err(error) = table.reload().await {
+        tracing::warn!(%error, path = %table.path().display(), "could not read the model tier table");
+    }
+    if let Err(error) = table
+        .refresh_runnable(&paths, std::time::Duration::from_secs(60))
+        .await
+    {
+        tracing::warn!(%error, "could not read the account model lists for tiers");
+    }
+    session.set_model_tier_resolver(Arc::new(model_tiers::TableTiers(table.clone())));
+    if !cfg!(test) {
+        // models.dev stale, a provider added: rebuild what changed.
+        table.maintain_in_background(paths, std::time::Duration::from_secs(600));
+    }
 }
 
 /// The store holding the last model selection. Test builds never fall back
@@ -283,6 +311,16 @@ async fn open_session_with_model(
     // providers and catalog. The offline mock has neither.
     if !cfg.model.mock {
         session.set_child_model_resolver(Arc::new(model_selection::CatalogChildModels::new(cfg)));
+        install_model_tiers(&mut session, cfg).await;
+    }
+    // The project's own validation command counts as verification in the
+    // turn records.
+    if let Some(command) = &cfg.validation.command {
+        let line = std::iter::once(command.executable.as_str())
+            .chain(command.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        session.set_verification_commands(vec![line]);
     }
 
     // The project's own remotes are where its pushes go: record them once,

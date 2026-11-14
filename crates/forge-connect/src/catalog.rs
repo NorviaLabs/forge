@@ -22,6 +22,9 @@ pub const DEFAULT_TTL_SECS: u64 = 3600;
 /// Public registry data changes less frequently than a provider's account catalog.
 pub const MODELS_DEV_TTL_SECS: u64 = 24 * 60 * 60;
 const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+/// The largest registry document read: several times its size today
+/// (about 5 MB uncompressed).
+pub(crate) const MODELS_DEV_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 use thiserror::Error;
 
@@ -180,6 +183,14 @@ struct CatalogFile {
     /// Set when this process has ingested `reasoning_options`.
     #[serde(default)]
     registry_effort_ready: bool,
+    /// provider/model id → the models.dev fields model tiers are derived
+    /// from (price, release date, family, reasoning). See `crate::tiers`.
+    #[serde(default)]
+    registry_tiers: BTreeMap<String, crate::tiers::TierMetadata>,
+    /// Set when this process has ingested tier metadata. Pre-feature catalog
+    /// files stay `false` even if `registry_fetched_at` is fresh.
+    #[serde(default)]
+    registry_tiers_ready: bool,
     /// Unix seconds when the public registry was refreshed.
     #[serde(default)]
     registry_fetched_at: Option<u64>,
@@ -254,7 +265,7 @@ impl ModelCatalogCache {
     }
 
     pub fn is_fresh(&self, profile_id: &str) -> bool {
-        let file = self.load();
+        let file = self.file.borrow();
         match file.fetched_at.get(profile_id) {
             Some(&t) => Self::now_secs().saturating_sub(t) < self.ttl_secs,
             None => false,
@@ -262,7 +273,8 @@ impl ModelCatalogCache {
     }
 
     pub fn get_cached(&self, profile_id: &str) -> Vec<String> {
-        self.load()
+        self.file
+            .borrow()
             .models
             .get(profile_id)
             .cloned()
@@ -287,13 +299,15 @@ impl ModelCatalogCache {
     }
 
     pub fn registry_is_fresh(&self) -> bool {
-        self.load()
+        self.file
+            .borrow()
             .registry_fetched_at
             .is_some_and(|t| Self::now_secs().saturating_sub(t) < MODELS_DEV_TTL_SECS)
     }
 
     pub fn get_registry_cached(&self, profile_id: &str) -> Vec<String> {
-        self.load()
+        self.file
+            .borrow()
             .registry_models
             .get(profile_id)
             .cloned()
@@ -309,7 +323,7 @@ impl ModelCatalogCache {
         if model_id.is_empty() {
             return None;
         }
-        let file = self.load();
+        let file = self.file.borrow();
         metadata_id_candidates(model_id)
             .into_iter()
             .find_map(|id| file.registry_limits.get(&id).copied())
@@ -320,7 +334,7 @@ impl ModelCatalogCache {
         if model_id.is_empty() {
             return false;
         }
-        let file = self.load();
+        let file = self.file.borrow();
         image_input_candidates(model_id)
             .into_iter()
             .any(|id| file.registry_image_input.contains(&id))
@@ -328,7 +342,7 @@ impl ModelCatalogCache {
 
     /// Whether `modalities.input` has been ingested at least once.
     pub fn image_input_ready(&self) -> bool {
-        self.load().registry_image_input_ready
+        self.file.borrow().registry_image_input_ready
     }
 
     /// Discrete effort values advertised for `model_id` by models.dev.
@@ -340,7 +354,7 @@ impl ModelCatalogCache {
         if model_id.is_empty() {
             return None;
         }
-        let file = self.load();
+        let file = self.file.borrow();
         if !file.registry_effort_ready {
             return None;
         }
@@ -359,7 +373,7 @@ impl ModelCatalogCache {
         if model_id.is_empty() {
             return false;
         }
-        let file = self.load();
+        let file = self.file.borrow();
         if !file.registry_effort_ready {
             return false;
         }
@@ -370,6 +384,47 @@ impl ModelCatalogCache {
         })
     }
 
+    /// When the models.dev registry was last downloaded (unix seconds).
+    pub fn registry_fetched_at(&self) -> Option<u64> {
+        self.file.borrow().registry_fetched_at
+    }
+
+    /// Every models.dev row stored for `profile_id`, with the metadata model
+    /// tiers are built from, in one read of the cache.
+    pub fn registry_rows(&self, profile_id: &str) -> Vec<RegistryRow> {
+        let file = self.file.borrow();
+        let Some(ids) = file.registry_models.get(profile_id) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .map(|id| RegistryRow {
+                id: id.clone(),
+                tier: file.registry_tiers.get(id).cloned(),
+                limits: file.registry_limits.get(id).copied(),
+                effort_options: file.registry_effort.get(id).cloned(),
+                image_input: file.registry_image_input.contains(id),
+            })
+            .collect()
+    }
+
+    /// Whether tier metadata has been ingested at least once.
+    pub fn tier_metadata_ready(&self) -> bool {
+        self.file.borrow().registry_tiers_ready
+    }
+
+    /// The models.dev fields tiers are derived from, for `model_id`. `None`
+    /// when the registry has no row for it (or has not been fetched).
+    pub fn model_tier_metadata(&self, model_id: &str) -> Option<crate::tiers::TierMetadata> {
+        if model_id.is_empty() {
+            return None;
+        }
+        let file = self.file.borrow();
+        metadata_id_candidates(model_id)
+            .into_iter()
+            .find_map(|id| file.registry_tiers.get(&id).cloned())
+    }
+
+    #[cfg(test)]
     fn put_registry(
         &self,
         models: BTreeMap<String, Vec<String>>,
@@ -377,16 +432,50 @@ impl ModelCatalogCache {
         image_input: BTreeSet<String>,
         effort: BTreeMap<String, Vec<String>>,
     ) -> Result<(), CatalogError> {
+        self.put_registry_rows(RegistryRows {
+            models,
+            limits,
+            image_input,
+            effort,
+            tiers: BTreeMap::new(),
+        })
+    }
+
+    fn put_registry_rows(&self, rows: RegistryRows) -> Result<(), CatalogError> {
         let mut file = self.load();
-        file.registry_models = models;
-        file.registry_limits = limits;
-        file.registry_image_input = image_input;
+        file.registry_models = rows.models;
+        file.registry_limits = rows.limits;
+        file.registry_image_input = rows.image_input;
         file.registry_image_input_ready = true;
-        file.registry_effort = effort;
+        file.registry_effort = rows.effort;
         file.registry_effort_ready = true;
+        file.registry_tiers = rows.tiers;
+        file.registry_tiers_ready = true;
         file.registry_fetched_at = Some(Self::now_secs());
         self.save(&file)
     }
+}
+
+/// One model's stored models.dev metadata (see
+/// [`ModelCatalogCache::registry_rows`]).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RegistryRow {
+    /// Forge model id, `<provider>/<model>`.
+    pub id: String,
+    pub tier: Option<crate::tiers::TierMetadata>,
+    pub limits: Option<CatalogLimits>,
+    /// Raw effort values; `Some([])` means the model takes none.
+    pub effort_options: Option<Vec<String>>,
+    pub image_input: bool,
+}
+
+/// Everything one models.dev refresh stores.
+struct RegistryRows {
+    models: BTreeMap<String, Vec<String>>,
+    limits: BTreeMap<String, CatalogLimits>,
+    image_input: BTreeSet<String>,
+    effort: BTreeMap<String, Vec<String>>,
+    tiers: BTreeMap<String, crate::tiers::TierMetadata>,
 }
 
 /// Refresh the public models.dev fallback registry for the configured Forge profiles.
@@ -412,16 +501,29 @@ pub fn refresh_models_dev_registry(
             detail: e.to_string(),
         })?
         .body_mut()
-        .read_json()
-        .map_err(|e| CatalogError::Decode {
-            label: "models.dev registry JSON".into(),
+        // Buffered, then parsed from memory: `read_json` parses from the
+        // stream, which measured 3-4x slower on the real 5 MB registry, and
+        // caps the body at ureq's 10 MB default, which models.dev will
+        // outgrow.
+        .with_config()
+        .limit(MODELS_DEV_MAX_BYTES)
+        .read_to_vec()
+        .map_err(|e| CatalogError::Transport {
+            label: "models.dev registry".into(),
             detail: e.to_string(),
+        })
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes).map_err(|e| CatalogError::Decode {
+                label: "models.dev registry JSON".into(),
+                detail: e.to_string(),
+            })
         })?;
 
     let mut by_profile = BTreeMap::new();
     let mut limits: BTreeMap<String, CatalogLimits> = BTreeMap::new();
     let mut image_input = BTreeSet::new();
     let mut effort_by_model = BTreeMap::new();
+    let mut tiers = BTreeMap::new();
     let mut total = 0usize;
     for profile in profiles {
         let mut ids = std::collections::BTreeSet::new();
@@ -447,6 +549,10 @@ pub fn refresh_models_dev_registry(
                     }
                     let effort = models_dev_effort_options(model);
                     insert_effort_metadata(&mut effort_by_model, &id, effort);
+                    tiers.insert(
+                        id.clone(),
+                        crate::tiers::TierMetadata::from_models_dev(model),
+                    );
                     ids.insert(id);
                 }
             }
@@ -454,8 +560,28 @@ pub fn refresh_models_dev_registry(
         total += ids.len();
         by_profile.insert(profile.id.clone(), ids.into_iter().collect());
     }
-    cache.put_registry(by_profile, limits, image_input, effort_by_model)?;
+    cache.put_registry_rows(RegistryRows {
+        models: by_profile,
+        limits,
+        image_input,
+        effort: effort_by_model,
+        tiers,
+    })?;
     Ok(total)
+}
+
+/// Refresh the models.dev registry when it is stale or predates a metadata
+/// field Forge now reads (image input, tier metadata). Returns whether a
+/// refresh was attempted. Blocking: call it off the async runtime.
+pub fn refresh_models_dev_registry_if_stale(
+    profiles: &[ConnectProfile],
+    cache: &ModelCatalogCache,
+) -> bool {
+    if cache.registry_is_fresh() && cache.image_input_ready() && cache.tier_metadata_ready() {
+        return false;
+    }
+    let _ = refresh_models_dev_registry(profiles, cache);
+    true
 }
 
 fn models_dev_limits(model: &serde_json::Value) -> Option<CatalogLimits> {
@@ -991,11 +1117,11 @@ pub fn models_for_picker(
 ) -> Vec<CatalogEntry> {
     let mut out = Vec::new();
 
-    if refresh_stale && (!cache.registry_is_fresh() || !cache.image_input_ready()) {
+    if refresh_stale {
         // Registry availability must never prevent opening the picker. The existing
         // cache and built-ins below remain usable offline. A fresh pre-feature
-        // cache still needs one refresh to ingest image-input metadata.
-        let _ = refresh_models_dev_registry(profiles, cache);
+        // cache still needs one refresh to ingest image-input and tier metadata.
+        refresh_models_dev_registry_if_stale(profiles, cache);
     }
 
     for p in profiles {
@@ -2022,6 +2148,126 @@ mod tests {
             credential_for_catalog(&oauth_profile, &store),
             Some("real-access-token".into())
         );
+    }
+
+    /// A registry fetched before tier metadata existed is fresh by its TTL
+    /// but has nothing to derive tiers from: it is refreshed once, and the
+    /// price/date/family/reasoning fields come back per Forge model id.
+    #[test]
+    fn a_fresh_registry_without_tier_metadata_is_refreshed_and_stores_it() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+        use tempfile::tempdir;
+
+        const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
+        let guard = EnvGuard::new(ENV);
+        let Some(base) = mock_http(vec![(
+            200,
+            r#"{"anthropic":{"models":{
+                "claude-haiku-4-5":{"family":"claude-haiku","reasoning":true,"release_date":"2025-10-15","cost":{"input":1,"output":5},"limit":{"context":200000,"output":64000},"tool_call":true,"modalities":{"output":["text"]}},
+                "claude-sonnet-4-5":{"family":"claude-sonnet","reasoning":true,"release_date":"2025-09-29","cost":{"input":3,"output":15},"limit":{"context":200000,"output":64000},"tool_call":true,"modalities":{"output":["text"]}},
+                "claude-opus-4-1":{"family":"claude-opus","reasoning":true,"release_date":"2025-08-05","cost":{"input":15,"output":75},"limit":{"context":200000,"output":32000},"tool_call":true,"modalities":{"output":["text"]}}
+            }}}"#,
+            vec![],
+        )]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        guard.set("FORGE_MODELS_DEV_URL", &base);
+
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        cache
+            .save(&CatalogFile {
+                registry_fetched_at: Some(ModelCatalogCache::now_secs()),
+                registry_image_input_ready: true,
+                ..CatalogFile::default()
+            })
+            .unwrap();
+        assert!(cache.registry_is_fresh() && cache.image_input_ready());
+        assert!(!cache.tier_metadata_ready());
+
+        let profiles = vec![crate::builtin::builtin_profile("anthropic")];
+        assert!(refresh_models_dev_registry_if_stale(&profiles, &cache));
+        assert!(cache.tier_metadata_ready());
+        // Up to date now: nothing to do.
+        assert!(!refresh_models_dev_registry_if_stale(&profiles, &cache));
+
+        let opus = cache
+            .model_tier_metadata("anthropic/claude-opus-4-1")
+            .unwrap();
+        assert_eq!(opus.family.as_deref(), Some("claude-opus"));
+        assert_eq!(opus.output_cost, Some(75.0));
+        assert_eq!(cache.model_tier_metadata("anthropic/unknown"), None);
+
+        // Reopened from disk, the rows tiers are built from are all there.
+        let reopened = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let rows = reopened.registry_rows("anthropic");
+        assert_eq!(rows.len(), 3);
+        let opus = rows
+            .iter()
+            .find(|row| row.id == "anthropic/claude-opus-4-1")
+            .unwrap();
+        assert_eq!(
+            opus.tier.as_ref().unwrap().family.as_deref(),
+            Some("claude-opus")
+        );
+        assert_eq!(opus.limits.unwrap().context, 200_000);
+        assert!(reopened.registry_rows("openai").is_empty());
+        let build = crate::tiers::build_profile_tiers(
+            &crate::builtin::builtin_profile("anthropic"),
+            &reopened,
+        );
+        let first = |tier| {
+            build
+                .rows
+                .iter()
+                .find(|row| row.tier == tier && row.rank == 0)
+                .map(|row| row.model_id.as_str())
+        };
+        assert_eq!(
+            first(forge_types::ModelTier::Fast),
+            Some("anthropic/claude-haiku-4-5")
+        );
+        assert_eq!(
+            first(forge_types::ModelTier::Default),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+        assert_eq!(
+            first(forge_types::ModelTier::Strong),
+            Some("anthropic/claude-opus-4-1")
+        );
+    }
+
+    /// models.dev is about 5 MB and growing; ureq's default read cap is
+    /// 10 MB. A larger registry still refreshes.
+    #[test]
+    fn a_models_dev_registry_over_ten_megabytes_still_refreshes() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+        use tempfile::tempdir;
+
+        const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
+        let guard = EnvGuard::new(ENV);
+        let padding = "x".repeat(11 * 1024 * 1024);
+        let body: &'static str = format!(
+            r#"{{"filler":{{"models":{{"big":{{"description":"{padding}"}}}}}},"anthropic":{{"models":{{"claude-haiku-4-5":{{"tool_call":true,"modalities":{{"output":["text"]}},"cost":{{"input":1,"output":5}},"limit":{{"context":200000,"output":64000}}}}}}}}}}"#
+        )
+        .leak();
+        let Some(base) = mock_http(vec![(200, body, vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        guard.set("FORGE_MODELS_DEV_URL", &base);
+        let dir = tempdir().unwrap();
+        let cache = ModelCatalogCache::new(dir.path().join("c.toml"));
+        let kept =
+            refresh_models_dev_registry(&[crate::builtin::builtin_profile("anthropic")], &cache)
+                .unwrap();
+        assert_eq!(kept, 1);
+        assert!(cache
+            .model_tier_metadata("anthropic/claude-haiku-4-5")
+            .is_some());
     }
 
     #[test]

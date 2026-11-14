@@ -66,6 +66,9 @@ impl AgentSession {
             return Err(LoopError::from(err));
         }
         self.journal.append_status(self.session_id, to).await?;
+        if from == TaskLifecycle::Waiting {
+            self.note_waiting_ended();
+        }
         if matches!(
             to,
             TaskLifecycle::Completed | TaskLifecycle::Failed | TaskLifecycle::Cancelled
@@ -79,6 +82,18 @@ impl AgentSession {
             reason = ?reason,
             "lifecycle transition"
         );
+        if matches!(
+            to,
+            TaskLifecycle::Completed
+                | TaskLifecycle::Failed
+                | TaskLifecycle::Cancelled
+                | TaskLifecycle::Interrupted
+        ) {
+            // The turn is over: record it on the model it ran on, then hand
+            // the session back to the model a turn-scoped tier replaced.
+            self.record_finished_turn(to, &reason).await;
+            self.restore_turn_tier();
+        }
         Ok(())
     }
 
@@ -107,6 +122,8 @@ impl AgentSession {
         self.journal
             .append_status(self.session_id, TaskLifecycle::Waiting)
             .await?;
+        self.note_waiting_started();
+        self.record_wait_signal();
         if let Some(payload) = approval {
             self.audit_hitl_request(&payload);
             self.flush_audit_at_boundary().await?;
@@ -132,10 +149,35 @@ impl AgentSession {
         self.active_task
             .start_new_task(task_id)
             .map_err(LoopError::from)?;
+        self.begin_turn_telemetry();
         self.journal
             .append_status(self.session_id, TaskLifecycle::Working)
             .await?;
         Ok(())
+    }
+
+    /// Record why the turn just started waiting on the user.
+    fn record_wait_signal(&mut self) {
+        let signals: Vec<(TurnSignalKind, Option<String>)> = match &self.active_task.wait_reason {
+            Some(WaitReason::Approval { payload, .. }) => {
+                let mut signals = vec![(
+                    TurnSignalKind::ApprovalRequested,
+                    Some(payload.tool.clone()),
+                )];
+                if payload.sandbox_escalation {
+                    signals.push((
+                        TurnSignalKind::SandboxEscalationRequested,
+                        Some(payload.tool.clone()),
+                    ));
+                }
+                signals
+            }
+            Some(WaitReason::Question { .. }) => vec![(TurnSignalKind::QuestionAsked, None)],
+            _ => Vec::new(),
+        };
+        for (kind, detail) in signals {
+            self.record_signal(kind, detail);
+        }
     }
 
     /// Enqueue a future-task instruction. Journals the enqueue before

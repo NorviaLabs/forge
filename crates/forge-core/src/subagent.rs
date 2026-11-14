@@ -113,6 +113,7 @@ impl AgentSession {
         // applied on top of this policy below, so it can only narrow it.
         let governance = self.governance.clone();
 
+        let inherited = self.base_model_selection();
         let mut child = AgentSession {
             session_id,
             coordinator: self.coordinator.clone(),
@@ -131,10 +132,11 @@ impl AgentSession {
             events: vec![],
             active_task: ActiveTaskState::new(session_id),
             tasks: crate::task_runtime::TaskRuntime::new(),
-            active_model: self.active_model.clone(),
-            active_profile_id: self.active_profile_id.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
-            thinking_enabled: self.thinking_enabled,
+            // The model the user chose, not a tier this turn switched to.
+            active_model: inherited.model.clone(),
+            active_profile_id: inherited.profile_id.clone(),
+            reasoning_effort: inherited.reasoning_effort.clone(),
+            thinking_enabled: inherited.thinking_enabled,
             journal: SessionPersistence::new(journal),
             tools: self.tools.clone(),
             model: self.model.clone(),
@@ -185,6 +187,9 @@ impl AgentSession {
             user_agents_dir: self.user_agents_dir.clone(),
             agents_section: String::new(),
             agents_project_root: None,
+            tracking: Default::default(),
+            tier_resolver: self.tier_resolver.clone(),
+            verification_commands: self.verification_commands.clone(),
         };
         child.apply_child_profile(spec.tool_allowlist.clone(), &spec.profile);
         let journaled = crate::custom_agents::JournaledProfile {
@@ -268,6 +273,7 @@ impl AgentSession {
             token_usage.record_response(response.usage.as_ref(), response.thinking.as_deref());
         }
 
+        let inherited = self.base_model_selection();
         let mut child = AgentSession {
             session_id,
             coordinator: self.coordinator.clone(),
@@ -278,10 +284,11 @@ impl AgentSession {
             }],
             active_task: ActiveTaskState::from_restored(session_id, state.status, wait_reason),
             tasks: crate::task_runtime::TaskRuntime::with_queue(queue),
-            active_model: self.active_model.clone(),
-            active_profile_id: self.active_profile_id.clone(),
-            reasoning_effort: self.reasoning_effort.clone(),
-            thinking_enabled: self.thinking_enabled,
+            // The model the user chose, not a tier this turn switched to.
+            active_model: inherited.model.clone(),
+            active_profile_id: inherited.profile_id.clone(),
+            reasoning_effort: inherited.reasoning_effort.clone(),
+            thinking_enabled: inherited.thinking_enabled,
             journal: SessionPersistence::new(journal),
             tools: self.tools.clone(),
             model: self.model.clone(),
@@ -332,6 +339,9 @@ impl AgentSession {
             user_agents_dir: self.user_agents_dir.clone(),
             agents_section: String::new(),
             agents_project_root: None,
+            tracking: Default::default(),
+            tier_resolver: self.tier_resolver.clone(),
+            verification_commands: self.verification_commands.clone(),
         };
         if let Some(journaled) = journaled {
             child.apply_child_profile(journaled.tool_limit, &journaled.profile);
@@ -1085,16 +1095,70 @@ async fn drive_subagent(
     )
     .await;
 
+    // A turn the completion evaluator failed is re-run once, in this same
+    // child and worktree, on the strong tier. The failed turn decided this
+    // as it ended (`plan_escalation`), so its record says it escalated; the
+    // retry is recorded as the escalation's retry and is never escalated
+    // again.
+    if let Some(plan) = child.take_pending_escalation() {
+        if !cancel_token.is_cancelled() {
+            let _ = coordinator.update(
+                child_session_id,
+                AgentStatus::Running,
+                Some(format!(
+                    "retrying on the strong tier ({})",
+                    plan.resolution.model.model
+                )),
+            );
+            child.begin_escalation_retry(&plan);
+            let probe = ActivityProbe::start(runtime.latest_message.clone());
+            result = child
+                .run_user_message_with_stream(
+                    &crate::tiers::escalation_note(&plan.failure, &plan.resolution),
+                    Some(probe.sender()),
+                )
+                .await;
+            probe.finish();
+            snapshot_subagent(&child, &runtime);
+            resume_subagent_after_hitl(
+                &mut child,
+                &mut result,
+                child_session_id,
+                &runtime,
+                hitl_rx,
+                &coordinator,
+                &cancel_token,
+            )
+            .await;
+        }
+    }
+
     // Any lifecycle that isn't already terminal here means the loop above
     // exited without a natural Completed/Failed outcome (cancelled — via
     // token or a dropped decision channel — while Working or Waiting).
     // Reconcile explicitly rather than reporting a stale in-progress status.
+    //
+    // A run an error ended (a provider failure, a runtime error) — not a
+    // stop — fails the turn with that reason instead: the parent sees a
+    // failed child and why.
+    if let Err(error) = &result {
+        if !matches!(error, LoopError::Cancelled)
+            && !cancel_token.is_cancelled()
+            && child.active_task.lifecycle == TaskLifecycle::Working
+        {
+            let _ = child.fail_turn_on_error(error).await;
+        }
+    }
     if matches!(
         child.active_task.lifecycle,
         TaskLifecycle::Working | TaskLifecycle::Waiting
     ) {
         let _ = child.mark_cancelled().await;
     }
+    // The turn is over however it ended. A strong-tier retry that never got
+    // as far as starting its turn must not leave the child on that tier for
+    // its next follow-up.
+    child.restore_turn_tier();
     snapshot_subagent(&child, &runtime);
 
     let status = subagent_background_status(&child, &result);

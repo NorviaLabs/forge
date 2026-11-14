@@ -324,6 +324,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::save_agent_source,
         bridge::list_agent_tools,
         bridge::connect_provider,
+        bridge::prepare_model_tiers,
         bridge::import_provider_login,
         bridge::disconnect_provider,
         bridge::add_model,

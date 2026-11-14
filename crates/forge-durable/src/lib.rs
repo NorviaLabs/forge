@@ -18,8 +18,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 mod audit;
+mod turn_record;
 
 pub use audit::{AuditEntry, AuditKind, AuditRow};
+pub use turn_record::{TurnRecord, TurnRecordRow};
 
 const REPLAY_CHECKPOINT_INTERVAL: u64 = 256;
 
@@ -301,6 +303,7 @@ impl Journal {
         .execute(&self.pool)
         .await?;
         self.migrate_audit().await?;
+        self.migrate_turn_records().await?;
         Ok(())
     }
 

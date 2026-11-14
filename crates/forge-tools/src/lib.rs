@@ -41,8 +41,8 @@ pub use builtins::{
 pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};
 pub use orchestration::{
-    AgentMessageAction, AgentMessageArgs, AgentMode, SendMessageTool, SpawnAgentArgs,
-    SpawnAgentTool, WaitAgentArgs, WaitAgentTool,
+    AgentMessageAction, AgentMessageArgs, AgentMode, SendMessageTool, SetModelTierArgs,
+    SetModelTierTool, SpawnAgentArgs, SpawnAgentTool, WaitAgentArgs, WaitAgentTool,
 };
 pub use output_filters::compress_tool_output;
 pub use registry::{

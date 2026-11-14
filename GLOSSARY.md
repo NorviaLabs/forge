@@ -16,3 +16,12 @@ docs and reviews.
 - **Session snapshot**: the backend's projection of the on-screen session
   (transcript, turn state, pending decisions, plan, queue), replaced whole on
   each update.
+- **Model tier**: `fast`, `default` or `strong` — a provider/model/effort
+  combination named by what it is for rather than by model id. Forge derives
+  each provider's tiers from models.dev metadata for the models the account
+  can run; users never configure them. A failed subagent turn is re-run once
+  on the strong tier (**escalation**).
+- **Turn record**: the one row a finished turn — top-level or subagent —
+  writes to its session's journal: model, effort, tier, outcome and reason,
+  escalation, tokens, duration, and the turn's **signals** (what happened
+  during it: approvals, verification commands, cancellation, …).

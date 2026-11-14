@@ -90,8 +90,16 @@ fn fetch_models_dev_cost(provider: &str, model: &str) -> Result<Option<ModelCost
         .call()
         .map_err(|error| format!("models.dev pricing: {error}"))?
         .body_mut()
-        .read_json()
-        .map_err(|error| format!("models.dev pricing JSON: {error}"))?;
+        // As the registry refresh reads it: buffered past ureq's 10 MB
+        // default, then parsed from memory.
+        .with_config()
+        .limit(crate::catalog::MODELS_DEV_MAX_BYTES)
+        .read_to_vec()
+        .map_err(|error| format!("models.dev pricing: {error}"))
+        .and_then(|bytes| {
+            serde_json::from_slice(&bytes)
+                .map_err(|error| format!("models.dev pricing JSON: {error}"))
+        })?;
     Ok(models_dev_cost_from_value(&body, provider, model))
 }
 
@@ -258,5 +266,31 @@ mod tests {
             .iter()
             .any(|line| line.contains("Estimated session cost")));
         assert!(report.iter().any(|line| line.contains("$2.000000")));
+    }
+
+    /// models.dev is about 5 MB and growing; ureq's default read cap is
+    /// 10 MB. A larger document still prices the model.
+    #[test]
+    fn pricing_reads_a_models_dev_document_over_ten_megabytes() {
+        use crate::test_env::EnvGuard;
+        use forge_test_support::mock_http;
+
+        const ENV: &[&str] = &["FORGE_MODELS_DEV_URL"];
+        let guard = EnvGuard::new(ENV);
+        let padding = "x".repeat(11 * 1024 * 1024);
+        let body: &'static str = format!(
+            r#"{{"filler":{{"models":{{"big":{{"description":"{padding}"}}}}}},"openai":{{"models":{{"gpt-test":{{"cost":{{"input":2.0,"output":8.0}}}}}}}}}}"#
+        )
+        .leak();
+        let Some(base) = mock_http(vec![(200, body, vec![])]) else {
+            eprintln!("skipping: this host denies binding a listener");
+            return;
+        };
+        guard.set("FORGE_MODELS_DEV_URL", &base);
+        let cost = fetch_models_dev_cost("openai", "gpt-test")
+            .unwrap()
+            .unwrap();
+        assert_eq!(cost.input, 2.0);
+        assert_eq!(cost.output, 8.0);
     }
 }

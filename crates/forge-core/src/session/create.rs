@@ -267,6 +267,9 @@ impl AgentSession {
             user_agents_dir: loop_cfg.user_agents_dir.clone(),
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
+            tracking: Default::default(),
+            tier_resolver: None,
+            verification_commands: Default::default(),
         })
     }
 
@@ -380,6 +383,9 @@ impl AgentSession {
             user_agents_dir: loop_cfg.user_agents_dir.clone(),
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
+            tracking: Default::default(),
+            tier_resolver: None,
+            verification_commands: Default::default(),
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());

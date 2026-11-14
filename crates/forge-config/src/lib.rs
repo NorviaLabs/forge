@@ -86,6 +86,11 @@ pub struct ModelConfig {
     /// user's file; tests point it at a temporary file. Set only in code.
     #[serde(skip)]
     pub preferences_path: Option<PathBuf>,
+    /// The model tier table (see `forge-session`'s `model_tiers`). `None` is
+    /// the user's table in Forge's application-data directory; tests point it
+    /// at a temporary file. Set only in code.
+    #[serde(skip)]
+    pub tiers_path: Option<PathBuf>,
 }
 
 fn default_request_timeout() -> u64 {
@@ -101,6 +106,7 @@ impl Default for ModelConfig {
             mock_script: None,
             catalog_path: None,
             preferences_path: None,
+            tiers_path: None,
         }
     }
 }

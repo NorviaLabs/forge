@@ -90,6 +90,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "save_agent_source",
     "list_agent_tools",
     "connect_provider",
+    "prepare_model_tiers",
     "import_provider_login",
     "disconnect_provider",
     "add_model",

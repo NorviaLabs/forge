@@ -15,8 +15,11 @@ mod resume;
 mod stream;
 mod subagent;
 mod task_runtime;
+mod tiers;
 mod turn;
+mod turn_record;
 pub(crate) mod turn_state;
+mod verification;
 mod work;
 
 pub use stream::{
@@ -47,6 +50,8 @@ pub use forge_context::compaction::{
     Checkpoint, CompactionError, CompactionPolicy, CompactionRecord, CompactionTelemetry,
     CompactionTrigger, ProtectedFact, ProtectedFactKind, SessionContextState,
 };
+pub use forge_durable::{TurnRecord, TurnRecordRow};
+pub use forge_types::ModelTier;
 pub use host_questions::{HostAnswered, HostDecision, HostQuestion, HostQuestions};
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
 pub use model_selection::ModelExecutionSelection;
@@ -64,6 +69,8 @@ pub use session::tools::{
     PendingHitlExecution, PendingToolApplication,
 };
 pub use subagent::{SubagentOutcome, SubagentSpec};
+pub use tiers::{ModelTierResolver, TierBasis, TierRequest, TierResolution};
+pub use turn_record::{TurnSignal, TurnSignalInbox, TurnSignalKind};
 pub use work::IsolatedTask;
 
 use std::collections::HashMap;
@@ -237,6 +244,15 @@ pub struct AgentSession {
     agents_section: String,
     /// The project root custom agents are read for, once known.
     agents_project_root: Option<PathBuf>,
+    /// Turn records and signals, the turn-scoped model tier, and a pending
+    /// strong-tier escalation (see `turn_record` and `tiers`).
+    tracking: turn_record::TurnTracking,
+    /// Resolves model tiers. Installed by the session's owner and shared
+    /// with the subagents this session spawns, which need it to escalate.
+    tier_resolver: Option<Arc<dyn tiers::ModelTierResolver>>,
+    /// The project's configured validation command lines, which count as
+    /// verification commands in turn signals. Shared with subagents.
+    verification_commands: Arc<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -274,3 +290,5 @@ mod custom_agents_tests;
 mod mcp_egress_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod turn_record_tests;

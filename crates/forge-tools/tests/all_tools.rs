@@ -29,6 +29,7 @@ const DEFAULT_TOOL_NAMES: &[&str] = &[
     "read_file",
     "request_unconfined_retry",
     "send_message",
+    "set_model_tier",
     "spawn_agent",
     "update_plan",
     "view_image",

@@ -136,6 +136,14 @@ impl AgentSession {
             kind: "question_answered".into(),
             detail: decision.to_string(),
         });
+        self.record_signal(
+            if decision == "answer" {
+                TurnSignalKind::QuestionAnswered
+            } else {
+                TurnSignalKind::QuestionDismissed
+            },
+            None,
+        );
         self.turn
             .evidence_mut()
             .0
