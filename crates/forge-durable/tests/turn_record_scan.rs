@@ -353,3 +353,60 @@ async fn filters_are_applied_in_the_query() {
         "everything {everything:?}, since {by_since:?}, kind {by_kind:?}"
     );
 }
+
+/// The scan and the full reader decode rows the same way, rows without a
+/// stored kind included: a child's (it has a parent) is `subagent`, a
+/// top-level session's `main`.
+#[tokio::test]
+async fn a_scan_and_the_full_reader_agree_on_rows_without_a_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_id = new_session_id();
+    let path = journal_with(
+        dir.path(),
+        &[record(
+            session_id,
+            TaskKind::Custom("reviewer".into()),
+            at(1),
+        )],
+    )
+    .await;
+    let mut conn = SqliteConnectOptions::new()
+        .filename(&path)
+        .connect()
+        .await
+        .unwrap();
+    for (hour, parent) in [(2, None), (3, Some(new_session_id().to_string()))] {
+        sqlx::query(
+            "INSERT INTO turn_records (session_id, parent_session_id, task_id, ended_at, model, \
+             profile_id, reasoning_effort, outcome, completion_reason, escalated, \
+             escalation_retry, prompt_tokens, signals) \
+             VALUES (?, ?, 9, ?, 'a/b', 'a', NULL, 'failed', 'x', 1, 0, 7, \
+             '[{\"kind\":\"approval_denied\"}]')",
+        )
+        .bind(session_id.to_string())
+        .bind(parent)
+        .bind(at(hour).to_rfc3339())
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    }
+    conn.close().await.unwrap();
+
+    let scanned = scan(&path, &TurnRecordFilter::default()).await;
+    let read: Vec<Seen> = read_turn_records(&path)
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| expected(&row.record))
+        .collect();
+    assert_eq!(scanned, read);
+    let kinds: Vec<TaskKind> = scanned.into_iter().map(|seen| seen.0).collect();
+    assert_eq!(
+        kinds,
+        [
+            TaskKind::Custom("reviewer".into()),
+            TaskKind::Main,
+            TaskKind::Subagent
+        ]
+    );
+}

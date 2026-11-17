@@ -17,6 +17,7 @@
 //! and `forge_types::TurnSignalKind`; `completion_reason` and `tier` belong
 //! to `forge-core`. This crate stores them as text.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -215,20 +216,14 @@ async fn read_row(
     let ended_at: String = column(row, "ended_at")?;
     let parent: Option<String> = column(row, "parent_session_id")?;
     let parent_session_id = parent.as_deref().map(parse_session).transpose()?;
-    let signals: String = column(row, "signals")?;
-    let stored_kind: Option<String> = if with_kind_column {
-        column(row, "task_kind")?
-    } else {
-        None
-    };
-    let task_kind = match stored_kind.and_then(|kind| kind.parse().ok()) {
-        Some(kind) => kind,
-        None => {
-            profiles
-                .kind(conn, &session_id.to_string(), parent_session_id.is_some())
-                .await?
-        }
-    };
+    let task_kind = kind_of_row(conn, profiles, row, with_kind_column, || {
+        Ok((
+            Cow::Owned(session_id.to_string()),
+            parent_session_id.is_some(),
+        ))
+    })
+    .await?;
+    let view = view_of(row, &task_kind, parse_ts(&ended_at)?)?;
     Ok(TurnRecordRow {
         seq: column::<i64>(row, "seq")? as u64,
         record: TurnRecord {
@@ -236,26 +231,74 @@ async fn read_row(
             parent_session_id,
             task_id: column::<i64>(row, "task_id")? as u64,
             started_at: started_at.as_deref().map(parse_ts).transpose()?,
-            ended_at: parse_ts(&ended_at)?,
-            model: column(row, "model")?,
-            profile_id: column(row, "profile_id")?,
-            reasoning_effort: column(row, "reasoning_effort")?,
+            ended_at: view.ended_at,
+            model: view.model.to_string(),
+            profile_id: view.profile_id.to_string(),
+            reasoning_effort: view.reasoning_effort.map(str::to_string),
             tier: column(row, "tier")?,
-            task_kind,
-            outcome: column(row, "outcome")?,
-            completion_reason: column(row, "completion_reason")?,
-            escalated: column(row, "escalated")?,
+            outcome: view.outcome.to_string(),
+            completion_reason: view.completion_reason.to_string(),
+            escalated: view.escalated,
             escalation_retry: column(row, "escalation_retry")?,
-            prompt_tokens: opt_u64(column(row, "prompt_tokens")?),
-            completion_tokens: opt_u64(column(row, "completion_tokens")?),
+            prompt_tokens: view.prompt_tokens,
+            completion_tokens: view.completion_tokens,
             cache_read_tokens: opt_u64(column(row, "cache_read_tokens")?),
             cache_write_tokens: opt_u64(column(row, "cache_write_tokens")?),
             model_calls: opt_u64(column(row, "model_calls")?)
                 .map(|calls| u32::try_from(calls).unwrap_or(u32::MAX)),
-            duration_ms: opt_u64(column(row, "duration_ms")?),
-            waiting_ms: opt_u64(column(row, "waiting_ms")?),
-            signals: serde_json::from_str(&signals)?,
+            duration_ms: view.duration_ms,
+            waiting_ms: view.waiting_ms,
+            signals: serde_json::from_str(view.signals)?,
+            task_kind,
         },
+    })
+}
+
+/// A row's task kind: as stored; for a row without one, the kind the
+/// journal shows (`session`: the row's session id and whether it has a
+/// parent, asked for only then). The one rule both readers use.
+async fn kind_of_row<'r>(
+    conn: &mut SqliteConnection,
+    profiles: &mut Profiles,
+    row: &'r SqliteRow,
+    with_kind_column: bool,
+    session: impl FnOnce() -> Result<(Cow<'r, str>, bool), JournalError>,
+) -> Result<TaskKind, JournalError> {
+    let stored: Option<&str> = if with_kind_column {
+        column(row, "task_kind")?
+    } else {
+        None
+    };
+    match stored.and_then(|kind| kind.parse().ok()) {
+        Some(kind) => Ok(kind),
+        None => {
+            let (session_id, has_parent) = session()?;
+            profiles.kind(conn, &session_id, has_parent).await
+        }
+    }
+}
+
+/// The columns of a row both readers decode (see [`SCAN_COLUMNS`]),
+/// borrowed from it: one decoder, so they cannot read a row differently.
+fn view_of<'r>(
+    row: &'r SqliteRow,
+    task_kind: &'r TaskKind,
+    ended_at: DateTime<Utc>,
+) -> Result<TurnRecordView<'r>, JournalError> {
+    Ok(TurnRecordView {
+        task_kind,
+        ended_at,
+        model: column(row, "model")?,
+        profile_id: column(row, "profile_id")?,
+        reasoning_effort: column(row, "reasoning_effort")?,
+        outcome: column(row, "outcome")?,
+        completion_reason: column(row, "completion_reason")?,
+        escalated: column(row, "escalated")?,
+        prompt_tokens: opt_u64(column(row, "prompt_tokens")?),
+        completion_tokens: opt_u64(column(row, "completion_tokens")?),
+        duration_ms: opt_u64(column(row, "duration_ms")?),
+        waiting_ms: opt_u64(column(row, "waiting_ms")?),
+        signals: column(row, "signals")?,
     })
 }
 
@@ -451,19 +494,13 @@ async fn scan_rows(
             if filter.ended_since.is_some_and(|since| ended_at < since) {
                 continue;
             }
-            let stored: Option<&str> = if with_kind_column {
-                column(row, "task_kind")?
-            } else {
-                None
-            };
-            let task_kind = match stored.and_then(|kind| kind.parse().ok()) {
-                Some(kind) => kind,
-                None => {
-                    let session_id: &str = column(row, "session_id")?;
-                    let parent: Option<&str> = column(row, "parent_session_id")?;
-                    profiles.kind(conn, session_id, parent.is_some()).await?
-                }
-            };
+            // Session ids as stored: only to look up agent profiles.
+            let task_kind = kind_of_row(conn, &mut profiles, row, with_kind_column, || {
+                let session_id: &str = column(row, "session_id")?;
+                let parent: Option<&str> = column(row, "parent_session_id")?;
+                Ok((Cow::Borrowed(session_id), parent.is_some()))
+            })
+            .await?;
             if filter
                 .task_kind
                 .as_ref()
@@ -471,21 +508,7 @@ async fn scan_rows(
             {
                 continue;
             }
-            visit(TurnRecordView {
-                task_kind: &task_kind,
-                ended_at,
-                model: column(row, "model")?,
-                profile_id: column(row, "profile_id")?,
-                reasoning_effort: column(row, "reasoning_effort")?,
-                outcome: column(row, "outcome")?,
-                completion_reason: column(row, "completion_reason")?,
-                escalated: column(row, "escalated")?,
-                prompt_tokens: opt_u64(column(row, "prompt_tokens")?),
-                completion_tokens: opt_u64(column(row, "completion_tokens")?),
-                duration_ms: opt_u64(column(row, "duration_ms")?),
-                waiting_ms: opt_u64(column(row, "waiting_ms")?),
-                signals: column(row, "signals")?,
-            });
+            visit(view_of(row, &task_kind, ended_at)?);
         }
         if (rows.len() as i64) < SCAN_PAGE {
             return Ok(());
