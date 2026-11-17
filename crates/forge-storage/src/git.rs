@@ -3,6 +3,8 @@
 //! normal repository from a linked worktree, a bare repository, and a
 //! plain non-Git directory — each needs different storage handling.
 
+use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +102,58 @@ pub fn detect_repo_info(workspace: &Path) -> RepoInfo {
         git_common_dir,
         git_dir,
     }
+}
+
+/// The names of the files directly in `dir` that Git tracks: `None` when
+/// `dir` is not inside a working tree (nothing there can have been
+/// committed); an error when it is, but Git cannot list them.
+pub fn tracked_files(dir: &Path) -> Result<Option<HashSet<OsString>>, String> {
+    tracked_files_with(dir, &mut |dir: &Path, args: &[&str]| {
+        forge_sandbox::git::command(dir).args(args).output()
+    })
+}
+
+/// [`tracked_files`], running Git with `git`. One Git process in the usual
+/// case (a journal directory inside a repository): the listing first, and
+/// what kind of directory this is only when the listing fails.
+fn tracked_files_with(
+    dir: &Path,
+    git: &mut dyn FnMut(&Path, &[&str]) -> std::io::Result<std::process::Output>,
+) -> Result<Option<HashSet<OsString>>, String> {
+    let output = git(dir, &["ls-files", "-z", "--", "."])
+        .map_err(|error| format!("could not run git: {error}"))?;
+    if !output.status.success() {
+        if !matches!(
+            detect_repo_info(dir).topology,
+            GitTopology::Normal | GitTopology::LinkedWorktree
+        ) {
+            return Ok(None);
+        }
+        return Err(format!(
+            "git could not list the tracked files: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    // Paths relative to `dir`; only the files directly in it matter.
+    Ok(Some(
+        output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|path| !path.is_empty() && !path.contains(&b'/'))
+            .map(os_string)
+            .collect(),
+    ))
+}
+
+#[cfg(unix)]
+fn os_string(bytes: &[u8]) -> OsString {
+    use std::os::unix::ffi::OsStringExt;
+    OsString::from_vec(bytes.to_vec())
+}
+
+#[cfg(not(unix))]
+fn os_string(bytes: &[u8]) -> OsString {
+    OsString::from(String::from_utf8_lossy(bytes).into_owned())
 }
 
 /// Separate check for a bare repository — `--is-inside-work-tree` reports
@@ -219,5 +273,71 @@ mod tests {
                 .map(|p| p.canonicalize().unwrap()),
             Some(sub_path.canonicalize().unwrap())
         );
+    }
+}
+
+#[cfg(test)]
+mod tracked_files_tests {
+    use super::*;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// `tracked_files`, counting the Git processes it starts.
+    fn counted(dir: &Path) -> (Result<Option<HashSet<OsString>>, String>, usize) {
+        let mut runs = 0;
+        let result = tracked_files_with(dir, &mut |dir: &Path, args: &[&str]| {
+            runs += 1;
+            forge_sandbox::git::command(dir).args(args).output()
+        });
+        (result, runs)
+    }
+
+    /// Inside a repository — where Forge keeps its journals — one Git
+    /// process, not the four or five a topology check first would take.
+    #[test]
+    fn listing_the_tracked_files_of_a_repository_runs_git_once() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-q", "--initial-branch=main"]);
+        git(repo.path(), &["config", "user.email", "forge@example.com"]);
+        git(repo.path(), &["config", "user.name", "Forge Test"]);
+        let sessions = repo.path().join(".forge/local/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("committed.db"), "x").unwrap();
+        std::fs::write(sessions.join("local.db"), "x").unwrap();
+        git(
+            repo.path(),
+            &["add", "-f", ".forge/local/sessions/committed.db"],
+        );
+        git(repo.path(), &["commit", "-q", "-m", "x"]);
+
+        let (result, runs) = counted(&sessions);
+        assert_eq!(runs, 1);
+        assert_eq!(
+            result.unwrap(),
+            Some(HashSet::from([OsString::from("committed.db")]))
+        );
+    }
+
+    #[test]
+    fn outside_a_repository_nothing_is_tracked() {
+        let dir = tempfile::tempdir().unwrap();
+        let (result, _) = counted(dir.path());
+        assert_eq!(result.unwrap(), None);
+    }
+
+    #[test]
+    fn a_repository_git_cannot_list_is_an_error() {
+        let repo = tempfile::tempdir().unwrap();
+        git(repo.path(), &["init", "-q", "--initial-branch=main"]);
+        std::fs::write(repo.path().join(".git/index"), "not an index").unwrap();
+        let (result, _) = counted(repo.path());
+        assert!(result.is_err(), "{result:?}");
     }
 }

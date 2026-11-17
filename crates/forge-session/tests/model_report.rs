@@ -1182,3 +1182,61 @@ async fn many_journals_give_the_same_report_every_time() {
         assert_eq!(skipped, corrupt);
     }
 }
+
+/// A journal committed to the repository is not a session this machine ran
+/// (`.forge/local` is only git-excluded, so `git add -f` gets past it): even
+/// in a trusted repository it is skipped, and listed as committed.
+#[tokio::test]
+async fn journals_committed_to_a_trusted_repository_are_skipped_not_counted() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let sessions = repo.path().join(".forge/local/sessions");
+    write_journals(&sessions, all_turns()).await;
+    settle(&sessions).await;
+    git(repo.path(), &["add", "-f", ".forge"]);
+    git(repo.path(), &["commit", "-q", "-m", "add journals"]);
+    let committed: Vec<PathBuf> = std::fs::read_dir(&sessions)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    // A session that really ran here, afterwards.
+    let mine: Vec<TurnRecord> = subagent_turns().into_iter().map(|t| t.0).collect();
+    write_journals(&sessions, mine.clone()).await;
+    settle(&sessions).await;
+
+    let (_trust, store) = trust_store(&[repo.path()]);
+    let report = model_report_with_trust_store(&repo_config(repo.path()), &options(), Some(store))
+        .await
+        .unwrap();
+    assert_eq!(report.kinds, build_report(mine, &options()));
+    let mut skipped: Vec<PathBuf> = report.skipped.iter().map(|s| s.path.clone()).collect();
+    skipped.sort();
+    let mut committed = committed;
+    committed.sort();
+    assert_eq!(skipped, committed);
+    assert!(report.skipped.iter().all(|s| s.error.contains("committed")));
+}
+
+/// Inside a repository whose tracked files git cannot list, no journal can
+/// be told apart from a committed one: none is read.
+#[tokio::test]
+async fn when_git_cannot_tell_which_journals_are_committed_none_are_read() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let sessions = repo.path().join(".forge/local/sessions");
+    write_journals(&sessions, all_turns()).await;
+    settle(&sessions).await;
+    std::fs::write(repo.path().join(".git/index"), "not an index").unwrap();
+
+    let (_trust, store) = trust_store(&[repo.path()]);
+    let report = model_report_with_trust_store(&repo_config(repo.path()), &options(), Some(store))
+        .await
+        .unwrap();
+    assert!(report.kinds.is_empty(), "{:?}", report.kinds);
+    assert!(!report.skipped.is_empty());
+    assert!(
+        report.skipped.iter().all(|s| s.error.contains("committed")),
+        "{:?}",
+        report.skipped
+    );
+}

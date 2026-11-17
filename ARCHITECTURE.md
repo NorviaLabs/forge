@@ -185,7 +185,9 @@ report`.
   Rows are streamed a page at a time into running totals, only the columns
   the report uses, with the `--since` and `--kind` filters applied in the
   query; several journals are read at a time. Entries that are symbolic
-  links, and journals with a value the report uses that does not decode (an
+  links, journals the repository tracks (`forge_storage::tracked_files`:
+  committed, so not sessions run here — and when Git cannot tell, none is
+  read), and journals with a value the report uses that does not decode (an
   error, never a panic), are skipped and listed.
 - **Ranking.** Turns are grouped by kind and by (model, provider, effort) —
   old provider names read as today's profile ids — and ranked per kind on
@@ -195,5 +197,32 @@ report`.
   the minimum turn count are listed, unranked.
 - **Output.** The CLI prints names with control characters escaped: they
   come from journals and provider catalogs, and must not drive the terminal.
+
+The same ranking chooses the model of a subagent started without a tier or a
+model. `forge-core` asks a `SubagentModelAdvisor` — installed by the
+session's owner, like the tier resolver — from `subagent_spec_for`, only when
+`spawn_agent` names no tier, model or effort, with the child's kind and the
+parent's own model; the answer (a model or none, and a `ModelChoice`: source,
+reason, evidence) goes into the child's profile, so it is journaled with the
+`AgentProfile` and survives a resume, and comes back in the `spawn_agent`
+result and as a `model_chosen` signal on each of the child's turns.
+`forge-session::subagent_models` is the advisor `open_session_with_model`
+installs (not for the offline mock): a `model_report::RankingSnapshot` of the
+last 90 days, shared by the project's sessions, built and rebuilt (after 60 s)
+in the background so a spawn never waits. Rebuilds are incremental
+(`JournalRanking` keeps each journal's totals with the size and time of its
+`.db` and `-wal`, and reads again only the journals that changed; every
+journal at most hourly, which moves the window), and the snapshot holds each
+group's worked-out numbers, so advising a spawn costs the same whatever the
+history's length; the kind ranked over the parent's
+provider's models the account can run (the tier table's runnable list); a
+pick needs 20 turns and two ranked candidates, and goes through the same
+child-model resolver as an explicit model; about one spawn in ten explores.
+The `[subagents] model_selection` switch (`ranked` or `inherit`) is a
+privileged key; an untrusted workspace's journals are never read, and trust
+is checked again at every rebuild (a failed build drops the ranking rather
+than keep using it). Only candidates with a known effort name are ranked, so
+every name in a reason — which the parent agent reads — comes from the
+account's runnable models or Forge's own vocabulary, never from a journal.
 
 `forge-types` is the shared contract layer. `forge-test-support` is intentionally omitted from the runtime diagram because it is test-only infrastructure.

@@ -50,9 +50,17 @@ impl CatalogChildModels {
     /// Routes are read on every call, so a provider connected after the
     /// session started is accepted at once.
     pub(crate) fn new(cfg: &Config) -> Self {
+        Self::with_routes(cfg.model.catalog_path.clone(), Box::new(crate::route_table))
+    }
+
+    /// With the routes (and catalog) given rather than the user's own.
+    pub(crate) fn with_routes(
+        catalog_path: Option<std::path::PathBuf>,
+        routes: Box<dyn Fn() -> forge_model::RouteTable + Send + Sync>,
+    ) -> Self {
         Self {
-            catalog_path: cfg.model.catalog_path.clone(),
-            routes: Box::new(crate::route_table),
+            catalog_path,
+            routes,
         }
     }
 

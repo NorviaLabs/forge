@@ -7,6 +7,7 @@ mod completion;
 mod custom_agents;
 mod host_questions;
 mod lifecycle;
+mod model_choice;
 mod model_selection;
 mod permission;
 mod persistence;
@@ -54,6 +55,10 @@ pub use forge_durable::{TurnRecord, TurnRecordRow};
 pub use forge_types::ModelTier;
 pub use host_questions::{HostAnswered, HostDecision, HostQuestion, HostQuestions};
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
+pub use model_choice::{
+    ModelAdvice, ModelAdviceRequest, ModelChoice, ModelChoiceEvidence, ModelChoiceSource,
+    RankedCandidate, SubagentModelAdvisor,
+};
 pub use model_selection::ModelExecutionSelection;
 pub use permission::{egress_policy_for_workspace, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
@@ -247,6 +252,9 @@ pub struct AgentSession {
     /// Turn records and signals, the turn-scoped model tier, and a pending
     /// strong-tier escalation (see `turn_record` and `tiers`).
     tracking: turn_record::TurnTracking,
+    /// Chooses the model of a child started without a tier or a model.
+    /// Installed by the session's owner; a child has none (it cannot spawn).
+    model_advisor: Option<Arc<dyn model_choice::SubagentModelAdvisor>>,
     /// What this session's turns are recorded as: `main` for a top-level
     /// session, `subagent` or `custom:<name>` for a child. Set when the
     /// session is built or switched to another journal.

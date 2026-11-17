@@ -21,6 +21,7 @@ mod project;
 mod project_state;
 mod projects;
 mod snapshot;
+pub mod subagent_models;
 mod supervisor;
 mod topology;
 
@@ -129,12 +130,14 @@ pub fn route_table() -> forge_model::RouteTable {
 /// memory. Loading the table and the account model lists happens here, when
 /// the session opens; building it happens in the background. Neither is on
 /// the path of a turn. A table that cannot be read leaves tiers changing
-/// nothing, and never stops the session opening.
-async fn install_model_tiers(session: &mut AgentSession, cfg: &Config) {
+/// nothing, and never stops the session opening. Returns the table, which
+/// also knows which models the account can run.
+async fn install_model_tiers(
+    session: &mut AgentSession,
+    cfg: &Config,
+) -> Option<Arc<model_tiers::TierTable>> {
     let paths = model_tiers::TierPaths::from_config(cfg);
-    let Some(table) = model_tiers::TierTable::for_paths(&paths) else {
-        return;
-    };
+    let table = model_tiers::TierTable::for_paths(&paths)?;
     if let Err(error) = table.reload().await {
         tracing::warn!(%error, path = %table.path().display(), "could not read the model tier table");
     }
@@ -149,6 +152,57 @@ async fn install_model_tiers(session: &mut AgentSession, cfg: &Config) {
         // models.dev stale, a provider added: rebuild what changed.
         table.maintain_in_background(paths, std::time::Duration::from_secs(600));
     }
+    Some(table)
+}
+
+/// Choose the model of a subagent started without a tier or a model from
+/// the ranking of this workspace's journals (`subagent_models`). The
+/// ranking is shared by the project's sessions and built in the background:
+/// opening a session never waits for it.
+fn install_subagent_model_advisor(
+    session: &mut AgentSession,
+    cfg: &Config,
+    journal_dir: &std::path::Path,
+    tiers: Option<Arc<model_tiers::TierTable>>,
+) {
+    install_subagent_model_advisor_with(
+        session,
+        cfg,
+        journal_dir,
+        tiers,
+        Arc::new(model_selection::CatalogChildModels::new(cfg)),
+        None,
+    );
+}
+
+/// [`install_subagent_model_advisor`] with the model resolver and the trust
+/// store given: the user's own (`CatalogChildModels::new`, `None`) outside
+/// tests.
+fn install_subagent_model_advisor_with(
+    session: &mut AgentSession,
+    cfg: &Config,
+    journal_dir: &std::path::Path,
+    tiers: Option<Arc<model_tiers::TierTable>>,
+    resolver: Arc<dyn forge_core::ChildModelResolver>,
+    trust_store: Option<&std::path::Path>,
+) {
+    let runnable: Arc<dyn subagent_models::RunnableModels> = match tiers {
+        Some(table) => table,
+        None => Arc::new(subagent_models::UnknownRunnableModels),
+    };
+    let advisor = subagent_models::RankedSubagentModels::with_cache(
+        Arc::new(subagent_models::JournalRanking::for_workspace(
+            journal_dir.to_path_buf(),
+            cfg.workspace_root().to_path_buf(),
+            trust_store.map(std::path::Path::to_path_buf),
+        )),
+        runnable,
+        resolver,
+        subagent_models::settings_for(cfg, trust_store),
+        subagent_models::shared_cache(journal_dir),
+    );
+    advisor.warm();
+    session.set_subagent_model_advisor(advisor);
 }
 
 /// The store holding the last model selection. Test builds never fall back
@@ -266,7 +320,7 @@ async fn open_session_with_model(
     notices.extend(storage_notices);
     let loop_cfg = LoopConfig {
         workspace: cfg.workspace_root().to_path_buf(),
-        journal_dir,
+        journal_dir: journal_dir.clone(),
         enable_context_lifecycle: true,
         enable_governance: true,
         agents: cfg.tools.agents.clone(),
@@ -312,7 +366,8 @@ async fn open_session_with_model(
     // providers and catalog. The offline mock has neither.
     if !cfg.model.mock {
         session.set_child_model_resolver(Arc::new(model_selection::CatalogChildModels::new(cfg)));
-        install_model_tiers(&mut session, cfg).await;
+        let tiers = install_model_tiers(&mut session, cfg).await;
+        install_subagent_model_advisor(&mut session, cfg, &journal_dir, tiers);
     }
     // The project's own validation command counts as verification in the
     // turn records.
@@ -573,5 +628,330 @@ auth_mode = { api_key = { tui_always_prompt = true } }
         assert!(notices.is_empty());
         assert!(dir.ends_with(".forge/local/sessions"));
         assert!(temp.path().join(".forge/ui-state.json").exists());
+    }
+
+    // ------------------------------------------- the subagent model advisor
+
+    mod subagent_model_wiring {
+        use super::*;
+        use std::collections::{HashMap, HashSet};
+        use std::path::PathBuf;
+        use std::time::Duration;
+
+        const OPUS: &str = "anthropic/claude-opus-4-1";
+        const SONNET: &str = "anthropic/claude-sonnet-4";
+        const HELPER_PROMPT: &str = "inspect the files";
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?}");
+        }
+
+        /// Everything user-level the wiring reads, in temporary files: the
+        /// trust store, the tier table (and its list of runnable models), the
+        /// catalog; plus the project's journals, holding a ranking of subagent
+        /// work on anthropic where opus (12 turns, all completed) leads sonnet
+        /// (10 turns, 3 failed). Efforts are the models' defaults.
+        struct World {
+            _dir: TempDir,
+            repo: PathBuf,
+            journals: PathBuf,
+            store: PathBuf,
+            cfg: Config,
+            tiers: Arc<model_tiers::TierTable>,
+        }
+
+        async fn world(trusted: bool) -> World {
+            let dir = TempDir::new().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir_all(&repo).unwrap();
+            git(&repo, &["init", "-q", "--initial-branch=main"]);
+            git(&repo, &["config", "user.email", "forge@example.com"]);
+            git(&repo, &["config", "user.name", "Forge Test"]);
+            git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+            let store = dir.path().join("trust.toml");
+            if trusted {
+                forge_config::grant_trust_at(&store, &repo).unwrap();
+            }
+            let journals = dir.path().join("journals");
+            let history = forge_durable::new_session_id();
+            let journal = forge_durable::Journal::open(&journals, history)
+                .await
+                .unwrap();
+            for (model, turns, failed) in [(OPUS, 12, 0), (SONNET, 10, 3)] {
+                for i in 0..turns {
+                    journal
+                        .append_turn_record(&forge_durable::TurnRecord {
+                            session_id: history,
+                            parent_session_id: None,
+                            task_id: i,
+                            started_at: None,
+                            ended_at: chrono::Utc::now() - chrono::Duration::days(1),
+                            model: model.into(),
+                            profile_id: "anthropic".into(),
+                            reasoning_effort: None,
+                            tier: None,
+                            task_kind: forge_types::TaskKind::Subagent,
+                            outcome: if i < failed { "failed" } else { "completed" }.into(),
+                            completion_reason: "edit_verified".into(),
+                            escalated: i < failed,
+                            escalation_retry: false,
+                            prompt_tokens: Some(1000),
+                            completion_tokens: Some(100),
+                            cache_read_tokens: None,
+                            cache_write_tokens: None,
+                            model_calls: Some(1),
+                            duration_ms: Some(10_000),
+                            waiting_ms: Some(0),
+                            signals: json!([]),
+                        })
+                        .await
+                        .unwrap();
+                }
+            }
+            drop(journal);
+            let tiers = model_tiers::TierTable::at(&dir.path().join("model-tiers.db"));
+            tiers.set_runnable(HashMap::from([(
+                "anthropic".to_string(),
+                HashSet::from([OPUS.to_string(), SONNET.to_string()]),
+            )]));
+            let mut cfg = Config {
+                resolved_workspace: repo.clone(),
+                workspace_root: Some(repo.display().to_string()),
+                ..Default::default()
+            };
+            cfg.journal.path = journals.display().to_string();
+            World {
+                repo,
+                journals,
+                store,
+                cfg,
+                tiers,
+                _dir: dir,
+            }
+        }
+
+        /// The anthropic route alone, and an empty catalog: no user file.
+        fn resolver(world: &World) -> Arc<dyn forge_core::ChildModelResolver> {
+            let catalog = world.journals.with_file_name("catalog.toml");
+            std::fs::write(&catalog, "version = 2\n").unwrap();
+            Arc::new(model_selection::CatalogChildModels::with_routes(
+                Some(catalog),
+                Box::new(|| {
+                    forge_model::RouteTable::single(
+                        forge_connect::RouteDefinition::from_spec(
+                            &forge_connect::builtin::builtin_profile("anthropic"),
+                        ),
+                        forge_connect::Credential::Static(None),
+                    )
+                }),
+            ))
+        }
+
+        /// Spawns a helper (no tier, no model) once, then finishes; the
+        /// helper says it is done. Records the helper's requests' models.
+        struct Delegating(std::sync::Mutex<Vec<String>>);
+
+        #[async_trait::async_trait]
+        impl ModelClient for Delegating {
+            async fn complete(
+                &self,
+                request: forge_model::ModelRequest,
+            ) -> Result<forge_types::ModelResponse, forge_model::ModelError> {
+                let reply = |text: &str| forge_types::ModelResponse {
+                    text: text.into(),
+                    tool_calls: vec![],
+                    usage: None,
+                    thinking: None,
+                };
+                let helper = request.messages.iter().any(|message| {
+                    message.role == forge_types::MessageRole::User
+                        && message.content == HELPER_PROMPT
+                });
+                if helper {
+                    self.0.lock().unwrap().push(request.model.clone());
+                    return Ok(reply("Nothing to change."));
+                }
+                if request
+                    .messages
+                    .iter()
+                    .any(|message| message.role == forge_types::MessageRole::Tool)
+                {
+                    return Ok(reply("Delegated."));
+                }
+                Ok(forge_types::ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![forge_types::ToolCall {
+                        id: "spawn-1".into(),
+                        name: "spawn_agent".into(),
+                        arguments: json!({
+                            "task_name": "helper",
+                            "message": HELPER_PROMPT,
+                            "mode": "read_only",
+                        }),
+                    }],
+                    usage: None,
+                    thinking: None,
+                })
+            }
+        }
+
+        async fn parent_session(world: &World, model: Arc<Delegating>) -> AgentSession {
+            let mut session = AgentSession::create(
+                LoopConfig {
+                    workspace: world.repo.clone(),
+                    journal_dir: world.journals.clone(),
+                    enable_context_lifecycle: true,
+                    enable_governance: true,
+                    ..Default::default()
+                },
+                model,
+                ToolRegistry::new(),
+            )
+            .await
+            .unwrap();
+            session.set_model_selection(forge_core::ModelExecutionSelection {
+                model: SONNET.into(),
+                profile_id: "anthropic".into(),
+                reasoning_effort: None,
+                thinking_enabled: true,
+            });
+            session
+        }
+
+        fn install(world: &World, session: &mut AgentSession) {
+            install_subagent_model_advisor_with(
+                session,
+                &world.cfg,
+                &world.journals,
+                Some(world.tiers.clone()),
+                resolver(world),
+                Some(&world.store),
+            );
+        }
+
+        async fn ranking_built(journals: &std::path::Path) {
+            for _ in 0..500 {
+                if subagent_models::shared_cache(journals).is_built() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("the ranking was never built");
+        }
+
+        /// Delegate once; the spawn's result and the helper's models.
+        async fn delegate(
+            session: &mut AgentSession,
+            model: &Delegating,
+        ) -> (serde_json::Value, Vec<String>) {
+            session
+                .run_user_message_with_stream("have a helper look", None)
+                .await
+                .unwrap();
+            let result = session
+                .messages
+                .iter()
+                .find(|message| message.tool_call_id.as_deref() == Some("spawn-1"))
+                .map(|message| message.content.clone())
+                .expect("a spawn_agent result");
+            let task = session.background().list().next().expect("a helper").id;
+            for _ in 0..500 {
+                session.poll_background_tasks().await.unwrap();
+                if session
+                    .background()
+                    .get(task)
+                    .is_some_and(|task| task.status.is_terminal())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            let models = model.0.lock().unwrap().clone();
+            assert!(!models.is_empty(), "the helper never ran: {result}");
+            (serde_json::from_str(&result).unwrap(), models)
+        }
+
+        /// Installed as a session opens: the ranking is built without any
+        /// spawn asking, and a helper then runs on the leader — through the
+        /// real runnable list, resolver, journal ranking and shared cache —
+        /// unless this spawn is one of the about one in ten that explore.
+        #[tokio::test]
+        async fn in_a_trusted_workspace_a_helper_runs_on_the_ranked_leader() {
+            let world = world(true).await;
+            let model = Arc::new(Delegating(Default::default()));
+            let mut session = parent_session(&world, model.clone()).await;
+            install(&world, &mut session);
+            ranking_built(&world.journals).await;
+
+            let (result, models) = delegate(&mut session, &model).await;
+            // Production settings explore about one spawn in ten: then the
+            // helper keeps the parent's model, and says which it passed over.
+            let choice = &result["model_choice"];
+            eprintln!("wiring outcome: {}", choice["source"]);
+            match choice["source"].as_str() {
+                Some("ranking") => assert!(models.iter().all(|m| m == OPUS), "{models:?}"),
+                Some("exploration") => {
+                    assert!(models.iter().all(|m| m == SONNET), "{models:?}");
+                    let reason = choice["reason"].as_str().unwrap();
+                    assert!(reason.contains(OPUS), "{reason}");
+                }
+                _ => panic!("neither a ranked pick nor an exploration: {result}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn in_an_untrusted_workspace_a_helper_keeps_the_parents_model() {
+            let world = world(false).await;
+            let model = Arc::new(Delegating(Default::default()));
+            let mut session = parent_session(&world, model.clone()).await;
+            install(&world, &mut session);
+
+            let (result, models) = delegate(&mut session, &model).await;
+            assert!(models.iter().all(|m| m == SONNET), "{models:?}");
+            assert_eq!(result["model_choice"]["source"], "fallback");
+            let reason = result["model_choice"]["reason"].as_str().unwrap();
+            assert!(reason.contains("not trusted"), "{reason}");
+            assert!(!subagent_models::shared_cache(&world.journals).is_built());
+        }
+
+        #[tokio::test]
+        async fn the_config_switch_reaches_the_advisor() {
+            let mut world = world(true).await;
+            world.cfg.subagents.model_selection = forge_config::SubagentModelSelection::Inherit;
+            let model = Arc::new(Delegating(Default::default()));
+            let mut session = parent_session(&world, model.clone()).await;
+            install(&world, &mut session);
+
+            let (result, models) = delegate(&mut session, &model).await;
+            assert!(models.iter().all(|m| m == SONNET), "{models:?}");
+            let reason = result["model_choice"]["reason"].as_str().unwrap();
+            assert!(reason.contains("inherit"), "{reason}");
+        }
+
+        /// The project's sessions share one ranking: a second session does
+        /// not rebuild a fresh one.
+        #[tokio::test]
+        async fn a_projects_sessions_share_one_ranking() {
+            let world = world(true).await;
+            let mut first = parent_session(&world, Arc::new(Delegating(Default::default()))).await;
+            install(&world, &mut first);
+            ranking_built(&world.journals).await;
+            let cache = subagent_models::shared_cache(&world.journals);
+            let built_at = cache.built_at();
+
+            let mut second = parent_session(&world, Arc::new(Delegating(Default::default()))).await;
+            install(&world, &mut second);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(Arc::ptr_eq(
+                &cache,
+                &subagent_models::shared_cache(&world.journals)
+            ));
+            assert_eq!(cache.built_at(), built_at, "a fresh ranking is not rebuilt");
+        }
     }
 }

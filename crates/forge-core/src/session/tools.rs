@@ -1232,6 +1232,7 @@ impl AgentSession {
                 let spec = self.subagent_spec_for(args)?;
                 let agent = spec.profile.agent.clone();
                 let tier = spec.profile.tier;
+                let model_choice = spec.profile.model_choice.clone();
                 let task_id = self.spawn_subagent(spec).await?;
                 let agent_id = self
                     .background()
@@ -1244,6 +1245,10 @@ impl AgentSession {
                 }
                 if let Some(tier) = tier {
                     started["tier"] = json!(tier);
+                }
+                if let Some(choice) = model_choice {
+                    started["model_choice"] =
+                        json!({"source": choice.source, "reason": choice.reason});
                 }
                 if let Some(child) = self
                     .background()

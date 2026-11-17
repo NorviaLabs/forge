@@ -48,7 +48,7 @@ pub struct ChildModel {
 }
 
 /// What a child was started as, beyond its label and first prompt.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChildProfile {
     /// The custom agent's name, when started as one.
     #[serde(default)]
@@ -70,6 +70,10 @@ pub struct ChildProfile {
     /// The model tier the caller asked for, which chose `model`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<forge_types::ModelTier>,
+    /// Why the child runs on its model, when the caller named no tier or
+    /// model and the session's advisor chose (see `model_choice`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_choice: Option<crate::ModelChoice>,
 }
 
 /// The `AgentProfile` journal payload.
@@ -244,14 +248,20 @@ or reasoning effort for the agent, pass `model` (`<provider>/<model>`) and `reas
     prompt
 }
 
+/// The task kind of a child started as the custom agent `name`.
+fn child_task_kind_for_agent(name: &str) -> forge_types::TaskKind {
+    format!("custom:{name}")
+        .parse()
+        .unwrap_or(forge_types::TaskKind::Subagent)
+}
+
 /// The task kind of a child started with `profile`: `custom:<name>` for a
 /// named custom agent, in either mode; `subagent` for any other child.
 pub(crate) fn child_task_kind(profile: &ChildProfile) -> forge_types::TaskKind {
     profile
         .agent
         .as_deref()
-        .and_then(|agent| format!("custom:{agent}").parse().ok())
-        .unwrap_or(forge_types::TaskKind::Subagent)
+        .map_or(forge_types::TaskKind::Subagent, child_task_kind_for_agent)
 }
 
 /// The task kind of a session reopened from its journal, from the
@@ -447,6 +457,7 @@ impl AgentSession {
                 "pass either `tier` or `model`/`reasoning_effort`, not both".into(),
             ));
         }
+        let advised = tier.is_none() && requested_model.is_none() && requested_effort.is_none();
         let model = if let Some(tier) = tier {
             // Resolved on the provider this session is on, from the model the
             // user chose rather than any tier this turn switched to.
@@ -476,6 +487,10 @@ impl AgentSession {
                     "`task_name` is required unless `agent` names a custom agent".into(),
                 )
             })?;
+            let (model, model_choice) = match advised {
+                true => self.advised_model(forge_types::TaskKind::Subagent),
+                false => (model, None),
+            };
             return Ok(SubagentSpec {
                 role,
                 prompt: args.message,
@@ -484,6 +499,7 @@ impl AgentSession {
                 profile: ChildProfile {
                     model,
                     tier,
+                    model_choice,
                     ..ChildProfile::default()
                 },
             });
@@ -503,6 +519,10 @@ impl AgentSession {
         if let Some(narrower) = &args.tool_allowlist {
             tools.retain(|tool| narrower.contains(tool));
         }
+        let (model, model_choice) = match advised {
+            true => self.advised_model(child_task_kind_for_agent(&definition.name)),
+            false => (model, None),
+        };
         Ok(SubagentSpec {
             role: args.label().unwrap_or_else(|| definition.name.clone()),
             prompt: args.message,
@@ -520,8 +540,33 @@ impl AgentSession {
                 no_network: !definition.network(),
                 model,
                 tier,
+                model_choice,
             },
         })
+    }
+
+    /// The model the session's advisor chooses for a child of `kind`, and
+    /// why. Without an advisor: the parent's model, and nothing recorded.
+    fn advised_model(
+        &self,
+        kind: forge_types::TaskKind,
+    ) -> (Option<ChildModel>, Option<crate::ModelChoice>) {
+        let Some(advisor) = &self.model_advisor else {
+            return (None, None);
+        };
+        // The model the user chose, not a tier this turn switched to.
+        let parent = self.base_model_selection();
+        let advice = advisor.advise(&crate::ModelAdviceRequest {
+            kind: &kind,
+            parent: &parent,
+        });
+        (advice.pick, Some(advice.choice))
+    }
+
+    /// Install the advisor that chooses the model of a child started without
+    /// a tier or a model.
+    pub fn set_subagent_model_advisor(&mut self, advisor: Arc<dyn crate::SubagentModelAdvisor>) {
+        self.model_advisor = Some(advisor);
     }
 }
 
@@ -623,6 +668,7 @@ mod tests {
                 no_network: true,
                 model: None,
                 tier: None,
+                model_choice: None,
             },
         );
         assert!(prompt.contains("custom agent `test-fixer` (capabilities: write, exec)"));
@@ -649,11 +695,35 @@ mod tests {
                     image_input: Some(true),
                 }),
                 tier: Some(forge_types::ModelTier::Strong),
+                model_choice: Some(crate::ModelChoice {
+                    source: crate::ModelChoiceSource::Ranking,
+                    reason: "anthropic/claude-x @ high ranks first".into(),
+                    kind: forge_types::TaskKind::Custom("code-reviewer".into()),
+                    evidence: Some(crate::ModelChoiceEvidence {
+                        window_days: 90,
+                        turns: 30,
+                        ranked_groups: 2,
+                        leader: Some(crate::RankedCandidate {
+                            model: "anthropic/claude-x".into(),
+                            provider: "anthropic".into(),
+                            effort: Some("high".into()),
+                            turns: 20,
+                            score: 1.25,
+                            rank: 1,
+                        }),
+                        runner_up: None,
+                        min_group_turns: 5,
+                        min_kind_turns: 20,
+                        min_ranked_groups: 2,
+                    }),
+                }),
             },
         };
         let value = serde_json::to_value(&journaled).unwrap();
         assert_eq!(value["agent"], "code-reviewer");
         assert_eq!(value["tier"], "strong");
+        assert_eq!(value["model_choice"]["source"], "ranking");
+        assert_eq!(value["model_choice"]["kind"], "custom:code-reviewer");
         let back: JournaledProfile = serde_json::from_value(value).unwrap();
         assert_eq!(back, journaled);
         // An older or minimal payload still reads.

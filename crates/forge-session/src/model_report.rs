@@ -306,7 +306,7 @@ impl<'a> TurnFacts<'a> {
 
 /// What a group's turns add up to. Only the two numbers per turn the
 /// medians need are kept; everything else is a count.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct Tally {
     turns: usize,
     completed: usize,
@@ -446,10 +446,19 @@ fn fractional_ranks(values: &[Option<f64>], higher_is_better: bool) -> Vec<f64> 
 /// Rank the groups with enough turns and order the kind: ranked best first,
 /// then the rest by turns and name.
 fn rank_kind(kind: TaskKind, groups: BTreeMap<GroupKey, Tally>, min_turns: usize) -> KindReport {
-    let turns = groups.values().map(|tally| tally.turns).sum();
-    let (mut ranked, mut unranked): (Vec<RankedModel>, Vec<RankedModel>) = groups
+    let models = groups
         .into_iter()
         .map(|(key, tally)| tally.into_model(key))
+        .collect();
+    rank_models(kind, models, min_turns)
+}
+
+/// Rank groups whose numbers are worked out (not yet ranked): the ones with
+/// enough turns best first, then the rest by turns and name.
+fn rank_models(kind: TaskKind, models: Vec<RankedModel>, min_turns: usize) -> KindReport {
+    let turns = models.iter().map(|model| model.turns).sum();
+    let (mut ranked, mut unranked): (Vec<RankedModel>, Vec<RankedModel>) = models
+        .into_iter()
         .partition(|model| model.turns >= min_turns);
 
     let metric = |pick: fn(&RankedModel) -> Option<f64>, higher_is_better: bool| {
@@ -519,8 +528,8 @@ const KEY_CACHE: usize = 64;
 
 /// Running totals: turns are added one at a time, as they are read, and
 /// totals from separate journals merged.
-#[derive(Default)]
-struct Aggregator {
+#[derive(Debug, Default)]
+pub(crate) struct Aggregator {
     kinds: BTreeMap<TaskKind, BTreeMap<GroupKey, Tally>>,
     keys: Vec<(String, String, Option<String>, GroupKey)>,
 }
@@ -559,6 +568,16 @@ impl Aggregator {
         }
     }
 
+    /// Add `other`'s totals, leaving it as it is.
+    pub(crate) fn merge_from(&mut self, other: &Aggregator) {
+        for (kind, groups) in &other.kinds {
+            let mine = self.kinds.entry(kind.clone()).or_default();
+            for (key, tally) in groups {
+                mine.entry(key.clone()).or_default().merge(tally.clone());
+            }
+        }
+    }
+
     fn merge(&mut self, other: Aggregator) {
         for (kind, groups) in other.kinds {
             let mine = self.kinds.entry(kind).or_default();
@@ -588,6 +607,105 @@ pub fn build_report(
     totals.finish(options.min_turns)
 }
 
+// ---------------------------------------------------------------- snapshots
+
+/// A group of turns as a snapshot names it: normalized model and provider,
+/// and effort (`None`: the provider's default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupRef<'a> {
+    pub model: &'a str,
+    pub provider: &'a str,
+    pub effort: Option<&'a str>,
+}
+
+/// Every kind's groups with their numbers worked out (rates, medians), ready
+/// to be ranked over any set of them — what choosing a subagent's model
+/// reads, built once and ranked per spawn. The numbers are worked out when
+/// the snapshot is built, so ranking costs the same whatever the history's
+/// length. Ranking a kind over all its groups gives the report's result.
+#[derive(Debug, Default)]
+pub struct RankingSnapshot {
+    kinds: BTreeMap<TaskKind, Vec<RankedModel>>,
+}
+
+impl RankingSnapshot {
+    /// The totals of `records` that ended at or after `since` (restart-
+    /// interrupted turns left out, as in the report).
+    pub fn from_records(
+        records: impl IntoIterator<Item = TurnRecord>,
+        since: Option<DateTime<Utc>>,
+    ) -> Self {
+        let options = ReportOptions {
+            since,
+            ..ReportOptions::default()
+        };
+        let mut totals = Aggregator::default();
+        for record in records {
+            totals.add(&TurnFacts::of_record(&record), &options);
+        }
+        Self::from_totals(totals)
+    }
+
+    pub(crate) fn from_totals(totals: Aggregator) -> Self {
+        Self {
+            kinds: totals
+                .kinds
+                .into_iter()
+                .map(|(kind, groups)| {
+                    let models = groups
+                        .into_iter()
+                        .map(|(key, tally)| tally.into_model(key))
+                        .collect();
+                    (kind, models)
+                })
+                .collect(),
+        }
+    }
+
+    /// `kind` ranked over the groups `allow` accepts alone (groups with
+    /// fewer than `min_turns` turns listed, not ranked); `None` when no
+    /// accepted group has turns.
+    pub fn rank(
+        &self,
+        kind: &TaskKind,
+        allow: impl Fn(&GroupRef<'_>) -> bool,
+        min_turns: usize,
+    ) -> Option<KindReport> {
+        let models: Vec<RankedModel> = self
+            .kinds
+            .get(kind)?
+            .iter()
+            .filter(|model| {
+                allow(&GroupRef {
+                    model: &model.model,
+                    provider: &model.provider,
+                    effort: model.effort.as_deref(),
+                })
+            })
+            .cloned()
+            .collect();
+        (!models.is_empty()).then(|| rank_models(kind.clone(), models, min_turns))
+    }
+}
+
+/// The snapshot of every session journal in `journal_dir`, turns that ended
+/// at or after `since`. Read like the report: without changing or creating
+/// anything; journals that cannot be read are left out.
+pub async fn ranking_snapshot_in(
+    journal_dir: &Path,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<RankingSnapshot> {
+    let options = ReportOptions {
+        since,
+        ..ReportOptions::default()
+    };
+    let (totals, skipped) = totals_in(journal_dir, &options).await?;
+    for journal in &skipped {
+        tracing::debug!(path = %journal.path.display(), error = %journal.error, "journal left out of the ranking");
+    }
+    Ok(RankingSnapshot::from_totals(totals))
+}
+
 // ------------------------------------------------------------ the journals
 
 /// Whether `path` is named like a session journal: `<session uuid>.db`.
@@ -608,31 +726,94 @@ pub async fn model_report_in(
     journal_dir: &Path,
     options: &ReportOptions,
 ) -> anyhow::Result<ModelReport> {
+    let (totals, skipped) = totals_in(journal_dir, options).await?;
+    Ok(ModelReport {
+        journal_dir: journal_dir.to_path_buf(),
+        since: options.since,
+        min_turns: options.min_turns,
+        kinds: totals.finish(options.min_turns),
+        skipped,
+    })
+}
+
+/// The running totals of every session journal in `journal_dir`, and the
+/// journals skipped (see [`model_report_in`]).
+async fn totals_in(
+    journal_dir: &Path,
+    options: &ReportOptions,
+) -> anyhow::Result<(Aggregator, Vec<SkippedJournal>)> {
+    let (journals, mut skipped) = list_session_journals(journal_dir).await?;
+    let mut totals = Aggregator::default();
+    for (path, read) in read_journals(journals, options).await? {
+        match read {
+            Ok(journal) => totals.merge(journal),
+            Err(error) => skipped.push(SkippedJournal { path, error }),
+        }
+    }
+    skipped.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok((totals, skipped))
+}
+
+/// The session journals in `journal_dir` that may be read, in path order,
+/// and those that may not (a missing directory: none of either): a symbolic
+/// link is not followed; a journal the repository tracks was committed by
+/// someone (the directory is only git-excluded), not a session run here;
+/// and when Git cannot tell which are tracked, none is read.
+pub(crate) async fn list_session_journals(
+    journal_dir: &Path,
+) -> anyhow::Result<(Vec<PathBuf>, Vec<SkippedJournal>)> {
     let mut journals = Vec::new();
     let mut skipped = Vec::new();
-    if journal_dir.is_dir() {
-        for entry in std::fs::read_dir(journal_dir)
-            .with_context(|| format!("could not list {}", journal_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if !is_session_journal_name(&path) {
-                continue;
-            }
-            // The entry's own type: a symbolic link is not followed.
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                skipped.push(SkippedJournal {
+    if !journal_dir.is_dir() {
+        return Ok((journals, skipped));
+    }
+    let tracked = {
+        let dir = journal_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || forge_storage::tracked_files(&dir)).await?
+    };
+    for entry in std::fs::read_dir(journal_dir)
+        .with_context(|| format!("could not list {}", journal_dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !is_session_journal_name(&path) {
+            continue;
+        }
+        // The entry's own type: a symbolic link is not followed.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            skipped.push(SkippedJournal {
+                path,
+                error: "a symbolic link, not a journal file: not followed".into(),
+            });
+        } else if file_type.is_file() {
+            match &tracked {
+                Ok(None) => journals.push(path),
+                Ok(Some(names)) if !names.contains(&entry.file_name()) => journals.push(path),
+                Ok(Some(_)) => skipped.push(SkippedJournal {
                     path,
-                    error: "a symbolic link, not a journal file: not followed".into(),
-                });
-            } else if file_type.is_file() {
-                journals.push(path);
+                    error: "committed to the repository, not a session run here: not read".into(),
+                }),
+                Err(error) => skipped.push(SkippedJournal {
+                    path,
+                    error: format!(
+                        "cannot tell whether it was committed to the repository ({error}): \
+                         not read"
+                    ),
+                }),
             }
         }
     }
     journals.sort();
+    Ok((journals, skipped))
+}
 
+/// Each of `journals`' totals, read [`CONCURRENT_JOURNALS`] at a time; an
+/// error says why a journal could not be read.
+pub(crate) async fn read_journals(
+    journals: Vec<PathBuf>,
+    options: &ReportOptions,
+) -> anyhow::Result<Vec<(PathBuf, Result<Aggregator, String>)>> {
     let permits = Arc::new(Semaphore::new(CONCURRENT_JOURNALS));
     let mut reads = JoinSet::new();
     for path in journals {
@@ -644,21 +825,11 @@ pub async fn model_report_in(
             (path, totals)
         });
     }
-    let mut totals = Aggregator::default();
+    let mut results = Vec::new();
     while let Some(read) = reads.join_next().await {
-        match read? {
-            (_, Ok(journal)) => totals.merge(journal),
-            (path, Err(error)) => skipped.push(SkippedJournal { path, error }),
-        }
+        results.push(read?);
     }
-    skipped.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(ModelReport {
-        journal_dir: journal_dir.to_path_buf(),
-        since: options.since,
-        min_turns: options.min_turns,
-        kinds: totals.finish(options.min_turns),
-        skipped,
-    })
+    Ok(results)
 }
 
 /// Journals read at once. Not tied to the number of CPUs: a journal's read

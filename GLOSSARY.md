@@ -35,3 +35,10 @@ docs and reviews.
   `forge_session::model_report` — turn records grouped by task kind and by
   model, provider and effort, scored on seven measures and ranked per kind by
   mean rank; groups with fewer than the minimum turns are **not enough data**.
+- **Model choice**: why a subagent started without a tier or a model runs on
+  its model — `ranking` (the leader of the ranking for its kind, among the
+  parent's provider's runnable models), `exploration` (the parent's model,
+  kept on purpose about one spawn in ten so other models keep being tried) or
+  `fallback` (the parent's model: thin evidence, `inherit`, an untrusted
+  workspace, no ranking yet). Journaled with the child's profile, returned by
+  `spawn_agent`, and recorded as the `model_chosen` turn signal.

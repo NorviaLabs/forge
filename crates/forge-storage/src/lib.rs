@@ -19,7 +19,7 @@ mod resolver;
 pub mod worktree;
 
 pub use exclude::{ensure_managed_block, has_managed_block, resolve_exclude_path, ExcludeError};
-pub use git::{detect_repo_info, GitTopology, RepoInfo};
+pub use git::{detect_repo_info, tracked_files, GitTopology, RepoInfo};
 pub use migrate::{migrate_legacy_runtime_files, MigrationOutcome, MigrationRecord};
 pub use resolver::{
     forge_data_dir, LocalRuntimeStorage, RepositoryRuntimeStorage, RuntimeDataKind,

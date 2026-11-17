@@ -270,6 +270,7 @@ impl AgentSession {
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
+            model_advisor: None,
             task_kind: forge_types::TaskKind::Main,
             tier_resolver: None,
             verification_commands: Default::default(),
@@ -387,6 +388,7 @@ impl AgentSession {
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
+            model_advisor: None,
             task_kind: crate::custom_agents::kind_of_journaled_session(
                 state.agent_profile.as_ref(),
                 false,

@@ -1379,3 +1379,398 @@ async fn a_main_turn_interrupted_by_a_restart_records_the_main_kind() {
     assert_eq!(records[0].completion_reason, "interrupted_by_restart");
     assert_eq!(records[0].task_kind, TaskKind::Main);
 }
+
+// ------------------------------------------------------------ model choice
+
+/// An advisor that answers every request with `advice`, and remembers what
+/// it was asked.
+struct FakeAdvisor {
+    advice: crate::ModelAdvice,
+    asked: Mutex<Vec<(TaskKind, ModelExecutionSelection)>>,
+}
+
+impl FakeAdvisor {
+    fn new(advice: crate::ModelAdvice) -> Arc<Self> {
+        Arc::new(Self {
+            advice,
+            asked: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn asked(&self) -> Vec<(TaskKind, ModelExecutionSelection)> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+impl crate::SubagentModelAdvisor for FakeAdvisor {
+    fn advise(&self, request: &crate::ModelAdviceRequest<'_>) -> crate::ModelAdvice {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((request.kind.clone(), request.parent.clone()));
+        self.advice.clone()
+    }
+}
+
+fn evidence() -> crate::ModelChoiceEvidence {
+    let candidate = |model: &str, effort: &str, turns, score, rank| crate::RankedCandidate {
+        model: model.into(),
+        provider: "test".into(),
+        effort: Some(effort.into()),
+        turns,
+        score,
+        rank,
+    };
+    crate::ModelChoiceEvidence {
+        window_days: 90,
+        turns: 40,
+        ranked_groups: 2,
+        leader: Some(candidate("test/big", "high", 25, 1.25, 1)),
+        runner_up: Some(candidate("test/mid", "medium", 15, 1.75, 2)),
+        min_group_turns: 5,
+        min_kind_turns: 20,
+        min_ranked_groups: 2,
+    }
+}
+
+/// The advisor picks the strong model (`test/big` @ high).
+fn ranked_pick() -> crate::ModelAdvice {
+    let strong = FakeTiers.resolve_tier(&TierRequest {
+        tier: ModelTier::Strong,
+        current: &selection("test/mid", "medium"),
+    });
+    crate::ModelAdvice {
+        pick: Some(strong.model),
+        choice: crate::ModelChoice {
+            source: crate::ModelChoiceSource::Ranking,
+            reason: "test/big @ high ranks first for subagent work".into(),
+            kind: TaskKind::Subagent,
+            evidence: Some(evidence()),
+        },
+    }
+}
+
+fn fallback(reason: &str, kind: TaskKind) -> crate::ModelAdvice {
+    crate::ModelAdvice {
+        pick: None,
+        choice: crate::ModelChoice {
+            source: crate::ModelChoiceSource::Fallback,
+            reason: reason.into(),
+            kind,
+            evidence: None,
+        },
+    }
+}
+
+/// The parent (on `test/mid`) calls `spawn_agent` with `arguments`, then
+/// finishes; returns the spawn's result and the child's id once it is done.
+async fn spawn_through_the_tool(
+    session: &mut AgentSession,
+    arguments: serde_json::Value,
+) -> (serde_json::Value, SessionId) {
+    session
+        .run_user_message_with_stream("delegate it", None)
+        .await
+        .unwrap();
+    let result = session
+        .messages
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("spawn-1"))
+        .unwrap_or_else(|| panic!("no spawn_agent result for {arguments}"))
+        .content
+        .clone();
+    let result: serde_json::Value =
+        serde_json::from_str(&result).unwrap_or_else(|error| panic!("{error}: {result}"));
+    let task = session.background().list().last().unwrap().id;
+    wait_terminal(session, task).await;
+    let child = session
+        .background()
+        .get(task)
+        .and_then(|task| task.child_session_id)
+        .unwrap();
+    (result, child)
+}
+
+fn delegating_model(arguments: serde_json::Value) -> Arc<TierModel> {
+    TierModel::new(&[(
+        "test/mid",
+        vec![
+            call("spawn-1", "spawn_agent", arguments),
+            text("Delegated."),
+        ],
+    )])
+}
+
+async fn child_profile(dir: &std::path::Path, child: SessionId) -> serde_json::Value {
+    let journal = Journal::open(&dir.join("j"), child).await.unwrap();
+    journal
+        .replay(child)
+        .await
+        .unwrap()
+        .agent_profile
+        .expect("the child's profile is journaled")
+}
+
+#[tokio::test]
+async fn a_subagent_started_without_a_model_runs_on_the_advisors_pick() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = delegating_model(json!({"task_name": "helper", "message": "look around"}));
+    let mut session = session(dir.path(), model.clone()).await;
+    let advisor = FakeAdvisor::new(ranked_pick());
+    session.set_subagent_model_advisor(advisor.clone());
+
+    let (result, child) =
+        spawn_through_the_tool(&mut session, json!({"task_name": "helper"})).await;
+
+    // Asked once, for subagent work, relative to the parent's own model.
+    assert_eq!(
+        advisor.asked(),
+        [(TaskKind::Subagent, selection("test/mid", "medium"))]
+    );
+    // The child ran on the pick.
+    let child_requests: Vec<Seen> = model
+        .seen()
+        .into_iter()
+        .filter(|seen| seen.model != "test/mid")
+        .collect();
+    assert!(!child_requests.is_empty());
+    assert!(child_requests
+        .iter()
+        .all(|seen| seen.model == "test/big" && seen.effort.as_deref() == Some("high")));
+    // The spawn tells the parent what was picked and why.
+    assert_eq!(result["model"], "test/big");
+    assert_eq!(result["reasoning_effort"], "high");
+    assert_eq!(result["model_choice"]["source"], "ranking");
+    assert_eq!(
+        result["model_choice"]["reason"],
+        "test/big @ high ranks first for subagent work"
+    );
+    // The child's journal keeps the whole decision.
+    let profile = child_profile(dir.path(), child).await;
+    assert_eq!(profile["model_choice"]["source"], "ranking");
+    assert_eq!(profile["model_choice"]["kind"], "subagent");
+    assert_eq!(
+        profile["model_choice"]["evidence"]["leader"]["model"],
+        "test/big"
+    );
+    assert_eq!(profile["model_choice"]["evidence"]["min_kind_turns"], 20);
+    // Each of the child's turns says how its model was chosen.
+    let child_turns = child_records(dir.path(), child).await;
+    assert!(!child_turns.is_empty());
+    for record in &child_turns {
+        assert_eq!(
+            signal_detail(record, "model_chosen").as_deref(),
+            Some("ranking: test/big @ high ranks first for subagent work")
+        );
+    }
+    // The parent's own turns are not subagent turns.
+    assert!(records_without_signal(
+        &records(&session).await,
+        "model_chosen"
+    ));
+}
+
+fn records_without_signal(records: &[TurnRecord], kind: &str) -> bool {
+    records
+        .iter()
+        .all(|record| !signal_kinds(record).iter().any(|signal| signal == kind))
+}
+
+/// A custom agent's model is chosen from its own kind's ranking.
+#[tokio::test]
+async fn a_custom_agent_is_advised_for_its_own_kind() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let agents = dir.path().join(".forge/agents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("code-reviewer.md"),
+        "---\nname: code-reviewer\ndescription: Reviews the diff.\nmode: [read-only]\n\
+         tools: [read_file]\n---\nReview carefully.\n",
+    )
+    .unwrap();
+    let model = delegating_model(json!({"agent": "code-reviewer", "message": "review"}));
+    let mut session = session(dir.path(), model).await;
+    let kind = TaskKind::Custom("code-reviewer".into());
+    let advisor = FakeAdvisor::new(fallback(
+        "only 4 turns of custom:code-reviewer work; 20 are needed",
+        kind.clone(),
+    ));
+    session.set_subagent_model_advisor(advisor.clone());
+
+    let (result, _) = spawn_through_the_tool(&mut session, json!({})).await;
+    assert_eq!(advisor.asked().len(), 1);
+    assert_eq!(advisor.asked()[0].0, kind);
+    assert_eq!(result["agent"], "code-reviewer");
+    assert_eq!(result["model_choice"]["source"], "fallback");
+}
+
+/// Thin evidence: the child keeps today's behaviour (the parent's model and
+/// effort), and says why.
+#[tokio::test]
+async fn a_fallback_leaves_the_child_on_the_parents_model_and_says_why() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = delegating_model(json!({"task_name": "helper", "message": "look around"}));
+    let mut session = session(dir.path(), model.clone()).await;
+    session.set_subagent_model_advisor(FakeAdvisor::new(fallback(
+        "only 12 turns of subagent work on test in the last 90 days; 20 are needed",
+        TaskKind::Subagent,
+    )));
+
+    let (result, child) = spawn_through_the_tool(&mut session, json!({})).await;
+    assert!(model
+        .seen()
+        .iter()
+        .all(|seen| seen.model == "test/mid" && seen.effort.as_deref() == Some("medium")));
+    assert_eq!(result["model_choice"]["source"], "fallback");
+    let profile = child_profile(dir.path(), child).await;
+    assert_eq!(profile["model_choice"]["source"], "fallback");
+    assert!(profile["model"].is_null(), "no model was picked: {profile}");
+    let records = child_records(dir.path(), child).await;
+    assert_eq!(
+        signal_detail(&records[0], "model_chosen").as_deref(),
+        Some("fallback: only 12 turns of subagent work on test in the last 90 days; 20 are needed")
+    );
+}
+
+/// A tier, a model or an effort is the caller's choice: the advisor is not
+/// asked, and nothing is recorded about a choice it did not make.
+#[tokio::test]
+async fn an_explicit_tier_model_or_effort_is_not_second_guessed() {
+    for arguments in [
+        json!({"task_name": "helper", "message": "m", "tier": "fast"}),
+        json!({"task_name": "helper", "message": "m", "model": "test/small"}),
+        json!({"task_name": "helper", "message": "m", "reasoning_effort": "low"}),
+    ] {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let model = delegating_model(arguments.clone());
+        let mut session = session(dir.path(), model).await;
+        let advisor = FakeAdvisor::new(ranked_pick());
+        session.set_subagent_model_advisor(advisor.clone());
+
+        let (result, child) = spawn_through_the_tool(&mut session, arguments.clone()).await;
+        assert!(advisor.asked().is_empty(), "{arguments}");
+        assert!(
+            result.get("model_choice").is_none(),
+            "{arguments}: {result}"
+        );
+        let profile = child_profile(dir.path(), child).await;
+        assert!(
+            profile.get("model_choice").is_none(),
+            "{arguments}: {profile}"
+        );
+        assert!(records_without_signal(
+            &child_records(dir.path(), child).await,
+            "model_chosen"
+        ));
+    }
+}
+
+/// Without an advisor (the offline mock, a direct API caller) nothing
+/// changes: the child inherits the parent's model and nothing is recorded.
+#[tokio::test]
+async fn without_an_advisor_nothing_changes() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = delegating_model(json!({"task_name": "helper", "message": "look around"}));
+    let mut session = session(dir.path(), model.clone()).await;
+    let (result, child) = spawn_through_the_tool(&mut session, json!({})).await;
+    assert!(model.seen().iter().all(|seen| seen.model == "test/mid"));
+    assert!(result.get("model_choice").is_none());
+    assert!(child_profile(dir.path(), child)
+        .await
+        .get("model_choice")
+        .is_none());
+}
+
+/// A child reopened from its journal runs on the model it was picked, and
+/// still knows why.
+#[tokio::test]
+async fn a_reopened_child_keeps_its_pick_and_the_reason() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let mut session = session(dir.path(), TierModel::new(&[])).await;
+    session.set_subagent_model_advisor(FakeAdvisor::new(ranked_pick()));
+    let args: SpawnAgentArgs =
+        serde_json::from_value(json!({"task_name": "helper", "message": "m"})).unwrap();
+    let spec = session.subagent_spec_for(args).unwrap();
+    assert_eq!(spec.profile.model_choice, Some(ranked_pick().choice));
+    let child_id = forge_durable::new_session_id();
+    let child = session
+        .create_child(
+            child_id,
+            dir.path().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+            &spec,
+        )
+        .await
+        .unwrap();
+    assert_eq!(child.model_selection().model, "test/big");
+    drop(child);
+
+    let resumed = session
+        .resume_child(
+            child_id,
+            dir.path().to_path_buf(),
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resumed.model_selection().model, "test/big");
+    assert_eq!(
+        resumed.model_selection().reasoning_effort.as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        resumed
+            .child_profile()
+            .and_then(|profile| profile.model_choice.clone()),
+        Some(ranked_pick().choice)
+    );
+}
+
+/// A picked child that fails is still re-run on the strong tier, and both
+/// turns say how the child's model was chosen.
+#[tokio::test]
+async fn a_picked_child_still_escalates() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = TierModel::new(&[
+        (
+            "test/mid",
+            vec![
+                call(
+                    "spawn-1",
+                    "spawn_agent",
+                    json!({"task_name": "helper", "message": "fix it"}),
+                ),
+                text("Delegated."),
+            ],
+        ),
+        ("test/small", vec![dangling()]),
+        ("test/big", vec![text("Fixed it on the strong tier.")]),
+    ]);
+    let mut session = session(dir.path(), model.clone()).await;
+    let fast = FakeTiers.resolve_tier(&TierRequest {
+        tier: ModelTier::Fast,
+        current: &selection("test/mid", "medium"),
+    });
+    let mut advice = ranked_pick();
+    advice.pick = Some(fast.model);
+    session.set_subagent_model_advisor(FakeAdvisor::new(advice));
+
+    let (_, child) = spawn_through_the_tool(&mut session, json!({})).await;
+    let records = child_records(dir.path(), child).await;
+    assert_eq!(records.len(), 2, "{records:#?}");
+    assert!(records[0].escalated && records[1].escalation_retry);
+    assert_eq!(records[0].model, "test/small");
+    assert_eq!(records[1].model, "test/big");
+    for record in &records {
+        assert!(signal_kinds(record)
+            .iter()
+            .any(|kind| kind == "model_chosen"));
+    }
+}

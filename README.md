@@ -186,8 +186,39 @@ The workspace's own journals are read only once you have trusted the
 workspace in Forge: Forge runs no sessions in an untrusted folder, so journals
 found there (committed to a repository, say) are not yours and are refused.
 `--journal` names a directory explicitly and needs no trust. Journals that are
-symbolic links, or that cannot be read, are skipped with a warning, and names
-are printed with control characters escaped.
+symbolic links, that cannot be read, or that are committed to the repository
+(so someone else's, not sessions run here) are skipped with a warning, and
+names are printed with control characters escaped.
+
+### How a subagent's model is chosen
+
+When the agent starts a subagent without naming a tier, a model or an effort,
+Forge picks the subagent's model and effort from this ranking, for that kind
+of task (`subagent`, or the custom agent's own `custom:<name>`):
+
+- only models on the parent's provider that your account can run are
+  candidates, and they are ranked among themselves over the last 90 days;
+- the leader is picked when there is enough evidence: at least 20 turns of
+  that kind on those models, and at least two of them with 5 or more turns
+  each. Otherwise the subagent runs on the parent's model, as it always did;
+- about one spawn in ten keeps the parent's model anyway, so every model
+  keeps being tried (recorded as `exploration`);
+- the ranking is built in the background; starting a subagent never waits
+  for it.
+
+Every such subagent records why it runs on its model: the agent sees it in
+the `spawn_agent` result (`model_choice`), the subagent's journal keeps the
+full decision with the evidence behind it, and each of its turns carries a
+`model_chosen` signal. A workspace you have not trusted never steers the
+choice (its journals are not read; trust is checked again each time the
+ranking is rebuilt), nor do journals committed to the repository, and only
+known effort names are ever picked. To always use the parent's model, set it
+in your user config:
+
+```toml
+[subagents]
+model_selection = "inherit"   # default: "ranked"
+```
 
 ## Providers and models
 

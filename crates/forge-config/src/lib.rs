@@ -347,6 +347,25 @@ impl Default for AgentConfig {
     }
 }
 
+/// How a subagent started without a tier or a model gets its model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SubagentModelSelection {
+    /// From the ranking of the models for its kind of task, when there is
+    /// enough evidence; otherwise the parent's model.
+    #[default]
+    Ranked,
+    /// Always the parent's model and effort.
+    Inherit,
+}
+
+/// `[subagents]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentsConfig {
+    #[serde(default)]
+    pub model_selection: SubagentModelSelection,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Optional; if unset/relative ".", resolved to process cwd at load time.
@@ -363,6 +382,8 @@ pub struct Config {
     /// Phase 9 tool settings.
     #[serde(default)]
     pub tools: ToolsConfig,
+    #[serde(default)]
+    pub subagents: SubagentsConfig,
     /// Resolved absolute workspace path (not from TOML alone).
     #[serde(skip)]
     pub resolved_workspace: PathBuf,
@@ -398,6 +419,7 @@ impl Default for Config {
             mcp: McpSection::default(),
             validation: ValidationConfig::default(),
             tools: ToolsConfig::default(),
+            subagents: SubagentsConfig::default(),
             resolved_workspace: cwd,
             refused_project_keys: Vec::new(),
             removed_model_keys: Vec::new(),
@@ -587,6 +609,12 @@ struct ConfigFile {
     mcp: Option<McpSection>,
     validation: Option<ValidationConfig>,
     tools: Option<ToolsConfigFile>,
+    subagents: Option<SubagentsConfigFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SubagentsConfigFile {
+    model_selection: Option<SubagentModelSelection>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -645,6 +673,17 @@ impl ConfigFile {
                 cfg.journal = j;
             } else {
                 refused.push("journal".into());
+            }
+        }
+        // Which model a subagent runs on is the user's to decide (it is what
+        // they are billed for, and what their code is sent to).
+        if let Some(subagents) = self.subagents {
+            if let Some(selection) = subagents.model_selection {
+                if privileged_ok {
+                    cfg.subagents.model_selection = selection;
+                } else {
+                    refused.push("subagents".into());
+                }
             }
         }
         // An MCP server definition is a command plus args that Forge spawns at
@@ -964,6 +1003,59 @@ args = ["-c", "exfiltrate"]
 
     fn parse(toml_text: &str) -> ConfigFile {
         toml::from_str(toml_text).unwrap()
+    }
+
+    // ------------------------------------------------- subagent model choice
+
+    #[test]
+    fn subagents_get_ranked_models_by_default() {
+        assert_eq!(
+            Config::default().subagents.model_selection,
+            SubagentModelSelection::Ranked
+        );
+    }
+
+    #[test]
+    fn subagent_model_selection_can_be_set_to_inherit() {
+        let mut cfg = Config::default();
+        parse("[subagents]\nmodel_selection = \"inherit\"\n").apply(&mut cfg, ConfigScope::Trusted);
+        assert_eq!(
+            cfg.subagents.model_selection,
+            SubagentModelSelection::Inherit
+        );
+        parse("[subagents]\nmodel_selection = \"ranked\"\n").apply(&mut cfg, ConfigScope::Trusted);
+        assert_eq!(
+            cfg.subagents.model_selection,
+            SubagentModelSelection::Ranked
+        );
+    }
+
+    #[test]
+    fn an_unknown_subagent_model_selection_is_an_error() {
+        for text in [
+            "[subagents]\nmodel_selection = \"fastest\"\n",
+            "[subagents]\nmodel_selection = \"Ranked\"\n",
+            "[subagents]\nmodel_selection = 1\n",
+        ] {
+            assert!(
+                toml::from_str::<ConfigFile>(text).is_err(),
+                "{text} must not parse"
+            );
+        }
+    }
+
+    /// Which model a subagent runs on is the user's to decide: a project's
+    /// own config cannot change it unless the project is trusted.
+    #[test]
+    fn an_untrusted_project_cannot_change_subagent_model_selection() {
+        let mut cfg = Config::default();
+        parse("[subagents]\nmodel_selection = \"inherit\"\n")
+            .apply(&mut cfg, ConfigScope::UntrustedProject);
+        assert_eq!(
+            cfg.subagents.model_selection,
+            SubagentModelSelection::Ranked
+        );
+        assert!(cfg.refused_project_keys.contains(&"subagents".to_string()));
     }
 
     #[test]

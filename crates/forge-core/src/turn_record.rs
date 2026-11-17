@@ -66,6 +66,10 @@ pub enum TurnSignalKind {
     /// The user sent a message while the turn was running (or waiting on
     /// them). It is queued, and runs after this turn.
     UserMessageQueued,
+    /// How this subagent's model was chosen, when its caller named no tier
+    /// or model: `<ranking|exploration|fallback>: <reason>`. On each of its
+    /// turns.
+    ModelChosen,
 }
 
 /// One observation, with when it happened relative to the turn's start.
@@ -290,6 +294,14 @@ impl AgentSession {
             ..TurnTelemetry::default()
         };
         self.tracking.inbox.open();
+        if let Some(choice) = self
+            .child_profile
+            .as_ref()
+            .and_then(|profile| profile.model_choice.as_ref())
+        {
+            let detail = format!("{}: {}", choice.source, choice.reason);
+            self.record_signal(TurnSignalKind::ModelChosen, Some(detail));
+        }
     }
 
     /// Take what the owner recorded during the turn, in time order with the

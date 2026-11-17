@@ -480,6 +480,16 @@ impl TierTable {
         Ok(())
     }
 
+    /// Whether the account can run `model` on `profile_id`, from the last
+    /// read of its model lists; `None` when the provider's list is unknown.
+    pub(crate) fn runnable_contains(&self, profile_id: &str, model: &str) -> Option<bool> {
+        self.runnable
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(profile_id)
+            .map(|models| models.contains(model))
+    }
+
     /// Resolve `tier` for a session on `current`, from memory only.
     pub fn resolve(&self, tier: ModelTier, current: &ModelExecutionSelection) -> TierResolution {
         let profile_id = if current.profile_id.is_empty() {
