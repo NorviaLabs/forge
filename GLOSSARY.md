@@ -51,3 +51,34 @@ docs and reviews.
   start, each higher effort on the same model, then the provider's
   strong-tier model and its higher efforts. Up one step after a failed turn,
   down one after two successful turns in a row.
+- **Remote control**: `forge-remote`, the off-by-default service that lets
+  one **paired device** follow sessions, send prompts, stop a turn and
+  answer approvals over pinned TLS. Nothing listens while it is off.
+- **Paired device**: the one device holding a working remote token. Forge
+  stores only the token's SHA-256; pairing another device replaces it, and
+  revoking it ends its connections at once.
+- **Pairing code**: eight Crockford base32 characters (`ABCD-EFGH`) the
+  desktop shows to pair a device. Memory only, single use, five minutes,
+  destroyed after five wrong guesses. The **pairing link**
+  (`forge-remote://host:port/?code=…&fp=sha256:…`) carries it with the
+  certificate **pin**.
+- **Pairing request**: what a redeemed pairing code opens. The device waits
+  on it (polling with a secret **pairing id**) until the desktop allows or
+  refuses it, for at most two minutes; the token is created only when an
+  allowed device collects it.
+- **Confirmation number**: the six digits the desktop and the device both
+  show for a pairing request, so you allow only the device in your hand.
+- **Event log**: a followed session's remote events, numbered without gaps
+  (`<epoch>.<seq>`). A reconnect replays from it, or gets a **resync**
+  snapshot when it cannot.
+- **Execution target**: where a session's tools run — this machine (`local`,
+  under Forge's sandbox) or a host from the user's SSH config and a folder on
+  it (`ssh`). Saved with the session; every workspace tool goes through it
+  (`forge_tools::target::Target`).
+- **Remote root**: the canonical path of an SSH session's folder on its host,
+  found when connecting. The remote counterpart of the workspace root.
+- **Remote temp**: an SSH session's private temp directory on its host (the
+  commands' `$TMPDIR`), made when connecting and removed when the session
+  closes.
+- **Ask before each command**: an SSH session's setting (on by default) that
+  makes every command and `git` call on the host wait for approval.

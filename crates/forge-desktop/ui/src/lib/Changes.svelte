@@ -20,6 +20,9 @@
     activityCount = 0,
     activityNeedsYou = false,
     activity,
+    // `{ host, path }` for a session that runs on an SSH host: its files are
+    // there, and this column shows this Mac's.
+    remote = null,
   } = $props();
 
   const PREVIEW_LINES = 400;
@@ -137,7 +140,7 @@
 <aside class="changes" aria-label="Changes">
   <header class="changes-head" role="tablist" aria-label="Side panel">
     <button type="button" role="tab" class="view-tab" aria-selected={view === "changes"} onclick={() => (view = "changes")}>
-      Changes{#if supportsGit && status.files.length > 0}<span class="total">{status.files.length}</span>{/if}
+      Changes{#if supportsGit && !remote && status.files.length > 0}<span class="total">{status.files.length}</span>{/if}
     </button>
     <button type="button" role="tab" class="view-tab" aria-selected={view === "activity"} onclick={() => (view = "activity")}>
       Activity{#if activityCount > 0}<span class="total" class:needs={activityNeedsYou}>{activityCount}</span>{/if}
@@ -147,6 +150,11 @@
 
   {#if view === "activity"}
     {@render activity?.()}
+  {:else if remote}
+    <div class="empty">
+      <strong>Files are on {remote.host}</strong>
+      <p>This session works in <span class="mono">{remote.path}</span> on {remote.host}. Changes, Files, Git and the terminal show this Mac, so they are off. Ask the agent, or open the files there.</p>
+    </div>
   {:else if !supportsGit}
     <div class="empty">
       <strong>No Git repository here</strong>

@@ -2209,6 +2209,41 @@ mod tests {
         assert!(profile.contains("(deny file-read* (subpath \"/Volumes\"))"));
     }
 
+    /// Remote control keeps its certificate key, paired-device record and
+    /// activity log in Forge's data directory (`~/Library/Application
+    /// Support/forge/remote` on macOS). A confined command must not read it:
+    /// `~/Library` is denied, and Application Support is never reopened.
+    /// (On Linux the whole home tree is a tmpfs; see
+    /// `network_is_unshared_and_user_homes_are_masked`.)
+    #[test]
+    fn the_remote_control_folder_is_unreadable() {
+        let ws = workspace();
+        let (_home, home) = home_fixture();
+        let remote = home.join("Library/Application Support/forge/remote");
+        std::fs::create_dir_all(&remote).unwrap();
+        let profile =
+            seatbelt_profile(&SandboxPolicy::for_workspace(ws.path()).with_home(&home)).unwrap();
+        let library = home.join("Library");
+        assert!(
+            profile.contains(&format!(
+                "(deny file-read* (require-all (subpath \"{}\")",
+                library.display()
+            )),
+            "~/Library must be denied: {profile}"
+        );
+        let support = library.join("Application Support");
+        assert!(
+            !profile.contains(&format!("(subpath \"{}", support.display())),
+            "Application Support (and the remote folder in it) must never be reopened: {profile}"
+        );
+        assert!(
+            !LIBRARY_READABLE
+                .iter()
+                .any(|name| "Application Support".starts_with(name)),
+            "no readable ~/Library entry may cover Application Support"
+        );
+    }
+
     /// A workspace inside a denied tree is readable; its denied parent is
     /// not, beyond the metadata needed to walk to it.
     #[test]

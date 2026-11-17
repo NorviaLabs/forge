@@ -132,6 +132,13 @@ pub fn run() -> i32 {
     if let Some(started) = ready {
         let started = *started;
         _scratch = started._scratch;
+        // Remote control starts with the window (listening only if the user
+        // left it on). A self-test run never touches the user's settings.
+        if !self_test_run(&args) {
+            if let Some(remote) = crate::remote::start(started.projects.clone()) {
+                builder = builder.manage(remote);
+            }
+        }
         #[allow(unused_mut)] // self-test builds attach their probe
         let mut state = DesktopState::new(started.projects, started.active);
         #[cfg(feature = "self-test")]
@@ -191,6 +198,14 @@ pub fn run() -> i32 {
             let Some(state) = handle.try_state::<DesktopState>() else {
                 return;
             };
+            // Stop listening first: nothing remote may act while sessions
+            // are being released.
+            if let Some(remote) = handle.try_state::<crate::remote::RemoteState>() {
+                let service = remote.service.clone();
+                let _ = runtime_handle.block_on(async move {
+                    tokio::time::timeout(Duration::from_secs(2), service.shutdown()).await
+                });
+            }
             state.shells.close_all();
             // Release every project explicitly, bounded so a provider that
             // never answers cannot keep the app from quitting.
@@ -213,6 +228,12 @@ pub fn run() -> i32 {
     // The supervisor's durable work was already shut down above.
     runtime.shutdown_background();
     0
+}
+
+/// Whether this launch is a scripted self-test, which must leave the user's
+/// remote-control settings alone.
+fn self_test_run(args: &Args) -> bool {
+    args.self_test
 }
 
 /// Unsaved editor buffers or live turns, and no confirmation yet: a close
@@ -275,6 +296,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::child_transcript,
         bridge::message_detail,
         bridge::create_session,
+        bridge::list_ssh_hosts,
         bridge::select_session,
         bridge::archive_session,
         bridge::attach_worktree,
@@ -336,7 +358,13 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::shell_open,
         bridge::shell_write,
         bridge::shell_resize,
-        bridge::shell_close
+        bridge::shell_close,
+        bridge::remote_status,
+        bridge::remote_configure,
+        bridge::remote_pair_start,
+        bridge::remote_pair_cancel,
+        bridge::remote_pair_decide,
+        bridge::remote_revoke
     ]
 }
 

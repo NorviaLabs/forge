@@ -28,7 +28,7 @@ export function emptySnapshot() {
     queue: [],
     interrupted: [],
     counts: { tools: 0, skills: 0, allows: 0 },
-    info: { workspace: "", branch: "", model: "", contextUsage: 0, queued: 0, auto: null, autoTurns: [] },
+    info: { workspace: "", branch: "", target: null, model: "", contextUsage: 0, queued: 0, auto: null, autoTurns: [] },
     githubIssue: null,
     githubPr: "",
     agentWarnings: [],
@@ -66,6 +66,8 @@ export function snapshotFrom(event, record) {
     info: {
       workspace: event.workspace,
       branch: event.branch,
+      // The SSH host and folder, for a session that runs on one.
+      target: event.target ?? null,
       model: event.model,
       contextUsage: event.context_usage,
       queued: event.queued,

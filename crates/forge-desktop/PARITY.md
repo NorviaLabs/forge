@@ -30,6 +30,7 @@ parity. Desktop tests and the real-webview self-test cover the core flows.
 | Capability | TUI | Desktop | Notes |
 | --- | --- | --- | --- |
 | Create session | yes | yes | `create_session(label)` |
+| Run a session on an SSH host | no | yes | New session → Run on (hosts from `list_ssh_hosts`); `create_session(label, target)` connects and checks the host first |
 | Select session | yes | yes | rail click; Needs you rows open the session at its decision |
 | Archive session | yes | yes | confirm dialog |
 | Archive and remove a managed worktree | yes | yes | archive dialog option; dirty checkouts are retained until the operator ticks discard |

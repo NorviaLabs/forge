@@ -2,9 +2,11 @@
 
 mod git;
 mod image;
+pub mod target;
 mod task_kind;
 mod tier;
 mod turn_vocabulary;
+pub use target::ExecutionTarget;
 
 pub use git::is_readonly_git_subcommand;
 pub use image::{
@@ -993,6 +995,11 @@ pub struct HitlPayload {
     /// then offers to let sandboxed commands write it and re-run confined.
     #[serde(default)]
     pub denied_path: Option<String>,
+    /// The remote host the call would run on, for a session with an SSH
+    /// execution target; `None` on this machine. Shown on the approval, and
+    /// it keeps persistent ("always") grants off the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 /// What a pending approval is asking for, which decides the choices a
@@ -1223,6 +1230,7 @@ mod tests {
                 sandbox_escalation: false,
                 denied_host: None,
                 denied_path: None,
+                target: None,
             },
         };
         assert_eq!(approval.request_id(), "r1");

@@ -11,6 +11,7 @@
 //! `forge-connect`, neither of which `forge-core` depends on and neither of
 //! which belongs in it.
 
+pub mod approvals;
 pub mod auto_models;
 mod control;
 pub mod headless;

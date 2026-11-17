@@ -86,18 +86,41 @@ and `apply_patch` for multi-hunk or multi-file diffs."
             ));
         }
 
-        let path = ctx.resolve_write_path(&a.path)?;
-        let original = tokio::fs::read_to_string(&path).await.map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                ToolError::Execution(format!("edit: `{}` does not exist", a.path))
-            } else {
-                ToolError::Execution(format!("edit: reading `{}`: {error}", a.path))
+        let target = &ctx.target;
+        let local = target.remote_host().is_none();
+        let path = target
+            .resolve(ctx, &a.path, crate::target::Access::Write)
+            .await?;
+        let original = match target.read(&path, u64::MAX).await {
+            Ok(bytes) => String::from_utf8(bytes).map_err(|_| {
+                ToolError::Execution(format!(
+                    "edit: reading `{}`: stream did not contain valid UTF-8",
+                    a.path
+                ))
+            })?,
+            Err(ToolError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(ToolError::Execution(format!(
+                    "edit: `{}` does not exist",
+                    a.path
+                )))
             }
-        })?;
+            Err(ToolError::Io(error)) => {
+                return Err(ToolError::Execution(format!(
+                    "edit: reading `{}`: {error}",
+                    a.path
+                )))
+            }
+            Err(error) => return Err(error),
+        };
 
         let count = original.matches(&a.old_string).count();
         if count == 0 {
-            let hint = locate_elsewhere(&self.state, &ctx.workspace_root, &a.path, &a.old_string);
+            // The index knows this machine's files only.
+            let hint = if local {
+                locate_elsewhere(&self.state, &ctx.workspace_root, &a.path, &a.old_string)
+            } else {
+                String::new()
+            };
             return Ok(ToolOutput::failed_exit(
                 format!("edit: old_string not found in `{}`{hint}", a.path),
                 None,
@@ -118,11 +141,13 @@ and `apply_patch` for multi-hunk or multi-file diffs."
         } else {
             original.replacen(&a.old_string, &a.new_string, 1)
         };
-        tokio::fs::write(&path, updated.as_bytes()).await?;
-        let _ = self
-            .state
-            .index_for(&ctx.workspace_root)
-            .and_then(|index| index.note_file_changed(&path).map_err(index_err));
+        target.write(&path, updated.as_bytes()).await?;
+        if local {
+            let _ = self
+                .state
+                .index_for(&ctx.workspace_root)
+                .and_then(|index| index.note_file_changed(path.as_path()).map_err(index_err));
+        }
         let diff = unified_diff(&a.path, Some(&original), &updated)?;
         Ok(ToolOutput {
             outcome: Default::default(),

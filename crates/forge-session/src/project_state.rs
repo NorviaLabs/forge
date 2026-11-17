@@ -39,6 +39,8 @@ pub struct SessionSummary {
     pub label: String,
     pub lifecycle: SessionLifecycle,
     pub turn_state: SupervisorTurnState,
+    /// Where it runs.
+    pub target: forge_types::ExecutionTarget,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -86,6 +88,7 @@ impl SessionView {
                 label: snapshot.task.label.clone(),
                 lifecycle: snapshot.task.lifecycle,
                 turn_state: snapshot.task.turn_state,
+                target: snapshot.task.target.clone(),
             },
             waiting,
         }
@@ -102,6 +105,7 @@ impl SessionView {
                 label: task.label.clone(),
                 lifecycle: task.lifecycle,
                 turn_state: task.turn_state,
+                target: task.target.clone(),
             },
             waiting: Vec::new(),
         }
@@ -159,6 +163,51 @@ pub(crate) fn next_state(
 mod tests {
     use super::*;
 
+    /// The summary a frontend lists carries where each session runs.
+    #[test]
+    fn a_summary_says_where_its_session_runs() {
+        let target = forge_types::ExecutionTarget::Ssh {
+            host: "devbox".into(),
+            path: "/srv/app".into(),
+            ask: true,
+        };
+        let mut task = crate::RepositorySession {
+            session_id: SessionId::new_v4(),
+            label: "remote".into(),
+            workspace: std::path::PathBuf::from("/private/remote"),
+            branch: String::new(),
+            base_sha: None,
+            ownership: crate::WorktreeOwnership::Remote,
+            lifecycle: SessionLifecycle::Active,
+            turn_state: SupervisorTurnState::Idle,
+            slot: None,
+            model_id: String::new(),
+            profile_id: String::new(),
+            reasoning_effort: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            archived_at: None,
+            github_issue_number: None,
+            github_pr_url: None,
+            github_retry_attempts: 0,
+            github_tests_passed: false,
+            target: target.clone(),
+        };
+        assert_eq!(SessionView::of_task(&task).summary.target, target);
+        let snapshot = SessionRuntimeSnapshot {
+            task: task.clone(),
+            session: Default::default(),
+            transcript: Default::default(),
+            details: None,
+            queued_prompts: Vec::new(),
+            interrupted_prompts: Vec::new(),
+            host_questions: Vec::new(),
+        };
+        assert_eq!(SessionView::of(&snapshot).summary.target, target);
+        task.target = forge_types::ExecutionTarget::Local;
+        assert!(SessionView::of_task(&task).summary.target.is_local());
+    }
+
     fn view(
         session_id: SessionId,
         turn_state: SupervisorTurnState,
@@ -170,6 +219,7 @@ mod tests {
                 label: "s".into(),
                 lifecycle: SessionLifecycle::Active,
                 turn_state,
+                target: forge_types::ExecutionTarget::Local,
             },
             waiting: waiting
                 .iter()

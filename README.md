@@ -135,6 +135,30 @@ isolated issue session, and shows its pull request and checks. Starting or
 completing an issue never pushes, creates a PR, or merges on its own; each of
 those is an explicit action. GitHub reads require `gh` and `gh auth login`.
 
+### Remote control
+
+Remote control lets one paired device follow a session live, send it a
+prompt, stop a turn, and allow or deny a pending request. It is off by
+default, and while it is off nothing listens.
+
+Turn it on in **Settings → Remote control** and choose where it is reachable
+from: **This computer only** (`127.0.0.1`) or **Local network** (one address
+of this computer; anyone on that network can reach the port, only a paired
+device gets in). Then **Pair a device**: the desktop shows a one-time code
+and a pairing link that also carries the certificate fingerprint the device
+pins. The code works once and expires after five minutes. When the device
+enters it, the desktop asks **Allow <device> to pair?** and shows a
+six-digit number: allow only if the device shows the same number. Pairing another
+device replaces the first; **Revoke** disconnects it at once and replaces the
+certificate, so nothing pinned to the old one connects again. The footer
+shows **Remote on** while it listens and names the device while it is
+connected.
+
+From a device, you can allow a request once or deny it, with or without a
+note. Anything that would run outside the sandbox, open a host, or remember
+a grant stays on the desktop. The HTTPS API a client implements is in
+[`crates/forge-remote/PROTOCOL.md`](crates/forge-remote/PROTOCOL.md).
+
 ### Automation and benchmark runs
 
 Forge also has a frontend-independent entry point for automation. Pipe one
@@ -672,6 +696,43 @@ the sidebar and can be resumed; `/fork` starts a new session seeded with the
 current conversation. Session journals stay separate from your source files and
 should never contain API keys or OAuth tokens.
 
+### Sessions on another machine (SSH)
+
+A session can run on a host from your SSH config instead of this machine: in
+**New session**, pick the host under **Run on** and give the folder on it (an
+absolute path). Every shell command, file tool, search and `git` call then runs
+there; this machine only relays. Forge uses your own `ssh` client and
+`~/.ssh/config` (`ProxyJump`, identities, agent and `known_hosts` all apply),
+over one connection per session.
+
+- **Forge checks the host before the session exists.** The host must be
+  reachable without prompting (keys or agent; connect once in a terminal to
+  accept its host key), Linux or macOS with `bash`, `realpath` and `mktemp`,
+  and the folder must exist. Whatever is wrong is the dialog's error.
+- **Commands run outside Forge's sandbox**, with the host's network and
+  credentials. **Ask before each command** is on by default: every command and
+  `git` call waits for your approval, which can be widened for the session
+  (**Allow this kind of call**, **Trust all commands**) but is never saved as
+  an "always" rule. Rules in your personal permissions file are about this
+  machine and do not cover the host. Turn asking off only for a machine you
+  can throw away. File edits never ask.
+- **Nothing of this machine goes to the host**: no agent or X11 forwarding,
+  no port forwards, and none of Forge's environment (provider keys included).
+  A `ProxyJump` hop follows your own config for that hop.
+- An approval shows the command, not what it runs: file edits never ask, so
+  a command can run a script the agent just wrote. **Trust all commands**
+  asks for a second confirmation.
+- **Files, Changes, Git, GitHub and the terminal show this machine**, so they
+  are off for an SSH session; the header's **Runs on** chip says where it runs.
+- A lost connection fails the running command with
+  "Lost the connection to *host* while running *command*"; the command may
+  still be running there, and Forge reconnects on the next one. Stopping a turn
+  kills the command on the host too.
+- Read-only agents work alongside an SSH session; a writing agent, which needs
+  a checkout of its own, does not.
+- Resuming reconnects to the same host and folder. Closing the session
+  removes its temp directory on the host.
+
 ## Safety
 
 Forge can execute commands and modify files on your machine. Treat it like a
@@ -689,6 +750,8 @@ shell with an AI interface:
 4. Do not commit `.forge/`, runtime journals, API keys, OAuth tokens, or
    credential files.
 5. Use a disposable clone when evaluating an unfamiliar repository.
+6. A session on an SSH host is not sandboxed there. Keep **Ask before each
+   command** on unless the host is disposable.
 
 See [SECURITY.md](SECURITY.md) for the threat model and private vulnerability
 reporting process.

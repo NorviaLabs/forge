@@ -51,6 +51,9 @@ pub enum RuntimeDataKind {
     /// git-excluded exactly like session/queue state, never a user-visible
     /// project change.
     Worktree,
+    /// The local workspace of a session that runs on an SSH host: an empty
+    /// private directory per session, since its files are on the host.
+    RemoteWorkspace,
 }
 
 impl RuntimeDataKind {
@@ -67,6 +70,7 @@ impl RuntimeDataKind {
             Self::Checkpoint => "checkpoints",
             Self::Attachment => "attachments",
             Self::Worktree => "worktrees",
+            Self::RemoteWorkspace => "remote",
         }
     }
 }

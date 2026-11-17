@@ -24,10 +24,12 @@
   import Providers from "./lib/Providers.svelte";
   import Agents from "./lib/Agents.svelte";
   import { agentNotice } from "./agents.js";
+  import { footerItem } from "./remote.js";
   import Github from "./lib/Github.svelte";
   import Details from "./lib/Details.svelte";
   import Help from "./lib/Help.svelte";
   import { modal } from "./modal.js";
+  import { compactTarget, folderError, offHere, targetChip, targetRequest, targetTitle } from "./target.js";
   import { chime, setSoundEnabled, soundEnabled, unlockOnFirstGesture } from "./chime.js";
   import {
     applyRefresh, attentionLabel, beginRefresh, clearShown, failRefresh, flattenTree, foldersToLoad,
@@ -167,19 +169,56 @@
   let detailsOpen = $state(false);
   let helpOpen = $state(false);
   let settingsOpen = $state(false);
+  // Which Settings section to open at ("remote" from the footer), or null.
+  let settingsSection = $state(null);
+  // Remote control's latest status, pushed by the backend on every change.
+  let remoteStatus = $state(null);
+  let remoteItem = $derived(footerItem(remoteStatus));
   // The New session dialog: its name field, and whether it is open.
   let newSessionOpen = $state(false);
   let newSessionName = $state("");
+  // Where the new session runs: "local" (this Mac) or an SSH host alias,
+  // with the folder on that host and whether each command asks first.
+  let sshHosts = $state([]);
+  let runOn = $state("local");
+  let remoteFolder = $state("");
+  let askEachCommand = $state(true);
+  let newSessionError = $state("");
+  let connecting = $state(false);
+  const remoteFolderError = $derived(runOn === "local" ? "" : folderError(remoteFolder, runOn));
   function openNewSession() {
     newSessionName = "";
+    runOn = "local";
+    remoteFolder = "";
+    askEachCommand = true;
+    newSessionError = "";
+    connecting = false;
     newSessionOpen = true;
+    invoke("list_ssh_hosts").then((hosts) => { sshHosts = hosts; }).catch(() => { sshHosts = []; });
   }
   async function submitNewSession(event) {
     event.preventDefault();
     const label = newSessionName.trim();
-    if (!label || creating) return;
-    newSessionOpen = false;
-    await createSession(label);
+    if (!label || creating || connecting) return;
+    const target = targetRequest({ runOn, folder: remoteFolder, ask: askEachCommand });
+    if (!target) {
+      newSessionOpen = false;
+      await createSession(label);
+      return;
+    }
+    if (remoteFolderError) return;
+    // Connecting and checking the host can take a while, and its error
+    // belongs in the dialog: it stays open until the session exists.
+    newSessionError = "";
+    connecting = true;
+    try {
+      await invoke("create_session", { label, githubIssueNumber: null, target });
+      newSessionOpen = false;
+    } catch (cause) {
+      newSessionError = typeof cause === "string" ? cause : (cause?.message ?? String(cause));
+    } finally {
+      connecting = false;
+    }
   }
   const DARK_QUERY = "(prefers-color-scheme: dark)";
   let themes = $state([]);
@@ -248,6 +287,18 @@
   let lastTurn = "";
 
   const activeSession = $derived(sessions.find((session) => session.session_id === sessionId));
+  // The SSH host and folder the session on screen runs on, or null. Its
+  // files, Git and terminal are there, so the panels that show this Mac are
+  // off for it.
+  const remoteTarget = $derived(info.target ?? null);
+  let targetPopoverOpen = $state(false);
+  let targetPopoverLeft = $state(8);
+  $effect(() => {
+    // Another session, or the same one no longer remote: the popover goes.
+    sessionId;
+    if (!remoteTarget) targetPopoverOpen = false;
+  });
+  const targetOf = (id) => sessions.find((session) => session.session_id === id)?.target ?? null;
   const branch = $derived(status.branch || info.branch);
   // The record every block renders from. Before a session is selected this
   // is a throwaway record so a binding never writes through undefined.
@@ -613,7 +664,7 @@
   // Refresh one session's workspace into its own record. The session need
   // not be on screen when the reply arrives.
   async function refreshFiles(owner = sessionId) {
-    if (!owner) return;
+    if (!owner || targetOf(owner)) return;
     const record = viewFor(views, owner);
     const ticket = beginRefresh(record.files);
     try {
@@ -685,6 +736,10 @@
   };
 
   function onEvent(event) {
+    if (event.type === "remote") {
+      remoteStatus = event.status;
+      return;
+    }
     if (event.type === "workspace") {
       projects = event.projects;
       return;
@@ -1662,7 +1717,7 @@
   }
 
   async function openTerminal() {
-    if (!sessionId) return;
+    if (!sessionId || remoteTarget) return;
     const view = viewFor(views, sessionId);
     view.drawerOpen = true;
     if (view.screen === "files") view.screen = "session";
@@ -1670,7 +1725,7 @@
   }
 
   async function focusTerminal() {
-    if (!sessionId) return;
+    if (!sessionId || remoteTarget) return;
     await ensureShell();
     viewFor(views, sessionId).screen = "terminal";
     screenAnnouncement = "Terminal";
@@ -1688,13 +1743,13 @@
 
   // GitHub is a screen of the session, beside Session and Files.
   function openGithub() {
-    if (!sessionId || !supportsGit) return;
+    if (!sessionId || !supportsGit || remoteTarget) return;
     viewFor(views, sessionId).screen = "github";
     screenAnnouncement = "GitHub";
   }
 
   function openFiles() {
-    if (!sessionId) return;
+    if (!sessionId || remoteTarget) return;
     const view = viewFor(views, sessionId);
     if (view.screen === "files") return;
     view.screen = "files";
@@ -1960,11 +2015,11 @@
       {#if currentView.screen !== "terminal"}
         <div class="view-switch" role="tablist" aria-label="View">
           <button type="button" role="tab" aria-selected={currentView.screen === "session"} disabled={!sessionId} onclick={() => currentView.screen !== "session" && backToSession()}>Session</button>
-          <button bind:this={filesButton} type="button" role="tab" aria-selected={currentView.screen === "files"} title={`Files (${chord("E")})`} disabled={!sessionId} onclick={openFiles}>
+          <button bind:this={filesButton} type="button" role="tab" aria-selected={currentView.screen === "files"} title={remoteTarget ? `Files are on ${remoteTarget.host}` : `Files (${chord("E")})`} disabled={!sessionId || !!remoteTarget} aria-describedby={remoteTarget ? "target-note" : undefined} onclick={openFiles}>
             Files{#if fileTotals.changed > 0}<span class="count" aria-label={`${fileTotals.changed} changed`}>{fileTotals.changed}</span>{/if}
           </button>
           {#if supportsGit}
-            <button type="button" role="tab" aria-selected={currentView.screen === "github"} disabled={!sessionId} onclick={openGithub}>GitHub</button>
+            <button type="button" role="tab" aria-selected={currentView.screen === "github"} disabled={!sessionId || !!remoteTarget} title={remoteTarget ? `GitHub works on this Mac's checkout; this session's files are on ${remoteTarget.host}` : undefined} aria-describedby={remoteTarget ? "target-note" : undefined} onclick={openGithub}>GitHub</button>
           {/if}
         </div>
       {/if}
@@ -1974,6 +2029,21 @@
         {#if activeSession}<span class="state-dot {turnState}" aria-hidden="true"></span>{/if}
         <strong>{activeSession?.label ?? "No session"}</strong>
         {#if activeSession}<span class="head-state">{turnWord(turnState)}</span>{/if}
+        {#if activeSession && remoteTarget}
+          <button
+            type="button"
+            class="chip mono target-chip"
+            aria-haspopup="dialog"
+            aria-expanded={targetPopoverOpen}
+            aria-describedby="target-note"
+            title={targetTitle(remoteTarget)}
+            onclick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              targetPopoverLeft = Math.max(8, Math.min(rect.left, window.innerWidth - 336));
+              targetPopoverOpen = !targetPopoverOpen;
+            }}
+          ><span class="full">{targetChip(remoteTarget, false)}</span><span class="short">{targetChip(remoteTarget, true)}</span></button>
+        {/if}
         {#if currentStep}
           <button type="button" class="head-step" title="Open the plan" onclick={() => showActivity("plan")}>
             <span class="step-count">Step {stepNumber} of {plan.items.length}</span>
@@ -1981,6 +2051,14 @@
           </button>
         {/if}
       </div>
+      {#if targetPopoverOpen && remoteTarget}
+        <div class="menu-scrim" role="presentation" onclick={() => (targetPopoverOpen = false)}></div>
+        <div class="target-popover" role="dialog" aria-label="Where this session runs" tabindex="-1" style={`left: ${targetPopoverLeft}px`} use:modal={{ onClose: () => (targetPopoverOpen = false) }}>
+          <p><strong>Runs on {remoteTarget.host}</strong></p>
+          <p class="mono target-path">{targetTitle(remoteTarget)}</p>
+          <p class="note">Commands and file edits happen there. Files, Changes, Git, GitHub and the terminal show this Mac, so they are off for this session.</p>
+        </div>
+      {/if}
       <span class="spacer"></span>
       <!-- Icons for the three everyday actions; each has its name as a tooltip
            and an accessible label. -->
@@ -1989,10 +2067,11 @@
         type="button"
         class="icon-btn head-icon"
         class:on={terminalShown}
-        title={`${terminalShown ? "Hide" : "Show"} terminal (${isMac() ? "⌘J" : "Ctrl+`"})`}
+        title={remoteTarget ? `The terminal is on this Mac; this session runs on ${remoteTarget.host}` : `${terminalShown ? "Hide" : "Show"} terminal (${isMac() ? "⌘J" : "Ctrl+`"})`}
         aria-label={terminalShown ? "Hide terminal" : "Show terminal"}
         aria-pressed={terminalShown}
-        disabled={!sessionId}
+        aria-describedby={remoteTarget ? "target-note" : undefined}
+        disabled={!sessionId || !!remoteTarget}
         onclick={toggleTerminal}
       >
         <Icon name="terminal" size={15} />
@@ -2270,6 +2349,7 @@
       <Changes
         {sessionId}
         {status}
+        remote={remoteTarget}
         {lastTurnFiles}
         {supportsGit}
         loading={filesLoading}
@@ -2308,7 +2388,8 @@
         destination={sessionMenu}
         onClose={() => (sessionMenu = null)}
         sessionId={sessionId}
-        workspace={info.workspace}
+        workspace={remoteTarget ? targetTitle(remoteTarget) : info.workspace}
+        remote={!!remoteTarget}
         {branch}
         model={info.model}
         contextUsage={info.contextUsage}
@@ -2337,7 +2418,9 @@
 
   <footer class="statusbar" aria-label="Status">
     {#if currentProject}<span class="sb-item sb-project" title={currentProject.root}>{currentProject.name}</span>{/if}
-    {#if sessionId && (branch || info.workspace)}
+    {#if sessionId && remoteTarget}
+      <span class="sb-item mono sb-target" title={targetTitle(remoteTarget)}>{compactTarget(remoteTarget)}</span>
+    {:else if sessionId && (branch || info.workspace)}
       <button type="button" class="sb-item sb-link" title={`${info.workspace} · open Files`} onclick={openFiles}>
         <Icon name="branch" size={12} />
         <span class="sb-branch">{branch || basename(info.workspace)}</span>
@@ -2345,7 +2428,7 @@
         {#if status.behind}<span class="sb-track"><Icon name="arrow-down" size={11} />{status.behind}</span>{/if}
       </button>
     {/if}
-    {#if sessionId && supportsGit}
+    {#if sessionId && supportsGit && !remoteTarget}
       <button type="button" class="sb-item sb-link" onclick={() => (sideView = "changes")}>
         {fileTotals.changed === 0 ? "No uncommitted changes" : `${fileTotals.changed} uncommitted`}
       </button>
@@ -2354,6 +2437,11 @@
     {#if needsYou > 0}
       <button type="button" class="sb-item sb-link sb-needs" onclick={showNeedsYou}>
         <span class="state-dot waiting" aria-hidden="true"></span>{needsYou} {needsYou === 1 ? "needs" : "need"} you
+      </button>
+    {/if}
+    {#if remoteItem}
+      <button type="button" class="sb-item sb-link" class:sb-error={remoteItem.tone === "failed"} class:sb-warn={remoteItem.tone === "waiting"} title="Remote control settings" onclick={() => { settingsSection = "remote"; settingsOpen = true; }}>
+        <span class="state-dot {remoteItem.tone === 'idle' ? 'queued' : remoteItem.tone}" aria-hidden="true"></span>{remoteItem.text}
       </button>
     {/if}
     {#if runSummary}<span class="sb-item">{runSummary}</span>{/if}
@@ -2368,6 +2456,7 @@
   </footer>
 
   <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{screenAnnouncement}</div>
+  {#if remoteTarget}<p id="target-note" class="sr-only">{offHere(remoteTarget)}</p>{/if}
 
   <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">
     {question ? "Forge needs your answer." : approval ? "Forge needs your approval." : background.some((task) => task.awaiting_approval) ? "A background task needs your approval. It is in Activity, beside Changes." : `Forge: ${turnState}.`}
@@ -2416,14 +2505,23 @@
   {#if approveAllPending}
     <div class="modal">
       <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="approve-all-title" tabindex="-1" use:modal={{ onClose: () => (approveAllPending = false) }}>
-        <h2 id="approve-all-title">Auto-approve review prompts?</h2>
-        <p>
-          Every review prompt in this session is approved without being shown.
-          The sandbox stays on and nothing is asked: a command that needs a host
-          or a path outside it fails, and the agent is told why.
-        </p>
+        {#if remoteTarget}
+          <h2 id="approve-all-title">Trust all commands on {remoteTarget.host}?</h2>
+          <p>
+            Every command and Git call in this session runs on {remoteTarget.host} without
+            asking, outside Forge's sandbox, with that machine's network and credentials,
+            until the session ends or you turn this off.
+          </p>
+        {:else}
+          <h2 id="approve-all-title">Auto-approve review prompts?</h2>
+          <p>
+            Every review prompt in this session is approved without being shown.
+            The sandbox stays on and nothing is asked: a command that needs a host
+            or a path outside it fails, and the agent is told why.
+          </p>
+        {/if}
         <div class="dialog-actions">
-          <button class="btn danger" type="button" onclick={confirmApproveAll}>Auto-approve</button>
+          <button class="btn danger" type="button" onclick={confirmApproveAll}>{remoteTarget ? "Trust all commands" : "Auto-approve"}</button>
           <button class="btn" type="button" onclick={() => (approveAllPending = false)}>Cancel</button>
         </div>
       </div>
@@ -2705,21 +2803,48 @@
     <Help onClose={() => (helpOpen = false)} onSettings={() => { helpOpen = false; settingsOpen = true; }} />
   {/if}
   {#if settingsOpen}
-    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} onClose={() => (settingsOpen = false)} onProviders={() => { settingsOpen = false; providersOpen = true; }} onAgents={() => { settingsOpen = false; agentsOpen = true; }} />
+    <Settings bind:theme={themeChoice} bind:sound={attentionSound} {themes} {remoteStatus} section={settingsSection} onClose={() => { settingsOpen = false; settingsSection = null; }} onProviders={() => { settingsOpen = false; providersOpen = true; }} onAgents={() => { settingsOpen = false; agentsOpen = true; }} />
   {/if}
   {#if newSessionOpen}
     <div class="modal">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-title" tabindex="-1" use:modal={{ onClose: () => (newSessionOpen = false) }}>
+      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="new-session-title" tabindex="-1" use:modal={{ onClose: () => (newSessionOpen = false), busy: connecting }}>
         <form onsubmit={submitNewSession}>
           <h2 id="new-session-title">New session</h2>
-          <p>{supportsGit ? "The session gets its own Git worktree and branch, so it can work while others do." : "The session works in this folder."}</p>
-          <input class="field new-session-name" bind:value={newSessionName} placeholder="What is this session for?" aria-label="New session name" />
+          <p>{runOn !== "local" ? `The session runs its commands and edits its files on ${runOn}.` : supportsGit ? "The session gets its own Git worktree and branch, so it can work while others do." : "The session works in this folder."}</p>
+          <div class="new-session-fields">
+            <input class="field new-session-name" bind:value={newSessionName} placeholder="What is this session for?" aria-label="New session name" disabled={connecting} />
+            <div>
+              <label class="field-label" for="new-session-run-on">Run on</label>
+              <select id="new-session-run-on" class="field" bind:value={runOn} disabled={connecting} onchange={() => (newSessionError = "")}>
+                <option value="local">This Mac</option>
+                {#each sshHosts as host (host)}<option value={host}>{host}</option>{/each}
+              </select>
+              {#if sshHosts.length === 0}
+                <p class="field-note">No hosts in ~/.ssh/config yet. Add one to run a session on another machine.</p>
+              {/if}
+            </div>
+            {#if runOn !== "local"}
+              <div>
+                <label class="field-label" for="new-session-folder">Remote folder</label>
+                <input id="new-session-folder" class="field mono" bind:value={remoteFolder} placeholder="/srv/app" aria-describedby="new-session-folder-note" aria-invalid={remoteFolder.trim() !== "" && !!remoteFolderError} disabled={connecting} oninput={() => (newSessionError = "")} />
+                <p id="new-session-folder-note" class="field-note">{remoteFolder.trim() && remoteFolderError ? remoteFolderError : `An existing folder on ${runOn}, as an absolute path.`}</p>
+              </div>
+              <div class="field-check">
+                <input id="new-session-ask" type="checkbox" bind:checked={askEachCommand} aria-describedby="new-session-ask-note" disabled={connecting} />
+                <span>
+                  <label for="new-session-ask">Ask before each command</label><br />
+                  <span id="new-session-ask-note" class="field-note">Commands run on {runOn} outside Forge's sandbox, with its network and credentials. Turn this off only for a machine you can throw away.</span>
+                </span>
+              </div>
+            {/if}
+          </div>
+          {#if newSessionError}<p class="new-session-error" role="alert">{newSessionError}</p>{/if}
           <div class="dialog-actions">
-            {#if supportsGit}
+            {#if supportsGit && runOn === "local"}
               <button class="link attach-instead" type="button" onclick={() => { newSessionOpen = false; openAttach(); }}>Attach an existing worktree instead</button>
             {/if}
-            <button class="btn" type="button" onclick={() => (newSessionOpen = false)}>Cancel</button>
-            <button class="btn primary" type="submit" disabled={creating || !newSessionName.trim()}>Create</button>
+            <button class="btn" type="button" disabled={connecting} onclick={() => (newSessionOpen = false)}>Cancel</button>
+            <button class="btn primary" type="submit" disabled={creating || connecting || !newSessionName.trim() || (runOn !== "local" && !!remoteFolderError)}>{connecting ? `Connecting to ${runOn}…` : "Create"}</button>
           </div>
         </form>
       </div>
@@ -2865,8 +2990,36 @@
   .sb-branch { max-width: 240px; overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; }
   .sb-track { display: inline-flex; align-items: center; gap: 2px; }
   .sb-needs, .sb-warn { color: var(--warning); }
+  .sb-error { color: var(--error); }
   .more { position: relative; flex: none; }
   .menu-scrim { position: fixed; inset: 0; z-index: 25; }
+  /* Where a remote session runs. Inline-block, not inline-flex: only a
+     block container truncates its text. The title keeps priority. */
+  .target-chip {
+    display: inline-block; flex: 0 4 auto; min-width: 7ch; max-width: 260px; height: 22px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px;
+    font: inherit; font-family: var(--font-mono); font-size: 11px; color: var(--muted); cursor: pointer;
+  }
+  .target-chip:hover { color: var(--text); }
+  .target-chip .short { display: none; }
+  .target-popover {
+    position: fixed; top: calc(var(--bar) + 2px); z-index: 26; width: 320px; padding: 12px;
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--raised); box-shadow: var(--shadow);
+    font-size: var(--text-md);
+  }
+  .target-popover p { margin: 0 0 8px; }
+  .target-popover p:last-child { margin: 0; }
+  .target-popover .target-path { font-size: var(--text-sm); overflow-wrap: anywhere; }
+  .target-popover .note { color: var(--muted); font-size: var(--text-sm); line-height: 18px; }
+  /* Block, not flex: only a block container truncates its text. */
+  .sb-target { display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  .new-session-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 16px; }
+  .field-label { display: block; margin: 0 0 4px; font-size: var(--text-sm); font-weight: 500; }
+  .dialog .field-note { margin: 4px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 18px; }
+  .field-check { display: flex; align-items: flex-start; gap: 8px; font-size: var(--text-md); }
+  .field-check input { margin-top: 2px; }
+  .field-check .field-note { display: inline-block; }
+  .dialog .new-session-error { margin: 0 0 12px; color: var(--error); font-size: var(--text-sm); line-height: 18px; overflow-wrap: anywhere; }
   .menu {
     position: absolute; top: calc(100% + 6px); right: 0; z-index: 26;
     display: flex; flex-direction: column; min-width: 320px; padding: 4px;
@@ -2936,7 +3089,7 @@
   .context-note span:first-child { flex: 1; min-width: 0; }
   .wait-note .btn { height: 24px; padding: 0 8px; flex: none; }
   .head-btn.on { background: var(--raised); color: var(--text); }
-  .new-session-name { margin-bottom: 16px; }
+  .new-session-fields .new-session-name { margin-bottom: 0; }
   .attach-instead { margin-right: auto; align-self: center; font-size: var(--text-sm); }
 
   .decision { display: contents; }
@@ -3171,7 +3324,11 @@
     .brand .wordmark { display: inline; }
     .head-step, .statusbar .sb-project, .statusbar .mono { display: none; }
     /* The state word outlasts the branch chip: a dot alone says nothing. */
-    .head-title .chip { display: none; }
+    .head-title .chip:not(.target-chip) { display: none; }
+    /* Where the session runs stays, reduced to the host. */
+    .target-chip { max-width: 120px; }
+    .target-chip .full { display: none; }
+    .target-chip .short { display: inline; }
 
     .rail-toggle { display: inline-grid; }
 

@@ -66,6 +66,7 @@
           class="row"
           class:active={session.session_id === activeId}
           class:needs-you={needsYou}
+          class:remote={!!session.target}
         >
           <button
             type="button"
@@ -75,7 +76,15 @@
           >
             <span class="state-dot {session.turn_state}"></span>
             {#if session.slot}<span class="slot" title="Pinned">{session.slot}</span>{/if}
-            <span class="session-name">{session.label}</span>
+            {#if session.target}
+              <!-- Where it runs, under its name: a session on another machine. -->
+              <span class="session-text">
+                <span class="session-name">{session.label}</span>
+                <span class="session-host" title={`${session.target.host}:${session.target.path}`}>{session.target.host}</span>
+              </span>
+            {:else}
+              <span class="session-name">{session.label}</span>
+            {/if}
             <span class="session-state {session.turn_state}">
               {needsYou ? "needs you" : session.turn_state}
             </span>
@@ -586,6 +595,29 @@
     flex: 1;
     min-width: 0;
     overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .session-list li.row.remote {
+    height: auto;
+    min-height: var(--control-lg);
+  }
+
+  .session-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    padding: 4px 0;
+  }
+
+  .session-host {
+    overflow: hidden;
+    color: var(--muted);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 16px;
     text-overflow: ellipsis;
     white-space: nowrap;
   }

@@ -232,6 +232,24 @@ impl Tool for FffFindTool {
         } else {
             query
         };
+        if ctx.target.remote_host().is_some() {
+            let (found, more) = ctx.target.find(&query, max_results).await?;
+            return Ok(ToolOutput {
+                outcome: Default::default(),
+                content: if found.is_empty() {
+                    "No files found".into()
+                } else {
+                    let mut output = found.join("\n");
+                    if more {
+                        output.push_str("\n\n(Results truncated; use a narrower pattern.)");
+                    }
+                    output
+                },
+                is_error: false,
+                exit_code: None,
+                attachments: Vec::new(),
+            });
+        }
         let response = tokio::task::spawn_blocking(move || {
             state
                 .index_for(&root)?
@@ -320,6 +338,9 @@ impl Tool for FffGrepTool {
         let path = args.path.clone();
         let include = args.include.clone();
         let max_results = clamp_fff_results(args.max_results);
+        if ctx.target.remote_host().is_some() {
+            return remote_grep(ctx, &args, mode, max_results).await;
+        }
         let response = tokio::task::spawn_blocking(move || {
             state
                 .index_for(&root)?
@@ -363,6 +384,61 @@ impl Tool for FffGrepTool {
             attachments: Vec::new(),
         })
     }
+}
+
+/// `grep` on a remote target, in the local tool's output shape.
+async fn remote_grep(
+    ctx: &ToolContext,
+    args: &FffGrepArgs,
+    mode: GrepQueryMode,
+    max_results: usize,
+) -> Result<ToolOutput, ToolError> {
+    let scope = match args.path.as_deref().filter(|path| !path.trim().is_empty()) {
+        Some(path) => Some(
+            ctx.target
+                .resolve(ctx, path, crate::target::Access::Read)
+                .await?,
+        ),
+        None => None,
+    };
+    let literal = !matches!(mode, GrepQueryMode::Regex);
+    let (hits, more) = ctx
+        .target
+        .grep(
+            &args.pattern,
+            literal,
+            scope.as_ref(),
+            args.include.as_deref(),
+            max_results,
+        )
+        .await?;
+    let content = if hits.is_empty() {
+        "No matches found".to_string()
+    } else {
+        let mut output = String::new();
+        let mut current_path = "";
+        for hit in &hits {
+            if current_path != hit.path {
+                if !output.is_empty() {
+                    output.push('\n');
+                }
+                output.push_str(&format!("{}:\n", hit.path));
+                current_path = &hit.path;
+            }
+            output.push_str(&format!("  Line {}: {}\n", hit.line, hit.text));
+        }
+        if more {
+            output.push_str("\n(Results truncated; use a narrower pattern.)");
+        }
+        output.trim_end().to_string()
+    };
+    Ok(ToolOutput {
+        outcome: Default::default(),
+        content,
+        is_error: false,
+        exit_code: None,
+        attachments: Vec::new(),
+    })
 }
 
 fn reject_blank_or_oversized(tool: &str, field: &str, value: &str) -> Option<ToolOutput> {

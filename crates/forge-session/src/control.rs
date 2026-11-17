@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use forge_storage::WorktreeRecord;
-use forge_types::SessionId;
+use forge_types::{ExecutionTarget, SessionId};
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{Row, SqlitePool};
@@ -22,6 +22,10 @@ pub enum WorktreeOwnership {
     /// repository). Every such session shares the project root, so several
     /// may be live on one workspace path at once.
     Directory,
+    /// A session whose workspace is a folder on an SSH host. Its local
+    /// workspace is an empty private directory Forge owns; nothing of the
+    /// project's checkout is touched.
+    Remote,
 }
 
 impl WorktreeOwnership {
@@ -31,6 +35,7 @@ impl WorktreeOwnership {
             Self::Managed => "managed",
             Self::Attached => "attached",
             Self::Directory => "directory",
+            Self::Remote => "remote",
         }
     }
 
@@ -40,6 +45,7 @@ impl WorktreeOwnership {
             "managed" => Ok(Self::Managed),
             "attached" => Ok(Self::Attached),
             "directory" => Ok(Self::Directory),
+            "remote" => Ok(Self::Remote),
             value => Err(RepositorySessionError::InvalidStoredValue {
                 field: "ownership",
                 value: value.into(),
@@ -157,6 +163,9 @@ pub struct RepositorySession {
     pub github_pr_url: Option<String>,
     pub github_retry_attempts: u32,
     pub github_tests_passed: bool,
+    /// Where the session's tools run. Rows written before targets existed
+    /// are local.
+    pub target: ExecutionTarget,
 }
 
 #[derive(Debug, Clone)]
@@ -170,6 +179,7 @@ pub struct NewRepositorySession {
     pub model_id: String,
     pub profile_id: String,
     pub reasoning_effort: Option<String>,
+    pub target: ExecutionTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -506,7 +516,8 @@ impl RepositoryControl {
                 github_issue_number INTEGER,
                 github_pr_url TEXT,
                 github_retry_attempts INTEGER NOT NULL DEFAULT 0,
-                github_tests_passed INTEGER NOT NULL DEFAULT 0
+                github_tests_passed INTEGER NOT NULL DEFAULT 0,
+                target TEXT NOT NULL DEFAULT '{"kind":"local"}'
             );
             DROP INDEX IF EXISTS sessions_live_workspace;
             DROP INDEX IF EXISTS sessions_live_slot;
@@ -756,6 +767,14 @@ impl RepositoryControl {
         {
             sqlx::query(
                 "ALTER TABLE sessions ADD COLUMN github_tests_passed INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
+        }
+        // Where a session's tools run. Rows from before targets are local.
+        if !session_columns.iter().any(|name| name == "target") {
+            sqlx::query(
+                "ALTER TABLE sessions ADD COLUMN target TEXT NOT NULL DEFAULT '{\"kind\":\"local\"}'",
             )
             .execute(&self.pool)
             .await?;
@@ -1034,15 +1053,15 @@ impl RepositoryControl {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
-        // The successor works on the same checkout towards the same issue
-        // and pull request, from the same starting commit. Without these it
+        // The successor works on the same checkout (or host) towards the same
+        // issue and pull request, from the same starting commit. Without these it
         // could not create or refresh that pull request ("issue does not
         // match"), and had no base to tell new commits from old ones.
         sqlx::query(
             "UPDATE sessions SET (github_issue_number, github_pr_url, github_retry_attempts, \
-              github_tests_passed, base_sha) = \
+              github_tests_passed, base_sha, target) = \
              (SELECT github_issue_number, github_pr_url, github_retry_attempts, \
-              github_tests_passed, base_sha FROM sessions WHERE session_id = ?) \
+              github_tests_passed, base_sha, target FROM sessions WHERE session_id = ?) \
              WHERE session_id = ?",
         )
         .bind(previous.to_string())
@@ -1512,8 +1531,8 @@ impl RepositoryControl {
         sqlx::query(
             "INSERT INTO sessions \
              (session_id, label, workspace, branch, ownership, lifecycle, turn_state, slot, \
-              model_id, route_id, reasoning_effort, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?)",
+              model_id, route_id, reasoning_effort, created_at, updated_at, target) \
+             VALUES (?, ?, ?, ?, ?, 'active', 'idle', ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(session.session_id.to_string())
         .bind(session.label)
@@ -1526,6 +1545,7 @@ impl RepositoryControl {
         .bind(session.reasoning_effort)
         .bind(&now)
         .bind(&now)
+        .bind(serde_json::to_string(&session.target)?)
         .execute(&mut *transaction)
         .await?;
         if let Some(operation_id) = operation_id {
@@ -1874,6 +1894,24 @@ impl RepositoryControl {
             // remove it, because the branch it started on is gone. The
             // worktree path is what ties a session to its checkout; a
             // directory project has no branches to follow.
+            // A remote session's local workspace is a private directory, not
+            // a checkout: it stays usable while that directory exists.
+            if session.ownership == WorktreeOwnership::Remote {
+                let lifecycle = match (session.lifecycle, session.workspace.is_dir()) {
+                    (SessionLifecycle::Retained, true) => "retained",
+                    (_, true) => "active",
+                    _ => "unavailable",
+                };
+                sqlx::query(
+                    "UPDATE sessions SET lifecycle = ?, updated_at = ? WHERE session_id = ?",
+                )
+                .bind(lifecycle)
+                .bind(&now)
+                .bind(session.session_id.to_string())
+                .execute(&mut *transaction)
+                .await?;
+                continue;
+            }
             let followed_branch = (session.ownership != WorktreeOwnership::Directory)
                 .then(|| {
                     worktrees
@@ -2031,6 +2069,12 @@ fn parse_session(
         github_pr_url: row.get("github_pr_url"),
         github_retry_attempts: row.get::<i64, _>("github_retry_attempts").max(0) as u32,
         github_tests_passed: row.get::<i64, _>("github_tests_passed") != 0,
+        target: serde_json::from_str(&row.get::<String, _>("target")).map_err(|_| {
+            RepositorySessionError::InvalidStoredValue {
+                field: "target",
+                value: row.get::<String, _>("target"),
+            }
+        })?,
     })
 }
 
@@ -2225,6 +2269,7 @@ mod tests {
             model_id: "mock".into(),
             profile_id: String::new(),
             reasoning_effort: Some("high".into()),
+            target: forge_types::ExecutionTarget::Local,
         }
     }
 
@@ -3179,6 +3224,119 @@ mod tests {
         // The old `native` placeholder reads as no profile.
         assert_eq!(stored.profile_id, "");
         assert_eq!(stored.reasoning_effort, None);
+    }
+
+    fn devbox() -> ExecutionTarget {
+        ExecutionTarget::Ssh {
+            host: "devbox".into(),
+            path: "/srv/app".into(),
+            ask: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_remote_session_keeps_its_target_across_reopening() {
+        let dir = TempDir::new().unwrap();
+        let mut session = new_session(&dir.path().join("remote-a"), "a", None);
+        session.ownership = WorktreeOwnership::Remote;
+        session.target = devbox();
+        let id = session.session_id;
+        {
+            let control = RepositoryControl::open(dir.path()).await.unwrap();
+            control.register_session(session, None).await.unwrap();
+            let stored = control.session(id).await.unwrap();
+            assert_eq!(stored.ownership, WorktreeOwnership::Remote);
+            assert_eq!(stored.target, devbox());
+        }
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        assert_eq!(control.session(id).await.unwrap().target, devbox());
+    }
+
+    #[tokio::test]
+    async fn a_control_database_without_targets_migrates_and_reads_local() {
+        let dir = TempDir::new().unwrap();
+        let old = new_session(&dir.path().join("a"), "a", None);
+        let old_id = old.session_id;
+        {
+            let control = RepositoryControl::open(dir.path()).await.unwrap();
+            control.register_session(old, None).await.unwrap();
+            // Stand up the pre-target shape, then reopen through the real
+            // migration path.
+            sqlx::query("ALTER TABLE sessions DROP COLUMN target")
+                .execute(&control.pool)
+                .await
+                .unwrap();
+        }
+        let control = RepositoryControl::open(dir.path()).await.unwrap();
+        assert_eq!(
+            control.session(old_id).await.unwrap().target,
+            ExecutionTarget::Local
+        );
+        let mut remote = new_session(&dir.path().join("b"), "b", None);
+        remote.ownership = WorktreeOwnership::Remote;
+        remote.target = devbox();
+        let remote_id = remote.session_id;
+        control.register_session(remote, None).await.unwrap();
+        assert_eq!(control.session(remote_id).await.unwrap().target, devbox());
+    }
+
+    /// A remote session's workspace is no checkout: reconciling against Git
+    /// keeps it while its private directory exists.
+    #[tokio::test]
+    async fn a_remote_session_survives_worktree_reconciliation() {
+        let dir = TempDir::new().unwrap();
+        let control = RepositoryControl::open(&dir.path().join("control"))
+            .await
+            .unwrap();
+        let private = dir.path().join("remote/a");
+        std::fs::create_dir_all(&private).unwrap();
+        let mut remote = new_session(&private, "a", None);
+        remote.branch = String::new();
+        remote.ownership = WorktreeOwnership::Remote;
+        remote.target = devbox();
+        let id = remote.session_id;
+        control.register_session(remote, None).await.unwrap();
+        control.reconcile_worktrees(&[]).await.unwrap();
+        assert_eq!(
+            control.session(id).await.unwrap().lifecycle,
+            SessionLifecycle::Active
+        );
+        std::fs::remove_dir_all(&private).unwrap();
+        control.reconcile_worktrees(&[]).await.unwrap();
+        assert_eq!(
+            control.session(id).await.unwrap().lifecycle,
+            SessionLifecycle::Unavailable
+        );
+    }
+
+    /// A moved project re-points its local paths; a path on the host is not
+    /// one of them.
+    #[tokio::test]
+    async fn adopting_a_new_root_leaves_remote_paths_alone() {
+        let dir = TempDir::new().unwrap();
+        let old_root = dir.path().join("old");
+        let new_root = dir.path().join("new");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir_all(&new_root).unwrap();
+        let control = RepositoryControl::open(&dir.path().join("control"))
+            .await
+            .unwrap();
+        let mut remote = new_session(&old_root.join(".forge/local/remote/a"), "a", None);
+        remote.ownership = WorktreeOwnership::Remote;
+        remote.target = ExecutionTarget::Ssh {
+            host: "devbox".into(),
+            // The same string as the old local root, on purpose.
+            path: old_root.display().to_string(),
+            ask: true,
+        };
+        let id = remote.session_id;
+        let target = remote.target.clone();
+        control.register_session(remote, None).await.unwrap();
+        control.adopt_root(&old_root).await.unwrap();
+        control.adopt_root(&new_root).await.unwrap();
+        let stored = control.session(id).await.unwrap();
+        assert!(stored.workspace.starts_with(&new_root));
+        assert_eq!(stored.target, target);
     }
 
     #[tokio::test]

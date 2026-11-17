@@ -159,6 +159,7 @@ impl AgentSession {
                     .with_session_tmp(session_tmp);
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx.credential_env_names = Arc::clone(&self.tool_ctx.credential_env_names);
+                ctx.target = Arc::clone(&self.tool_ctx.target);
                 ctx
             },
             egress: None,
@@ -202,7 +203,12 @@ impl AgentSession {
             ),
             tier_resolver: self.tier_resolver.clone(),
             verification_commands: self.verification_commands.clone(),
+            // A child works where its parent does, under the same rules.
+            execution_target: self.execution_target.clone(),
         };
+        if !child.execution_target.is_local() {
+            child.describe_target_in_prompt();
+        }
         child.apply_child_profile(spec.tool_allowlist.clone(), &spec.profile);
         let journaled = crate::custom_agents::JournaledProfile {
             tool_limit: spec.tool_allowlist.clone(),
@@ -314,6 +320,7 @@ impl AgentSession {
                     .with_session_tmp(session_tmp);
                 ctx.egress = self.tool_ctx.egress.clone();
                 ctx.credential_env_names = Arc::clone(&self.tool_ctx.credential_env_names);
+                ctx.target = Arc::clone(&self.tool_ctx.target);
                 ctx
             },
             egress: None,
@@ -360,7 +367,12 @@ impl AgentSession {
             ),
             tier_resolver: self.tier_resolver.clone(),
             verification_commands: self.verification_commands.clone(),
+            // A child works where its parent does, under the same rules.
+            execution_target: self.execution_target.clone(),
         };
+        if !child.execution_target.is_local() {
+            child.describe_target_in_prompt();
+        }
         if let Some(journaled) = journaled {
             child.apply_child_profile(journaled.tool_limit, &journaled.profile);
         }
@@ -691,19 +703,41 @@ impl AgentSession {
         &mut self,
         spec: SubagentSpec,
     ) -> Result<BackgroundTaskId, LoopError> {
-        let repo_root = forge_storage::detect_repo_info(&self.tool_ctx.workspace_root)
-            .worktree_root
-            .ok_or_else(|| {
-                LoopError::Other(
-                    "subagents require the workspace to be inside a git repository".into(),
-                )
-            })?;
+        // On an SSH host the files are there: a writer's separate checkout
+        // would have to be made there too, so only read-only agents run,
+        // alongside the session, in its (remote) workspace.
+        let remote = self.execution_target.host().map(str::to_string);
+        if let (Some(host), AgentMode::Writer) = (&remote, spec.mode) {
+            return Err(LoopError::Other(format!(
+                "A writing agent needs a checkout of its own, and this session's files are on \
+                 {host}; start a read-only agent, or make the change in this session."
+            )));
+        }
+        let repo_root = match &remote {
+            Some(_) => self.tool_ctx.workspace_root.clone(),
+            None => forge_storage::detect_repo_info(&self.tool_ctx.workspace_root)
+                .worktree_root
+                .ok_or_else(|| {
+                    LoopError::Other(
+                        "subagents require the workspace to be inside a git repository".into(),
+                    )
+                })?,
+        };
         let writer_gate =
             matches!(spec.mode, AgentMode::Writer).then(|| get_writer_gate(&repo_root));
-        let storage = forge_storage::LocalRuntimeStorage::new(&self.tool_ctx.workspace_root);
-        let base_dir = storage
-            .path_for(forge_storage::RuntimeDataKind::Worktree)
-            .map_err(|e| LoopError::Other(format!("could not prepare worktree storage: {e}")))?;
+        // Only a writer gets a worktree; a read-only child prepares no storage.
+        let base_dir = if matches!(spec.mode, AgentMode::Writer) {
+            let storage = forge_storage::LocalRuntimeStorage::new(&self.tool_ctx.workspace_root);
+            Some(
+                storage
+                    .path_for(forge_storage::RuntimeDataKind::Worktree)
+                    .map_err(|e| {
+                        LoopError::Other(format!("could not prepare worktree storage: {e}"))
+                    })?,
+            )
+        } else {
+            None
+        };
 
         let child_session_id = forge_durable::new_session_id();
         let cancel = CancellationToken::new();
@@ -753,7 +787,9 @@ impl AgentSession {
         } else {
             match forge_storage::create_worktree(
                 &repo_root,
-                &base_dir,
+                base_dir
+                    .as_deref()
+                    .expect("a writer prepared worktree storage"),
                 self.session_id,
                 task_id.0,
                 &spec.role,
@@ -820,6 +856,9 @@ impl AgentSession {
                 .as_ref()
                 .map(|worktree| worktree.branch.clone())
                 .or_else(|| {
+                    if remote.is_some() {
+                        return None;
+                    }
                     forge_storage::list_worktree_records(&repo_root)
                         .ok()?
                         .into_iter()

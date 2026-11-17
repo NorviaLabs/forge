@@ -57,6 +57,9 @@ pub struct ShellSpawnSpec {
     confined: bool,
     env_remove: Vec<String>,
     env_set: Vec<(String, OsString)>,
+    /// Start from an empty environment (a remote target's local `ssh`,
+    /// which must not carry this machine's environment anywhere).
+    clear_env: bool,
     egress_invocation: Option<EgressInvocation>,
 }
 
@@ -328,8 +331,29 @@ impl ShellSpawnSpec {
             confined,
             env_remove,
             env_set,
+            clear_env: false,
             egress_invocation,
         })
+    }
+
+    /// Run `program` with `args` in `cwd`, with exactly the environment
+    /// `env` and no sandbox: how a remote target starts its local `ssh`.
+    pub(crate) fn direct(
+        program: impl Into<String>,
+        args: Vec<String>,
+        cwd: &Path,
+        env: Vec<(String, OsString)>,
+    ) -> Self {
+        Self {
+            program: program.into(),
+            args,
+            cwd: cwd.to_path_buf(),
+            confined: false,
+            env_remove: Vec::new(),
+            env_set: env,
+            clear_env: true,
+            egress_invocation: None,
+        }
     }
 
     /// Whether the command runs inside the sandbox.
@@ -370,6 +394,9 @@ impl ShellSpawnSpec {
     pub fn tokio_command(&self) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&self.program);
         command.args(&self.args).current_dir(&self.cwd);
+        if self.clear_env {
+            command.env_clear();
+        }
         for name in &self.env_remove {
             command.env_remove(name);
         }
@@ -384,6 +411,9 @@ impl ShellSpawnSpec {
         let mut command = portable_pty::CommandBuilder::new(&self.program);
         command.args(&self.args);
         command.cwd(&self.cwd);
+        if self.clear_env {
+            command.env_clear();
+        }
         for name in &self.env_remove {
             command.env_remove(name);
         }

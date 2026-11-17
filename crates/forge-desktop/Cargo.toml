@@ -32,6 +32,9 @@ forge-config = { path = "../forge-config" }
 forge-core = { path = "../forge-core" }
 forge-connect = { path = "../forge-connect" }
 forge-session = { path = "../forge-session" }
+# Remote control: one paired device follows sessions over pinned TLS.
+forge-remote = { path = "../forge-remote" }
+forge-storage = { path = "../forge-storage" }
 # File name and content search through the same watched index the agent uses.
 forge-search = { path = "../forge-search" }
 # The `__egress-connect` helper git's SSH routing invokes on this executable.
@@ -54,3 +57,5 @@ rfd = { version = "=0.17.2", default-features = false, features = ["gtk3", "comm
 [dev-dependencies]
 # Constructing a session snapshot in the bridge's roster tests.
 chrono = "0.4"
+# SSH config fixtures.
+tempfile = "3"

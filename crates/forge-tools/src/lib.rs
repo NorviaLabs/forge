@@ -25,6 +25,7 @@ mod registry;
 pub mod sandbox;
 pub mod shell_spawn;
 mod skills;
+pub mod target;
 mod unified_exec;
 mod validation;
 mod view_image;
@@ -34,9 +35,9 @@ pub use apply_patch::{ApplyPatchArgs, ApplyPatchTool};
 pub use builtins::{
     default_builtins, is_provider_credential_env, provider_credential_env_names, run_shell_command,
     run_shell_command_observed, run_shell_command_unconfined, run_shell_command_with_egress,
-    run_shell_command_with_egress_and_temp, strip_credentials, AskUserQuestionTool, BashTool,
-    GitTool, LsTool, ReadFileTool, ShellOutputCapture, ShellOutputSnapshot, UpdatePlanTool,
-    WriteFileTool, PROVIDER_CREDENTIAL_ENV,
+    run_shell_command_with_egress_and_temp, run_shell_job, strip_credentials, AskUserQuestionTool,
+    BashTool, GitTool, LsTool, ReadFileTool, ShellOutputCapture, ShellOutputSnapshot,
+    UpdatePlanTool, WriteFileTool, PROVIDER_CREDENTIAL_ENV,
 };
 pub use builtins::{set_process_group, ProcessGroupGuard};
 pub use edit::{EditArgs, EditTool};

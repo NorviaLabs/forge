@@ -41,6 +41,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "child_transcript",
     "message_detail",
     "create_session",
+    "list_ssh_hosts",
     "select_session",
     "archive_session",
     "attach_worktree",
@@ -103,4 +104,10 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "shell_write",
     "shell_resize",
     "shell_close",
+    "remote_status",
+    "remote_configure",
+    "remote_pair_start",
+    "remote_pair_cancel",
+    "remote_pair_decide",
+    "remote_revoke",
 ];

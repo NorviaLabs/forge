@@ -82,6 +82,9 @@ struct Session {
     egress_invocation: Option<crate::egress::EgressInvocation>,
     _session_tmp: Option<Arc<crate::SessionTempDir>>,
     process: Process,
+    /// On a remote target: the command's exit status and process group on
+    /// the host. Dropped unfinished, it kills the command there.
+    remote: Option<crate::target::RemoteRun>,
     /// Owns the retained session's process group so `terminate_process`,
     /// `shutdown`, and dropping the session all reap the whole tree.
     process_group: ProcessGroupGuard,
@@ -234,6 +237,9 @@ async fn terminate_process(session: &mut Session) {
     // Kill the whole group first: a plain child kill (below) can leave a
     // shell's descendants — or a sandbox wrapper's shell — running.
     session.process_group.kill();
+    if let Some(remote) = &session.remote {
+        remote.cancel();
+    }
     match &mut session.process {
         Process::Pipe { child, .. } => {
             let _ = child.kill().await;
@@ -282,6 +288,15 @@ async fn collect(
         }
         if let Some((success, exit_code)) = try_wait(session)? {
             session.running = false;
+            // A remote command's status comes from the host: the local
+            // `ssh` exits 255 for a lost connection too.
+            let (success, exit_code) = match &session.remote {
+                Some(remote) => {
+                    let exit_code = remote.exit_status(exit_code).await?;
+                    (exit_code == Some(0), exit_code)
+                }
+                None => (success, exit_code),
+            };
             let exit = format!("\n[process exited with code {}]", exit_code.unwrap_or(-1));
             append_output(session, exit.as_bytes());
             drain_process_output(session).await?;
@@ -466,8 +481,9 @@ async fn start(
     // itself gated — a session that starts unconfined accepts arbitrary
     // commands unconfined for as long as it lives.
     let shell = args.shell.as_deref().unwrap_or("sh");
-    let mut spec =
-        crate::shell_spawn::ShellSpawnSpec::build(crate::shell_spawn::ShellSpawnRequest {
+    let crate::target::TargetShell { mut spec, remote } = ctx
+        .target
+        .shell(crate::shell_spawn::ShellSpawnRequest {
             mode: if args.tty {
                 crate::shell_spawn::ShellSpawnMode::Pty
             } else {
@@ -580,6 +596,7 @@ async fn start(
         egress_invocation,
         _session_tmp: ctx.session_tmp.clone(),
         process,
+        remote,
         process_group: ProcessGroupGuard::new(pgid),
         output: String::new(),
         stderr_output: String::new(),
@@ -607,7 +624,7 @@ async fn start(
         args.max_output_tokens,
     )
     .await;
-    if session_finished(&result) {
+    if session_finished(&result) || !session.running {
         sessions.sessions.lock().await.remove(&id);
         sessions.cancellations.lock().await.remove(&id);
     }
@@ -712,7 +729,7 @@ impl Tool for WriteStdinTool {
             args.max_output_tokens,
         )
         .await;
-        if session_finished(&result) {
+        if session_finished(&result) || !session.running {
             self.sessions.sessions.lock().await.remove(&args.session_id);
         }
         result

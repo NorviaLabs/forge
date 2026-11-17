@@ -266,6 +266,8 @@ pub struct AgentSession {
     /// The project's configured validation command lines, which count as
     /// verification commands in turn signals. Shared with subagents.
     verification_commands: Arc<Vec<String>>,
+    /// Where the tools run; `tool_ctx.target` is its connection.
+    execution_target: forge_types::ExecutionTarget,
 }
 
 #[derive(Debug)]
@@ -301,6 +303,8 @@ mod compaction_tests;
 mod custom_agents_tests;
 #[cfg(all(test, unix))]
 mod mcp_egress_tests;
+#[cfg(test)]
+mod remote_target_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

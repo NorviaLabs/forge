@@ -35,6 +35,10 @@ pub enum GrantRejection {
     /// Only one simple invocation of a bare program can be trusted.
     #[error("only a single simple command can have its program trusted; approve it once instead")]
     NotTrustable,
+    /// A command on an SSH host is allowed for this session at most: a
+    /// personal rule was written about this machine.
+    #[error("a command on another machine is allowed for this session, not always")]
+    NotKeptForRemote,
 }
 
 /// The grant a resolved decision applied, for a frontend to report.
@@ -102,6 +106,11 @@ pub fn validate_grant_decision(
             if kind == ApprovalKind::SandboxEscalation =>
         {
             Err(GrantRejection::EscalationPattern)
+        }
+        // A personal rule is about this machine; a command on another one is
+        // allowed for the session at most.
+        GrantDecision::AllowPatternAlways if payload.target.is_some() => {
+            Err(GrantRejection::NotKeptForRemote)
         }
         GrantDecision::AllowPathForSession | GrantDecision::AllowPathAlways => {
             if kind == ApprovalKind::SandboxEscalation && payload.denied_path.is_some() {
@@ -355,6 +364,7 @@ mod tests {
             sandbox_escalation: false,
             denied_host: None,
             denied_path: None,
+            target: None,
         }
     }
 

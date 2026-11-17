@@ -3,17 +3,20 @@
   // connects to, and the custom agents it can start. Help holds only help.
   import { onMount } from "svelte";
   import Icon from "./Icon.svelte";
+  import RemoteControl from "./RemoteControl.svelte";
   import { modal } from "../modal.js";
   import { invoke } from "../ipc.js";
   import { grantGroups, projectName, withoutGrant } from "../grants.js";
 
-  let { onClose, onProviders, onAgents, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true) } = $props();
+  let { onClose, onProviders, onAgents, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true), remoteStatus = null, section = null } = $props();
 
   // What sandboxed commands were allowed "always", per project.
   let grants = $state(null);
   let grantsError = $state("");
 
   onMount(async () => {
+    // Opened from the footer's remote item: start at that section.
+    if (section === "remote") document.getElementById("settings-remote")?.scrollIntoView({ block: "start" });
     try { grants = await invoke("sandbox_grants"); }
     catch (cause) { grantsError = `Could not read sandbox permissions: ${cause}`; }
   });
@@ -59,6 +62,8 @@
         </span>
         <button class="link" type="button" onclick={onProviders}>Manage</button>
       </div>
+
+      <RemoteControl status={remoteStatus} />
 
       <h3>Agents</h3>
       <div class="row">

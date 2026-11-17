@@ -14,6 +14,20 @@ use std::sync::{Arc, Mutex};
 
 use forge_types::{PolicyDecision, Principal, SideEffectClass, ToolCall, ToolDescriptor};
 
+/// The tools that run a command on the session's target. `write_stdin`
+/// with nothing to send only reads a running command's output.
+fn is_remote_command(call: &ToolCall) -> bool {
+    match call.name.as_str() {
+        "bash" | "exec_command" | "background_run" | "git" => true,
+        "write_stdin" => call
+            .arguments
+            .get("chars")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|chars| !chars.is_empty()),
+        _ => false,
+    }
+}
+
 /// High-level governance facade for the tool path.
 ///
 /// There is one shipped policy: shell and file writes run without a prompt
@@ -35,6 +49,9 @@ pub struct Governance {
     /// Shared across clones so a parent and its subagents see the same set.
     /// Never written to `permissions.toml`.
     session_pattern_allow: Arc<Mutex<Vec<PatternRule>>>,
+    /// Commands run on an SSH host and each asks; see
+    /// [`Governance::asking_before_remote_commands`].
+    remote_commands: bool,
 }
 
 impl Default for Governance {
@@ -51,6 +68,7 @@ impl Default for Governance {
             pattern_allow: vec![],
             pattern_deny: vec![],
             session_pattern_allow: Arc::new(Mutex::new(Vec::new())),
+            remote_commands: false,
         }
     }
 }
@@ -64,6 +82,22 @@ impl Governance {
     pub fn require_hitl_for_tool(mut self, name: impl Into<String>) -> Self {
         self.hitl_tools.push(name.into());
         self
+    }
+
+    /// The policy for a session whose commands run on an SSH host, outside
+    /// Forge's sandbox, with "ask before each command" on: every command
+    /// (`Exec` tools) and every `git` call asks, except a `write_stdin` that
+    /// only polls a running command's output. Rules in the personal
+    /// permissions file were written about this machine and do not cover the
+    /// host; only what the user allows in this session does.
+    pub fn asking_before_remote_commands(mut self) -> Self {
+        self.remote_commands = true;
+        self
+    }
+
+    /// Whether [`Self::asking_before_remote_commands`] applies.
+    pub fn asks_before_remote_commands(&self) -> bool {
+        self.remote_commands
     }
 
     pub fn with_pattern_rules(mut self, allow: Vec<PatternRule>, deny: Vec<PatternRule>) -> Self {
@@ -114,6 +148,13 @@ impl Governance {
         // working because the default policy stopped asking.
         if self.pattern_deny.iter().any(|rule| rule.matches(call)) {
             return PolicyDecision::Hitl;
+        }
+        if self.remote_commands && is_remote_command(call) {
+            return if self.session_pattern_allows(call) {
+                PolicyDecision::Allow
+            } else {
+                PolicyDecision::Hitl
+            };
         }
         let hitl_gated = self
             .hitl_tools
@@ -338,6 +379,76 @@ mod tests {
     use super::*;
     use forge_types::ToolCall;
     use serde_json::json;
+
+    #[test]
+    fn remote_commands_ask_and_only_session_rules_cover_them() {
+        let g = Governance::default()
+            .with_pattern_rules(
+                parse_pattern_rules(&["bash(cargo test *)", "git(*)"]),
+                vec![],
+            )
+            .asking_before_remote_commands();
+        let cases = [
+            (
+                call("bash", json!({"command": "cargo test --all"})),
+                SideEffectClass::Exec,
+            ),
+            (
+                call("exec_command", json!({"cmd": "ls"})),
+                SideEffectClass::Exec,
+            ),
+            (
+                call("write_stdin", json!({"session_id": 1, "chars": "y"})),
+                SideEffectClass::Exec,
+            ),
+            (
+                call("background_run", json!({"command": "make"})),
+                SideEffectClass::Exec,
+            ),
+            (
+                call("git", json!({"subcommand": "status", "args": []})),
+                SideEffectClass::Write,
+            ),
+        ];
+        for (c, class) in &cases {
+            assert_eq!(g.authorize(c, *class), PolicyDecision::Hitl, "{}", c.name);
+        }
+        for (c, class) in [
+            // Polling a running command's output sends nothing to the host.
+            (
+                call("write_stdin", json!({"session_id": 1, "chars": ""})),
+                SideEffectClass::Exec,
+            ),
+            (
+                call("write_stdin", json!({"session_id": 1})),
+                SideEffectClass::Exec,
+            ),
+            (
+                call("read_file", json!({"path": "a"})),
+                SideEffectClass::Read,
+            ),
+            (
+                call("write_file", json!({"path": "a", "content": ""})),
+                SideEffectClass::Write,
+            ),
+            (call("edit", json!({"path": "a"})), SideEffectClass::Write),
+        ] {
+            assert_eq!(
+                g.authorize(&c, class),
+                PolicyDecision::Allow,
+                "{}: {}",
+                c.name,
+                c.arguments
+            );
+        }
+        let mut g = g;
+        g.allow_suggested_pattern_for_session(&cases[0].0).unwrap();
+        assert_eq!(
+            g.authorize(&cases[0].0, SideEffectClass::Exec),
+            PolicyDecision::Allow,
+            "what the user allows this session does cover the host"
+        );
+    }
 
     fn call(name: &str, args: serde_json::Value) -> ToolCall {
         ToolCall {

@@ -495,6 +495,7 @@ mod tests {
                         model_id: "mock".into(),
                         profile_id: String::new(),
                         reasoning_effort: None,
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -558,6 +559,7 @@ mod tests {
                     model_id: "mock".into(),
                     profile_id: String::new(),
                     reasoning_effort: None,
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -1058,6 +1060,7 @@ mod tests {
                     model_id: "mock".into(),
                     profile_id: String::new(),
                     reasoning_effort: None,
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 Some(creation.operation_id),
             )

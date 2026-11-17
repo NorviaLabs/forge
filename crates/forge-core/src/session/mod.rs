@@ -14,6 +14,7 @@ mod create;
 pub(crate) mod grant;
 mod inspect;
 pub(crate) mod question;
+pub(crate) mod target;
 mod tasks;
 pub(crate) mod tools;
 mod turn_ops;

@@ -1001,6 +1001,15 @@ impl AgentSession {
             return Ok(ToolExecutionStart::Finished(None));
         }
         if call.name == "request_unconfined_retry" {
+            if let Some(host) = self.execution_target.host() {
+                // Nothing on the host is sandboxed: there is no boundary to
+                // ask to step outside of.
+                let output = ToolOutput::denied(format!(
+                    "`request_unconfined_retry` does not apply here: commands on {host} already                      run outside Forge's sandbox"
+                ));
+                self.record_denied_tool(&call, output).await?;
+                return Ok(ToolExecutionStart::Finished(None));
+            }
             if !validated {
                 self.tools
                     .validate_call(&call.name, &call.arguments)
@@ -1025,7 +1034,13 @@ impl AgentSession {
                         call_id: call.id.clone(),
                         tool: call.name.clone(),
                         args_redacted: self.governance.redact_args(&call.arguments),
-                        reason: "policy requires human approval".into(),
+                        reason: if self.governance.asks_before_remote_commands()
+                            && self.approval_target(&call.name).is_some()
+                        {
+                            "This session asks before each command.".into()
+                        } else {
+                            "policy requires human approval".into()
+                        },
                         // Gated before the call ran, so there is no refusal to
                         // quote — this is the one prompt where the category
                         // really is everything we know.
@@ -1033,6 +1048,7 @@ impl AgentSession {
                         sandbox_escalation: false,
                         denied_host: None,
                         denied_path: None,
+                        target: self.approval_target(&call.name),
                     };
                     self.journal
                         .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
@@ -1705,6 +1721,7 @@ impl AgentSession {
             sandbox_escalation: denied_host.is_none(),
             denied_host: denied_host.clone(),
             denied_path,
+            target: None,
         };
         self.journal
             .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())

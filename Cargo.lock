@@ -1610,8 +1610,10 @@ dependencies = [
  "forge-config",
  "forge-connect",
  "forge-core",
+ "forge-remote",
  "forge-search",
  "forge-session",
+ "forge-storage",
  "forge-tools",
  "forge-types",
  "forge-workspace",
@@ -1686,6 +1688,41 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "forge-remote"
+version = "0.1.0-beta.11"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "forge-config",
+ "forge-core",
+ "forge-remote",
+ "forge-session",
+ "forge-types",
+ "futures",
+ "getrandom 0.3.4",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tokio-util",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
  "uuid",
 ]
 
@@ -1774,8 +1811,10 @@ dependencies = [
  "forge-context",
  "forge-sandbox",
  "forge-search",
+ "forge-tools",
  "forge-types",
  "futures",
+ "globset",
  "jsonschema",
  "portable-pty",
  "rcgen",
@@ -2472,6 +2511,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "httpdate"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2494,6 +2539,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",

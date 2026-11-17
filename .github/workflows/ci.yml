@@ -35,9 +35,13 @@ jobs:
       # AppArmor, which stops bubblewrap from creating the sandbox's network
       # namespace ("bwrap: loopback: Failed RTM_NEWADDR"). Lift it on the
       # runner so the real sandbox is exercised.
+      #
+      # OpenSSH: the SSH execution target's tests run a real `sshd` (as this
+      # user, on a loopback port). Without it they skip;
+      # `openssh_is_available_in_ci` asserts it is here.
       - name: Install sandbox dependencies
         run: |
-          sudo apt-get update && sudo apt-get install -y bubblewrap socat
+          sudo apt-get update && sudo apt-get install -y bubblewrap socat openssh-client openssh-server
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       # forge-desktop is a workspace member, so every workspace build compiles
       # Tauri: Linux needs the WebKitGTK/GTK development packages, and its

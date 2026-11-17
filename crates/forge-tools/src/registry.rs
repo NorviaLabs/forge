@@ -104,6 +104,9 @@ pub struct ToolContext {
     /// stripped from every model-triggered child process in addition to the
     /// built-in vendor aliases and any `FORGE_*_API_KEY` override.
     pub credential_env_names: Arc<[String]>,
+    /// Where shell commands run and files live: this machine (the default)
+    /// or a remote host. Every workspace tool goes through it.
+    pub target: Arc<dyn crate::target::Target>,
 }
 
 impl ToolContext {
@@ -120,7 +123,14 @@ impl ToolContext {
             unconfined_shell: false,
             tool_call_id: None,
             credential_env_names: Arc::from(Vec::<String>::new()),
+            target: Arc::new(crate::target::LocalTarget),
         }
+    }
+
+    /// Run this context's tools on `target`.
+    pub fn with_target(mut self, target: Arc<dyn crate::target::Target>) -> Self {
+        self.target = target;
+        self
     }
 
     /// A per-call egress gateway for a tool that opens its own connections

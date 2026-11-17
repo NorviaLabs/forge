@@ -281,6 +281,7 @@ const SESSIONLESS_COMMANDS: &[&str] = &[
     "attach_worktree",
     "list_models",
     "list_providers",
+    "list_ssh_hosts",
     "connect_provider",
     "prepare_model_tiers",
     "disconnect_provider",
@@ -291,6 +292,13 @@ const SESSIONLESS_COMMANDS: &[&str] = &[
     "add_model",
     "set_unsaved",
     "quit_app",
+    // Remote control is app-level: the service, its pairing and its device.
+    "remote_status",
+    "remote_configure",
+    "remote_pair_start",
+    "remote_pair_cancel",
+    "remote_pair_decide",
+    "remote_revoke",
 ];
 
 /// A session command that reads "the selected session" from the backend can
@@ -321,4 +329,10 @@ fn every_session_command_names_its_session() {
         "a command without `session_id` must be project-, provider- or app-level and listed in \
          SESSIONLESS_COMMANDS; a session command takes its session from the page"
     );
+}
+
+/// The new-session dialog lists the user's SSH hosts.
+#[test]
+fn ssh_hosts_can_be_listed_from_the_page() {
+    assert!(DESKTOP_COMMANDS.contains(&"list_ssh_hosts"));
 }

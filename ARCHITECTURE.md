@@ -9,6 +9,7 @@ flowchart TB
         desktop[forge-desktop\nTauri desktop app]
         cli[forge-cli\nforge command, bench]
         session[forge-session\nSession assembly, resume, headless]
+        remote[forge-remote\nRemote control: pairing, pinned TLS API, event logs]
     end
 
     subgraph runtime[Agent runtime]
@@ -38,6 +39,8 @@ flowchart TB
         mcpservers[(MCP servers)]
         repo[(Workspace repository)]
         local[(.forge/local session data)]
+        device[(Paired remote device)]
+        sshhost[(SSH host\nremote folder)]
     end
 
     user --> desktop
@@ -45,6 +48,10 @@ flowchart TB
     cli -. opens .-> desktop
     cli --> session
     desktop --> session
+    desktop --> remote
+    remote --> session
+    remote --> core
+    remote --> types
     desktop --> workspace
     session --> core
     session --> config
@@ -85,9 +92,11 @@ flowchart TB
     mcp --> mcpservers
     workspace --> repo
     search --> repo
+    tools -. ssh .-> sshhost
     durable --> local
     storage --> local
     connect --> local
+    device -. HTTPS, pinned .-> remote
 
     classDef entry fill:#264653,stroke:#8bd3dd,color:#fff
     classDef runtime fill:#3a506b,stroke:#a8dadc,color:#fff
@@ -95,11 +104,11 @@ flowchart TB
     classDef data fill:#2d6a4f,stroke:#95d5b2,color:#fff
     classDef external fill:#5c4033,stroke:#f4a261,color:#fff
 
-    class desktop,cli,session entry
+    class desktop,cli,session,remote entry
     class core,tools,mcp,model runtime
     class context,workspace,search,governance,connect,config service
     class durable,storage,types data
-    class providers,mcpservers,repo,local external
+    class providers,mcpservers,repo,local,device,sshhost external
 ```
 
 ## Runtime flow
@@ -109,6 +118,52 @@ flowchart TB
 3. `forge-core` coordinates turns: it streams model output, validates and executes tools, applies governance checks, and journals durable events.
 4. `forge-model` connects to model providers; `forge-mcp` connects external MCP servers; workspace tools operate on the repository through `forge-workspace` and `forge-search`.
 5. `forge-durable` and `forge-storage` preserve resumable session state under repository-local `.forge/local/` storage (or the configured application-data fallback). A `.forge/local` is used only while Git tracks nothing in it (`forge-storage::local_dir`: one `git ls-files` per repository per process; when Git cannot tell, or `.forge` or `.forge/local` is a symbolic link Git would not look through, it is not used either): committed runtime state — a session list, journals — is not this machine's, so such a repository's state goes to application data, for writers and read-only callers alike, with a notice, and the committed files are left untouched.
+
+6. `forge-remote` lets one paired device (a phone app, later) follow sessions
+   live, send a prompt, stop a turn, and allow or deny a pending request. It
+   is off until the user turns it on in Settings; then it serves a small
+   HTTPS API (TLS 1.3, a self-signed certificate the device pins by
+   fingerprint) on loopback or one chosen LAN address. `forge-desktop` owns
+   the service (`src/remote.rs`); the crate reaches sessions only through its
+   `RemoteBackend` trait, implemented over `ProjectService` by
+   `SupervisorBackend` with the same supervisor commands the desktop sends.
+   Which decisions a device may make comes from `forge-session::approvals`,
+   which the desktop's approval card reads too: allow once, deny, or deny
+   with a note, and only where the request offers that option without a
+   privileged confirmation. A pairing code lives only in memory, works once
+   and expires; redeeming it opens a pairing request the desktop must allow
+   against a confirmation number both screens show, and only then is a
+   token created, stored only as a SHA-256. Each followed
+   session has an event log with contiguous sequence numbers (`hub`), so a
+   device sees events in order and resumes after a reconnect without a
+   silent gap. A session event carries only the newest 30 messages (older
+   ones are paged), and streamed text is batched every 50 ms, so an update
+   costs the same however long the conversation. The wire format is
+   `crates/forge-remote/PROTOCOL.md`.
+
+Execution targets decide where a session's tools run. `forge-tools::target`
+defines the `Target` trait every workspace tool goes through (`bash`,
+background jobs, `exec_command`/`write_stdin`, the file tools, `glob`/`grep`
+and `git`): `LocalTarget` is this machine under the sandbox, as before, and
+`SshTarget` a host from the user's SSH config and a folder on it. An SSH
+command is a local `ssh` process over the session's `ControlMaster`
+connection, so it uses the same spawn, output, yield and PTY code; a small
+`bash` wrapper on the host records its process group (for cancel) and exit
+status (to tell an exit of 255 from a lost connection). File operations go to a pool of up to four long-lived helpers on the host
+(`forge-tools::target::helper`: a `bash` loop reading length-prefixed requests,
+one network round trip each), falling back to one SSH command per operation on
+a host without `base64`. File tools resolve and
+confine paths on the host; `glob`/`grep` use `rg` there when it is installed,
+`find`/`grep` otherwise, in the local tools' output shape. The target
+(`forge_types::ExecutionTarget`) is saved on the session's control row
+(`sessions.target`, ownership `remote`); `forge-session` connects and checks
+the host before a remote session is created, points a reopened session back at
+it (connecting on first use), and closes it with the session. `forge-core`
+applies it to the session: approvals name the host, "ask before each command"
+gates commands through `forge-governance`, the unconfined retry is withdrawn,
+the system prompt says where commands run, and only read-only child agents
+start. `forge-desktop` lists hosts from `~/.ssh/config` and refuses its
+local-only commands (files, Git, terminal, GitHub) for a remote session.
 
 Custom agents span the layers: `forge-config::agents` owns the file format,
 both scopes, validation and the capability rules; `forge-core::custom_agents`

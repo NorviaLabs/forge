@@ -5,7 +5,6 @@ use forge_types::{inspect_image, ImageRef, SideEffectClass, ToolOutput};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::AsyncReadExt;
 
 use crate::builtins::schema_for;
 use crate::registry::ToolContext;
@@ -75,21 +74,39 @@ impl Tool for ViewImageTool {
             }
         }
 
-        let abs = ctx.resolve_path(&a.path)?;
-        let file_len = tokio::fs::metadata(&abs).await?.len();
+        let target = &ctx.target;
+        let abs = target
+            .resolve(ctx, &a.path, crate::target::Access::Read)
+            .await?;
+        let file_len = match target.metadata(&abs).await? {
+            Some(meta) => meta.len,
+            None => {
+                return Err(ToolError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("`{}` does not exist", a.path),
+                )))
+            }
+        };
         if file_len > forge_types::MAX_IMAGE_BYTES {
             return Err(ToolError::Execution(format!(
                 "image is {file_len} bytes; maximum allowed is {} bytes",
                 forge_types::MAX_IMAGE_BYTES
             )));
         }
-        let mut file = tokio::fs::File::open(&abs).await?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).await?;
+        let bytes = target.read(&abs, forge_types::MAX_IMAGE_BYTES).await?;
         let meta = inspect_image(&bytes).map_err(|err| ToolError::Execution(err.to_string()))?;
 
-        let rel = workspace_rel_path(&ctx.workspace_root, &abs).unwrap_or_else(|| a.path.clone());
-        let image = ImageRef::new(rel.clone(), meta.mime, bytes.len() as u64)
+        let (rel, attached) = if target.remote_host().is_none() {
+            let rel = workspace_rel_path(&ctx.workspace_root, abs.as_path())
+                .unwrap_or_else(|| a.path.clone());
+            (rel.clone(), rel)
+        } else {
+            // The image lives on the host; the model request is built here,
+            // so attach a private local copy of it.
+            let rel = a.path.trim_start_matches("./").to_string();
+            (rel, local_copy(ctx, &bytes, meta.mime)?)
+        };
+        let image = ImageRef::new(attached, meta.mime, bytes.len() as u64)
             .with_dimensions(meta.width, meta.height);
 
         let mut summary = format!(
@@ -109,6 +126,44 @@ impl Tool for ViewImageTool {
             attachments: vec![image],
         })
     }
+}
+
+/// Write a remote image's bytes to a private local file, in the session
+/// temp when there is one; returns its absolute path.
+fn local_copy(ctx: &ToolContext, bytes: &[u8], mime: &str) -> Result<String, ToolError> {
+    let dir = match &ctx.session_tmp {
+        Some(temp) => {
+            let dir = temp.path().join("remote-images");
+            std::fs::create_dir_all(&dir)?;
+            dir
+        }
+        // A fresh directory only this user can enter, never a fixed name in
+        // a shared temp directory that someone else could make first.
+        None => {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix("forge-remote-images-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                builder.permissions(std::fs::Permissions::from_mode(0o700));
+            }
+            builder.tempdir()?.keep()
+        }
+    };
+    let extension = match mime {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => "img",
+    };
+    let mut file = tempfile::Builder::new()
+        .prefix("image-")
+        .suffix(&format!(".{extension}"))
+        .tempfile_in(&dir)?;
+    std::io::Write::write_all(&mut file, bytes)?;
+    let (_, path) = file.keep().map_err(|error| ToolError::Io(error.error))?;
+    Ok(path.display().to_string())
 }
 
 pub(crate) fn workspace_rel_path(root: &std::path::Path, abs: &std::path::Path) -> Option<String> {
@@ -135,6 +190,25 @@ mod tests {
     use forge_types::sample_png_bytes;
     use serde_json::json;
     use tempfile::tempdir;
+
+    /// Without a session temp, a remote image's local copy still goes to a
+    /// directory only this user can enter, not a name anyone could create
+    /// first in a shared `/tmp`.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_images_copy_is_private_without_a_session_temp() {
+        use std::os::unix::fs::PermissionsExt;
+        let ctx = ToolContext::new(std::env::temp_dir());
+        let copy = std::path::PathBuf::from(local_copy(&ctx, b"png", "image/png").unwrap());
+        let dir = copy.parent().unwrap();
+        assert_ne!(
+            dir,
+            std::env::temp_dir().join(format!("forge-remote-images-{}", std::process::id()))
+        );
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{}", dir.display());
+        assert_eq!(std::fs::read(&copy).unwrap(), b"png");
+    }
 
     fn ctx_with_image(dir: &std::path::Path, allowed: bool) -> ToolContext {
         let mut ctx = ToolContext::new(dir.to_path_buf());

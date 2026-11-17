@@ -87,6 +87,10 @@ pub enum SupervisorCommand {
         label: String,
         first_prompt: Option<String>,
         github_issue_number: Option<u64>,
+        /// Where the new session runs. An SSH target is connected and
+        /// checked before the session exists: an unreachable host or a
+        /// missing folder fails the command and leaves nothing behind.
+        target: forge_types::ExecutionTarget,
     },
     CreateIssuePullRequest {
         session_id: SessionId,
@@ -183,6 +187,12 @@ pub enum SupervisorCommand {
         session_id: SessionId,
         /// As for [`SupervisorCommand::ResolveApproval`].
         expected_call_id: Option<String>,
+        /// The kind of request the decision was checked against. A
+        /// governance prompt and the sandbox escalation that follows when
+        /// the same call is refused share its call id; a decision validated
+        /// for one must never apply to the other. Checked under the session
+        /// lock, with the call id.
+        expected_kind: Option<forge_types::ApprovalKind>,
         decision: GrantDecision,
         actor: String,
     },
@@ -952,6 +962,7 @@ impl RepositorySupervisor {
                         model_id: start_model.clone(),
                         profile_id: start_profile.clone(),
                         reasoning_effort: start_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -994,6 +1005,7 @@ impl RepositorySupervisor {
                         model_id: start_model.clone(),
                         profile_id: start_profile.clone(),
                         reasoning_effort: start_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -1034,9 +1046,10 @@ impl RepositorySupervisor {
                     model,
                 )
                 .await
-                .map(|mut opened| {
+                .and_then(|mut opened| {
                     restore_task_model(&mut opened.session, &task, &task_cfg);
-                    opened.session
+                    restore_task_target(&mut opened.session, &task, &task_cfg)?;
+                    Ok(opened.session)
                 });
                 (task, opened)
             });
@@ -1118,6 +1131,7 @@ impl RepositorySupervisor {
                         model_id: opened.session.active_model.clone(),
                         profile_id: opened.session.active_profile_id.clone(),
                         reasoning_effort: None,
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -1163,11 +1177,15 @@ impl RepositorySupervisor {
                 SessionTarget::Resume(task.session_id),
                 model.clone(),
             )
-            .await;
+            .await
+            .and_then(|opened| {
+                let mut session = opened.session;
+                restore_task_model(&mut session, &task, &task_cfg);
+                restore_task_target(&mut session, &task, &task_cfg)?;
+                Ok(session)
+            });
             match opened {
-                Ok(opened) => {
-                    let mut session = opened.session;
-                    restore_task_model(&mut session, &task, &task_cfg);
+                Ok(session) => {
                     sessions.push((task, session));
                 }
                 Err(error) => {
@@ -1265,7 +1283,7 @@ impl RepositorySupervisor {
             }
             let interrupted = control.interrupted_prompts(task.session_id).await?;
             let queued = control.queued_prompts(task.session_id).await?;
-            let trusted = workspace_is_trusted(trust_store.as_deref(), &task.workspace);
+            let trusted = task_is_trusted(trust_store.as_deref(), &task);
             let task_actor = Arc::new(SessionActor::new(
                 task.clone(),
                 session,
@@ -1814,6 +1832,7 @@ async fn resolve_approval(
     state: Arc<SupervisorState>,
     session_id: SessionId,
     expected_call_id: Option<String>,
+    expected_kind: Option<forge_types::ApprovalKind>,
     answer: ApprovalAnswer,
     decision_actor: String,
 ) -> Result<(), RepositorySupervisorError> {
@@ -1828,11 +1847,13 @@ async fn resolve_approval(
         None
     };
     let mut session = try_session(&task_actor)?;
-    if expected_call_id.as_deref().is_some_and(|call_id| {
-        session
-            .pending_hitl()
-            .is_none_or(|payload| payload.call_id != call_id)
-    }) {
+    let changed = |payload: Option<&forge_types::HitlPayload>| {
+        expected_call_id
+            .as_deref()
+            .is_some_and(|call_id| payload.is_none_or(|p| p.call_id != call_id))
+            || expected_kind.is_some_and(|kind| payload.is_none_or(|p| p.kind() != kind))
+    };
+    if changed(session.pending_hitl()) {
         return Err(LoopError::Other(
             "approval request changed; review the current request".into(),
         )
@@ -2125,6 +2146,7 @@ async fn execute_command(
             label,
             first_prompt,
             github_issue_number,
+            target,
         } => {
             // An empty label is legal: the task starts unnamed and is named
             // from its first prompt. A prompt supplied here (the form path)
@@ -2146,6 +2168,16 @@ async fn execute_command(
             // repository state.
             if github_issue_number.is_some() && !state.topology.supports_git() {
                 return Err(RepositorySupervisorError::Unsupported("an issue session"));
+            }
+            if !target.is_local() {
+                if github_issue_number.is_some() {
+                    return Err(RepositorySupervisorError::Command(
+                        "an issue session works in a checkout on this machine; it cannot run on \
+                         an SSH host"
+                            .into(),
+                    ));
+                }
+                return create_remote_session(&state, label, first_prompt, target).await;
             }
             let _git_mutation = state.git_mutation.lock().await;
             // A directory project has no worktrees: every session runs in the
@@ -2256,6 +2288,7 @@ async fn execute_command(
                 github_pr_url: None,
                 github_retry_attempts: 0,
                 github_tests_passed: false,
+                target: forge_types::ExecutionTarget::Local,
             };
             state
                 .control
@@ -2270,6 +2303,7 @@ async fn execute_command(
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     Some(pending.operation_id),
                 )
@@ -2403,6 +2437,7 @@ async fn execute_command(
                 model_id: opened.session.active_model.clone(),
                 profile_id: opened.session.active_profile_id.clone(),
                 reasoning_effort: None,
+                target: forge_types::ExecutionTarget::Local,
             };
             // Recheck the immutable worktree binding immediately before the
             // durable attach. The first check selected the workspace for
@@ -2907,6 +2942,7 @@ async fn execute_command(
                 state,
                 session_id,
                 expected_call_id,
+                None,
                 ApprovalAnswer::Raw { decision, feedback },
                 decision_actor,
             )
@@ -2915,6 +2951,7 @@ async fn execute_command(
         SupervisorCommand::DecideApproval {
             session_id,
             expected_call_id,
+            expected_kind,
             decision,
             actor: decision_actor,
         } => {
@@ -2922,6 +2959,7 @@ async fn execute_command(
                 state,
                 session_id,
                 expected_call_id,
+                expected_kind,
                 ApprovalAnswer::Typed(decision),
                 decision_actor,
             )
@@ -3295,7 +3333,9 @@ async fn retire_every_actor(
         };
         let refresh = {
             let session = task_actor.session.lock().await;
-            refresh_actor(state, &task_actor, &session).await
+            let refresh = refresh_actor(state, &task_actor, &session).await;
+            session.close_execution_target().await;
+            refresh
         };
         task_actor.finish_retirement();
         if let Err(error) = refresh {
@@ -3438,6 +3478,134 @@ fn validate_attach_target(
 /// whose trust could not be recorded: its session goes with its checkout.
 /// Without it, cancelling a creation that already completed is refused, since
 /// the session is live and a cancel must not tear it down.
+/// Create a session that runs on an SSH host. The host and folder are
+/// checked first (connect and preflight): a host that cannot be reached, or
+/// a folder that is not there, fails the command before anything is
+/// recorded. Its local workspace is an empty private directory; it needs no
+/// trust decision, since nothing of this machine's project runs for it.
+async fn create_remote_session(
+    state: &Arc<SupervisorState>,
+    label: String,
+    first_prompt: Option<String>,
+    target: forge_types::ExecutionTarget,
+) -> Result<(), RepositorySupervisorError> {
+    let forge_types::ExecutionTarget::Ssh { host, path, .. } = &target else {
+        return Err(RepositorySupervisorError::Command(
+            "not a remote target".into(),
+        ));
+    };
+    let control = forge_tools::target::private_control_dir().map_err(|error| {
+        RepositorySupervisorError::Command(format!(
+            "could not prepare the SSH connection to {host}: {error}"
+        ))
+    })?;
+    let runtime = Arc::new(forge_tools::target::SshTarget::new(
+        host,
+        path,
+        &control,
+        ssh_options(&state.cfg),
+    ));
+    if let Err(error) = runtime.connect().await {
+        runtime.close().await;
+        return Err(RepositorySupervisorError::Command(match error {
+            forge_tools::ToolError::Execution(message) => message,
+            other => other.to_string(),
+        }));
+    }
+    let created =
+        create_remote_session_on(state, label, first_prompt, target.clone(), runtime.clone()).await;
+    if created.is_err() {
+        runtime.close().await;
+    }
+    created
+}
+
+async fn create_remote_session_on(
+    state: &Arc<SupervisorState>,
+    label: String,
+    first_prompt: Option<String>,
+    target: forge_types::ExecutionTarget,
+    runtime: Arc<forge_tools::target::SshTarget>,
+) -> Result<(), RepositorySupervisorError> {
+    let base = state
+        .topology
+        .storage()?
+        .path_for(RuntimeDataKind::RemoteWorkspace)?;
+    let workspace = base.join(format!("session-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&workspace).map_err(forge_storage::StorageError::from)?;
+    let remove_workspace = |workspace: &Path| {
+        let _ = std::fs::remove_dir_all(workspace);
+    };
+    let mut task_cfg = state.cfg.clone();
+    task_cfg.resolved_workspace = workspace.clone();
+    task_cfg.workspace_root = Some(workspace.display().to_string());
+    let (journal_dir, _) = resolve_journal_dir(&task_cfg);
+    task_cfg.journal.path = journal_dir.display().to_string();
+    let mut opened =
+        match open_session_with_model(&task_cfg, SessionTarget::New, state.model.clone()).await {
+            Ok(opened) => opened,
+            Err(error) => {
+                remove_workspace(&workspace);
+                return Err(error.into());
+            }
+        };
+    let (model_id, profile_id, reasoning_effort) = state.inherited_model().await;
+    if !model_id.is_empty() {
+        opened.session.set_active_model(model_id);
+        opened.session.set_active_profile_id(profile_id);
+        opened.session.set_reasoning_effort(reasoning_effort);
+    }
+    opened.session.set_execution_target(target.clone(), runtime);
+    opened.session.set_workspace_trusted(true);
+    let session_id = opened.session.session_id;
+    let registered = state
+        .control
+        .register_session(
+            NewRepositorySession {
+                session_id,
+                label,
+                workspace: workspace.clone(),
+                branch: String::new(),
+                ownership: WorktreeOwnership::Remote,
+                slot: None,
+                model_id: opened.session.active_model.clone(),
+                profile_id: opened.session.active_profile_id.clone(),
+                reasoning_effort: opened.session.reasoning_effort().map(str::to_string),
+                target,
+            },
+            None,
+        )
+        .await;
+    if let Err(error) = registered {
+        remove_workspace(&workspace);
+        return Err(error.into());
+    }
+    let task = state.control.session(session_id).await?;
+    let actor = Arc::new(SessionActor::new(
+        task,
+        opened.session,
+        Vec::new(),
+        Vec::new(),
+        true,
+    ));
+    actor.watch_host_questions(state.events.clone());
+    state.actors.write().await.insert(session_id, actor);
+    let _ = state
+        .events
+        .send(SupervisorEvent::Roster(snapshots(state).await));
+    state.control.set_selected(Some(session_id)).await?;
+    let _ = state
+        .events
+        .send(SupervisorEvent::Selected(Some(session_id)));
+    if let Some(text) = first_prompt {
+        state.control.mark_queued(session_id).await?;
+        state.control.enqueue_prompt(session_id, &text).await?;
+        publish_actor(state, session_id).await?;
+        start_prompt_driver(state.clone(), session_id).await?;
+    }
+    Ok(())
+}
+
 async fn rollback_creation(
     state: &Arc<SupervisorState>,
     operation_id: u64,
@@ -3542,7 +3710,10 @@ async fn replace_conversation(
     // session opens on the last global selection instead, so put it on the
     // row's model (with that model's capabilities) before it can run.
     restore_task_model(&mut replacement, &record, &state.cfg);
-    let trusted = workspace_is_trusted(state.trust_store.as_deref(), &record.workspace);
+    if let Err(error) = restore_task_target(&mut replacement, &record, &state.cfg) {
+        return Err(RepositorySupervisorError::Command(error.to_string()));
+    }
+    let trusted = task_is_trusted(state.trust_store.as_deref(), &record);
     drop(session);
     let replacement = Arc::new(SessionActor::new(
         record,
@@ -3592,6 +3763,12 @@ async fn close_session(
         return Err(error.into());
     }
     state.actors.write().await.remove(&session_id);
+    task_actor
+        .session
+        .lock()
+        .await
+        .close_execution_target()
+        .await;
     task_actor.finish_retirement();
 
     let _ = state
@@ -4381,6 +4558,43 @@ fn same_path(left: &std::path::Path, right: &std::path::Path) -> bool {
 /// falling back to an empty config default. A blank stored model means the
 /// row predates model persistence; leave whatever `cfg` produced in place.
 /// The restored model's capabilities are derived with it.
+/// Point a reopened session at the target its row records. An SSH target is
+/// not connected here: it connects on first use, so an unreachable host
+/// never stops a project from opening.
+fn restore_task_target(
+    session: &mut AgentSession,
+    task: &RepositorySession,
+    cfg: &Config,
+) -> anyhow::Result<()> {
+    let forge_types::ExecutionTarget::Ssh { host, path, .. } = &task.target else {
+        return Ok(());
+    };
+    // Never falls back to this machine: a session that cannot be pointed at
+    // its host does not open.
+    let control = forge_tools::target::private_control_dir().map_err(|error| {
+        anyhow::anyhow!("could not prepare the SSH connection to {host}: {error}")
+    })?;
+    let runtime = forge_tools::target::SshTarget::new(host, path, &control, ssh_options(cfg));
+    session.set_execution_target(task.target.clone(), Arc::new(runtime));
+    Ok(())
+}
+
+/// How SSH sessions connect: the user's `ssh` and config, unless `cfg`
+/// names another config file (tests).
+fn ssh_options(cfg: &Config) -> forge_tools::target::SshOptions {
+    forge_tools::target::SshOptions {
+        config_file: cfg.ssh_config_file.clone(),
+        ..Default::default()
+    }
+}
+
+/// Whether `task`'s actor runs trusted. A remote session runs nothing of this
+/// machine's project: its commands and files are on the host the user chose.
+fn task_is_trusted(trust_store: Option<&std::path::Path>, task: &RepositorySession) -> bool {
+    task.ownership == WorktreeOwnership::Remote
+        || workspace_is_trusted(trust_store, &task.workspace)
+}
+
 fn restore_task_model(session: &mut AgentSession, task: &RepositorySession, cfg: &Config) {
     if task.model_id.is_empty() {
         return;
@@ -4623,6 +4837,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -4784,6 +4999,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -5161,6 +5377,7 @@ mod tests {
             github_pr_url: None,
             github_retry_attempts: 0,
             github_tests_passed: false,
+            target: forge_types::ExecutionTarget::Local,
         }
     }
 
@@ -5195,6 +5412,7 @@ mod tests {
                 label: "issue-test".into(),
                 first_prompt: None,
                 github_issue_number: Some(12),
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -5320,6 +5538,7 @@ mod tests {
                 label: "discard-dirty".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -5384,6 +5603,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -5417,6 +5637,7 @@ mod tests {
                 sandbox_escalation: false,
                 denied_host: None,
                 denied_path: None,
+                target: None,
             });
             snapshot.clone()
         };
@@ -5474,6 +5695,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -5576,6 +5798,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -5756,6 +5979,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -5880,6 +6104,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -5976,6 +6201,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -6073,6 +6299,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -6174,6 +6401,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -6238,6 +6466,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -6302,6 +6531,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -6472,6 +6702,7 @@ mod tests {
                     model_id: "mock".into(),
                     profile_id: String::new(),
                     reasoning_effort: None,
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -6547,6 +6778,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -6779,6 +7011,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -6885,6 +7118,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -6922,6 +7156,7 @@ mod tests {
             .command(SupervisorCommand::DecideApproval {
                 session_id,
                 expected_call_id: Some(call_id.clone()),
+                expected_kind: None,
                 decision: GrantDecision::ApproveAll,
                 actor: "test".into(),
             })
@@ -6937,6 +7172,7 @@ mod tests {
             .command(SupervisorCommand::DecideApproval {
                 session_id,
                 expected_call_id: Some(call_id),
+                expected_kind: None,
                 decision: GrantDecision::AllowOnce,
                 actor: "test".into(),
             })
@@ -6957,6 +7193,137 @@ mod tests {
         assert!(done.transcript.messages().iter().any(|message| message
             .content
             .contains("finished after approved escalation")));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// A governance prompt and the escalation raised when the sandbox then
+    /// refuses the same call share its `call_id`. A decision validated
+    /// against the first must never land on the second: `allow_once` there
+    /// runs the call outside the sandbox. The kind is checked under the
+    /// session lock, where the call id is.
+    #[tokio::test]
+    async fn a_decision_made_for_another_kind_of_request_is_refused_under_the_lock() {
+        let temp = TempDir::new().unwrap();
+        let control = Arc::new(RepositoryControl::open(temp.path()).await.unwrap());
+        let mut cfg = Config {
+            resolved_workspace: temp.path().join("primary"),
+            workspace_root: Some(temp.path().join("primary").display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = temp.path().join("journals").display().to_string();
+        std::fs::create_dir_all(&cfg.resolved_workspace).unwrap();
+
+        let session = escalation_session(
+            &cfg,
+            vec![
+                ModelResponse {
+                    text: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "escalate-1".into(),
+                        name: "escalating_sandbox_denied".into(),
+                        arguments: json!({}),
+                    }],
+                    usage: None,
+                    thinking: None,
+                },
+                ModelResponse {
+                    text: "finished after approved escalation".into(),
+                    tool_calls: vec![],
+                    usage: None,
+                    thinking: None,
+                },
+            ],
+        )
+        .await;
+        let session_id = session.session_id;
+        let task = task_for(session_id, "escalate", &cfg.resolved_workspace);
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: task.session_id,
+                    label: task.label.clone(),
+                    workspace: task.workspace.clone(),
+                    branch: task.branch.clone(),
+                    ownership: task.ownership,
+                    slot: task.slot,
+                    model_id: task.model_id.clone(),
+                    profile_id: task.profile_id.clone(),
+                    reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let lease = RepositoryLease::acquire(temp.path(), temp.path()).unwrap();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(Vec::new()));
+        let (_supervisor, handle) =
+            RepositorySupervisor::spawn(control, lease, vec![(task, session)], 1, cfg, model)
+                .await
+                .unwrap();
+
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id,
+                text: "exercise escalation".into(),
+            })
+            .await
+            .unwrap();
+        let waiting = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+        assert_eq!(waiting.task.turn_state, SupervisorTurnState::Waiting);
+        let payload = waiting.session.pending_hitl.as_ref().unwrap();
+        assert!(
+            payload.sandbox_escalation,
+            "the sandbox denial must be flagged as an escalation"
+        );
+
+        let call_id = payload.call_id.clone();
+        let stale = handle
+            .command(SupervisorCommand::DecideApproval {
+                session_id,
+                expected_call_id: Some(call_id.clone()),
+                expected_kind: Some(forge_types::ApprovalKind::Governance),
+                decision: GrantDecision::AllowOnce,
+                actor: "remote:phone".into(),
+            })
+            .await;
+        assert!(
+            stale.is_err(),
+            "a governance decision must not run an escalation: {stale:?}"
+        );
+        let still = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+        assert!(
+            still
+                .session
+                .pending_hitl
+                .as_ref()
+                .unwrap()
+                .sandbox_escalation,
+            "the escalation is still waiting for an answer"
+        );
+
+        handle
+            .command(SupervisorCommand::DecideApproval {
+                session_id,
+                expected_call_id: Some(call_id),
+                expected_kind: Some(forge_types::ApprovalKind::SandboxEscalation),
+                decision: GrantDecision::AllowOnce,
+                actor: "test".into(),
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+                || snapshot.task.turn_state == SupervisorTurnState::Failed
+        })
+        .await;
+        assert_eq!(done.task.turn_state, SupervisorTurnState::Completed);
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
@@ -7007,6 +7374,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -7217,6 +7585,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -7642,6 +8011,7 @@ mod tests {
                 label: "kept".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -7698,6 +8068,7 @@ mod tests {
                 label: "live".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -8231,6 +8602,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -8405,6 +8777,7 @@ mod tests {
                         sandbox_escalation: false,
                         denied_host: None,
                         denied_path: None,
+                        target: None,
                     },
                 }),
                 decision: HitlDecision::Approve,
@@ -8538,6 +8911,7 @@ mod tests {
                         model_id: task.model_id.clone(),
                         profile_id: task.profile_id.clone(),
                         reasoning_effort: task.reasoning_effort.clone(),
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -8662,6 +9036,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -8770,6 +9145,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -9065,6 +9441,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -9152,6 +9529,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -9279,6 +9657,7 @@ mod tests {
                     label: label.into(),
                     first_prompt: None,
                     github_issue_number: None,
+                    target: forge_types::ExecutionTarget::Local,
                 })
                 .await
                 .unwrap();
@@ -9346,6 +9725,7 @@ mod tests {
                         label: "gated".into(),
                         first_prompt: None,
                         github_issue_number: None,
+                        target: forge_types::ExecutionTarget::Local,
                     })
                     .await
             }
@@ -9389,6 +9769,7 @@ mod tests {
                 label: String::new(),
                 first_prompt: Some("rewrite the lexer".into()),
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9435,6 +9816,7 @@ mod tests {
                 label: "parser".into(),
                 first_prompt: Some("rewrite the lexer".into()),
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9489,6 +9871,7 @@ mod tests {
                 label: String::new(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9555,6 +9938,7 @@ mod tests {
                 label: String::new(),
                 first_prompt: Some("rewrite the lexer".into()),
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9631,6 +10015,7 @@ mod tests {
                 label: "Fix the parser".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9726,6 +10111,7 @@ mod tests {
                 label: String::new(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9787,6 +10173,7 @@ mod tests {
                 label: "Research the parser".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9841,6 +10228,7 @@ mod tests {
                 label: "parser".into(),
                 first_prompt: Some("rewrite the lexer".into()),
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9901,6 +10289,7 @@ mod tests {
                 label: "cleanup".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -9964,6 +10353,7 @@ mod tests {
                 label: "switched".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -10022,6 +10412,7 @@ mod tests {
                 label: "keep my commits".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -10104,6 +10495,7 @@ mod tests {
                 label: "forked".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -10187,6 +10579,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -10289,6 +10682,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -10401,6 +10795,7 @@ mod tests {
                         label: "half-way".into(),
                         first_prompt: None,
                         github_issue_number: None,
+                        target: forge_types::ExecutionTarget::Local,
                     })
                     .await
             }
@@ -10477,6 +10872,7 @@ mod tests {
                 label: "parked".into(),
                 first_prompt: Some("waits for trust".into()),
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -10547,6 +10943,7 @@ mod tests {
                     model_id: task.model_id.clone(),
                     profile_id: task.profile_id.clone(),
                     reasoning_effort: task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -10655,6 +11052,7 @@ mod tests {
                         label: "in-flight".into(),
                         first_prompt: None,
                         github_issue_number: None,
+                        target: forge_types::ExecutionTarget::Local,
                     })
                     .await
             }
@@ -10708,6 +11106,7 @@ mod tests {
                 label: "dirty-cleanup".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -10847,6 +11246,7 @@ mod tests {
                     model_id: primary_task.model_id.clone(),
                     profile_id: primary_task.profile_id.clone(),
                     reasoning_effort: primary_task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -10881,6 +11281,7 @@ mod tests {
                 label: "inherits".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -10985,6 +11386,7 @@ mod tests {
                             model_id: "mock".into(),
                             profile_id: String::new(),
                             reasoning_effort: None,
+                            target: forge_types::ExecutionTarget::Local,
                         },
                         None,
                     )
@@ -11082,6 +11484,7 @@ mod tests {
                         model_id: "mock".into(),
                         profile_id: String::new(),
                         reasoning_effort: None,
+                        target: forge_types::ExecutionTarget::Local,
                     },
                     None,
                 )
@@ -11175,6 +11578,7 @@ mod tests {
                     model_id: primary_task.model_id.clone(),
                     profile_id: primary_task.profile_id.clone(),
                     reasoning_effort: primary_task.reasoning_effort.clone(),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -11207,6 +11611,7 @@ mod tests {
                     model_id: "test/small".into(),
                     profile_id: "native-v2".into(),
                     reasoning_effort: Some("high".into()),
+                    target: forge_types::ExecutionTarget::Local,
                 },
                 None,
             )
@@ -11288,6 +11693,7 @@ mod tests {
                 label: "x".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             },
             SupervisorCommand::AttachWorktree {
                 workspace: PathBuf::from("."),
@@ -11449,6 +11855,7 @@ mod tests {
                         sandbox_escalation: false,
                         denied_host: None,
                         denied_path: None,
+                        target: None,
                     },
                 }),
                 decision: HitlDecision::Deny,
@@ -11525,5 +11932,332 @@ mod tests {
         assert!(actor.request_continuation());
         assert!(actor.take_continuations());
         actor.release_driver();
+    }
+
+    // ---- SSH execution target ------------------------------------------
+
+    use forge_tools::target::testing::{SshServer, DOWN_HOST, HOST};
+
+    fn devbox_target(server: &SshServer, ask: bool) -> forge_types::ExecutionTarget {
+        forge_types::ExecutionTarget::Ssh {
+            host: HOST.into(),
+            path: server.remote_root().display().to_string(),
+            ask,
+        }
+    }
+
+    fn bash_call(id: &str, command: &str) -> ModelResponse {
+        ModelResponse {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: id.into(),
+                name: "bash".into(),
+                arguments: json!({ "command": command }),
+            }],
+            usage: None,
+            thinking: None,
+        }
+    }
+
+    /// A trusted repository whose supervisor's model plays `script` and
+    /// whose SSH sessions use the test server's client config.
+    async fn ssh_supervisor(
+        repo: &std::path::Path,
+        scratch: &std::path::Path,
+        server: &SshServer,
+        script: Vec<ModelResponse>,
+    ) -> (Config, Arc<RepositoryControl>, SupervisorHandle) {
+        let trust_store = scratch.join("trust.toml");
+        forge_config::grant_trust_at(&trust_store, repo).unwrap();
+        let storage = RepositoryRuntimeStorage::new(repo).unwrap();
+        let control_dir = storage.path_for(RuntimeDataKind::Control).unwrap();
+        let control = Arc::new(RepositoryControl::open(&control_dir).await.unwrap());
+        let lease = RepositoryLease::acquire(&control_dir, repo).unwrap();
+        let mut cfg = Config {
+            resolved_workspace: repo.to_path_buf(),
+            workspace_root: Some(repo.display().to_string()),
+            ssh_config_file: Some(server.config()),
+            ..Default::default()
+        };
+        cfg.journal.path = scratch.join("journals").display().to_string();
+        let model: Arc<dyn ModelClient> = Arc::new(MockModelClient::script(script));
+        let (_supervisor, handle) = RepositorySupervisor::spawn_with_trust_store(
+            control.clone(),
+            lease,
+            Vec::new(),
+            2,
+            cfg.clone(),
+            model,
+            Some(trust_store),
+        )
+        .await
+        .unwrap();
+        (cfg, control, handle)
+    }
+
+    fn tool_results(snapshot: &SessionRuntimeSnapshot) -> Vec<String> {
+        snapshot
+            .transcript
+            .messages()
+            .iter()
+            .filter(|message| message.role == forge_types::MessageRole::Tool)
+            .map(|message| message.content.clone())
+            .collect()
+    }
+
+    fn is_empty_dir(path: &std::path::Path) -> bool {
+        std::fs::read_dir(path).unwrap().next().is_none()
+    }
+
+    /// The whole path: create on the host, ask, run there, and clean up the
+    /// host's temp directory when the session closes.
+    #[tokio::test]
+    async fn an_ssh_session_asks_then_runs_its_command_on_the_host() {
+        let Some(server) = SshServer::start().await else {
+            return;
+        };
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let (_cfg, control, handle) = ssh_supervisor(
+            repo.path(),
+            scratch.path(),
+            &server,
+            vec![
+                bash_call(
+                    "where",
+                    "test \"$FORGE_TEST_REMOTE\" = 1 || exit 99; pwd; echo tmp=$TMPDIR",
+                ),
+                text_response("done"),
+            ],
+        )
+        .await;
+        let target = devbox_target(&server, true);
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "on the box".into(),
+                first_prompt: Some("where am I".into()),
+                github_issue_number: None,
+                target: target.clone(),
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "on the box")
+            .expect("the session was created");
+        assert_eq!(task.ownership, WorktreeOwnership::Remote);
+        assert_eq!(task.target, target);
+        assert!(task.workspace.is_dir() && is_empty_dir(&task.workspace));
+        assert!(
+            !same_path(&task.workspace, repo.path()),
+            "not the project folder"
+        );
+
+        let waiting = wait_for_task_state(&handle, task.session_id, |snapshot| {
+            snapshot.session.pending_hitl.is_some()
+        })
+        .await;
+        let payload = waiting.session.pending_hitl.unwrap();
+        assert_eq!(payload.tool, "bash");
+        assert_eq!(payload.target.as_deref(), Some(HOST));
+        handle
+            .command(SupervisorCommand::DecideApproval {
+                session_id: task.session_id,
+                expected_call_id: Some(payload.call_id.clone()),
+                expected_kind: None,
+                decision: GrantDecision::AllowOnce,
+                actor: "test".into(),
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, task.session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        let output = tool_results(&done).join("\n");
+        let root = server.remote_root().display().to_string();
+        assert!(output.contains(&root), "ran in the remote folder: {output}");
+        let remote_tmp = output
+            .lines()
+            .find_map(|line| line.strip_prefix("tmp="))
+            .unwrap_or_else(|| panic!("no TMPDIR in {output}"))
+            .trim()
+            .to_string();
+        assert!(std::path::Path::new(&remote_tmp).is_dir());
+        assert!(is_empty_dir(&task.workspace), "nothing was written locally");
+
+        handle
+            .command(SupervisorCommand::CloseSession {
+                session_id: task.session_id,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !std::path::Path::new(&remote_tmp).exists(),
+            "closing the session removes its temp directory on the host"
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Nothing is registered for a target that cannot be used: the error
+    /// names what is wrong, and no session, worktree or operation is left.
+    #[tokio::test]
+    async fn an_unusable_target_is_refused_before_any_session_exists() {
+        let Some(server) = SshServer::start().await else {
+            return;
+        };
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let (_cfg, control, handle) =
+            ssh_supervisor(repo.path(), scratch.path(), &server, vec![]).await;
+        let missing = server.remote_root().join("no-such-folder");
+        for (host, path, named) in [
+            (
+                DOWN_HOST.to_string(),
+                "/srv".to_string(),
+                DOWN_HOST.to_string(),
+            ),
+            (
+                HOST.to_string(),
+                missing.display().to_string(),
+                "no-such-folder".to_string(),
+            ),
+        ] {
+            let error = handle
+                .command(SupervisorCommand::CreateSession {
+                    label: "doomed".into(),
+                    first_prompt: Some("hello".into()),
+                    github_issue_number: None,
+                    target: forge_types::ExecutionTarget::Ssh {
+                        host,
+                        path,
+                        ask: true,
+                    },
+                })
+                .await
+                .expect_err("an unusable target fails the creation")
+                .to_string();
+            assert!(error.contains(&named), "{error}");
+        }
+        assert!(
+            control
+                .sessions()
+                .await
+                .unwrap()
+                .iter()
+                .all(|task| task.label != "doomed"),
+            "no session row"
+        );
+        assert!(
+            control.stale_creations().await.unwrap().is_empty(),
+            "no half-made creation"
+        );
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Reopening the project reconnects a remote session to its host.
+    #[tokio::test]
+    async fn a_reopened_ssh_session_runs_on_its_host_again() {
+        let Some(server) = SshServer::start().await else {
+            return;
+        };
+        let repo = TempDir::new().unwrap();
+        forge_test_support::init_repo_with_commit(repo.path());
+        let scratch = TempDir::new().unwrap();
+        let (mut cfg, control, handle) =
+            ssh_supervisor(repo.path(), scratch.path(), &server, vec![]).await;
+        handle
+            .command(SupervisorCommand::CreateSession {
+                label: "kept".into(),
+                first_prompt: None,
+                github_issue_number: None,
+                target: devbox_target(&server, false),
+            })
+            .await
+            .unwrap();
+        let task = control
+            .sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|task| task.label == "kept")
+            .unwrap();
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+        drop(control);
+
+        let script = scratch.path().join("script.json");
+        std::fs::write(
+            &script,
+            json!({"steps": [
+                {"tool_calls": {"calls": [{
+                    "id": "again", "name": "bash",
+                    "arguments": {"command": "test \"$FORGE_TEST_REMOTE\" = 1 || exit 99; echo back on $(pwd)"}
+                }]}},
+                {"text": {"text": "done"}}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        cfg.model.mock_script = Some(script);
+        // Boxed: the whole open future is too large for a test thread's stack
+        // in a debug build.
+        let (_supervisor, handle) = Box::pin(RepositorySupervisor::open(&cfg)).await.unwrap();
+        handle
+            .command(SupervisorCommand::SubmitPrompt {
+                session_id: task.session_id,
+                text: "again".into(),
+            })
+            .await
+            .unwrap();
+        let done = wait_for_task_state(&handle, task.session_id, |snapshot| {
+            snapshot.task.turn_state == SupervisorTurnState::Completed
+        })
+        .await;
+        let output = tool_results(&done).join("\n");
+        assert!(
+            output.contains(&format!("back on {}", server.remote_root().display())),
+            "{output}"
+        );
+        assert!(is_empty_dir(&task.workspace));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// Every reopen path puts the session back on its row's target, without
+    /// connecting (a host that is down must not stop the project opening).
+    #[tokio::test]
+    async fn restoring_a_row_restores_its_target_without_connecting() {
+        let dir = TempDir::new().unwrap();
+        let mut cfg = Config {
+            resolved_workspace: dir.path().to_path_buf(),
+            workspace_root: Some(dir.path().display().to_string()),
+            ..Default::default()
+        };
+        cfg.journal.path = dir.path().join("journal").display().to_string();
+        let mut session = scripted_session(&cfg, "ok").await;
+        let mut task = task_for(session.session_id, "remote", dir.path());
+        task.ownership = WorktreeOwnership::Remote;
+        task.target = forge_types::ExecutionTarget::Ssh {
+            host: DOWN_HOST.into(),
+            path: "/srv/app".into(),
+            ask: true,
+        };
+        restore_task_target(&mut session, &task, &cfg).unwrap();
+        assert_eq!(session.execution_target(), &task.target);
+        assert!(!session
+            .list_tools()
+            .contains(&"request_unconfined_retry".to_string()));
+
+        let mut local = scripted_session(&cfg, "ok").await;
+        let local_task = task_for(local.session_id, "local", dir.path());
+        restore_task_target(&mut local, &local_task, &cfg).unwrap();
+        assert_eq!(
+            local.execution_target(),
+            &forge_types::ExecutionTarget::Local
+        );
     }
 }

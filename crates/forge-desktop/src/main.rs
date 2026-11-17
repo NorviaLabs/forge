@@ -1,8 +1,9 @@
 //! Forge desktop: the walking skeleton (phase K1).
 //!
 //! Runs the repository supervisor in-process and bridges it to the webview
-//! over Tauri IPC: one `Channel` of events per window, a small command
-//! allowlist, no network listener. Startup goes through
+//! over Tauri IPC: one `Channel` of events per window and a small command
+//! allowlist. The only network listener is remote control (`remote.rs`,
+//! `forge-remote`), which is off until the user turns it on. Startup goes through
 //! `forge_session::ProjectService`, which opens projects with the UI-free
 //! `forge_session::LaunchPlan`.
 
@@ -15,9 +16,11 @@ mod github;
 mod last_turn;
 mod pinned;
 mod providers;
+mod remote;
 #[cfg(feature = "self-test")]
 mod self_test;
 mod shell;
+mod ssh_hosts;
 mod startup;
 mod themes;
 mod workspace;

@@ -12,6 +12,8 @@
     queued = 0,
     turnState = "idle",
     approveAll = false,
+    // Runs on an SSH host: nothing there is sandboxed.
+    remote = false,
     thinking = false,
     tokens = null,
     counts = { tools: 0, skills: 0, allows: 0 },
@@ -66,7 +68,7 @@
           <span class="change-hint">Change</span>
         </button>
       </dd>
-      <dt>Workspace</dt>
+      <dt>{remote ? "Runs on" : "Workspace"}</dt>
       <dd class="mono" title={workspace}>{workspace || "—"}</dd>
       {#if branch}
         <dt>Branch</dt>
@@ -82,7 +84,7 @@
           type="button"
           class="toggle"
           class:on={approveAll}
-          title="Approve every review prompt this session; the sandbox still asks"
+          title={remote ? "Run every command on the host without asking, until the session ends" : "Approve every review prompt this session; the sandbox still asks"}
           onclick={onToggleApproveAll}
         >
           {approveAll ? "Every command" : "Ask me"}

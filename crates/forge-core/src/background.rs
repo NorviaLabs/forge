@@ -673,13 +673,9 @@ pub enum BackgroundTaskOutcome {
 }
 
 async fn run_shell_job(
+    ctx: forge_tools::ToolContext,
     command: String,
-    workspace_root: std::path::PathBuf,
-    egress: Option<std::sync::Arc<forge_tools::sandbox::EgressGrant>>,
-    session_tmp: Option<std::sync::Arc<forge_tools::SessionTempDir>>,
     capture: Arc<forge_tools::ShellOutputCapture>,
-    call_id: Option<String>,
-    credential_env_names: Arc<[String]>,
 ) -> BackgroundTaskOutcome {
     // Backgrounded work gets the same network the foreground has. It was
     // calling the grantless variant, so a background `cargo build` was confined
@@ -689,18 +685,7 @@ async fn run_shell_job(
     //
     // Always confined, approve-all included: approve-all answers prompts, it
     // does not take the sandbox away.
-    let tmp = session_tmp.as_deref().map(|temp| temp.path());
-    let result = forge_tools::run_shell_command_observed(
-        &command,
-        &workspace_root,
-        egress.as_deref(),
-        tmp,
-        false,
-        capture,
-        call_id.as_deref(),
-        &credential_env_names,
-    )
-    .await;
+    let result = forge_tools::run_shell_job(&ctx, &command, capture).await;
     match result {
         Ok(out) => BackgroundTaskOutcome::Shell {
             output: out.content,
@@ -861,20 +846,14 @@ impl AgentSession {
             cwd: workspace_root.clone(),
             output: Arc::clone(&capture),
         });
-        let egress = self.tool_ctx.egress.clone();
-        let session_tmp = self.tool_ctx.session_tmp.clone();
-        let credential_env_names = Arc::clone(&self.tool_ctx.credential_env_names);
+        // The job runs where the session's tools do, with the same network
+        // and temp; attributed to the call that started it.
+        let mut ctx = self.tool_ctx.clone();
+        ctx.tool_call_id = call_id.map(Into::into);
+        ctx.unconfined_shell = false;
         tokio::spawn(async move {
             let outcome = tokio::select! {
-                outcome = run_shell_job(
-                    command,
-                    workspace_root,
-                    egress,
-                    session_tmp,
-                    capture,
-                    call_id,
-                    credential_env_names,
-                ) => outcome,
+                outcome = run_shell_job(ctx, command, capture) => outcome,
                 // Dropping the job future on cancel drops the shell spawn's
                 // process-group guard, which kills the whole tree — not just
                 // the direct child — so no side effect runs after cancel.
@@ -1265,6 +1244,7 @@ mod tests {
                 sandbox_escalation: false,
                 denied_host: None,
                 denied_path: None,
+                target: None,
             },
         };
         control.track_hitl(
@@ -1307,6 +1287,7 @@ mod tests {
                 sandbox_escalation: false,
                 denied_host: None,
                 denied_path: None,
+                target: None,
             },
         };
         let pending = Arc::new(Mutex::new(Some(request.clone())));

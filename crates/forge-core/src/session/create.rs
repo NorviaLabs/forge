@@ -280,6 +280,7 @@ impl AgentSession {
             models: crate::models::state::SessionModels::new(forge_types::TaskKind::Main),
             tier_resolver: None,
             verification_commands: Default::default(),
+            execution_target: forge_types::ExecutionTarget::Local,
         })
     }
 
@@ -402,6 +403,7 @@ impl AgentSession {
             ),
             tier_resolver: None,
             verification_commands: Default::default(),
+            execution_target: forge_types::ExecutionTarget::Local,
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());
@@ -510,6 +512,12 @@ impl AgentSession {
         fork.last_prompt_hash = None;
         fork.cache_epoch = 0;
         fork.last_cache_transport = None;
+        if !self.execution_target.is_local() {
+            fork.set_execution_target(
+                self.execution_target.clone(),
+                Arc::clone(&self.tool_ctx.target),
+            );
+        }
         Ok(fork)
     }
 
@@ -529,7 +537,7 @@ impl AgentSession {
     /// anything; this is the call site its doc comment describes.
     pub fn set_governance(&mut self, mut g: Governance) {
         g.retain_session_patterns_from(&self.governance);
-        self.governance = g;
+        self.governance = self.governed_for_target(g);
     }
 
     /// Enforce `policy` on the session gateway.

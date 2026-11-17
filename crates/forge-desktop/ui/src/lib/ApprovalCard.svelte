@@ -1,5 +1,6 @@
 <script>
   import { chord, isChord } from "../keys.js";
+  import { approvalHeading } from "../target.js";
 
   let { approval, onDecide, savedDraft = null, onDraft = null } = $props();
 
@@ -102,18 +103,25 @@
 <section class="approval" aria-label="Approval required" data-call-id={approval.call_id}>
   <header>
     <span class="state-dot waiting" aria-hidden="true"></span>
-    <span class="badge">Needs your approval</span>
+    <span class="badge" class:remote={!!approval.target}>{approvalHeading(approval)}</span>
     <span class="spacer"></span>
     <strong>{approval.tool}</strong>
   </header>
   <pre>{approval.arguments}</pre>
-  <p class="reason">{#if riskLabel}<span class="risk">{riskLabel}:</span> {/if}{approval.reason}</p>
+  {#if approval.target}
+    <!-- On an SSH host nothing is sandboxed: say so where the decision is made. -->
+    <p class="reason">{approval.reason} It runs on {approval.target} <span class="risk inline">outside Forge's sandbox</span>, with that machine's network and credentials.</p>
+  {:else}
+    <p class="reason">{#if riskLabel}<span class="risk">{riskLabel}:</span> {/if}{approval.reason}</p>
+  {/if}
 
   {#if confirm}
     <div class="confirm" role="alertdialog" aria-label="Confirm this grant">
       <p class="risk">
         {confirm.decision === "allow_host_for_session" || confirm.decision === "allow_host_always"
           ? "This opens network access the sandbox refused."
+          : confirm.decision === "approve_all" && approval.target
+            ? `Every command in this session will run on ${approval.target} without asking, outside Forge's sandbox.`
           : confirm.decision === "approve_all"
             ? "Every review prompt in this session will be approved automatically. The sandbox stays on."
             : confirm.decision === "allow_path_for_session" || confirm.decision === "allow_path_always"
@@ -258,6 +266,17 @@
   .reason .risk {
     margin-right: 4px;
     font-weight: 500;
+  }
+
+  .reason .risk.inline {
+    margin-right: 0;
+  }
+
+  /* "Run this command on <host>?": a long host name gives way, not the card. */
+  .badge.remote {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* The second confirmation is an inline row of the card, not a card of its own. */

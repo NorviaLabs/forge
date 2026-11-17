@@ -1232,6 +1232,7 @@ mod tests {
                 label: "second".into(),
                 first_prompt: None,
                 github_issue_number: None,
+                target: forge_types::ExecutionTarget::Local,
             })
             .await
             .unwrap();
@@ -1274,6 +1275,7 @@ mod tests {
             label: "s".into(),
             lifecycle: SessionLifecycle::Active,
             turn_state,
+            target: forge_types::ExecutionTarget::Local,
         }
     }
 

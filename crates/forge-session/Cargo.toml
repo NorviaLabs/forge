@@ -41,4 +41,6 @@ fake-provider = ["forge-model/fake-provider", "forge-config/fake-provider"]
 forge-model = { workspace = true, features = ["fake-provider"] }
 async-trait = { workspace = true }
 forge-test-support = { workspace = true, features = ["turn-records"] }
+# A real `sshd` for the SSH execution target's end-to-end tests.
+forge-tools = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }

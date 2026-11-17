@@ -4,6 +4,7 @@ flowchart TB
         desktop[forge-desktop\nTauri desktop app]
         cli[forge-cli\nforge command, bench]
         session[forge-session\nSession assembly, resume, headless]
+        remote[forge-remote\nRemote control: pairing, pinned TLS API, event logs]
     end
 
     subgraph runtime[Agent runtime]
@@ -34,6 +35,7 @@ flowchart TB
         mcpservers[(MCP servers)]
         repo[(Workspace repository)]
         local[(.forge/local session data)]
+        device[(Paired remote device)]
     end
 
     user --> desktop
@@ -41,6 +43,10 @@ flowchart TB
     cli -. opens .-> desktop
     cli --> session
     desktop --> session
+    desktop --> remote
+    remote --> session
+    remote --> core
+    remote --> types
     desktop --> transcript
     desktop --> workspace
     session --> core
@@ -88,6 +94,7 @@ flowchart TB
     durable --> local
     storage --> local
     connect --> local
+    device -. HTTPS, pinned .-> remote
 
     classDef entry fill:#264653,stroke:#8bd3dd,color:#fff
     classDef runtime fill:#3a506b,stroke:#a8dadc,color:#fff
@@ -95,8 +102,8 @@ flowchart TB
     classDef data fill:#2d6a4f,stroke:#95d5b2,color:#fff
     classDef external fill:#5c4033,stroke:#f4a261,color:#fff
 
-    class desktop,cli,session entry
+    class desktop,cli,session,remote entry
     class core,transcript,tools,mcp,model runtime
     class context,workspace,search,governance,connect,config service
     class durable,storage,types data
-    class providers,mcpservers,repo,local external
+    class providers,mcpservers,repo,local,device external

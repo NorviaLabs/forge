@@ -395,6 +395,11 @@ pub struct Config {
     /// provider and model are chosen with /connect and saved preferences).
     #[serde(skip)]
     pub removed_model_keys: Vec<String>,
+    /// The SSH client configuration SSH sessions use. `None` is the user's
+    /// (`~/.ssh/config`); tests point it at a generated one. Not a config
+    /// file key.
+    #[serde(skip)]
+    pub ssh_config_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -423,6 +428,7 @@ impl Default for Config {
             resolved_workspace: cwd,
             refused_project_keys: Vec::new(),
             removed_model_keys: Vec::new(),
+            ssh_config_file: None,
         }
     }
 }

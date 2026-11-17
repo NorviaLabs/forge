@@ -4,10 +4,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 
 use crate::builtins::unified_diff;
 use crate::registry::ToolContext;
+use crate::target::{Access, TargetPath};
 use crate::{Tool, ToolError};
 
 /// Models sometimes dump an entire file into a patch. Cap the argument so a
@@ -59,13 +59,13 @@ enum Newline {
 #[derive(Debug)]
 enum PreparedChange {
     Write {
-        path: PathBuf,
+        path: TargetPath,
         display_path: String,
         original: Option<String>,
         content: String,
     },
     Delete {
-        path: PathBuf,
+        path: TargetPath,
         display_path: String,
         original: String,
     },
@@ -126,12 +126,9 @@ Supports Add/Update/Delete File, optional `*** Move to:`, `@@` hunks, and `*** E
         for change in &changes {
             match change {
                 PreparedChange::Write { path, content, .. } => {
-                    if let Some(parent) = path.parent() {
-                        tokio::fs::create_dir_all(parent).await?;
-                    }
-                    tokio::fs::write(path, content).await?;
+                    ctx.target.write(path, content.as_bytes()).await?;
                 }
-                PreparedChange::Delete { path, .. } => tokio::fs::remove_file(path).await?,
+                PreparedChange::Delete { path, .. } => ctx.target.remove(path).await?,
             }
         }
 
@@ -312,11 +309,11 @@ async fn prepare_changes(
         if !seen.insert(path_text.clone()) {
             return execution_error(format!("patch changes `{path_text}` more than once"));
         }
-        let path = safe_patch_path(ctx, &path_text)?;
+        let path = safe_patch_path(ctx, &path_text).await?;
 
         match action {
             PatchAction::Add { content, .. } => {
-                if tokio::fs::try_exists(&path).await? {
+                if ctx.target.metadata(&path).await?.is_some() {
                     return execution_error(format!("cannot add existing file `{path_text}`"));
                 }
                 changes.push(PreparedChange::Write {
@@ -327,7 +324,7 @@ async fn prepare_changes(
                 });
             }
             PatchAction::Update { hunks, move_to, .. } => {
-                let original = read_text_file(&path, "update", &path_text).await?;
+                let original = read_text_file(ctx, &path, "update", &path_text).await?;
                 let content = if hunks.is_empty() {
                     original.clone()
                 } else {
@@ -339,8 +336,8 @@ async fn prepare_changes(
                             "patch changes `{dest_text}` more than once"
                         ));
                     }
-                    let dest = safe_patch_path(ctx, &dest_text)?;
-                    if tokio::fs::try_exists(&dest).await? {
+                    let dest = safe_patch_path(ctx, &dest_text).await?;
+                    if ctx.target.metadata(&dest).await?.is_some() {
                         return execution_error(format!(
                             "cannot move `{path_text}` to existing file `{dest_text}`"
                         ));
@@ -366,7 +363,7 @@ async fn prepare_changes(
                 }
             }
             PatchAction::Delete { .. } => {
-                let original = read_text_file(&path, "delete", &path_text).await?;
+                let original = read_text_file(ctx, &path, "delete", &path_text).await?;
                 changes.push(PreparedChange::Delete {
                     path,
                     display_path: path_text,
@@ -379,21 +376,30 @@ async fn prepare_changes(
     Ok(changes)
 }
 
-fn safe_patch_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, ToolError> {
+async fn safe_patch_path(ctx: &ToolContext, path: &str) -> Result<TargetPath, ToolError> {
     // Same confinement as `write_file`: workspace-only, no `.git`, no dangling
     // or escaping symlinks. Absolute paths are accepted when they resolve
     // inside the workspace — models sometimes pass those.
-    ctx.resolve_write_path(path)
+    ctx.target.resolve(ctx, path, Access::Write).await
 }
 
-async fn read_text_file(path: &Path, verb: &str, display: &str) -> Result<String, ToolError> {
-    tokio::fs::read_to_string(path).await.map_err(|error| {
-        let detail = if error.kind() == std::io::ErrorKind::InvalidData {
-            "file is not valid UTF-8".to_string()
-        } else {
-            error.to_string()
+async fn read_text_file(
+    ctx: &ToolContext,
+    path: &TargetPath,
+    verb: &str,
+    display: &str,
+) -> Result<String, ToolError> {
+    let bytes = ctx.target.read(path, u64::MAX).await.map_err(|error| {
+        let detail = match error {
+            ToolError::Io(error) => error.to_string(),
+            other => other.to_string(),
         };
         ToolError::Execution(format!("cannot {verb} `{display}`: {detail}"))
+    })?;
+    String::from_utf8(bytes).map_err(|_| {
+        ToolError::Execution(format!(
+            "cannot {verb} `{display}`: file is not valid UTF-8"
+        ))
     })
 }
 
@@ -891,7 +897,14 @@ mod tests {
 mod path_confinement_tests {
     use super::*;
     use serde_json::json;
+    use std::path::PathBuf;
     use tempfile::tempdir;
+
+    /// What `apply_patch` resolves a path to on this machine: `LocalTarget`
+    /// resolves a write with exactly this.
+    fn safe_patch_path(ctx: &ToolContext, path: &str) -> Result<PathBuf, ToolError> {
+        ctx.resolve_write_path(path)
+    }
 
     /// `safe_patch_path` already rejected absolute paths and every non-`Normal`
     /// component, so the only way past it was a link the walk stepped over:

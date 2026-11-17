@@ -8,7 +8,7 @@
 //! desktop's permanent transport (doc 2, D8); there is no protocol rewrite
 //! planned behind it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -79,6 +79,8 @@ pub enum DesktopEvent {
         /// inspector. No credentials.
         workspace: String,
         branch: String,
+        /// Where the session runs: `None` for this machine.
+        target: Option<TargetView>,
         model: String,
         /// 0.0..=1.0 of the context window in use.
         context_usage: f64,
@@ -149,6 +151,11 @@ pub enum DesktopEvent {
     ProjectSwitched {
         project_id: forge_session::ProjectId,
         supports_git: bool,
+    },
+    /// Remote control's state changed: listening, pairing, a device
+    /// connecting or disconnecting.
+    Remote {
+        status: Box<forge_remote::RemoteStatus>,
     },
 }
 
@@ -305,10 +312,32 @@ pub struct SessionRow {
     /// `active`, `archived` or `retained`. Archived and retained rows are
     /// listed so the operator can resume them; they are not selectable.
     pub lifecycle: &'static str,
-    /// `primary`, `managed`, `attached` or `directory`. Only a managed
+    /// `primary`, `managed`, `attached`, `directory` or `remote`. Only a managed
     /// worktree can be removed with the session; an attached one belongs to
     /// the operator, and a directory session runs in the project folder.
     pub ownership: &'static str,
+    /// The SSH host and folder, for a session that runs on one.
+    pub target: Option<TargetView>,
+}
+
+/// A remote session's host and folder, as the page shows them.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TargetView {
+    pub host: String,
+    pub path: String,
+    /// Whether each command asks first.
+    pub ask: bool,
+}
+
+fn target_view(target: &forge_types::ExecutionTarget) -> Option<TargetView> {
+    match target {
+        forge_types::ExecutionTarget::Local => None,
+        forge_types::ExecutionTarget::Ssh { host, path, ask } => Some(TargetView {
+            host: escape_invisible(host),
+            path: escape_invisible(path),
+            ask: *ask,
+        }),
+    }
 }
 
 fn ownership_label(ownership: forge_session::WorktreeOwnership) -> &'static str {
@@ -317,6 +346,7 @@ fn ownership_label(ownership: forge_session::WorktreeOwnership) -> &'static str 
         forge_session::WorktreeOwnership::Managed => "managed",
         forge_session::WorktreeOwnership::Attached => "attached",
         forge_session::WorktreeOwnership::Directory => "directory",
+        forge_session::WorktreeOwnership::Remote => "remote",
     }
 }
 
@@ -334,6 +364,7 @@ fn session_row(task: &RepositorySession) -> SessionRow {
             SessionLifecycle::Removed => "removed",
         },
         ownership: ownership_label(task.ownership),
+        target: target_view(&task.target),
     }
 }
 
@@ -347,171 +378,12 @@ pub fn session_rows(snapshots: &[SessionRuntimeSnapshot]) -> Vec<SessionRow> {
         .collect()
 }
 
-/// Approvals whose every affirmative answer needs the native confirmation
-/// (AC-4.12): running unconfined, or opening a network host.
-pub fn requires_native_confirm(payload: &HitlPayload) -> bool {
-    matches!(
-        payload.kind(),
-        ApprovalKind::SandboxEscalation | ApprovalKind::NetworkHost
-    )
-}
-
-/// One decision the approval card offers. The backend, not the page, decides
-/// which grants exist for a request; the page only names one.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ApprovalOption {
-    /// The `GrantDecision` name sent back to `decide_approval`.
-    pub decision: String,
-    pub label: String,
-    /// The rule this would remember, when the option grants one.
-    pub detail: String,
-    pub help: String,
-    /// Needs the card's second confirmation step: it runs unconfined or opens
-    /// a host.
-    pub privileged: bool,
-}
-
-fn option(
-    decision: &str,
-    label: String,
-    detail: &str,
-    help: &str,
-    privileged: bool,
-) -> ApprovalOption {
-    ApprovalOption {
-        decision: decision.into(),
-        label,
-        detail: detail.into(),
-        help: help.into(),
-        privileged,
-    }
-}
-
-/// The grants this request can carry, in the order the card shows them.
-///
-/// Mirrors the terminal's menu: a denied host is granted for the session at
-/// least (running it once would only meet the same denial), a sandbox
-/// escalation always runs outside the sandbox, and approve-all is never
-/// offered for one.
-pub fn approval_options(payload: &HitlPayload) -> Vec<ApprovalOption> {
-    let mut options = Vec::new();
-    match payload.kind() {
-        ApprovalKind::NetworkHost => {
-            let host = payload.denied_host.as_deref().unwrap_or("this host");
-            options.push(option(
-                "allow_host_for_session",
-                format!("Allow {host} this session"),
-                &format!("host({host})"),
-                "The sandbox stays on; the call reruns confined. You will be asked again next session.",
-                true,
-            ));
-            options.push(option(
-                "allow_host_always",
-                format!("Always allow {host}"),
-                &format!("host({host})"),
-                "Writes the rule to your personal permissions file. Kept next session.",
-                true,
-            ));
-        }
-        ApprovalKind::SandboxEscalation => {
-            options.push(option(
-                "allow_once",
-                "Approve command".into(),
-                "",
-                "Retries this command outside the filesystem sandbox. That can run destructive commands.",
-                true,
-            ));
-            if let Some(dir) = payload
-                .denied_path
-                .as_deref()
-                .and_then(|path| forge_tools::write_grants::grant_for_denied_path(path).ok())
-            {
-                let dir = dir.display().to_string();
-                // Widening by one named directory comes first: the command
-                // stays in the sandbox.
-                options.insert(
-                    0,
-                    option(
-                        "allow_path_for_session",
-                        format!("Allow writing {dir} this session"),
-                        &format!("write {dir}"),
-                        "The sandbox stays on; the command reruns inside it with this one \
-                         directory writable. You will be asked again next session.",
-                        true,
-                    ),
-                );
-                options.insert(
-                    1,
-                    option(
-                        "allow_path_always",
-                        format!("Always allow writing {dir} in this project"),
-                        &format!("write {dir}"),
-                        "The sandbox stays on. Saved for this project, outside the workspace.",
-                        true,
-                    ),
-                );
-            }
-            if let Some(program) = forge_core::trustable_program(payload) {
-                options.push(option(
-                    "trust_program",
-                    format!("Always run {program} outside the sandbox in this project"),
-                    &format!("trusted program {program}"),
-                    &format!(
-                        "A full escape: every single {program} command in this project runs \
-                         unconfined without asking, including ones you have not seen. Saved \
-                         for this project."
-                    ),
-                    true,
-                ));
-            }
-        }
-        ApprovalKind::Governance => {
-            options.push(option(
-                "allow_once",
-                "Run once".into(),
-                "",
-                "Runs now. You will be asked again.",
-                false,
-            ));
-            options.push(option(
-                "allow_pattern_for_session",
-                "Allow this kind of call this session".into(),
-                "",
-                "The sandbox stays on. You will be asked again next session.",
-                false,
-            ));
-            options.push(option(
-                "allow_pattern_always",
-                "Always allow this kind of call".into(),
-                "",
-                "Writes the rule to your personal permissions file. Kept next session.",
-                false,
-            ));
-            options.push(option(
-                "approve_all",
-                "Trust all commands for this session".into(),
-                "",
-                "Approves review prompts until the session ends without asking. The sandbox stays on: what needs to leave it fails.",
-                false,
-            ));
-        }
-    }
-    options.push(option(
-        "deny",
-        "Don't run".into(),
-        "",
-        "The agent is told the call was denied.",
-        false,
-    ));
-    options.push(option(
-        "deny_with_note",
-        "Don't run, and say why".into(),
-        "",
-        "The note reaches the agent as the tool result.",
-        false,
-    ));
-    options
-}
+// The approval options and the invisible-character escaping live in
+// `forge_session::approvals`, shared with remote control so a phone and the
+// card never disagree about what a request allows.
+pub use forge_session::approvals::{
+    approval_options, escape_invisible, requires_native_confirm, ApprovalOption,
+};
 
 /// A pending approval as the page shows it. `call_id` is issued by the
 /// backend and is the only thing the page can approve or deny.
@@ -528,6 +400,8 @@ pub struct ApprovalView {
     pub privileged: bool,
     pub kind: &'static str,
     pub options: Vec<ApprovalOption>,
+    /// The SSH host the call would run on; `None` on this machine.
+    pub target: Option<String>,
     /// Set for a background child request: the exact request this view
     /// describes, so a decision cannot land on a replacement request.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -765,22 +639,6 @@ fn token_view(details: Option<&forge_session::SessionDetailsSnapshot>) -> TokenV
         .unwrap_or_default()
 }
 
-/// Make characters that can disguise what a command does visible:
-/// bidi controls, zero-width characters and the byte-order mark become
-/// `⟨U+XXXX⟩`.
-pub fn escape_invisible(text: &str) -> String {
-    text.chars()
-        .map(|c| match c {
-            '\u{200B}'..='\u{200F}'
-            | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{FEFF}' => format!("⟨U+{:04X}⟩", c as u32),
-            c => c.to_string(),
-        })
-        .collect()
-}
-
 fn approval_view(payload: &HitlPayload) -> ApprovalView {
     let arguments = serde_json::to_string_pretty(&payload.args_redacted)
         .unwrap_or_else(|_| payload.args_redacted.to_string());
@@ -796,6 +654,7 @@ fn approval_view(payload: &HitlPayload) -> ApprovalView {
             ApprovalKind::Governance => "governance",
         },
         options: approval_options(payload),
+        target: payload.target.as_deref().map(escape_invisible),
         request_id: None,
     }
 }
@@ -1000,6 +859,7 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .is_some_and(|details| thinking_switchable(&details.active_model)),
         workspace: snapshot.task.workspace.display().to_string(),
         branch: snapshot.task.branch.clone(),
+        target: target_view(&snapshot.task.target),
         model: snapshot
             .details
             .as_ref()
@@ -1527,6 +1387,7 @@ async fn open_in_window(
     use tauri::Manager;
     projects.open(id).await?;
     let project = projects.project(id).await?;
+    crate::remote::manage(app, projects);
     app.manage(DesktopState::new(projects.clone(), project));
     Ok(())
 }
@@ -1578,6 +1439,15 @@ pub async fn subscribe(
 ) -> Result<Hello, String> {
     let project = state.active();
     let (session_id, initial, sessions) = project_view_parts(&project).await?;
+    {
+        use tauri::Manager;
+        if let Some(remote) = app.try_state::<crate::remote::RemoteState>() {
+            tauri::async_runtime::spawn(crate::remote::forward_status(
+                channel.clone(),
+                remote.service.subscribe_status(),
+            ));
+        }
+    }
     let workspace = state.projects.workspace();
     let projects = project_views(&workspace.borrow());
     tauri::async_runtime::spawn(forward_workspace(
@@ -2251,28 +2121,83 @@ pub async fn submit_images(
         .map_err(SessionFailure::from)
 }
 
-/// Create a session (its own managed worktree) and select it. The roster
-/// and selection arrive on the event channel.
+/// A session creation's failure as the page shows it. An SSH host's
+/// answer is part of it, and the host is not trusted to write to the page.
+fn creation_error(message: String) -> String {
+    escape_invisible(&message)
+        .chars()
+        .map(|c| {
+            if c.is_control() && c != '\n' {
+                format!("⟨U+{:04X}⟩", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+/// Where the page asks a new session to run, when not on this Mac.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TargetRequest {
+    /// A `Host` alias from the user's SSH config.
+    pub host: String,
+    /// An absolute folder on that host.
+    pub path: String,
+    /// Ask before each command.
+    pub ask: bool,
+}
+
+/// The `Host` aliases in `~/.ssh/config` (and what it includes), for the
+/// new-session dialog's "Run on" list.
+#[tauri::command]
+pub async fn list_ssh_hosts() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        crate::ssh_hosts::user_config()
+            .map(|config| crate::ssh_hosts::hosts_in(&config))
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// Create a session (its own managed worktree, or a folder on an SSH host)
+/// and select it. The roster and selection arrive on the event channel. An
+/// SSH host is connected and checked first; its failure is the error.
 #[tauri::command]
 pub async fn create_session(
     state: State<'_, DesktopState>,
     label: String,
     github_issue_number: Option<u64>,
+    target: Option<TargetRequest>,
 ) -> Result<(), String> {
     let project = state.active();
     let label = label.trim().to_string();
     if label.is_empty() {
         return Err("session name is empty".into());
     }
+    let target = match target {
+        None => forge_types::ExecutionTarget::Local,
+        Some(request) => {
+            let known = tokio::task::spawn_blocking(|| {
+                crate::ssh_hosts::user_config()
+                    .map(|config| crate::ssh_hosts::hosts_in(&config))
+                    .unwrap_or_default()
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+            crate::ssh_hosts::remote_target(&request.host, &request.path, request.ask, &known)?
+        }
+    };
     project
         .handle
         .command(SupervisorCommand::CreateSession {
             label,
             first_prompt: None,
             github_issue_number,
+            target,
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| creation_error(error.to_string()))
 }
 
 #[tauri::command]
@@ -2480,6 +2405,9 @@ pub async fn decide_approval(
         .submit(SupervisorCommand::DecideApproval {
             session_id,
             expected_call_id: Some(call_id),
+            // The kind the options were checked against: a click meant for
+            // a review prompt never lands on the escalation that follows.
+            expected_kind: Some(payload.kind()),
             decision,
             actor: "desktop".into(),
         })
@@ -2770,6 +2698,7 @@ pub async fn list_resumable_sessions(
             slot: record.slot,
             lifecycle: "closed",
             ownership: ownership_label(record.ownership),
+            target: target_view(&record.target),
         })
         .collect())
 }
@@ -3040,17 +2969,31 @@ pub async fn message_detail(
         .ok_or_else(|| "that message is no longer in the transcript".into())
 }
 
+/// The local folder a session's files, Git and terminal commands work in.
+/// A session on an SSH host has none: its files are on the host, and this
+/// machine's copy of the project is not what it works on.
+fn local_root(snapshot: &SessionRuntimeSnapshot) -> Result<std::path::PathBuf, SessionFailure> {
+    if let forge_types::ExecutionTarget::Ssh { host, path, .. } = &snapshot.task.target {
+        return Err(format!(
+            "This session works in {path} on {host}; its files, Git and terminal are there, not \
+             on this Mac."
+        )
+        .into());
+    }
+    Ok(snapshot.session.workspace_root.clone())
+}
+
 /// One session's workspace root, by id.
 async fn workspace_of(
     state: &DesktopState,
     session_id: SessionId,
 ) -> Result<std::path::PathBuf, SessionFailure> {
     let project = state.project_for(session_id).await?;
-    project
+    let snapshot = project
         .snapshot(session_id)
         .await?
-        .map(|snapshot| snapshot.session.workspace_root)
-        .ok_or_else(|| "the session is gone".into())
+        .ok_or_else(|| SessionFailure::from("the session is gone".to_string()))?;
+    local_root(&snapshot)
 }
 
 /// One folder of a session's workspace (`""` is the root). The tree loads a
@@ -3923,6 +3866,49 @@ pub async fn git_discard_hunk(
 }
 
 /// Open (or restart) the active session's interactive shell.
+/// Remote control: what Settings and the footer show.
+#[tauri::command]
+pub async fn remote_status(app: tauri::AppHandle) -> Result<forge_remote::RemoteStatus, String> {
+    crate::remote::status(&app).await
+}
+
+/// Remote control: turn it on or off, and where it listens.
+#[tauri::command]
+pub async fn remote_configure(
+    app: tauri::AppHandle,
+    settings: crate::remote::RemoteSettingsInput,
+) -> Result<forge_remote::RemoteStatus, String> {
+    crate::remote::configure(&app, settings).await
+}
+
+/// Remote control: a one-time pairing code for a device.
+#[tauri::command]
+pub async fn remote_pair_start(app: tauri::AppHandle) -> Result<forge_remote::PairingInfo, String> {
+    crate::remote::pair_start(&app).await
+}
+
+/// Remote control: allow or refuse the device waiting to pair. The page
+/// passes the confirmation number it showed.
+#[tauri::command]
+pub async fn remote_pair_decide(
+    app: tauri::AppHandle,
+    confirmation: String,
+    allow: bool,
+) -> Result<forge_remote::RemoteStatus, String> {
+    crate::remote::pair_decide(&app, confirmation, allow).await
+}
+
+#[tauri::command]
+pub async fn remote_pair_cancel(app: tauri::AppHandle) -> Result<(), String> {
+    crate::remote::pair_cancel(&app).await
+}
+
+/// Remote control: forget the paired device and disconnect it now.
+#[tauri::command]
+pub async fn remote_revoke(app: tauri::AppHandle) -> Result<(), String> {
+    crate::remote::revoke(&app).await
+}
+
 #[tauri::command]
 pub async fn shell_open(
     state: State<'_, DesktopState>,
@@ -4218,6 +4204,7 @@ mod tests {
                 github_pr_url: None,
                 github_retry_attempts: 0,
                 github_tests_passed: false,
+                target: forge_types::ExecutionTarget::Local,
             },
             session: forge_session::SessionSnapshot::default(),
             transcript: forge_session::TranscriptSnapshot::default(),
@@ -4261,6 +4248,7 @@ mod tests {
                         slot: None,
                         lifecycle: "active",
                         ownership: "primary",
+                        target: None,
                     },
                     SessionRow {
                         session_id: archived,
@@ -4269,6 +4257,7 @@ mod tests {
                         slot: None,
                         lifecycle: "archived",
                         ownership: "primary",
+                        target: None,
                     },
                 ]
             }
@@ -4409,6 +4398,7 @@ mod tests {
             sandbox_escalation,
             denied_host: denied_host.map(str::to_string),
             denied_path: None,
+            target: None,
         }
     }
 
@@ -4527,6 +4517,124 @@ mod tests {
         let shown = question_view(&raw_label);
         assert_eq!(shown.questions[0].options[0].value, "Fast\u{202e}");
         assert!(!shown.questions[0].options[0].label.contains('\u{202e}'));
+    }
+
+    fn on_devbox(mut snapshot: SessionRuntimeSnapshot) -> SessionRuntimeSnapshot {
+        snapshot.task.ownership = forge_session::WorktreeOwnership::Remote;
+        snapshot.task.target = forge_types::ExecutionTarget::Ssh {
+            host: "devbox".into(),
+            path: "/srv/app".into(),
+            ask: true,
+        };
+        snapshot.session.workspace_root = std::path::PathBuf::from("/private/forge/remote-a");
+        snapshot
+    }
+
+    /// A command on another machine is not this machine's sandbox, and a
+    /// personal rule was written about this machine: no "always", and no
+    /// help text promising a sandbox.
+    #[test]
+    fn a_remote_command_is_allowed_for_the_session_at_most() {
+        let mut remote = payload(false, None);
+        remote.target = Some("devbox".into());
+        let options = approval_options(&remote);
+        let names: Vec<&str> = options
+            .iter()
+            .map(|option| option.decision.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "allow_once",
+                "allow_pattern_for_session",
+                "approve_all",
+                "deny",
+                "deny_with_note"
+            ]
+        );
+        for option in &options {
+            assert!(!option.help.contains("sandbox"), "{option:?}");
+        }
+        assert_eq!(approval_view(&remote).target.as_deref(), Some("devbox"));
+        assert_eq!(approval_view(&payload(false, None)).target, None);
+    }
+
+    /// Trusting every command removes the only boundary a host has: like
+    /// the local grants that leave the sandbox, it takes the card's second
+    /// confirmation.
+    #[test]
+    fn trusting_all_commands_on_a_host_needs_a_confirmation() {
+        let mut remote = payload(false, None);
+        remote.target = Some("devbox".into());
+        let options = approval_options(&remote);
+        let trust = options
+            .iter()
+            .find(|option| option.decision == "approve_all")
+            .unwrap();
+        assert!(trust.privileged, "{trust:?}");
+        assert!(options
+            .iter()
+            .filter(|option| option.decision != "approve_all")
+            .all(|option| !option.privileged));
+    }
+
+    #[test]
+    fn a_hosts_answer_cannot_disguise_the_creation_error() {
+        let shown = creation_error(
+            "Could not connect to devbox: \u{202e}elif.txt\u{1b}[31m boom".to_string(),
+        );
+        assert!(
+            !shown.contains('\u{202e}') && !shown.contains('\u{1b}'),
+            "{shown}"
+        );
+        assert!(shown.starts_with("Could not connect to devbox:"));
+    }
+
+    #[test]
+    fn a_remote_session_names_its_host_and_folder() {
+        use forge_session::SupervisorTurnState;
+        let local = snapshot(
+            SessionId::new_v4(),
+            "here",
+            SessionLifecycle::Active,
+            SupervisorTurnState::Idle,
+        );
+        let remote = on_devbox(snapshot(
+            SessionId::new_v4(),
+            "there",
+            SessionLifecycle::Active,
+            SupervisorTurnState::Idle,
+        ));
+        let expected = serde_json::json!({"host": "devbox", "path": "/srv/app", "ask": true});
+        let rows = serde_json::to_value(session_rows(&[local.clone(), remote.clone()])).unwrap();
+        assert_eq!(rows[0]["target"], serde_json::Value::Null);
+        assert_eq!(rows[1]["target"], expected);
+        assert_eq!(rows[1]["ownership"], "remote");
+        let event = serde_json::to_value(session_event(&remote)).unwrap();
+        assert_eq!(event["target"], expected);
+        let event = serde_json::to_value(session_event(&local)).unwrap();
+        assert_eq!(event["target"], serde_json::Value::Null);
+    }
+
+    /// Files, Git, GitHub and the terminal work on this machine's folder; a
+    /// remote session has none to offer them.
+    #[test]
+    fn local_only_commands_refuse_a_remote_session() {
+        use forge_session::SupervisorTurnState;
+        let mut local = snapshot(
+            SessionId::new_v4(),
+            "here",
+            SessionLifecycle::Active,
+            SupervisorTurnState::Idle,
+        );
+        local.session.workspace_root = std::path::PathBuf::from("/work/app");
+        assert_eq!(
+            local_root(&local).unwrap(),
+            std::path::PathBuf::from("/work/app")
+        );
+        let remote = on_devbox(local);
+        let failure = local_root(&remote).unwrap_err();
+        assert!(failure.message.contains("devbox"), "{failure:?}");
     }
 
     #[test]

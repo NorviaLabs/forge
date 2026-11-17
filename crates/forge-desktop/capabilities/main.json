@@ -46,6 +46,7 @@
     "allow-child-transcript",
     "allow-message-detail",
     "allow-create-session",
+    "allow-list-ssh-hosts",
     "allow-select-session",
     "allow-archive-session",
     "allow-attach-worktree",
@@ -107,6 +108,12 @@
     "allow-shell-open",
     "allow-shell-write",
     "allow-shell-resize",
-    "allow-shell-close"
+    "allow-shell-close",
+    "allow-remote-status",
+    "allow-remote-configure",
+    "allow-remote-pair-start",
+    "allow-remote-pair-cancel",
+    "allow-remote-pair-decide",
+    "allow-remote-revoke"
   ]
 }

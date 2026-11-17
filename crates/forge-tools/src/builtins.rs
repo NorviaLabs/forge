@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
 use crate::registry::ToolContext;
@@ -153,58 +153,51 @@ impl Tool for ReadFileTool {
         let a: ReadFileArgs = serde_json::from_value(args).map_err(|e| {
             ToolError::Execution(format!("internal deserialize after validation: {e}"))
         })?;
-        let path = ctx.resolve_path(&a.path)?;
+        let target = &ctx.target;
+        let path = target
+            .resolve(ctx, &a.path, crate::target::Access::Read)
+            .await?;
         const MAX_UNBOUNDED_READ_BYTES: u64 = 2 * 1024 * 1024;
         if a.offset.is_none() && a.limit.is_none() {
-            if let Ok(meta) = tokio::fs::metadata(&path).await {
-                if meta.len() > MAX_UNBOUNDED_READ_BYTES {
+            if let Ok(Some(meta)) = target.metadata(&path).await {
+                if meta.len > MAX_UNBOUNDED_READ_BYTES {
                     return Ok(ToolOutput::failed_exit(
                         format!(
                             "`{}` is {} bytes; pass `offset` and `limit` to read a slice (max {MAX_UNBOUNDED_READ_BYTES} bytes without a range)",
                             a.path,
-                            meta.len()
+                            meta.len
                         ),
                         None,
                     ));
                 }
             }
         }
-        let mut header = [0_u8; 32];
-        {
-            let mut probe = tokio::fs::File::open(&path).await?;
-            let n = probe.read(&mut header).await?;
-            if forge_types::sniff_allowed_image(&header[..n]) {
-                let hint = if ctx.image_input {
-                    "use view_image on this path"
-                } else {
-                    "the active model does not support image inputs"
-                };
-                return Ok(ToolOutput::failed_exit(
-                    format!("`{}` is an image; {hint}", a.path),
-                    None,
-                ));
-            }
-        }
-        let file = tokio::fs::File::open(&path).await?;
-        let mut lines = BufReader::new(file).lines();
-        let start = a.offset.unwrap_or(1).saturating_sub(1);
-        for _ in 0..start {
-            if lines.next_line().await?.is_none() {
-                break;
-            }
-        }
-        let mut content = String::new();
-        let mut count = 0;
-        while a.limit.is_none_or(|limit| count < limit) {
-            let Some(line) = lines.next_line().await? else {
-                break;
+        let offset = a.offset.unwrap_or(1);
+        // A remote target reads the header and the lines in one round trip;
+        // this machine reads the lines only once the header is not an image.
+        let (header, lines) = if target.remote_host().is_some() {
+            let (header, lines) = target
+                .read_head_and_lines(&path, 32, offset, a.limit)
+                .await?;
+            (header, Some(lines))
+        } else {
+            (target.read(&path, 32).await?, None)
+        };
+        if forge_types::sniff_allowed_image(&header) {
+            let hint = if ctx.image_input {
+                "use view_image on this path"
+            } else {
+                "the active model does not support image inputs"
             };
-            if !content.is_empty() {
-                content.push('\n');
-            }
-            content.push_str(&line);
-            count += 1;
+            return Ok(ToolOutput::failed_exit(
+                format!("`{}` is an image; {hint}", a.path),
+                None,
+            ));
         }
+        let content = match lines {
+            Some(lines) => lines?,
+            None => target.read_lines(&path, offset, a.limit).await?,
+        };
         Ok(ToolOutput {
             outcome: Default::default(),
             content,
@@ -253,28 +246,32 @@ impl Tool for LsTool {
             ToolError::Execution(format!("internal deserialize after validation: {e}"))
         })?;
         let requested = a.path.as_deref().unwrap_or(".");
-        let path = ctx.resolve_path(requested)?;
-        let metadata = tokio::fs::metadata(&path).await?;
-        let content = if metadata.is_dir() {
-            let mut names = Vec::new();
-            let mut entries = tokio::fs::read_dir(&path).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if !a.all && name.starts_with('.') {
-                    continue;
-                }
-                let suffix = if entry.file_type().await?.is_dir() {
-                    "/"
-                } else {
-                    ""
-                };
-                names.push(format!("{name}{suffix}"));
-            }
+        let target = &ctx.target;
+        let path = target
+            .resolve(ctx, requested, crate::target::Access::Read)
+            .await?;
+        let Some(metadata) = target.metadata(&path).await? else {
+            return Err(ToolError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("`{requested}` does not exist"),
+            )));
+        };
+        let content = if metadata.is_dir {
+            let mut names: Vec<String> = target
+                .list(&path)
+                .await?
+                .into_iter()
+                .filter(|entry| a.all || !entry.name.starts_with('.'))
+                .map(|entry| {
+                    let suffix = if entry.is_dir { "/" } else { "" };
+                    format!("{}{suffix}", entry.name)
+                })
+                .collect();
             names.sort();
             names.join("\n")
         } else {
-            path.file_name()
+            path.as_path()
+                .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
                 .unwrap_or_else(|| requested.to_string())
         };
@@ -332,12 +329,16 @@ impl Tool for WriteFileTool {
     async fn call(&self, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
         let a: WriteFileArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
-        let path = ctx.resolve_write_path(&a.path)?;
-        let old = tokio::fs::read_to_string(&path).await.ok();
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::write(&path, a.content.as_bytes()).await?;
+        let target = &ctx.target;
+        let path = target
+            .resolve(ctx, &a.path, crate::target::Access::Write)
+            .await?;
+        // Written, and what was there before for the diff: one round trip on
+        // a remote target.
+        let old = target
+            .replace(&path, a.content.as_bytes())
+            .await?
+            .and_then(|bytes| String::from_utf8(bytes).ok());
         let diff = unified_diff(&a.path, old.as_deref(), &a.content)?;
         let content = if diff.trim().is_empty() {
             format!("wrote {} bytes to {}", a.content.len(), a.path)
@@ -441,7 +442,18 @@ pub async fn run_shell_command_with_egress(
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
 ) -> Result<ToolOutput, ToolError> {
-    run_shell_command_inner(command, workspace_root, egress, None, true, None, None, &[]).await
+    run_shell_command_inner(
+        &crate::target::LocalTarget,
+        command,
+        workspace_root,
+        egress,
+        None,
+        true,
+        None,
+        None,
+        &[],
+    )
+    .await
 }
 
 pub async fn run_shell_command_with_egress_and_temp(
@@ -451,6 +463,7 @@ pub async fn run_shell_command_with_egress_and_temp(
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
     run_shell_command_inner(
+        &crate::target::LocalTarget,
         command,
         workspace_root,
         egress,
@@ -472,6 +485,7 @@ pub async fn run_shell_command_unconfined(
     session_tmp: Option<&Path>,
 ) -> Result<ToolOutput, ToolError> {
     run_shell_command_inner(
+        &crate::target::LocalTarget,
         command,
         workspace_root,
         None,
@@ -532,6 +546,30 @@ impl ShellOutputCapture {
     }
 }
 
+/// Run a background shell job on `ctx`'s target (this machine, confined as
+/// always, or a remote host), observed through `capture`. Background work
+/// gets the same target, network and temp as the foreground.
+pub async fn run_shell_job(
+    ctx: &ToolContext,
+    command: &str,
+    capture: Arc<ShellOutputCapture>,
+) -> Result<ToolOutput, ToolError> {
+    // Always confined on this machine, approve-all included: approve-all
+    // answers prompts, it does not take the sandbox away.
+    run_shell_command_inner(
+        &*ctx.target,
+        command,
+        &ctx.workspace_root,
+        ctx.egress.as_deref(),
+        ctx.session_tmp.as_deref().map(|temp| temp.path()),
+        true,
+        Some(capture),
+        ctx.tool_call_id.as_deref(),
+        &ctx.credential_env_names,
+    )
+    .await
+}
+
 /// Observe a shell job without changing its sandbox, grant or completion path.
 /// `egress_label` (the tool call id that started the job, when there is one)
 /// attributes the job's connections in the session's egress event log.
@@ -547,6 +585,7 @@ pub async fn run_shell_command_observed(
     credential_env_names: &[String],
 ) -> Result<ToolOutput, ToolError> {
     run_shell_command_inner(
+        &crate::target::LocalTarget,
         command,
         workspace_root,
         egress,
@@ -561,6 +600,7 @@ pub async fn run_shell_command_observed(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_shell_command_inner(
+    target: &dyn crate::target::Target,
     command: &str,
     workspace_root: &Path,
     egress: Option<&crate::sandbox::EgressGrant>,
@@ -570,8 +610,8 @@ async fn run_shell_command_inner(
     egress_label: Option<&str>,
     credential_env_names: &[String],
 ) -> Result<ToolOutput, ToolError> {
-    let mut spec =
-        crate::shell_spawn::ShellSpawnSpec::build(crate::shell_spawn::ShellSpawnRequest {
+    let crate::target::TargetShell { mut spec, remote } = target
+        .shell(crate::shell_spawn::ShellSpawnRequest {
             mode: crate::shell_spawn::ShellSpawnMode::Run,
             shell: "bash",
             command,
@@ -610,8 +650,14 @@ async fn run_shell_command_inner(
         // Armed guard drops here and reaps the tree the failure left behind.
         Err(error) => return Err(error),
     };
+    // On a remote target the local `ssh` relays the status; 255 from it may
+    // be a lost connection, which is an error naming the host.
+    let exit_code = match &remote {
+        Some(remote) => remote.exit_status(status.code()).await?,
+        None => status.code(),
+    };
     if let Some(capture) = capture.as_ref() {
-        capture.exited(status.code());
+        capture.exited(exit_code);
     }
     let mut content = String::from_utf8_lossy(&stdout).into_owned();
     let err = String::from_utf8_lossy(&stderr);
@@ -662,7 +708,7 @@ async fn run_shell_command_inner(
             command,
             &content,
             err.as_ref(),
-            status.success(),
+            exit_code == Some(0),
             "bash",
             workspace_root,
             denied_host,
@@ -671,8 +717,7 @@ async fn run_shell_command_inner(
         }
     }
 
-    let is_error = !status.success();
-    let exit_code = status.code();
+    let is_error = exit_code != Some(0);
     let outcome = if !is_error {
         ExecutionOutcome::Success
     } else if !refused_hosts.is_empty() {
@@ -775,6 +820,7 @@ included, is writable; Forge reports a call that changes hooks or config."
         let a: BashArgs =
             serde_json::from_value(args).map_err(|e| ToolError::Execution(e.to_string()))?;
         run_shell_command_inner(
+            &*ctx.target,
             &a.command,
             &ctx.workspace_root,
             ctx.egress.as_deref(),
@@ -1736,6 +1782,7 @@ fn validate_git_args(
         index += 1;
     }
 
+    let mut directories = Vec::new();
     match policy.operands {
         GitOperands::Free => {}
         // The directory git creates is confined; the source it reads is not,
@@ -1747,7 +1794,7 @@ fn validate_git_args(
                 ));
             }
             if let Some(directory) = operands.get(1) {
-                ctx.resolve_write_path(directory)?;
+                directories.push(directory.to_string());
             }
         }
         GitOperands::OptionalDirectory => {
@@ -1757,14 +1804,22 @@ fn validate_git_args(
                 )));
             }
             if let Some(directory) = operands.first() {
-                ctx.resolve_write_path(directory)?;
+                directories.push(directory.to_string());
             }
         }
     }
 
+    // The directory git would create or initialise is confined like a
+    // written path. On a remote target the caller checks it there.
+    if ctx.target.remote_host().is_none() {
+        for directory in &directories {
+            ctx.resolve_write_path(directory)?;
+        }
+    }
     Ok(ParsedGitArgs {
         operands: operands.into_iter().map(str::to_owned).collect(),
         options: options.into_iter().map(str::to_owned).collect(),
+        directories,
     })
 }
 
@@ -1776,6 +1831,8 @@ pub(crate) struct ParsedGitArgs {
     pub(crate) operands: Vec<String>,
     /// Names of the options present (`--all`, `--depth`, …), values excluded.
     pub(crate) options: Vec<String>,
+    /// Directories the call would create or initialise, confined as writes.
+    pub(crate) directories: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -1821,6 +1878,9 @@ Not a free-form shell. Prefer this over `bash(git …)`."
             )));
         }
         let parsed = validate_git_args(ctx, &sub, &a.args)?;
+        if ctx.target.remote_host().is_some() {
+            return run_git_remote(ctx, &sub, &a.args, &parsed).await;
+        }
         // Fast path: refuse a remote the policy does not permit before git
         // runs, so the host-grant prompt names it without a failed attempt.
         crate::git_network::check_git_network(ctx, &sub, &parsed.operands, &parsed.options).await?;
@@ -1912,6 +1972,60 @@ Not a free-form shell. Prefer this over `bash(git …)`."
     }
 }
 
+/// `git` on a remote target: the same allowlist and argument checks, run
+/// there without a shell. The host's network and credentials are its own;
+/// this machine's gateway and brokers do not apply.
+async fn run_git_remote(
+    ctx: &ToolContext,
+    sub: &str,
+    args: &[String],
+    parsed: &ParsedGitArgs,
+) -> Result<ToolOutput, ToolError> {
+    for directory in &parsed.directories {
+        ctx.target
+            .resolve(ctx, directory, crate::target::Access::Write)
+            .await?;
+    }
+    let argv: Vec<String> = ["env", "GIT_TERMINAL_PROMPT=0", "git", sub]
+        .into_iter()
+        .map(str::to_string)
+        .chain(args.iter().cloned())
+        .collect();
+    let timeout = crate::git_network::git_timeout(sub, args);
+    let out = ctx.target.run(&argv, timeout).await?;
+    if out.timed_out {
+        return Ok(ToolOutput {
+            outcome: Some(ExecutionOutcome::TimedOut),
+            content: format!(
+                "git {sub}: timed out after {}s; the git process and its children were killed",
+                timeout.as_secs()
+            ),
+            is_error: true,
+            exit_code: None,
+            attachments: Vec::new(),
+        });
+    }
+    let mut content = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.is_empty() {
+        if !content.is_empty() {
+            content.push('\n');
+        }
+        content.push_str(&err);
+    }
+    let success = out.status == Some(0);
+    if content.trim().is_empty() && success {
+        content = format!("git {sub}: ok");
+    }
+    Ok(ToolOutput {
+        outcome: Default::default(),
+        content,
+        is_error: !success,
+        exit_code: out.status,
+        attachments: Vec::new(),
+    })
+}
+
 async fn run_git_confined(
     ctx: &ToolContext,
     sub: &str,
@@ -1942,6 +2056,7 @@ async fn run_git_confined(
         .join(" ");
     let timeout = crate::git_network::git_timeout(sub, args);
     let run = run_shell_command_inner(
+        &crate::target::LocalTarget,
         &command,
         &ctx.workspace_root,
         ctx.egress.as_deref(),
@@ -2004,6 +2119,7 @@ mod tests {
     use super::*;
     use crate::validation::validate_args;
     use serde_json::json;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
     /// The group kill is what stops a background job at shutdown. It must
     /// reach a grandchild that ignores SIGTERM: the shell's `sleep` is not
