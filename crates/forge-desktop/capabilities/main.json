@@ -103,6 +103,7 @@
     "allow-update-custom-provider",
     "allow-remove-custom-provider",
     "allow-set-model",
+    "allow-set-auto-model",
     "allow-shell-open",
     "allow-shell-write",
     "allow-shell-resize",

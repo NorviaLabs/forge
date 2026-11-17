@@ -684,6 +684,10 @@ pub enum JournalEventType {
     /// runs on — appended to the *child's* own journal when it is created, so
     /// a resumed child keeps the same restrictions.
     AgentProfile,
+    /// Auto for the main session: its state after a change (`state`: on,
+    /// with its fallback and ladder position, or `null` for off) and, for a
+    /// turn Auto chose the model of, the decision (`decision`).
+    AutoModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

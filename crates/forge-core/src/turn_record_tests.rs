@@ -1774,3 +1774,400 @@ async fn a_picked_child_still_escalates() {
             .any(|kind| kind == "model_chosen"));
     }
 }
+
+// ------------------------------------------------------------- auto model
+
+/// Auto's advisor: a fixed start, and the test models' efforts — mid:
+/// low/medium/high (default medium); big: medium/high/max (default high);
+/// small and broken: none. (The strong tier is big @ high.)
+struct FakeAuto {
+    start: crate::AutoStart,
+}
+
+impl crate::AutoModelAdvisor for FakeAuto {
+    fn start(&self, _fallback: &crate::AutoFallback) -> crate::AutoStart {
+        self.start.clone()
+    }
+
+    fn efforts(&self, model: &str, _profile_id: &str) -> crate::ModelEfforts {
+        let (options, default): (&[&str], Option<&str>) = match model {
+            "test/mid" => (&["low", "medium", "high"], Some("medium")),
+            "test/big" => (&["medium", "high", "max"], Some("high")),
+            _ => (&[], None),
+        };
+        crate::ModelEfforts {
+            options: options.iter().map(|o| o.to_string()).collect(),
+            default: default.map(str::to_string),
+        }
+    }
+}
+
+fn child(model: &str, effort: Option<&str>) -> ChildModel {
+    ChildModel {
+        model: model.into(),
+        profile_id: "test".into(),
+        reasoning_effort: effort.map(str::to_string),
+        context_window: Some(100_000),
+        output_reserve: None,
+        image_input: Some(false),
+    }
+}
+
+fn ranked_start(model: &str, effort: Option<&str>) -> crate::AutoStart {
+    crate::AutoStart {
+        model: child(model, effort),
+        ranked: true,
+        reason: format!("{model} ranks first for main-session work"),
+        evidence: None,
+    }
+}
+
+fn fallback_of(model: &str, effort: Option<&str>) -> crate::AutoFallback {
+    crate::AutoFallback {
+        model: model.into(),
+        profile_id: "test".into(),
+        reasoning_effort: effort.map(str::to_string),
+    }
+}
+
+/// A session on Auto (fallback small @ low) whose advisor starts on
+/// `start`.
+async fn auto_session(
+    dir: &std::path::Path,
+    model: Arc<TierModel>,
+    start: crate::AutoStart,
+) -> AgentSession {
+    let mut session = session(dir, model).await;
+    session.set_auto_model_advisor(Arc::new(FakeAuto { start }));
+    session
+        .set_auto_model(fallback_of("test/small", Some("low")))
+        .await
+        .unwrap();
+    session
+}
+
+/// `(model, effort)` of every request so far.
+fn requests(model: &TierModel) -> Vec<(String, Option<String>)> {
+    model
+        .seen()
+        .into_iter()
+        .map(|seen| (seen.model, seen.effort))
+        .collect()
+}
+
+fn on(model: &str, effort: Option<&str>) -> (String, Option<String>) {
+    (model.to_string(), effort.map(str::to_string))
+}
+
+async fn turn(session: &mut AgentSession, text: &str) {
+    session
+        .run_user_message_with_stream(text, None)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn each_auto_turn_starts_on_the_ranked_model_and_says_so() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[("test/mid", vec![text("Done.")])]);
+    let mut session = auto_session(
+        dir.path(),
+        model.clone(),
+        ranked_start("test/mid", Some("medium")),
+    )
+    .await;
+    turn(&mut session, "hi").await;
+
+    assert_eq!(requests(&model), [on("test/mid", Some("medium"))]);
+    let decisions = session.auto_decisions().to_vec();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].source, crate::AutoSource::Ranked);
+    assert_eq!(decisions[0].step, 0);
+    assert_eq!(
+        decisions[0].steps, 4,
+        "mid@medium, mid@high, big@high, big@max"
+    );
+    assert_eq!(decisions[0].user_message, 1);
+    let record = &records(&session).await[0];
+    assert_eq!(
+        signal_detail(record, "auto_model").as_deref(),
+        Some("ranked: test/mid ranks first for main-session work")
+    );
+}
+
+/// After a failed turn the next turn starts one step higher — effort
+/// first, then the stronger model — and the failed turn is never re-run.
+#[tokio::test]
+async fn a_failed_turn_starts_the_next_one_step_higher_without_rerunning_it() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[
+        ("test/mid", vec![dangling(), dangling()]),
+        ("test/big", vec![dangling(), text("Done at last.")]),
+    ]);
+    let mut session = auto_session(
+        dir.path(),
+        model.clone(),
+        ranked_start("test/mid", Some("medium")),
+    )
+    .await;
+
+    for message in ["one", "two", "three", "four"] {
+        turn(&mut session, message).await;
+    }
+    // One request per turn: nothing was re-run.
+    assert_eq!(
+        requests(&model),
+        [
+            on("test/mid", Some("medium")),
+            on("test/mid", Some("high")),
+            on("test/big", Some("high")),
+            on("test/big", Some("max")),
+        ]
+    );
+    let sources: Vec<(crate::AutoSource, usize)> = session
+        .auto_decisions()
+        .iter()
+        .map(|d| (d.source, d.step))
+        .collect();
+    assert_eq!(
+        sources,
+        [
+            (crate::AutoSource::Ranked, 0),
+            (crate::AutoSource::SteppedUp, 1),
+            (crate::AutoSource::SteppedUp, 2),
+            (crate::AutoSource::SteppedUp, 3),
+        ]
+    );
+    let outcomes: Vec<String> = records(&session)
+        .await
+        .iter()
+        .map(|r| r.outcome.clone())
+        .collect();
+    assert_eq!(outcomes, ["failed", "failed", "failed", "completed"]);
+    assert_eq!(session.auto_model().unwrap().position, 3);
+}
+
+/// Two good turns in a row at a raised step: one step back down.
+#[tokio::test]
+async fn two_good_turns_step_back_down() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[
+        (
+            "test/mid",
+            vec![dangling(), dangling(), text("ok"), text("ok")],
+        ),
+        ("test/big", vec![text("ok"), text("ok")]),
+    ]);
+    let mut session = auto_session(
+        dir.path(),
+        model.clone(),
+        ranked_start("test/mid", Some("medium")),
+    )
+    .await;
+    for message in ["fail", "fail again", "good", "good again", "next"] {
+        turn(&mut session, message).await;
+    }
+    let steps: Vec<(crate::AutoSource, usize)> = session
+        .auto_decisions()
+        .iter()
+        .map(|d| (d.source, d.step))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            (crate::AutoSource::Ranked, 0),
+            (crate::AutoSource::SteppedUp, 1),
+            (crate::AutoSource::SteppedUp, 2),
+            (crate::AutoSource::SteppedUp, 2),
+            (crate::AutoSource::SteppedDown, 1),
+        ]
+    );
+    assert_eq!(requests(&model)[4], on("test/mid", Some("high")));
+}
+
+/// A provider error says nothing about the model's work: no step.
+#[tokio::test]
+async fn a_provider_error_does_not_move_auto() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[]);
+    let mut session =
+        auto_session(dir.path(), model.clone(), ranked_start("test/broken", None)).await;
+    // As every frontend does: a turn an error stopped is closed with it.
+    for message in ["one", "two"] {
+        if let Err(error) = session.run_user_message_with_stream(message, None).await {
+            session.fail_turn_on_error(&error).await.unwrap();
+        }
+    }
+    let records = records(&session).await;
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].completion_reason, "model_call_failed");
+    assert_eq!(session.auto_model().unwrap().position, 0);
+    assert!(session.auto_decisions().iter().all(|d| d.step == 0));
+}
+
+/// A tier the user asks for in a message wins for that turn; the turn
+/// does not move Auto, whatever its outcome.
+#[tokio::test]
+async fn a_tier_asked_for_in_a_message_wins_and_leaves_auto_where_it_was() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[
+        (
+            "test/mid",
+            vec![
+                call("t", "set_model_tier", json!({"tier": "strong"})),
+                text("ok"),
+            ],
+        ),
+        (
+            "test/big",
+            vec![
+                call("b", "bash", json!({"command": "npm test -- fail"})),
+                text("Tests are red."),
+            ],
+        ),
+    ]);
+    let mut session = auto_session(
+        dir.path(),
+        model.clone(),
+        ranked_start("test/mid", Some("medium")),
+    )
+    .await;
+    turn(&mut session, "use your strongest model").await;
+    turn(&mut session, "and now?").await;
+
+    let seen = requests(&model);
+    assert_eq!(seen[0], on("test/mid", Some("medium")));
+    assert_eq!(seen[1], on("test/big", Some("high")), "the tier wins");
+    // The tier's turn failed (its tests are red)...
+    assert_eq!(records(&session).await[0].outcome, "failed");
+    // ...and still Auto did not move: the next turn is back on the start.
+    assert_eq!(
+        session.auto_model().unwrap().position,
+        0,
+        "no step for that turn"
+    );
+    assert_eq!(seen.last(), Some(&on("test/mid", Some("medium"))));
+}
+
+/// Thin evidence: the fallback, recorded as such. A fallback with no
+/// effort setting steps straight to the stronger model after a failure.
+#[tokio::test]
+async fn the_fallback_is_used_when_the_evidence_is_thin() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[
+        ("test/small", vec![dangling()]),
+        ("test/big", vec![text("ok")]),
+    ]);
+    let start = crate::AutoStart {
+        model: child("test/small", Some("low")),
+        ranked: false,
+        reason: "only 3 turns of main work; 20 are needed".into(),
+        evidence: None,
+    };
+    let mut session = auto_session(dir.path(), model.clone(), start).await;
+    turn(&mut session, "one").await;
+    turn(&mut session, "two").await;
+    assert_eq!(
+        requests(&model),
+        [on("test/small", Some("low")), on("test/big", Some("high"))]
+    );
+    let decisions = session.auto_decisions();
+    assert_eq!(decisions[0].source, crate::AutoSource::Fallback);
+    assert_eq!(
+        decisions[0].reason,
+        "only 3 turns of main work; 20 are needed"
+    );
+    assert_eq!(decisions[1].source, crate::AutoSource::SteppedUp);
+}
+
+/// Without an advisor (the offline mock), Auto starts from the fallback.
+#[tokio::test]
+async fn without_an_advisor_auto_starts_from_the_fallback() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[("test/mid", vec![text("ok")])]);
+    let mut session = session(dir.path(), model.clone()).await;
+    session
+        .set_auto_model(fallback_of("test/mid", Some("medium")))
+        .await
+        .unwrap();
+    turn(&mut session, "hi").await;
+    assert_eq!(requests(&model), [on("test/mid", Some("medium"))]);
+    assert_eq!(
+        session.auto_decisions()[0].source,
+        crate::AutoSource::Fallback
+    );
+}
+
+/// Auto, its fallback, its step and the decisions so far are kept in the
+/// session's journal: a restart finds them all.
+#[tokio::test]
+async fn auto_survives_a_restart_with_its_step() {
+    let dir = TempDir::new().unwrap();
+    let session_id = {
+        let model = TierModel::new(&[("test/mid", vec![dangling()])]);
+        let mut session =
+            auto_session(dir.path(), model, ranked_start("test/mid", Some("medium"))).await;
+        turn(&mut session, "fail").await;
+        assert_eq!(session.auto_model().unwrap().position, 1);
+        session.session_id
+    };
+    let model = TierModel::new(&[("test/mid", vec![text("ok")])]);
+    let mut resumed = AgentSession::resume(
+        cfg(dir.path()),
+        model.clone(),
+        ToolRegistry::new(),
+        session_id,
+    )
+    .await
+    .unwrap();
+    resumed.set_model_tier_resolver(Arc::new(FakeTiers));
+    resumed.set_auto_model_advisor(Arc::new(FakeAuto {
+        start: ranked_start("test/mid", Some("medium")),
+    }));
+    let auto = resumed.auto_model().expect("Auto survives").clone();
+    assert_eq!(auto.position, 1);
+    assert_eq!(auto.fallback, fallback_of("test/small", Some("low")));
+    assert_eq!(resumed.auto_decisions().len(), 1);
+
+    turn(&mut resumed, "again").await;
+    assert_eq!(requests(&model), [on("test/mid", Some("high"))]);
+}
+
+/// Turning Auto off (the user picked a model): the next turn runs on the
+/// session's model, nothing is decided for it, and it stays off after a
+/// restart.
+#[tokio::test]
+async fn turning_auto_off_returns_the_session_to_its_own_model() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[
+        ("test/mid", vec![text("ok")]),
+        ("test/small", vec![text("ok")]),
+    ]);
+    let mut session = auto_session(
+        dir.path(),
+        model.clone(),
+        ranked_start("test/mid", Some("medium")),
+    )
+    .await;
+    turn(&mut session, "on auto").await;
+    session.set_model_selection(selection("test/small", "low"));
+    session.clear_auto_model().await.unwrap();
+    assert!(session.auto_model().is_none());
+    turn(&mut session, "my own model").await;
+    assert_eq!(requests(&model)[1], on("test/small", Some("low")));
+    assert_eq!(session.auto_decisions().len(), 1);
+    let last = records(&session).await.pop().unwrap();
+    assert!(signal_detail(&last, "auto_model").is_none());
+
+    let session_id = session.session_id;
+    drop(session);
+    let resumed = AgentSession::resume(
+        cfg(dir.path()),
+        TierModel::new(&[]),
+        ToolRegistry::new(),
+        session_id,
+    )
+    .await
+    .unwrap();
+    assert!(resumed.auto_model().is_none());
+}

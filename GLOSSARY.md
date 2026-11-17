@@ -42,3 +42,12 @@ docs and reviews.
   `fallback` (the parent's model: thin evidence, `inherit`, an untrusted
   workspace, no ranking yet). Journaled with the child's profile, returned by
   `spawn_agent`, and recorded as the `model_chosen` turn signal.
+- **Auto**: the main session's model choice when the user lets Forge pick:
+  each turn starts on the ranked best for main-session work, or on the
+  **fallback** (the model the user had) when the evidence is thin, and
+  climbs the **step-up ladder** after failed turns. Each turn's choice is an
+  **Auto decision** (`ranked`, `fallback`, `stepped_up`, `stepped_down`).
+- **Step-up ladder**: Auto's order of escalation, effort before model — the
+  start, each higher effort on the same model, then the provider's
+  strong-tier model and its higher efforts. Up one step after a failed turn,
+  down one after two successful turns in a row.

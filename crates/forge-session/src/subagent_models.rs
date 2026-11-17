@@ -31,8 +31,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use forge_config::{Config, SubagentModelSelection};
 use forge_core::{
-    ChildModelRequest, ChildModelResolver, ModelAdvice, ModelAdviceRequest, ModelChoice,
-    ModelChoiceEvidence, ModelChoiceSource, RankedCandidate, SubagentModelAdvisor,
+    ChildModel, ChildModelRequest, ChildModelResolver, ModelAdvice, ModelAdviceRequest,
+    ModelChoice, ModelChoiceEvidence, ModelChoiceSource, ModelExecutionSelection, RankedCandidate,
+    SubagentModelAdvisor,
 };
 use forge_types::TaskKind;
 
@@ -277,7 +278,7 @@ pub(crate) struct RankingCache {
 }
 
 impl RankingCache {
-    fn current(&self) -> Option<(Instant, Arc<RankingSnapshot>)> {
+    pub(crate) fn current(&self) -> Option<(Instant, Arc<RankingSnapshot>)> {
         self.snapshot
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -346,13 +347,246 @@ pub(crate) fn shared_cache(journal_dir: &Path) -> Arc<RankingCache> {
     cache
 }
 
+/// A ranking shared by a project's sessions: built in the background, never
+/// waited for, rebuilt when older than `stale_after`.
+pub(crate) struct SharedRanking {
+    source: Arc<dyn RankingSource>,
+    cache: Arc<RankingCache>,
+    stale_after: Duration,
+}
+
+impl SharedRanking {
+    pub(crate) fn new(
+        source: Arc<dyn RankingSource>,
+        cache: Arc<RankingCache>,
+        stale_after: Duration,
+    ) -> Self {
+        Self {
+            source,
+            cache,
+            stale_after,
+        }
+    }
+
+    /// The current ranking, starting a rebuild when it is stale; or why
+    /// there is none (one is then being built).
+    pub(crate) fn current(&self, kind: &TaskKind) -> Result<Arc<RankingSnapshot>, String> {
+        let Some((built_at, snapshot)) = self.cache.current() else {
+            self.refresh_in_background();
+            return Err(match self.cache.failure() {
+                Some(failure) => format!("the ranking of models could not be built: {failure}"),
+                None => format!("the ranking of models for {kind} work is not built yet"),
+            });
+        };
+        if built_at.elapsed() >= self.stale_after {
+            self.refresh_in_background();
+        }
+        Ok(snapshot)
+    }
+
+    pub(crate) async fn refresh(&self) -> anyhow::Result<()> {
+        match self.source.build().await {
+            Ok(snapshot) => {
+                self.cache.store(snapshot);
+                Ok(())
+            }
+            Err(error) => {
+                self.cache.fail(&error);
+                Err(error)
+            }
+        }
+    }
+
+    /// Start building, unless a build is under way (or there is no runtime
+    /// to build on). Returns at once.
+    pub(crate) fn refresh_in_background(&self) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        if self.cache.building.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let source = self.source.clone();
+        let cache = self.cache.clone();
+        runtime.spawn(async move {
+            match source.build().await {
+                Ok(snapshot) => cache.store(snapshot),
+                Err(error) => {
+                    tracing::warn!(%error, "could not build the model ranking");
+                    cache.fail(&error);
+                }
+            }
+            cache.building.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// Build in the background if there is no ranking yet, or it is stale.
+    pub(crate) fn warm(&self) {
+        let fresh = self
+            .cache
+            .current()
+            .is_some_and(|(built_at, _)| built_at.elapsed() < self.stale_after);
+        if !fresh {
+            self.refresh_in_background();
+        }
+    }
+}
+
+/// The provider a selection runs on: its profile, else its model's prefix.
+pub(crate) fn provider_of(selection: &ModelExecutionSelection) -> &str {
+    if selection.profile_id.is_empty() {
+        selection
+            .model
+            .split_once('/')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or_default()
+    } else {
+        selection.profile_id.as_str()
+    }
+}
+
+/// Where a kind stands in the ranking, held to the thresholds.
+pub(crate) enum Standing {
+    /// Not enough evidence to choose by: why, and what there was.
+    Thin {
+        reason: String,
+        evidence: Option<ModelChoiceEvidence>,
+    },
+    /// The ranked candidates, best first.
+    Ranked {
+        ranked: Vec<RankedModel>,
+        evidence: ModelChoiceEvidence,
+    },
+}
+
+/// `kind` ranked over `provider`'s models that the account can run (with a
+/// known effort name, if any), from `snapshot`, against the thresholds.
+/// `reference_model` is any model of the provider, to ask whether its list
+/// of runnable models is known at all.
+pub(crate) fn standing(
+    snapshot: &RankingSnapshot,
+    kind: &TaskKind,
+    provider: &str,
+    reference_model: &str,
+    runnable: &dyn RunnableModels,
+) -> Standing {
+    let thin =
+        |reason: String, evidence: Option<ModelChoiceEvidence>| Standing::Thin { reason, evidence };
+    if provider.is_empty() {
+        return thin("the provider is not known".into(), None);
+    }
+    if runnable.can_run(provider, reference_model).is_none() {
+        return thin(
+            format!("which {provider} models the account can run is not known"),
+            None,
+        );
+    }
+    // Only the account's runnable models, and only known effort names: an
+    // effort read from a journal is otherwise free text, and a candidate's
+    // names end up in reasons an agent reads.
+    let allowed = |group: &GroupRef<'_>| {
+        group.provider == provider
+            && runnable.can_run(provider, group.model) == Some(true)
+            && group.effort.is_none_or(is_known_effort)
+    };
+    let Some(ranking) = snapshot.rank(kind, allowed, DEFAULT_MIN_TURNS) else {
+        return thin(
+            format!(
+                "no {kind} work on {provider} models the account can run in the last \
+                 {WINDOW_DAYS} days"
+            ),
+            None,
+        );
+    };
+    let ranked: Vec<RankedModel> = ranking
+        .models
+        .into_iter()
+        .filter(|model| model.rank.is_some())
+        .collect();
+    let evidence = ModelChoiceEvidence {
+        window_days: WINDOW_DAYS,
+        turns: ranking.turns,
+        ranked_groups: ranked.len(),
+        leader: ranked.first().map(candidate),
+        runner_up: ranked.get(1).map(candidate),
+        min_group_turns: DEFAULT_MIN_TURNS,
+        min_kind_turns: MIN_KIND_TURNS,
+        min_ranked_groups: MIN_RANKED_GROUPS,
+    };
+    if ranking.turns < MIN_KIND_TURNS {
+        return thin(
+            format!(
+                "only {} turns of {kind} work on {provider} models in the last {WINDOW_DAYS} \
+                 days; {MIN_KIND_TURNS} are needed",
+                ranking.turns
+            ),
+            Some(evidence),
+        );
+    }
+    if ranked.len() < MIN_RANKED_GROUPS {
+        return thin(
+            format!(
+                "only {} {provider} model(s) have {DEFAULT_MIN_TURNS} or more turns of {kind} \
+                 work; {MIN_RANKED_GROUPS} are needed to compare",
+                ranked.len()
+            ),
+            Some(evidence),
+        );
+    }
+    Standing::Ranked { ranked, evidence }
+}
+
+/// The first of `ranked` the resolver accepts, and why it was chosen; or why
+/// none could be.
+pub(crate) fn first_accepted(
+    ranked: &[RankedModel],
+    resolver: &dyn ChildModelResolver,
+    parent: &ModelExecutionSelection,
+    provider: &str,
+    kind: &TaskKind,
+) -> Result<(ChildModel, String), String> {
+    let mut passed_over = Vec::new();
+    for model in ranked {
+        let request = ChildModelRequest {
+            model: Some(&model.model),
+            reasoning_effort: model.effort.as_deref(),
+            parent,
+        };
+        match resolver.resolve(&request) {
+            Ok(pick) => {
+                let name = named(&model.model, model.effort.as_deref());
+                let mut reason = format!(
+                    "{name} ranks {} of {} {provider} models for {kind} work over the last \
+                     {WINDOW_DAYS} days (score {:.2}, {} turns)",
+                    model.rank.unwrap_or(0),
+                    ranked.len(),
+                    model.score.unwrap_or(f64::NAN),
+                    model.turns
+                );
+                if !passed_over.is_empty() {
+                    reason.push_str("; passed over: ");
+                    reason.push_str(&passed_over.join("; "));
+                }
+                return Ok((pick, reason));
+            }
+            Err(error) => passed_over.push(format!(
+                "{} ({error})",
+                named(&model.model, model.effort.as_deref())
+            )),
+        }
+    }
+    Err(format!(
+        "none of the ranked {provider} models can be used: {}",
+        passed_over.join("; ")
+    ))
+}
+
 /// The ranking-based advisor.
 pub struct RankedSubagentModels {
-    source: Arc<dyn RankingSource>,
+    ranking: SharedRanking,
     runnable: Arc<dyn RunnableModels>,
     resolver: Arc<dyn ChildModelResolver>,
     settings: AdvisorSettings,
-    cache: Arc<RankingCache>,
     /// The exploration generator's state.
     draws: Mutex<u64>,
 }
@@ -386,11 +620,10 @@ impl RankedSubagentModels {
             _ => 0,
         };
         Arc::new(Self {
-            source,
+            ranking: SharedRanking::new(source, cache, settings.stale_after),
             runnable,
             resolver,
             settings,
-            cache,
             draws: Mutex::new(seed),
         })
     }
@@ -406,27 +639,14 @@ impl RankedSubagentModels {
         if !self.reads_journals() {
             return Ok(());
         }
-        match self.source.build().await {
-            Ok(snapshot) => {
-                self.cache.store(snapshot);
-                Ok(())
-            }
-            Err(error) => {
-                self.cache.fail(&error);
-                Err(error)
-            }
-        }
+        self.ranking.refresh().await
     }
 
     /// Build the ranking in the background if there is none yet, or it is
     /// stale: what a session does when it opens.
     pub fn warm(&self) {
-        let fresh = self
-            .cache
-            .current()
-            .is_some_and(|(built_at, _)| built_at.elapsed() < self.settings.stale_after);
-        if !fresh {
-            self.refresh_in_background();
+        if self.reads_journals() {
+            self.ranking.warm();
         }
     }
 
@@ -434,27 +654,9 @@ impl RankedSubagentModels {
     /// journals are not to be read, or there is no runtime to build it on).
     /// Returns at once.
     pub fn refresh_in_background(&self) {
-        if !self.reads_journals() {
-            return;
+        if self.reads_journals() {
+            self.ranking.refresh_in_background();
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        if self.cache.building.swap(true, Ordering::SeqCst) {
-            return;
-        }
-        let source = self.source.clone();
-        let cache = self.cache.clone();
-        runtime.spawn(async move {
-            match source.build().await {
-                Ok(snapshot) => cache.store(snapshot),
-                Err(error) => {
-                    tracing::warn!(%error, "could not build the model ranking");
-                    cache.fail(&error);
-                }
-            }
-            cache.building.store(false, Ordering::SeqCst);
-        });
     }
 
     /// Whether this spawn explores: about one in `n`.
@@ -508,7 +710,7 @@ fn is_known_effort(effort: &str) -> bool {
 }
 
 /// `model @ effort`, the provider's default effort as `default`.
-fn named(model: &str, effort: Option<&str>) -> String {
+pub(crate) fn named(model: &str, effort: Option<&str>) -> String {
     format!("{model} @ {}", effort.unwrap_or("default"))
 }
 
@@ -531,156 +733,50 @@ impl SubagentModelAdvisor for RankedSubagentModels {
                 None,
             );
         }
-        let Some((built_at, snapshot)) = self.cache.current() else {
-            self.refresh_in_background();
-            let reason = match self.cache.failure() {
-                Some(failure) => format!("the ranking of models could not be built: {failure}"),
-                None => format!("the ranking of models for {kind} work is not built yet"),
-            };
-            return fallback(kind, reason, None);
+        let snapshot = match self.ranking.current(kind) {
+            Ok(snapshot) => snapshot,
+            Err(reason) => return fallback(kind, reason, None),
         };
-        if built_at.elapsed() >= self.settings.stale_after {
-            self.refresh_in_background();
-        }
-
-        let provider = if parent.profile_id.is_empty() {
-            parent
-                .model
-                .split_once('/')
-                .map(|(prefix, _)| prefix)
-                .unwrap_or_default()
-        } else {
-            parent.profile_id.as_str()
+        let provider = provider_of(parent);
+        let (ranked, evidence) = match standing(
+            &snapshot,
+            kind,
+            provider,
+            &parent.model,
+            self.runnable.as_ref(),
+        ) {
+            Standing::Thin { reason, evidence } => return fallback(kind, reason, evidence),
+            Standing::Ranked { ranked, evidence } => (ranked, evidence),
         };
-        if provider.is_empty() {
-            return fallback(kind, "the parent's provider is not known".into(), None);
-        }
-        if self.runnable.can_run(provider, &parent.model).is_none() {
-            return fallback(
-                kind,
-                format!("which {provider} models the account can run is not known"),
-                None,
-            );
-        }
-        // Only the account's runnable models, and only known effort names:
-        // an effort read from a journal is otherwise free text, and a
-        // candidate's names end up in the reason the parent agent reads.
-        let allowed = |group: &GroupRef<'_>| {
-            group.provider == provider
-                && self.runnable.can_run(provider, group.model) == Some(true)
-                && group.effort.is_none_or(is_known_effort)
-        };
-        let Some(ranking) = snapshot.rank(kind, allowed, DEFAULT_MIN_TURNS) else {
-            return fallback(
-                kind,
-                format!(
-                    "no {kind} work on {provider} models the account can run in the last \
-                     {WINDOW_DAYS} days"
-                ),
-                None,
-            );
-        };
-        let ranked: Vec<&RankedModel> = ranking
-            .models
-            .iter()
-            .filter(|model| model.rank.is_some())
-            .collect();
-        let evidence = ModelChoiceEvidence {
-            window_days: WINDOW_DAYS,
-            turns: ranking.turns,
-            ranked_groups: ranked.len(),
-            leader: ranked.first().map(|model| candidate(model)),
-            runner_up: ranked.get(1).map(|model| candidate(model)),
-            min_group_turns: DEFAULT_MIN_TURNS,
-            min_kind_turns: MIN_KIND_TURNS,
-            min_ranked_groups: MIN_RANKED_GROUPS,
-        };
-        if ranking.turns < MIN_KIND_TURNS {
-            return fallback(
-                kind,
-                format!(
-                    "only {} turns of {kind} work on {provider} models in the last {WINDOW_DAYS} \
-                     days; {MIN_KIND_TURNS} are needed",
-                    ranking.turns
-                ),
-                Some(evidence),
-            );
-        }
-        if ranked.len() < MIN_RANKED_GROUPS {
-            return fallback(
-                kind,
-                format!(
-                    "only {} {provider} model(s) have {DEFAULT_MIN_TURNS} or more turns of {kind} \
-                     work; {MIN_RANKED_GROUPS} are needed to compare",
-                    ranked.len()
-                ),
-                Some(evidence),
-            );
-        }
-        let leader = ranked[0];
-        let leader_name = named(&leader.model, leader.effort.as_deref());
         if self.explores() {
+            let leader = &ranked[0];
             return ModelAdvice {
                 pick: None,
                 choice: ModelChoice {
                     source: ModelChoiceSource::Exploration,
                     reason: format!(
                         "kept the parent's model {} to keep trying it (about one spawn in \
-                         {EXPLORE_ONE_IN}); the ranking's leader is {leader_name}",
-                        named(&parent.model, parent.reasoning_effort.as_deref())
+                         {EXPLORE_ONE_IN}); the ranking's leader is {}",
+                        named(&parent.model, parent.reasoning_effort.as_deref()),
+                        named(&leader.model, leader.effort.as_deref())
                     ),
                     kind: kind.clone(),
                     evidence: Some(evidence),
                 },
             };
         }
-
-        let mut passed_over = Vec::new();
-        for model in &ranked {
-            let request = ChildModelRequest {
-                model: Some(&model.model),
-                reasoning_effort: model.effort.as_deref(),
-                parent,
-            };
-            match self.resolver.resolve(&request) {
-                Ok(pick) => {
-                    let name = named(&model.model, model.effort.as_deref());
-                    let mut reason = format!(
-                        "{name} ranks {} of {} {provider} models for {kind} work over the last \
-                         {WINDOW_DAYS} days (score {:.2}, {} turns)",
-                        model.rank.unwrap_or(0),
-                        ranked.len(),
-                        model.score.unwrap_or(f64::NAN),
-                        model.turns
-                    );
-                    if !passed_over.is_empty() {
-                        reason.push_str("; passed over: ");
-                        reason.push_str(&passed_over.join("; "));
-                    }
-                    return ModelAdvice {
-                        pick: Some(pick),
-                        choice: ModelChoice {
-                            source: ModelChoiceSource::Ranking,
-                            reason,
-                            kind: kind.clone(),
-                            evidence: Some(evidence),
-                        },
-                    };
-                }
-                Err(error) => passed_over.push(format!(
-                    "{} ({error})",
-                    named(&model.model, model.effort.as_deref())
-                )),
-            }
+        match first_accepted(&ranked, self.resolver.as_ref(), parent, provider, kind) {
+            Ok((pick, reason)) => ModelAdvice {
+                pick: Some(pick),
+                choice: ModelChoice {
+                    source: ModelChoiceSource::Ranking,
+                    reason,
+                    kind: kind.clone(),
+                    evidence: Some(evidence),
+                },
+            },
+            Err(reason) => fallback(kind, reason, Some(evidence)),
         }
-        fallback(
-            kind,
-            format!(
-                "none of the ranked {provider} models can be used: {}",
-                passed_over.join("; ")
-            ),
-            Some(evidence),
-        )
     }
 }
 

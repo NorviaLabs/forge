@@ -89,6 +89,12 @@ pub enum DesktopEvent {
         /// Custom agent files that were skipped, and listed tools an agent
         /// cannot have.
         agent_warnings: Vec<String>,
+        /// Auto, when the user chose it for this session: its fallback and
+        /// where it stands on the step-up ladder.
+        auto: Option<forge_core::AutoModel>,
+        /// The model and effort Auto chose for each of its turns, and why;
+        /// `user_message` places each one in the conversation.
+        auto_turns: Vec<forge_core::AutoDecision>,
     },
     /// The sessions the supervisor owns, in switcher order.
     Roster {
@@ -1009,6 +1015,15 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .iter()
             .map(|warning| escape_invisible(warning))
             .collect(),
+        auto: snapshot
+            .details
+            .as_ref()
+            .and_then(|details| details.auto_model.clone()),
+        auto_turns: snapshot
+            .details
+            .as_ref()
+            .map(|details| details.auto_decisions.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -3767,6 +3782,30 @@ pub async fn set_model(
         .map_err(SessionFailure::from)
 }
 
+/// Put the selected session on Auto: each turn's model and effort chosen for
+/// the user, falling back on this model and effort when the evidence is
+/// thin. Picking a model with `set_model` turns it off.
+#[tauri::command]
+pub async fn set_auto_model(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+    model_id: String,
+    profile_id: String,
+    effort: Option<String>,
+) -> Result<(), SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    project
+        .handle
+        .command(SupervisorCommand::SetAutoModel {
+            session_id,
+            model_id,
+            profile_id,
+            reasoning_effort: effort,
+        })
+        .await
+        .map_err(SessionFailure::from)
+}
+
 /// Save an edited file back into a session's workspace. Refused if the file
 /// changed since `read_file` returned that fingerprint.
 #[tauri::command]
@@ -4263,6 +4302,66 @@ mod tests {
         );
     }
 
+    /// The page shows Auto and each Auto turn's model, effort and why: the
+    /// session event carries them, as the page reads them.
+    #[test]
+    fn session_snapshots_carry_auto_and_its_turns() {
+        let mut snapshot = snapshot(
+            SessionId::new_v4(),
+            "auto",
+            SessionLifecycle::Active,
+            forge_session::SupervisorTurnState::Idle,
+        );
+        let mut auto = forge_core::AutoModel::new(forge_core::AutoFallback {
+            model: "anthropic/claude-sonnet-4".into(),
+            profile_id: "anthropic".into(),
+            reasoning_effort: Some("medium".into()),
+        });
+        auto.after_turn(forge_core::TurnEnd::Failed, 3);
+        snapshot.details = Some(forge_session::SessionDetailsSnapshot {
+            journal_dir: Default::default(),
+            active_model: "anthropic/claude-sonnet-4".into(),
+            active_profile_id: "anthropic".into(),
+            reasoning_effort: Some("high".into()),
+            thinking_enabled: false,
+            image_input_supported: false,
+            token_usage_report: Default::default(),
+            tools: Vec::new(),
+            skills: Vec::new(),
+            skill_descriptions: Vec::new(),
+            context_state: Default::default(),
+            compaction: Default::default(),
+            queue: Vec::new(),
+            background: Vec::new(),
+            session_pattern_allow_count: 0,
+            auto_model: Some(auto),
+            auto_decisions: vec![forge_core::AutoDecision {
+                task_id: 2,
+                user_message: 2,
+                model: "anthropic/claude-sonnet-4".into(),
+                profile_id: "anthropic".into(),
+                reasoning_effort: Some("high".into()),
+                source: forge_core::AutoSource::SteppedUp,
+                step: 1,
+                steps: 3,
+                reason: "step 1 of 2 above the start, after a failed turn".into(),
+            }],
+        });
+        let json = serde_json::to_value(session_event(&snapshot)).unwrap();
+        assert_eq!(
+            json["auto"]["fallback"]["model"],
+            "anthropic/claude-sonnet-4"
+        );
+        assert_eq!(json["auto"]["fallback"]["reasoning_effort"], "medium");
+        assert_eq!(json["auto"]["position"], 1);
+        assert_eq!(json["auto_turns"][0]["source"], "stepped_up");
+        assert_eq!(json["auto_turns"][0]["user_message"], 2);
+        snapshot.details = None;
+        let json = serde_json::to_value(session_event(&snapshot)).unwrap();
+        assert_eq!(json["auto"], serde_json::Value::Null);
+        assert_eq!(json["auto_turns"], serde_json::json!([]));
+    }
+
     #[test]
     fn session_snapshots_include_skill_completion_metadata() {
         let mut snapshot = snapshot(
@@ -4287,6 +4386,8 @@ mod tests {
             queue: Vec::new(),
             background: Vec::new(),
             session_pattern_allow_count: 0,
+            auto_model: None,
+            auto_decisions: Vec::new(),
         });
         let json = serde_json::to_value(session_event(&snapshot)).unwrap();
         assert_eq!(

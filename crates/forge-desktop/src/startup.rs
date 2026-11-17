@@ -332,6 +332,7 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::update_custom_provider,
         bridge::remove_custom_provider,
         bridge::set_model,
+        bridge::set_auto_model,
         bridge::shell_open,
         bridge::shell_write,
         bridge::shell_resize,

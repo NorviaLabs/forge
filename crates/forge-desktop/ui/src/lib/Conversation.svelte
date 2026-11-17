@@ -6,6 +6,9 @@
 
   let {
     messages = [],
+    // Auto's label and reason for each message (null for most): which model
+    // and effort Auto ran the turn a user message started on, and why.
+    autoLabels = [],
     streaming = "",
     turnState = "idle",
     scroll = $bindable(0),
@@ -136,7 +139,7 @@
   {#each visible as message, index (start + index)}
     <div class="turn {message.role}" class:multi={message.role === "tool" && !oneLine(message)}>
       <div class="who">
-        {#if message.role === "user"}You{:else if message.role === "assistant"}Forge{:else}<span class="sr-only">Tool</span>
+        {#if message.role === "user"}You{#if autoLabels[start + index]}<span class="auto-turn" title={autoLabels[start + index].title}>{autoLabels[start + index].label}</span>{/if}{:else if message.role === "assistant"}Forge{:else}<span class="sr-only">Tool</span>
           <span class="tool-name">{toolName(message)}</span>
           {#if oneLine(message)}<span class="tool-result" class:empty={!message.text.trim()}>{message.text.trim() || "No output."}</span>{/if}
         {/if}
@@ -280,6 +283,15 @@
   /* A work log: every message is a block under a one-line header. */
   .turn + .turn {
     margin-top: 20px;
+  }
+
+  .auto-turn {
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 400;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .who {

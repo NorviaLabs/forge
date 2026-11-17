@@ -150,6 +150,7 @@ impl AgentSession {
             .start_new_task(task_id)
             .map_err(LoopError::from)?;
         self.begin_turn_telemetry();
+        self.choose_auto_model().await?;
         self.journal
             .append_status(self.session_id, TaskLifecycle::Working)
             .await?;

@@ -2,6 +2,7 @@
 // events. Plain module with no Svelte imports: the rules about which session
 // an event belongs to are unit-tested here, away from the page.
 
+import { autoLabelsForShown } from "./auto.js";
 import { shownMessages, viewFor } from "./view.js";
 
 // What the page shows before a session's first snapshot arrives. Selecting
@@ -10,6 +11,7 @@ export function emptySnapshot() {
   return {
     turnState: "idle",
     messages: [],
+    autoLabels: [],
     promptHistory: [],
     skillDescriptions: [],
     approval: null,
@@ -26,7 +28,7 @@ export function emptySnapshot() {
     queue: [],
     interrupted: [],
     counts: { tools: 0, skills: 0, allows: 0 },
-    info: { workspace: "", branch: "", model: "", contextUsage: 0, queued: 0 },
+    info: { workspace: "", branch: "", model: "", contextUsage: 0, queued: 0, auto: null, autoTurns: [] },
     githubIssue: null,
     githubPr: "",
     agentWarnings: [],
@@ -39,6 +41,9 @@ export function snapshotFrom(event, record) {
   return {
     turnState: event.turn_state,
     messages: shownMessages(record, event.messages),
+    // One entry per message on screen: Auto's label for the turn a user
+    // message started, or null.
+    autoLabels: autoLabelsForShown(event.messages, record.clearedFrom ?? 0, event.auto_turns),
     promptHistory: event.messages
       .filter((message) => message.role === "user" && message.text.trim())
       .map((message) => message.text)
@@ -64,6 +69,10 @@ export function snapshotFrom(event, record) {
       model: event.model,
       contextUsage: event.context_usage,
       queued: event.queued,
+      // Auto for this session (its fallback and ladder position), and the
+      // model, effort and why of each of its turns.
+      auto: event.auto ?? null,
+      autoTurns: event.auto_turns ?? [],
     },
     githubIssue: event.github_issue_number ?? null,
     githubPr: event.github_pr_url ?? "",

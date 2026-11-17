@@ -10,6 +10,10 @@
     onClose,
     onApply,
     onProviders,
+    // Auto: whether it is on, and how to turn it on with the selected model
+    // and effort as its fallback.
+    autoOn = false,
+    onAuto = null,
   } = $props();
 
   let query = $state("");
@@ -61,6 +65,15 @@
     const ok = await onApply(selected.id, selected.profile_id, effort || null);
     applying = false;
     if (!ok) localError = "The model switch failed; see the error above.";
+  }
+
+  async function useAuto() {
+    if (!selected || !onAuto) return;
+    applying = true;
+    localError = "";
+    const ok = await onAuto(selected.id, selected.profile_id, effort || null);
+    applying = false;
+    if (!ok) localError = "Turning on Auto failed; see the error above.";
   }
 
   function pick(model) {
@@ -144,10 +157,24 @@
       </div>
     {/if}
 
+    {#if autoOn}
+      <p class="auto-note">Auto is on: Forge chooses each turn's model. Switching to a model turns it off.</p>
+    {/if}
     <footer>
       <button class="btn" type="button" onclick={onProviders}>Providers…</button>
       <span class="spacer"></span>
       <button class="btn" type="button" onclick={onClose}>Cancel</button>
+      {#if onAuto}
+        <button
+          class="btn"
+          type="button"
+          disabled={!selected || applying}
+          title="Let Forge choose each turn's model and effort; the selected model and effort are the fallback when there is too little history to choose by"
+          onclick={useAuto}
+        >
+          Auto
+        </button>
+      {/if}
       <button class="btn primary" type="button" disabled={!selected || applying} onclick={apply}>
         {applying ? "Switching…" : "Switch"}
       </button>
@@ -305,6 +332,13 @@
   }
 
   .choice,
+  .auto-note {
+    margin: 0;
+    padding: 8px 16px 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
   footer {
     display: flex;
     align-items: center;

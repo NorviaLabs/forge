@@ -217,11 +217,15 @@ impl ModelCatalogCache {
     }
 
     pub fn user_default() -> Self {
-        let path = dirs::config_dir()
+        Self::new(Self::user_default_path())
+    }
+
+    /// Where the user's catalog lives, without reading it.
+    pub fn user_default_path() -> PathBuf {
+        dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("forge")
-            .join("model-catalog.toml");
-        Self::new(path)
+            .join("model-catalog.toml")
     }
 
     pub fn path(&self) -> &Path {

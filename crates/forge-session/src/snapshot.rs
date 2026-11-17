@@ -183,6 +183,10 @@ pub struct SessionDetailsSnapshot {
     pub queue: Vec<QueuedTask>,
     pub background: Vec<BackgroundTaskSnapshot>,
     pub session_pattern_allow_count: usize,
+    /// Auto, when the user chose it: its fallback and ladder position.
+    pub auto_model: Option<forge_core::AutoModel>,
+    /// The model and effort Auto chose for each of its turns, and why.
+    pub auto_decisions: Vec<forge_core::AutoDecision>,
 }
 
 impl SessionDetailsSnapshot {
@@ -211,6 +215,8 @@ impl SessionDetailsSnapshot {
                 .map(BackgroundTaskSnapshot::capture)
                 .collect(),
             session_pattern_allow_count: session.session_pattern_allow_count(),
+            auto_model: session.auto_model().cloned(),
+            auto_decisions: session.auto_decisions().to_vec(),
         }
     }
 }

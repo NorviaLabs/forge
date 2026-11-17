@@ -218,6 +218,24 @@ history's length; the kind ranked over the parent's
 provider's models the account can run (the tier table's runnable list); a
 pick needs 20 turns and two ranked candidates, and goes through the same
 child-model resolver as an explicit model; about one spawn in ten explores.
+The same ranking chooses the main session's model per turn when the user
+picks **Auto** (`forge-core::auto_model`). `choose_auto_model`, run as each
+turn starts (`transition_to_new_task`, before the first model request), asks
+the session's `AutoModelAdvisor` for the start — the ranked best for `main`
+work on the fallback's provider (`forge-session::auto_models`, sharing
+`subagent_models`' ranking, cache, thresholds and rules, without
+exploration), or the fallback — builds the step-up ladder from it (`ladder`:
+the start's higher efforts from the catalog, then the tier resolver's strong
+model and its efforts), and puts the turn on the current step; the decision
+is an `auto_model` signal and an `AutoModel` journal event. When the turn is
+recorded, `move_auto_model` steps up after a failure the completion evaluator
+found (not a provider or runtime error, not denied approvals), down after two
+successes in a row, and not at all for a turn on a user-requested tier; a
+failed turn is never re-run. Auto (fallback, position, decisions) is replayed
+from the journal on resume; the supervisor's `SetAutoModel` turns it on and
+keeps the fallback as the session's model on its control row, and `SetModel`
+turns it off. The desktop shows each Auto turn's choice from the session
+details' `auto_decisions`, anchored to the user message that started it.
 The `[subagents] model_selection` switch (`ranked` or `inherit`) is a
 privileged key; an untrusted workspace's journals are never read, and trust
 is checked again at every rebuild (a failed build drops the ranking rather

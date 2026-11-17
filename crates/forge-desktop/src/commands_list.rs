@@ -98,6 +98,7 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "update_custom_provider",
     "remove_custom_provider",
     "set_model",
+    "set_auto_model",
     "shell_open",
     "shell_write",
     "shell_resize",

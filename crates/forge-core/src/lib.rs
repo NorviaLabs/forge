@@ -2,6 +2,7 @@
 
 mod agent_coordinator;
 mod audit;
+mod auto_model;
 mod background;
 mod completion;
 mod custom_agents;
@@ -31,6 +32,10 @@ pub use stream::{
 pub use agent_coordinator::{
     AgentActivity, AgentCoordinator, AgentCoordinatorConfig, AgentCoordinatorError, AgentSnapshot,
     AgentStatus, AgentWaitResult,
+};
+pub use auto_model::{
+    ladder, AutoDecision, AutoFallback, AutoModel, AutoModelAdvisor, AutoSource, AutoStart,
+    LadderMove, ModelEfforts, TurnEnd, SUCCESSES_TO_STEP_DOWN,
 };
 pub use background::{
     BackgroundApprovalRequest, BackgroundChildExecution, BackgroundControl, BackgroundRunId,
@@ -252,6 +257,12 @@ pub struct AgentSession {
     /// Turn records and signals, the turn-scoped model tier, and a pending
     /// strong-tier escalation (see `turn_record` and `tiers`).
     tracking: turn_record::TurnTracking,
+    /// Chooses where Auto turns start (the session's owner installs it).
+    auto_advisor: Option<Arc<dyn auto_model::AutoModelAdvisor>>,
+    /// Auto, when the user chose it for this (top-level) session.
+    auto_model: Option<auto_model::AutoModel>,
+    /// The model and effort Auto chose for each of its turns, and why.
+    auto_decisions: Vec<auto_model::AutoDecision>,
     /// Chooses the model of a child started without a tier or a model.
     /// Installed by the session's owner; a child has none (it cannot spawn).
     model_advisor: Option<Arc<dyn model_choice::SubagentModelAdvisor>>,
@@ -294,6 +305,8 @@ impl CtxTokensFingerprint {
     }
 }
 
+#[cfg(test)]
+mod auto_model_tests;
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]

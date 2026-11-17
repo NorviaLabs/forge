@@ -84,6 +84,8 @@ impl AgentSession {
         self.journal = SessionPersistence::new(journal);
         self.task_kind =
             crate::custom_agents::kind_of_journaled_session(state.agent_profile.as_ref(), false);
+        self.auto_model = crate::auto_model::auto_from_journal(state.auto_model.as_ref());
+        self.auto_decisions = crate::auto_model::decisions_from_journal(&state.auto_decisions);
         let credential_env_names = std::sync::Arc::clone(&self.tool_ctx.credential_env_names);
         self.tool_ctx = ToolContext::new(active_root)
             .with_session_id(session_id)
@@ -271,6 +273,9 @@ impl AgentSession {
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
             model_advisor: None,
+            auto_advisor: None,
+            auto_model: None,
+            auto_decisions: Vec::new(),
             task_kind: forge_types::TaskKind::Main,
             tier_resolver: None,
             verification_commands: Default::default(),
@@ -389,6 +394,9 @@ impl AgentSession {
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
             model_advisor: None,
+            auto_advisor: None,
+            auto_model: crate::auto_model::auto_from_journal(state.auto_model.as_ref()),
+            auto_decisions: crate::auto_model::decisions_from_journal(&state.auto_decisions),
             task_kind: crate::custom_agents::kind_of_journaled_session(
                 state.agent_profile.as_ref(),
                 false,

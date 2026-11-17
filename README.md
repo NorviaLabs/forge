@@ -220,6 +220,35 @@ in your user config:
 model_selection = "inherit"   # default: "ranked"
 ```
 
+### Auto: Forge picks the model for each turn
+
+In the model picker, **Auto** lets Forge choose the model and reasoning
+effort of each turn of the session; the model and effort selected when you
+turn it on are its fallback. Each turn starts on the ranked best for
+main-session work among the fallback provider's models your account can run
+(the same ranking and evidence rules as for subagents), or on the fallback
+when the evidence is thin.
+
+When work goes badly Forge climbs a **step-up ladder**, effort before model:
+after a failed turn, the next turn starts one step higher — first a higher
+reasoning effort on the same model; only once that model is at its highest
+effort (or has no effort setting) the provider's strong-tier model, then its
+higher efforts. A failed turn is never re-run by itself. After two successful
+turns in a row on a raised step, Forge steps back down one. Provider errors,
+denied approvals, cancellations and turns on a tier you asked for don't move
+the ladder. Mind the cost: the ladder's top is the strong-tier model at its
+highest effort, whatever your fallback costs, and work that keeps failing
+(for example tests that cannot pass) keeps Auto there until two turns
+succeed. Each turn's label shows where it is; picking a model ends it.
+
+You stay in charge: picking a model turns Auto off, and asking for a tier in
+a message ("use your strongest model") still wins for that turn. Each Auto
+turn shows the model and effort it ran on and why (ranked best, fallback,
+stepped up after a failed turn, stepped down after two good turns), and the
+turn's record keeps it as an `auto_model` signal. Auto, its fallback and
+where it stands on the ladder are saved with the session and survive a
+restart.
+
 ## Providers and models
 
 Forge includes native routes for:

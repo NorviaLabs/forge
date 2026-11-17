@@ -102,6 +102,11 @@ pub struct ReplayState {
     /// as when it is a child agent. Opaque here for the same reason as
     /// `context_state`: `forge-core` owns the schema.
     pub agent_profile: Option<Value>,
+    /// The latest `AutoModel` state (`Some(Null)`: turned off; `None`: never
+    /// set), and every decision, in order. Opaque here: `forge-core` owns
+    /// the schema.
+    pub auto_model: Option<Value>,
+    pub auto_decisions: Vec<Value>,
 }
 
 impl ReplayState {
@@ -127,6 +132,8 @@ impl ReplayState {
             context_state: None,
             compaction_count: 0,
             agent_profile: None,
+            auto_model: None,
+            auto_decisions: Vec::new(),
         }
     }
 }
@@ -156,6 +163,11 @@ struct ReplayCheckpoint {
     /// Absent from checkpoints written before agent profiles existed.
     #[serde(default)]
     agent_profile: Option<Value>,
+    /// Absent from checkpoints written before Auto existed.
+    #[serde(default)]
+    auto_model: Option<Value>,
+    #[serde(default)]
+    auto_decisions: Vec<Value>,
 }
 
 impl ReplayCheckpoint {
@@ -179,6 +191,8 @@ impl ReplayCheckpoint {
             context_state: state.context_state.clone(),
             compaction_count: state.compaction_count,
             agent_profile: state.agent_profile.clone(),
+            auto_model: state.auto_model.clone(),
+            auto_decisions: state.auto_decisions.clone(),
         }
     }
 
@@ -204,6 +218,8 @@ impl ReplayCheckpoint {
             context_state: self.context_state,
             compaction_count: self.compaction_count,
             agent_profile: self.agent_profile,
+            auto_model: self.auto_model,
+            auto_decisions: self.auto_decisions,
         }
     }
 }
@@ -404,6 +420,17 @@ impl Journal {
 
     /// Record what a child agent was started as. See
     /// [`JournalEventType::AgentProfile`].
+    /// Append an [`JournalEventType::AutoModel`] event: Auto's state after a
+    /// change and/or a turn's decision.
+    pub async fn append_auto_model(
+        &self,
+        session_id: SessionId,
+        payload: Value,
+    ) -> Result<u64, JournalError> {
+        self.append(session_id, JournalEventType::AutoModel, payload)
+            .await
+    }
+
     pub async fn append_agent_profile(
         &self,
         session_id: SessionId,
@@ -1118,6 +1145,14 @@ impl Journal {
                 }
                 JournalEventType::AgentProfile => {
                     state.agent_profile = Some(payload.clone());
+                }
+                JournalEventType::AutoModel => {
+                    if let Some(auto) = payload.get("state") {
+                        state.auto_model = Some(auto.clone());
+                    }
+                    if let Some(decision) = payload.get("decision").filter(|d| !d.is_null()) {
+                        state.auto_decisions.push(decision.clone());
+                    }
                 }
                 JournalEventType::SubagentSpawned => {
                     if let (Some(id), Some(workspace)) = (

@@ -35,6 +35,7 @@
   } from "./view.js";
   import Icon from "./lib/Icon.svelte";
   import { withSkills } from "./slash.js";
+  import { autoRequest, pickerLabel } from "./auto.js";
   import {
     closeDocument,
     defaultView,
@@ -84,6 +85,8 @@
   const turnState = $derived(snapshot.turnState);
   let stopping = $state(false);
   const messages = $derived(snapshot.messages);
+  // Auto's label for each message on screen (null for most).
+  const autoLabels = $derived(snapshot.autoLabels ?? []);
   const promptHistory = $derived(snapshot.promptHistory);
   const skillDescriptions = $derived(snapshot.skillDescriptions);
   let streaming = $state("");
@@ -1131,6 +1134,7 @@
     if (!sessionId) return;
     clearShown(viewFor(views, sessionId), messages.length);
     snapshot.messages = [];
+    snapshot.autoLabels = [];
   }
 
   async function openChild(task) {
@@ -1568,6 +1572,19 @@
       modelsError = String(cause);
     } finally {
       modelsLoading = false;
+    }
+  }
+
+  // Auto: each turn's model chosen for the user, the selected model and
+  // effort as the fallback. Picking a model with `applyModel` turns it off.
+  async function applyAuto(modelId, profileId, effort) {
+    try {
+      await invoke("set_auto_model", autoRequest(sessionId, modelId, profileId, effort));
+      pickerOpen = false;
+      return true;
+    } catch (cause) {
+      modelsError = String(cause);
+      return false;
     }
   }
 
@@ -2090,6 +2107,7 @@
         <div class="chat-host">
           <Conversation
             {messages}
+            {autoLabels}
             {streaming}
             {turnState}
             bind:scroll={currentView.scroll}
@@ -2340,7 +2358,7 @@
     {/if}
     {#if runSummary}<span class="sb-item">{runSummary}</span>{/if}
     {#if sessionId}
-      <button type="button" class="sb-item sb-link mono" title="Change model" onclick={openModelPicker}>{info.model || "Choose a model"}</button>
+      <button type="button" class="sb-item sb-link mono" title="Change model" onclick={openModelPicker}>{info.auto ? pickerLabel(info) : info.model || "Choose a model"}</button>
       {#if snapshot.thinkingSwitchable}
         <button type="button" class="sb-item sb-link" aria-pressed={thinking} title={thinking ? "Turn extended thinking off for this session" : "Turn extended thinking on for this session"} onclick={toggleThinking}>Thinking {thinking ? "on" : "off"}</button>
       {/if}
@@ -2359,6 +2377,8 @@
     <ModelPicker
       {models}
       currentModel={info.model}
+      autoOn={!!info.auto}
+      onAuto={applyAuto}
       loading={modelsLoading}
       error={modelsError}
       onClose={() => (pickerOpen = false)}

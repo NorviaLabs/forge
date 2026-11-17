@@ -212,6 +212,15 @@ pub enum SupervisorCommand {
         profile_id: String,
         reasoning_effort: Option<String>,
     },
+    /// Turn Auto on for the session: each turn's model and effort chosen for
+    /// the user, falling back on this model and effort when the evidence is
+    /// thin. The fallback is the session's model on its row.
+    SetAutoModel {
+        session_id: SessionId,
+        model_id: String,
+        profile_id: String,
+        reasoning_effort: Option<String>,
+    },
     SetThinking {
         session_id: SessionId,
         enabled: bool,
@@ -2982,6 +2991,8 @@ async fn execute_command(
             selection.reasoning_effort = reasoning_effort;
             // The model and its capabilities change together.
             crate::model_selection::apply(&mut session, &state.cfg, selection);
+            // A model the user picks turns Auto off.
+            session.clear_auto_model().await?;
             let selection = session.model_selection();
             // Persist the selection on the task row so a restart restores it
             // instead of dropping back to a blank model.
@@ -3000,6 +3011,36 @@ async fn execute_command(
                 &selection.profile_id,
                 selection.reasoning_effort.as_deref(),
             );
+            refresh_actor(&state, &task_actor, &session).await?;
+        }
+        SupervisorCommand::SetAutoModel {
+            session_id,
+            model_id,
+            profile_id,
+            reasoning_effort,
+        } => {
+            let task_actor = actor(&state, session_id).await?;
+            let mut session = try_session(&task_actor)?;
+            let mut selection = session.model_selection();
+            selection.model = model_id;
+            selection.profile_id = profile_id;
+            selection.reasoning_effort = reasoning_effort;
+            // Until Auto chooses (and in a session opened by an older
+            // Forge), the session runs on the fallback.
+            crate::model_selection::apply(&mut session, &state.cfg, selection);
+            let selection = session.model_selection();
+            session
+                .set_auto_model(forge_core::AutoFallback::of(&selection))
+                .await?;
+            state
+                .control
+                .set_session_model(
+                    session_id,
+                    &selection.model,
+                    &selection.profile_id,
+                    selection.reasoning_effort.as_deref(),
+                )
+                .await?;
             refresh_actor(&state, &task_actor, &session).await?;
         }
         SupervisorCommand::SetThinking {
@@ -7409,6 +7450,146 @@ mod tests {
         handle.command(SupervisorCommand::Shutdown).await.unwrap();
     }
 
+    // ----------------------------------------------------------- Auto model
+
+    /// Choosing Auto turns it on with the model and effort the user had as
+    /// its fallback, and keeps that fallback as the session's model on its
+    /// row — what the page shows, and what a restart reapplies.
+    #[tokio::test]
+    async fn choosing_auto_turns_it_on_and_keeps_the_fallback_as_the_sessions_model() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        handle
+            .command(SupervisorCommand::SetAutoModel {
+                session_id: owner,
+                model_id: "mock-v2".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: Some("high".into()),
+            })
+            .await
+            .unwrap();
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        {
+            let session = task_actor.session.lock().await;
+            let auto = session.auto_model().expect("Auto is on");
+            assert_eq!(auto.fallback.model, "mock-v2");
+            assert_eq!(auto.fallback.profile_id, "native-v2");
+            assert_eq!(auto.fallback.reasoning_effort.as_deref(), Some("high"));
+            let details = crate::SessionDetailsSnapshot::capture(&session);
+            assert_eq!(
+                details
+                    .auto_model
+                    .as_ref()
+                    .map(|auto| auto.fallback.model.as_str()),
+                Some("mock-v2")
+            );
+        }
+        let row = supervisor.state.control.session(owner).await.unwrap();
+        assert_eq!(row.model_id, "mock-v2");
+        assert_eq!(row.reasoning_effort.as_deref(), Some("high"));
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// A model the user picks turns Auto off.
+    #[tokio::test]
+    async fn picking_a_model_turns_auto_off() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        handle
+            .command(SupervisorCommand::SetAutoModel {
+                session_id: owner,
+                model_id: "mock-v2".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        handle
+            .command(SupervisorCommand::SetModel {
+                session_id: owner,
+                model_id: "mock-v3".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        let session = task_actor.session.lock().await;
+        assert!(session.auto_model().is_none());
+        assert_eq!(session.model_selection().model, "mock-v3");
+        assert!(crate::SessionDetailsSnapshot::capture(&session)
+            .auto_model
+            .is_none());
+        drop(session);
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// After a restart the row's model is put back on the session; that is
+    /// Auto's fallback, not the user picking a model: Auto stays on.
+    #[tokio::test]
+    async fn restoring_the_rows_model_after_a_restart_leaves_auto_on() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![]))).await;
+        handle
+            .command(SupervisorCommand::SetAutoModel {
+                session_id: owner,
+                model_id: "mock-v2".into(),
+                profile_id: "native-v2".into(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        let row = supervisor.state.control.session(owner).await.unwrap();
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        let mut session = task_actor.session.lock().await;
+        restore_task_model(&mut session, &row, &supervisor.state.cfg);
+        assert!(session.auto_model().is_some());
+        drop(session);
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
+    /// The page shows each Auto turn's model, effort and why: the details
+    /// carry every decision.
+    #[tokio::test]
+    async fn the_details_carry_each_auto_turns_decision() {
+        let (_temp, supervisor, handle, owner, _sibling) =
+            two_session_supervisor(Arc::new(MockModelClient::script(vec![
+                text_response("first"),
+                text_response("second"),
+            ])))
+            .await;
+        handle
+            .command(SupervisorCommand::SetAutoModel {
+                session_id: owner,
+                model_id: "mock".into(),
+                profile_id: String::new(),
+                reasoning_effort: None,
+            })
+            .await
+            .unwrap();
+        let task_actor = actor(&supervisor.state, owner).await.unwrap();
+        {
+            let mut session = task_actor.session.lock().await;
+            session
+                .run_user_message_with_stream("one", None)
+                .await
+                .unwrap();
+            session
+                .run_user_message_with_stream("two", None)
+                .await
+                .unwrap();
+            let details = crate::SessionDetailsSnapshot::capture(&session);
+            assert_eq!(details.auto_decisions.len(), 2);
+            assert_eq!(details.auto_decisions[0].user_message, 1);
+            assert_eq!(details.auto_decisions[1].user_message, 2);
+            assert_eq!(
+                details.auto_decisions[0].source,
+                forge_core::AutoSource::Fallback
+            );
+        }
+        handle.command(SupervisorCommand::Shutdown).await.unwrap();
+    }
+
     /// A prompt that arrives while a driver still holds its claim cannot
     /// start one. It must leave the note that driver checks on its way out.
     #[tokio::test]
@@ -11213,6 +11394,12 @@ mod tests {
                 session_id: Some(id),
             },
             SupervisorCommand::SetModel {
+                session_id: id,
+                model_id: "mock".into(),
+                profile_id: String::new(),
+                reasoning_effort: None,
+            },
+            SupervisorCommand::SetAutoModel {
                 session_id: id,
                 model_id: "mock".into(),
                 profile_id: String::new(),

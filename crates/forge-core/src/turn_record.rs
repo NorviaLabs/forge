@@ -70,6 +70,9 @@ pub enum TurnSignalKind {
     /// or model: `<ranking|exploration|fallback>: <reason>`. On each of its
     /// turns.
     ModelChosen,
+    /// The model and effort Auto chose for this main-session turn, and why:
+    /// `<ranked|fallback|stepped_up|stepped_down>: <reason>`.
+    AutoModel,
 }
 
 /// One observation, with when it happened relative to the turn's start.
@@ -144,6 +147,11 @@ pub(crate) struct TurnTelemetry {
     cancel_reason: Option<TurnSignalKind>,
     pub(crate) escalated: bool,
     pub(crate) escalation_retry: bool,
+    /// Auto chose this turn's model, on a ladder of this many steps.
+    pub(crate) auto_steps: Option<usize>,
+    /// The turn's work failed (the completion evaluator's verdict, not a
+    /// provider error or the user's denials): Auto steps up.
+    pub(crate) work_failed: bool,
 }
 
 impl TurnTelemetry {
@@ -436,6 +444,7 @@ impl AgentSession {
         if let Err(error) = self.journal.append_turn_record(&record).await {
             tracing::warn!(%error, session = %self.session_id, "could not write the turn record");
         }
+        self.move_auto_model(to).await;
     }
 }
 

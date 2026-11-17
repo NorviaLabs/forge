@@ -516,6 +516,9 @@ impl AgentSession {
             detail: format!("{category}: {summary}"),
         });
         self.note_failure_category(category);
+        if category != "hitl_denied" {
+            self.tracking.telemetry.work_failed = true;
+        }
         // Decided now, so the failed turn's record says whether it escalated.
         self.plan_escalation(category, summary);
         self.transition(TaskLifecycle::Failed, TransitionReason::TurnFailure)

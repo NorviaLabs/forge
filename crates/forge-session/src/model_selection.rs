@@ -44,7 +44,17 @@ pub(crate) fn derive_capabilities(session: &mut AgentSession, cfg: &Config) {
 pub(crate) struct CatalogChildModels {
     catalog_path: Option<std::path::PathBuf>,
     routes: Box<dyn Fn() -> forge_model::RouteTable + Send + Sync>,
+    /// The catalog as last read, with the file's stamp then: Auto asks for
+    /// efforts and resolves models at the start of every turn, and reading
+    /// a large catalog takes tens of milliseconds.
+    loaded: std::sync::Mutex<Option<(CatalogStamp, forge_connect::ModelCatalogCache)>>,
+    /// How many times the catalog file was read.
+    #[cfg(test)]
+    reads: std::sync::atomic::AtomicUsize,
 }
+
+/// A file's size and modification time (`None`: no file).
+type CatalogStamp = Option<(u64, Option<std::time::SystemTime>)>;
 
 impl CatalogChildModels {
     /// Routes are read on every call, so a provider connected after the
@@ -61,13 +71,63 @@ impl CatalogChildModels {
         Self {
             catalog_path,
             routes,
+            loaded: Default::default(),
+            #[cfg(test)]
+            reads: Default::default(),
         }
     }
 
-    fn catalog(&self) -> forge_connect::ModelCatalogCache {
-        match &self.catalog_path {
-            Some(path) => forge_connect::ModelCatalogCache::new(path.clone()),
-            None => forge_connect::ModelCatalogCache::user_default(),
+    #[cfg(test)]
+    pub(crate) fn catalog_reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Run `f` on the catalog: read once, and again only when the file
+    /// changes (so an updated catalog is seen at once).
+    fn with_catalog<R>(&self, f: impl FnOnce(&forge_connect::ModelCatalogCache) -> R) -> R {
+        let path = self
+            .catalog_path
+            .clone()
+            .unwrap_or_else(forge_connect::ModelCatalogCache::user_default_path);
+        let stamp: CatalogStamp = std::fs::metadata(&path)
+            .ok()
+            .map(|meta| (meta.len(), meta.modified().ok()));
+        let mut loaded = self
+            .loaded
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if loaded.as_ref().is_none_or(|(kept, _)| *kept != stamp) {
+            #[cfg(test)]
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *loaded = Some((stamp, forge_connect::ModelCatalogCache::new(path)));
+        }
+        let (_, catalog) = loaded.as_ref().expect("the catalog was just read");
+        f(catalog)
+    }
+}
+
+impl crate::auto_models::EffortLookup for CatalogChildModels {
+    /// From the provider serving `model` and the catalog: its levels, lowest
+    /// first, and its default — or none, for a model without an effort
+    /// setting (or one no provider serves).
+    fn efforts(&self, model: &str, _profile_id: &str) -> forge_core::ModelEfforts {
+        let table = (self.routes)();
+        let Some((found, bare)) = table.profile_for_request(model) else {
+            return forge_core::ModelEfforts::default();
+        };
+        let support = self.with_catalog(|catalog| {
+            forge_connect::effort::effort(&found.definition, bare, catalog)
+        });
+        if !support.supported() {
+            return forge_core::ModelEfforts::default();
+        }
+        forge_core::ModelEfforts {
+            options: support
+                .options
+                .iter()
+                .map(|level| level.as_str().to_string())
+                .collect(),
+            default: Some(support.default.as_str().to_string()),
         }
     }
 }
@@ -98,8 +158,13 @@ impl forge_core::ChildModelResolver for CatalogChildModels {
             ));
         };
         child.profile_id = found.definition.profile_id.clone();
-        let catalog = self.catalog();
-        let support = forge_connect::effort::effort(&found.definition, bare, &catalog);
+        let (support, limits, image_input) = self.with_catalog(|catalog| {
+            (
+                forge_connect::effort::effort(&found.definition, bare, catalog),
+                catalog.model_limits(&model),
+                catalog.model_accepts_image_input(&model),
+            )
+        });
         match request.reasoning_effort {
             Some(requested) => {
                 let level = EffortLevel::parse(requested)
@@ -128,14 +193,11 @@ impl forge_core::ChildModelResolver for CatalogChildModels {
             }
             None => {}
         }
-        if let Some(limits) = catalog
-            .model_limits(&model)
-            .filter(|limits| limits.context > 0)
-        {
+        if let Some(limits) = limits.filter(|limits| limits.context > 0) {
             child.context_window = Some(limits.context);
             child.output_reserve = (limits.output > 0).then_some(limits.output);
         }
-        child.image_input = Some(catalog.model_accepts_image_input(&model));
+        child.image_input = Some(image_input);
         Ok(child)
     }
 }
@@ -225,6 +287,82 @@ pub(crate) mod tests {
         assert!(!session.image_input_supported());
     }
 
+    /// The efforts Auto's ladder climbs, from the provider and the catalog:
+    /// an anthropic model with an effort setting lists its levels in order
+    /// with its default; one without lists none.
+    #[test]
+    fn a_models_efforts_come_from_its_provider_and_the_catalog() {
+        use crate::auto_models::EffortLookup;
+        let dir = tempfile::tempdir().unwrap();
+        let models = child_models(dir.path());
+        let opus = models.efforts("anthropic/claude-opus-4-8", "anthropic");
+        assert_eq!(opus.options, ["low", "medium", "high", "xhigh"]);
+        assert_eq!(opus.default.as_deref(), Some("low"));
+        assert_eq!(
+            models.efforts("anthropic/claude-sonnet-4", "anthropic"),
+            forge_core::ModelEfforts::default()
+        );
+        assert_eq!(
+            models.efforts("nobody/serves-this", "nobody"),
+            forge_core::ModelEfforts::default()
+        );
+    }
+
+    /// Auto asks for efforts and resolves models at the start of every
+    /// turn: the catalog is read once, and again only when it changes (a
+    /// 2,000-model catalog took about 26 ms to read, three times a turn).
+    #[test]
+    fn the_catalog_is_read_once_until_it_changes() {
+        use crate::auto_models::EffortLookup;
+        use forge_core::ChildModelResolver;
+        let dir = tempfile::tempdir().unwrap();
+        let models = child_models(dir.path());
+        let parent = forge_core::ModelExecutionSelection {
+            model: "anthropic/claude-opus-4-8".into(),
+            profile_id: "anthropic".into(),
+            reasoning_effort: None,
+            thinking_enabled: true,
+        };
+        for _ in 0..5 {
+            let _ = models.efforts("anthropic/claude-opus-4-8", "anthropic");
+            let _ = models.resolve(&forge_core::ChildModelRequest {
+                model: Some("anthropic/claude-opus-4-8"),
+                reasoning_effort: None,
+                parent: &parent,
+            });
+        }
+        assert_eq!(models.catalog_reads(), 1);
+        assert_eq!(
+            models
+                .resolve(&forge_core::ChildModelRequest {
+                    model: Some("anthropic/claude-opus-4-8"),
+                    reasoning_effort: None,
+                    parent: &parent,
+                })
+                .unwrap()
+                .context_window,
+            Some(1_000_000)
+        );
+
+        // The catalog is updated: the next call sees it.
+        std::fs::write(
+            dir.path().join("child-catalog.toml"),
+            "version = 2\n\
+             registry_effort_ready = true\n\n\
+             [registry_effort]\n\
+             \"anthropic/claude-opus-4-8\" = [\"low\", \"high\"]\n\n\
+             [registry_limits.\"anthropic/claude-opus-4-8\"]\n\
+             context = 500000\n\
+             output = 32000\n",
+        )
+        .unwrap();
+        let efforts = models.efforts("anthropic/claude-opus-4-8", "anthropic");
+        assert_eq!(efforts.options, ["low", "high"]);
+        assert_eq!(models.catalog_reads(), 2);
+        let _ = models.efforts("anthropic/claude-opus-4-8", "anthropic");
+        assert_eq!(models.catalog_reads(), 2);
+    }
+
     fn child_models(dir: &Path) -> CatalogChildModels {
         let catalog = dir.join("child-catalog.toml");
         std::fs::write(
@@ -237,9 +375,9 @@ pub(crate) mod tests {
              output = 64000\n",
         )
         .unwrap();
-        CatalogChildModels {
-            catalog_path: Some(catalog),
-            routes: Box::new(|| {
+        CatalogChildModels::with_routes(
+            Some(catalog),
+            Box::new(|| {
                 forge_model::RouteTable::single(
                     forge_connect::RouteDefinition::from_spec(
                         &forge_connect::builtin::builtin_profile("anthropic"),
@@ -247,7 +385,7 @@ pub(crate) mod tests {
                     forge_connect::Credential::Static(None),
                 )
             }),
-        }
+        )
     }
 
     /// A child's model is checked against the providers and takes the

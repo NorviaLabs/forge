@@ -208,3 +208,24 @@ test("a session snapshot carries its custom agent warnings", () => {
   applyEvent(page, session("a"));
   assert.deepEqual(page.snapshot.agentWarnings, [], "an older backend sends none");
 });
+
+test("a snapshot carries Auto and each Auto turn's decision", () => {
+  const auto = { fallback: { model: "anthropic/claude-sonnet-4", profile_id: "anthropic", reasoning_effort: "medium" }, position: 1 };
+  const turns = [{ user_message: 1, model: "anthropic/claude-opus-4-1", reasoning_effort: "high", source: "ranked", reason: "r" }];
+  const shown = snapshotFrom(session("a", { auto, auto_turns: turns }), defaultView());
+  assert.deepEqual(shown.info.auto, auto);
+  assert.deepEqual(shown.info.autoTurns, turns);
+
+  assert.deepEqual(
+    shown.autoLabels.map((label) => label && label.label),
+    ["Auto · claude-opus-4-1 @ high · ranked best", null],
+    "one entry per message on screen",
+  );
+
+  const plain = snapshotFrom(session("a"), defaultView());
+  assert.deepEqual(plain.autoLabels, [null, null]);
+  assert.equal(plain.info.auto, null, "no Auto unless the event says so");
+  assert.deepEqual(plain.info.autoTurns, []);
+  assert.equal(emptySnapshot().info.auto, null);
+  assert.deepEqual(emptySnapshot().info.autoTurns, []);
+});
