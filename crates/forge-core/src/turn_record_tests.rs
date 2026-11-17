@@ -2171,3 +2171,86 @@ async fn turning_auto_off_returns_the_session_to_its_own_model() {
     .unwrap();
     assert!(resumed.auto_model().is_none());
 }
+
+// ------------------------------------------------------------ model services
+
+/// Accepts any model a child asks for.
+struct AnyChildModel;
+
+impl crate::ChildModelResolver for AnyChildModel {
+    fn resolve(&self, request: &crate::ChildModelRequest<'_>) -> Result<ChildModel, String> {
+        Ok(child(
+            request.model.unwrap_or("test/mid"),
+            request.reasoning_effort,
+        ))
+    }
+}
+
+/// The owner installs the services that choose models together; one left
+/// out keeps what is installed.
+#[tokio::test]
+async fn model_services_are_installed_together_and_one_left_out_is_kept() {
+    let dir = TempDir::new().unwrap();
+    let mut session = session(dir.path(), TierModel::new(&[])).await;
+    let child_models: Arc<dyn crate::ChildModelResolver> = Arc::new(AnyChildModel);
+    let tiers: Arc<dyn ModelTierResolver> = Arc::new(FakeTiers);
+    let subagents: Arc<dyn crate::SubagentModelAdvisor> = FakeAdvisor::new(ranked_pick());
+    let auto: Arc<dyn crate::AutoModelAdvisor> = Arc::new(FakeAuto {
+        start: ranked_start("test/mid", None),
+    });
+    session.install_model_services(crate::ModelServices {
+        child_models: Some(child_models.clone()),
+        tiers: Some(tiers.clone()),
+        subagent_advisor: Some(subagents.clone()),
+        auto_advisor: Some(auto.clone()),
+    });
+    let installed = session.model_services();
+    assert!(Arc::ptr_eq(
+        installed.child_models.as_ref().unwrap(),
+        &child_models
+    ));
+    assert!(Arc::ptr_eq(installed.tiers.as_ref().unwrap(), &tiers));
+    assert!(Arc::ptr_eq(
+        installed.subagent_advisor.as_ref().unwrap(),
+        &subagents
+    ));
+    assert!(Arc::ptr_eq(installed.auto_advisor.as_ref().unwrap(), &auto));
+
+    // Only a new tier resolver: the rest stay.
+    let other_tiers: Arc<dyn ModelTierResolver> = Arc::new(FakeTiers);
+    session.install_model_services(crate::ModelServices {
+        tiers: Some(other_tiers.clone()),
+        ..Default::default()
+    });
+    let installed = session.model_services();
+    assert!(Arc::ptr_eq(installed.tiers.as_ref().unwrap(), &other_tiers));
+    assert!(Arc::ptr_eq(
+        installed.child_models.as_ref().unwrap(),
+        &child_models
+    ));
+    assert!(Arc::ptr_eq(
+        installed.subagent_advisor.as_ref().unwrap(),
+        &subagents
+    ));
+    assert!(Arc::ptr_eq(installed.auto_advisor.as_ref().unwrap(), &auto));
+
+    // The one-at-a-time setters install into the same places.
+    let mut fresh = AgentSession::create(cfg(dir.path()), TierModel::new(&[]), ToolRegistry::new())
+        .await
+        .unwrap();
+    fresh.set_child_model_resolver(child_models.clone());
+    fresh.set_model_tier_resolver(tiers.clone());
+    fresh.set_subagent_model_advisor(subagents.clone());
+    fresh.set_auto_model_advisor(auto.clone());
+    let installed = fresh.model_services();
+    assert!(Arc::ptr_eq(
+        installed.child_models.as_ref().unwrap(),
+        &child_models
+    ));
+    assert!(Arc::ptr_eq(installed.tiers.as_ref().unwrap(), &tiers));
+    assert!(Arc::ptr_eq(
+        installed.subagent_advisor.as_ref().unwrap(),
+        &subagents
+    ));
+    assert!(Arc::ptr_eq(installed.auto_advisor.as_ref().unwrap(), &auto));
+}

@@ -350,7 +350,10 @@ impl AgentSession {
 
     /// Install the resolver that validates a caller-chosen child model.
     pub fn set_child_model_resolver(&mut self, resolver: Arc<dyn ChildModelResolver>) {
-        self.child_model_resolver = Some(resolver);
+        self.install_model_services(crate::ModelServices {
+            child_models: Some(resolver),
+            ..Default::default()
+        });
     }
 
     /// Re-read the custom agents: the warnings a frontend shows, and the
@@ -566,7 +569,10 @@ impl AgentSession {
     /// Install the advisor that chooses the model of a child started without
     /// a tier or a model.
     pub fn set_subagent_model_advisor(&mut self, advisor: Arc<dyn crate::SubagentModelAdvisor>) {
-        self.models.subagent_advisor = Some(advisor);
+        self.install_model_services(crate::ModelServices {
+            subagent_advisor: Some(advisor),
+            ..Default::default()
+        });
     }
 }
 

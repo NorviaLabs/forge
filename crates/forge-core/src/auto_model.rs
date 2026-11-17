@@ -269,7 +269,10 @@ fn named(model: &ChildModel) -> String {
 impl crate::AgentSession {
     /// Install the advisor that chooses where Auto turns start.
     pub fn set_auto_model_advisor(&mut self, advisor: std::sync::Arc<dyn AutoModelAdvisor>) {
-        self.models.auto_advisor = Some(advisor);
+        self.install_model_services(crate::ModelServices {
+            auto_advisor: Some(advisor),
+            ..Default::default()
+        });
     }
 
     /// Turn Auto on, falling back on `fallback` when the evidence is thin.

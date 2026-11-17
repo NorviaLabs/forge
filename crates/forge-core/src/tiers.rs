@@ -156,7 +156,10 @@ pub(crate) fn parse_escalation_note(text: &str) -> Option<(String, Option<String
 impl AgentSession {
     /// Install the resolver that turns tiers into models.
     pub fn set_model_tier_resolver(&mut self, resolver: std::sync::Arc<dyn ModelTierResolver>) {
-        self.tier_resolver = Some(resolver);
+        self.install_model_services(crate::ModelServices {
+            tiers: Some(resolver),
+            ..Default::default()
+        });
     }
 
     /// Resolve `tier` against `current` without applying it.

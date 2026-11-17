@@ -155,16 +155,13 @@ pub fn route_table() -> forge_model::RouteTable {
     )
 }
 
-/// Resolve tiers (`fast`/`default`/`strong`) from the user's tier table, in
-/// memory. Loading the table and the account model lists happens here, when
-/// the session opens; building it happens in the background. Neither is on
-/// the path of a turn. A table that cannot be read leaves tiers changing
-/// nothing, and never stops the session opening. Returns the table, which
-/// also knows which models the account can run.
-async fn install_model_tiers(
-    session: &mut AgentSession,
-    cfg: &Config,
-) -> Option<Arc<model_tiers::TierTable>> {
+/// The user's tier table, which resolves tiers (`fast`/`default`/`strong`)
+/// in memory. Loading the table and the account model lists happens here,
+/// when the session opens; building it happens in the background. Neither
+/// is on the path of a turn. A table that cannot be read leaves tiers
+/// changing nothing, and never stops the session opening. The table also
+/// knows which models the account can run.
+async fn load_model_tiers(cfg: &Config) -> Option<Arc<model_tiers::TierTable>> {
     let paths = model_tiers::TierPaths::from_config(cfg);
     let table = model_tiers::TierTable::for_paths(&paths)?;
     if let Err(error) = table.reload().await {
@@ -176,7 +173,6 @@ async fn install_model_tiers(
     {
         tracing::warn!(%error, "could not read the account model lists for tiers");
     }
-    session.set_model_tier_resolver(Arc::new(model_tiers::TableTiers(table.clone())));
     if !cfg!(test) {
         // models.dev stale, a provider added: rebuild what changed.
         table.maintain_in_background(paths, std::time::Duration::from_secs(600));
@@ -184,30 +180,29 @@ async fn install_model_tiers(
     Some(table)
 }
 
-/// Choose models from the ranking of this workspace's journals: a
-/// subagent's, when it is started without a tier or a model
-/// (`subagent_models`), and each turn's when the user chose Auto
-/// (`auto_models`). The ranking is shared by the project's sessions and built
-/// in the background: opening a session never waits for it.
-fn install_model_advisors(
-    session: &mut AgentSession,
-    cfg: &Config,
-    journal_dir: &std::path::Path,
-    tiers: Option<Arc<model_tiers::TierTable>>,
-) {
-    install_model_advisors_with(
-        session,
-        cfg,
-        journal_dir,
-        tiers,
-        Arc::new(model_selection::CatalogChildModels::new(cfg)),
-        None,
-    );
+/// The services that choose a session's models: `spawn_agent`'s model
+/// check, the tier table, and the advisors that choose from the ranking of
+/// this workspace's journals — a subagent's model, when it is started
+/// without a tier or a model (`subagent_models`), and each turn's when the
+/// user chose Auto (`auto_models`). The ranking is shared by the project's
+/// sessions and built in the background: opening a session never waits for
+/// it.
+async fn model_services(cfg: &Config, journal_dir: &std::path::Path) -> forge_core::ModelServices {
+    let models = Arc::new(model_selection::CatalogChildModels::new(cfg));
+    let tiers = load_model_tiers(cfg).await;
+    let (subagents, auto) = model_advisors(cfg, journal_dir, tiers.clone(), models.clone(), None);
+    forge_core::ModelServices {
+        child_models: Some(models),
+        tiers: tiers.map(|table| {
+            Arc::new(model_tiers::TableTiers(table)) as Arc<dyn forge_core::ModelTierResolver>
+        }),
+        subagent_advisor: Some(subagents),
+        auto_advisor: Some(auto),
+    }
 }
 
-/// [`install_model_advisors`] with the model resolver (also the effort
-/// lookup) and the trust store given: the user's own
-/// (`CatalogChildModels::new`, `None`) outside tests.
+/// Install [`model_advisors`] in `session`.
+#[cfg(test)]
 fn install_model_advisors_with(
     session: &mut AgentSession,
     cfg: &Config,
@@ -215,6 +210,27 @@ fn install_model_advisors_with(
     tiers: Option<Arc<model_tiers::TierTable>>,
     models: Arc<model_selection::CatalogChildModels>,
     trust_store: Option<&std::path::Path>,
+) {
+    let (subagents, auto) = model_advisors(cfg, journal_dir, tiers, models, trust_store);
+    session.install_model_services(forge_core::ModelServices {
+        subagent_advisor: Some(subagents),
+        auto_advisor: Some(auto),
+        ..Default::default()
+    });
+}
+
+/// The subagent and Auto advisors, reading one ranking, already warming:
+/// `models` resolves models and knows their efforts, `trust_store` holds
+/// the user's trust (the user's own, `None`, outside tests).
+fn model_advisors(
+    cfg: &Config,
+    journal_dir: &std::path::Path,
+    tiers: Option<Arc<model_tiers::TierTable>>,
+    models: Arc<model_selection::CatalogChildModels>,
+    trust_store: Option<&std::path::Path>,
+) -> (
+    Arc<subagent_models::RankedSubagentModels>,
+    Arc<auto_models::RankedAutoModels>,
 ) {
     let runnable: Arc<dyn model_ranking::RunnableModels> = match tiers {
         Some(table) => table,
@@ -245,8 +261,7 @@ fn install_model_advisors_with(
     );
     subagents.warm();
     auto.warm();
-    session.set_subagent_model_advisor(subagents);
-    session.set_auto_model_advisor(auto);
+    (subagents, auto)
 }
 
 /// The store holding the last model selection. Test builds never fall back
@@ -409,9 +424,7 @@ async fn open_session_with_model(
     // A model or effort `spawn_agent` asks for is checked against the same
     // providers and catalog. The offline mock has neither.
     if !cfg.model.mock {
-        session.set_child_model_resolver(Arc::new(model_selection::CatalogChildModels::new(cfg)));
-        let tiers = install_model_tiers(&mut session, cfg).await;
-        install_model_advisors(&mut session, cfg, &journal_dir, tiers);
+        session.install_model_services(model_services(cfg, &journal_dir).await);
     }
     // The project's own validation command counts as verification in the
     // turn records.

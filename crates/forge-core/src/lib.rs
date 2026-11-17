@@ -78,6 +78,7 @@ pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
 };
+pub use session_models::ModelServices;
 pub use subagent::{SubagentOutcome, SubagentSpec};
 pub use tiers::{ModelTierResolver, TierBasis, TierRequest, TierResolution};
 pub use turn_record::{TurnSignal, TurnSignalInbox, TurnSignalKind};

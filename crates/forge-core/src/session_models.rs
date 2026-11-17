@@ -1,14 +1,17 @@
 //! How a session's models are chosen, kept together: what its turns are
 //! recorded as (its task kind), the advisors its owner installs, and Auto.
 //! One place builds it — for a new session, and for one reopened from its
-//! journal — so every way a session is made agrees.
+//! journal — so every way a session is made agrees. The owner installs the
+//! services that choose models in one go ([`ModelServices`]).
 
 use std::sync::Arc;
 
 use forge_types::TaskKind;
 
 use crate::auto_model::{AutoDecision, AutoModel, AutoModelAdvisor};
+use crate::custom_agents::ChildModelResolver;
 use crate::model_choice::SubagentModelAdvisor;
+use crate::tiers::ModelTierResolver;
 
 pub(crate) struct SessionModels {
     /// What this session's turns are recorded as: `main` for a top-level
@@ -69,6 +72,59 @@ impl SessionModels {
         } else {
             self.auto = crate::auto_model::auto_from_journal(auto);
             self.auto_decisions = crate::auto_model::decisions_from_journal(auto_decisions);
+        }
+    }
+}
+
+/// The services that choose a session's models, which its owner installs:
+/// each one given is installed, each one left out (`None`) keeps what is
+/// installed. Without any, a session runs on the model it was given.
+#[derive(Clone, Default)]
+pub struct ModelServices {
+    /// Validates a model or effort `spawn_agent` asks for; without it only
+    /// the request's shape is checked.
+    pub child_models: Option<Arc<dyn ChildModelResolver>>,
+    /// Resolves model tiers; shared with the subagents the session spawns,
+    /// which need it to escalate.
+    pub tiers: Option<Arc<dyn ModelTierResolver>>,
+    /// Chooses the model of a child started without a tier or a model.
+    pub subagent_advisor: Option<Arc<dyn SubagentModelAdvisor>>,
+    /// Chooses where Auto turns start, and knows models' efforts.
+    pub auto_advisor: Option<Arc<dyn AutoModelAdvisor>>,
+}
+
+impl crate::AgentSession {
+    /// Install the services that choose this session's models (see
+    /// [`ModelServices`]).
+    pub fn install_model_services(&mut self, services: ModelServices) {
+        let ModelServices {
+            child_models,
+            tiers,
+            subagent_advisor,
+            auto_advisor,
+        } = services;
+        if child_models.is_some() {
+            self.child_model_resolver = child_models;
+        }
+        if tiers.is_some() {
+            self.tier_resolver = tiers;
+        }
+        if subagent_advisor.is_some() {
+            self.models.subagent_advisor = subagent_advisor;
+        }
+        if auto_advisor.is_some() {
+            self.models.auto_advisor = auto_advisor;
+        }
+    }
+
+    /// The services installed.
+    #[cfg(test)]
+    pub(crate) fn model_services(&self) -> ModelServices {
+        ModelServices {
+            child_models: self.child_model_resolver.clone(),
+            tiers: self.tier_resolver.clone(),
+            subagent_advisor: self.models.subagent_advisor.clone(),
+            auto_advisor: self.models.auto_advisor.clone(),
         }
     }
 }
