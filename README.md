@@ -379,9 +379,13 @@ or completed descendant's next turn, and with `interrupt: true` (no message) it
 stops the descendant's current turn. `wait_agent` returns every descendant's
 status; pass `since_revision: 0` to list them without waiting. Agent IDs are opaque session identifiers, and operations
 are limited to descendants of the calling agent. Child journals, statuses,
-summaries, and worktree locations are durable. Running children are resumed
-after a restart when their worktree is recoverable; completed children remain
-available for a later follow-up without reopening their historical task.
+summaries, and worktree locations are durable. A child a restart interrupts
+is reopened from its own journal — a writer in its worktree, a read-only child
+in the repository it shares — recorded as interrupted, and kept for a
+follow-up (it is not re-run); completed children, writers and read-only alike,
+remain available for a later follow-up without reopening their historical
+task. A read-only child never owns a checkout: removing its parent never
+removes the repository it ran in.
 
 ### Themes
 

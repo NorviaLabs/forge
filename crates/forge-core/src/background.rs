@@ -757,13 +757,17 @@ impl AgentSession {
         }
         for task in orphaned.iter().filter(|t| !t.finished) {
             if task.kind == "subagent" {
-                if let Some(workspace) = subagent_workspaces.get(&task.id.0) {
-                    self.interrupt_orphaned_subagent_task(task, workspace.clone())
+                let workspace = match subagent_workspaces.get(&task.id.0) {
+                    Some(workspace) => Some(workspace.clone()),
+                    None => self.unrecorded_read_only_workspace(task).await,
+                };
+                if let Some(workspace) = workspace {
+                    self.interrupt_orphaned_subagent_task(task, workspace)
                         .await?;
                     continue;
                 }
-                // No recorded workspace — fall through to the conservative
-                // mark-cancelled path rather than guessing a path.
+                // Nowhere it may safely be reopened — fall through to the
+                // conservative mark-cancelled path rather than guessing.
             }
             let kind = if task.kind == "subagent" {
                 BackgroundTaskKind::Subagent {

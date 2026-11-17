@@ -172,6 +172,16 @@ impl Profiles {
         session_id: &str,
         has_parent: bool,
     ) -> Result<TaskKind, JournalError> {
+        let profile = self.profile(conn, session_id).await?;
+        Ok(kind_from_journal(profile, has_parent))
+    }
+
+    /// The latest `AgentProfile` payload of `session_id` (as stored).
+    async fn profile(
+        &mut self,
+        conn: &mut SqliteConnection,
+        session_id: &str,
+    ) -> Result<Option<&Value>, JournalError> {
         if !self.cache.contains_key(session_id) {
             let has_events = match self.has_events {
                 Some(has_events) => has_events,
@@ -196,9 +206,26 @@ impl Profiles {
             };
             self.cache.insert(session_id.to_string(), profile);
         }
-        let profile = self.cache.get(session_id).and_then(Option::as_ref);
-        Ok(kind_from_journal(profile, has_parent))
+        Ok(self.cache.get(session_id).and_then(Option::as_ref))
     }
+}
+
+/// The latest `AgentProfile` payload — what the session was started as — in
+/// `session_id`'s journal at `db_path`, read like [`read_turn_records`]:
+/// nothing written or created. `None` when it holds none; an error when
+/// there is no journal there. Cheaper than replaying the journal: one query.
+pub async fn read_agent_profile(
+    db_path: &Path,
+    session_id: crate::SessionId,
+) -> Result<Option<Value>, JournalError> {
+    let mut conn = open_read_only(db_path).await?;
+    let mut profiles = Profiles::new();
+    let result = profiles
+        .profile(&mut conn, &session_id.to_string())
+        .await
+        .map(|profile| profile.cloned());
+    conn.close().await?;
+    result
 }
 
 /// A stored row, with the kind it was written with when it has one. A row

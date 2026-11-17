@@ -165,9 +165,12 @@ impl AgentSession {
             if !restored_children.insert(child_session_id) {
                 continue;
             }
-            if let Some(workspace) = subagent_workspaces.get(&task.id.0) {
-                self.restore_finished_subagent_task(task, workspace.clone())
-                    .await?;
+            let workspace = match subagent_workspaces.get(&task.id.0) {
+                Some(workspace) => Some(workspace.clone()),
+                None => self.unrecorded_read_only_workspace(task).await,
+            };
+            if let Some(workspace) = workspace {
+                self.restore_finished_subagent_task(task, workspace).await?;
             }
         }
         Ok(())

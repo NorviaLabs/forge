@@ -18,6 +18,15 @@ use tokio::sync::Semaphore;
 
 static WRITER_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Semaphore>>>> = OnceLock::new();
 
+/// Whether `a` and `b` are the same directory (as resolved on disk; as
+/// written when either cannot be resolved).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
 fn get_writer_gate(root: &Path) -> Arc<Semaphore> {
     WRITER_GATES
         .get_or_init(|| Mutex::new(HashMap::new()))
@@ -431,7 +440,64 @@ impl AgentSession {
         };
         let mut child = child;
         child.mark_interrupted_if_stale().await?;
-        self.retain_subagent(task, child).await
+        let owns_checkout = self.owns_checkout(&child).await;
+        self.retain_subagent(task, child, owns_checkout).await
+    }
+
+    /// Where a subagent ran that the parent's journal recorded no workspace
+    /// for (journals from before read-only children's were recorded): the
+    /// parent's repository, when the child's own journal shows it was
+    /// read-only — read-only children run there. `None` otherwise: a writer
+    /// runs in a worktree of its own, and one whose worktree was never
+    /// recorded has nowhere it may safely be reopened.
+    pub(crate) async fn unrecorded_read_only_workspace(
+        &self,
+        task: &forge_durable::RestoredBackgroundTask,
+    ) -> Option<PathBuf> {
+        let child = task.child_session_id?;
+        let journal = self.journal.directory().join(format!("{child}.db"));
+        let profile = forge_durable::read_agent_profile(&journal, child)
+            .await
+            .ok()??;
+        let journaled: crate::custom_agents::JournaledProfile =
+            serde_json::from_value(profile).ok()?;
+        if journaled.mode != Some(AgentMode::ReadOnly) {
+            return None;
+        }
+        forge_storage::detect_repo_info(&self.tool_ctx.workspace_root).worktree_root
+    }
+
+    /// Whether a reopened child's workspace is a checkout of its own — a
+    /// writer's worktree, which removing the parent removes with it. A
+    /// read-only child ran in the repository it shares with its parent: that
+    /// is never the child's to remove. A child whose journal names no mode
+    /// (from before profiles) owns its recorded workspace unless that is the
+    /// parent's repository. Cheapest checks first: Git is asked (the
+    /// repository's root) only for such a child.
+    async fn owns_checkout(&self, child: &AgentSession) -> bool {
+        let workspace = child.workspace_root();
+        if same_dir(workspace, &self.tool_ctx.workspace_root) {
+            return false;
+        }
+        let journal = self
+            .journal
+            .directory()
+            .join(format!("{}.db", child.session_id));
+        let mode = forge_durable::read_agent_profile(&journal, child.session_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|profile| {
+                serde_json::from_value::<crate::custom_agents::JournaledProfile>(profile).ok()
+            })
+            .and_then(|profile| profile.mode);
+        match mode {
+            Some(AgentMode::ReadOnly) => false,
+            Some(AgentMode::Writer) => true,
+            None => !forge_storage::detect_repo_info(&self.tool_ctx.workspace_root)
+                .worktree_root
+                .is_some_and(|repository| same_dir(&repository, workspace)),
+        }
     }
 
     /// Attach an idle actor to an already-resumed child so the operator can
@@ -440,6 +506,7 @@ impl AgentSession {
         &mut self,
         task: &forge_durable::RestoredBackgroundTask,
         child: AgentSession,
+        owns_checkout: bool,
     ) -> Result<(), LoopError> {
         let child_session_id = child.session_id;
         let runtime = Arc::new(SubagentRuntime {
@@ -470,7 +537,7 @@ impl AgentSession {
                 runtime: runtime.clone(),
                 hitl_sender: hitl_tx,
                 child: metadata,
-                worktree: Some(crate::DescendantWorktree {
+                worktree: owns_checkout.then(|| crate::DescendantWorktree {
                     session_id: child_session_id,
                     path: child.workspace_root().to_path_buf(),
                     branch: None,
@@ -613,7 +680,8 @@ impl AgentSession {
         let child = self
             .resume_child(child_session_id, workspace, cancel)
             .await?;
-        self.retain_subagent(task, child).await
+        let owns_checkout = self.owns_checkout(&child).await;
+        self.retain_subagent(task, child, owns_checkout).await
     }
 
     /// Create a worktree, spin up a child session in it, and drive the
@@ -707,20 +775,18 @@ impl AgentSession {
             .as_ref()
             .map(|worktree| worktree.path.clone())
             .unwrap_or_else(|| repo_root.clone());
-        // Only journaled once the worktree actually exists — `workspace` is
-        // how a restart finds this same checkout again (see
-        // `reconcile_orphaned_background_tasks`).
-        if let Some(worktree) = &worktree {
-            self.journal
-                .append_subagent_spawned(
-                    self.session_id,
-                    task_id,
-                    child_session_id,
-                    &spec.role,
-                    &worktree.path,
-                )
-                .await?;
-        }
+        // Where the child runs — a writer's worktree, once it exists; the
+        // repository itself for a read-only child — is how a restart finds
+        // it again (see `reconcile_orphaned_background_tasks`).
+        self.journal
+            .append_subagent_spawned(
+                self.session_id,
+                task_id,
+                child_session_id,
+                &spec.role,
+                &child_workspace,
+            )
+            .await?;
 
         let child = match self
             .create_child(child_session_id, child_workspace.clone(), cancel, &spec)

@@ -1312,12 +1312,9 @@ async fn an_escalation_retry_keeps_its_childs_kind() {
 }
 
 /// A custom agent's child that a restart interrupts is reopened from its own
-/// journal; the record of the interrupted turn still names the agent.
-///
-/// A writer: a restart reopens an unfinished child through the workspace its
-/// parent recorded for it, and only a writer's worktree is recorded — a
-/// read-only child that a restart interrupts is marked cancelled in its
-/// parent without being reopened, so it writes no turn record.
+/// journal; the record of the interrupted turn still names the agent. (A
+/// writer; the read-only cases are under "read-only children and restarts"
+/// below.)
 #[tokio::test]
 async fn a_custom_agent_child_interrupted_by_a_restart_keeps_its_kind() {
     let dir = TempDir::new().unwrap();
@@ -1355,6 +1352,345 @@ async fn a_custom_agent_child_interrupted_by_a_restart_keeps_its_kind() {
         .find(|record| record.completion_reason == "interrupted_by_restart")
         .unwrap_or_else(|| panic!("no interrupted record: {records:#?}"));
     assert_eq!(interrupted.task_kind, TaskKind::Custom("reviewer".into()));
+}
+
+// ------------------------------------- read-only children and restarts
+
+/// The session's tools as `session` gives them, for a resumed parent.
+fn tools_with_bash() -> ToolRegistry {
+    let mut tools = ToolRegistry::new();
+    tools.register(Arc::new(ScriptedBash));
+    tools
+}
+
+/// Spawn a child in a session on `dir`, wait until its turn has started on
+/// the slow model, then drop the parent as a crash would: the parent's id,
+/// and the child's.
+async fn crash_while_a_child_runs(
+    dir: &std::path::Path,
+    mode: AgentMode,
+    profile: ChildProfile,
+    tool_allowlist: Option<Vec<String>>,
+) -> (SessionId, SessionId) {
+    let model = TierModel::new(&[]);
+    let mut session = session(dir, model.clone()).await;
+    let id = session
+        .spawn_subagent(SubagentSpec {
+            role: "helper".into(),
+            prompt: "look around".into(),
+            mode,
+            tool_allowlist,
+            profile,
+        })
+        .await
+        .unwrap();
+    let child = session
+        .background()
+        .get(id)
+        .and_then(|task| task.child_session_id)
+        .unwrap();
+    for _ in 0..200 {
+        if !model.seen().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(!model.seen().is_empty(), "the child's turn started");
+    (session.session_id, child)
+}
+
+async fn resume_parent(
+    dir: &std::path::Path,
+    parent: SessionId,
+    model: Arc<TierModel>,
+) -> AgentSession {
+    AgentSession::resume(cfg(dir), model, tools_with_bash(), parent)
+        .await
+        .unwrap()
+}
+
+/// The parent's task for `child`, as the resumed parent shows it.
+fn task_of(session: &AgentSession, child: SessionId) -> crate::BackgroundTaskHandle {
+    session
+        .background()
+        .list()
+        .filter(|task| task.child_session_id == Some(child))
+        .last()
+        .cloned()
+        .unwrap_or_else(|| panic!("no task for {child}"))
+}
+
+fn slow_profile() -> ChildProfile {
+    ChildProfile {
+        model: Some(slow_model()),
+        ..ChildProfile::default()
+    }
+}
+
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.canonicalize().unwrap() == b.canonicalize().unwrap()
+}
+
+/// A read-only child a restart interrupts is reopened like a writer: its
+/// interrupted turn is recorded, its parent says it was interrupted, and it
+/// takes a follow-up — in the repository, where it ran.
+#[tokio::test]
+async fn a_read_only_child_interrupted_by_a_restart_is_reopened() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let (parent, child) =
+        crash_while_a_child_runs(dir.path(), AgentMode::ReadOnly, slow_profile(), None).await;
+
+    let mut resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    let records = child_records(dir.path(), child).await;
+    let interrupted = records
+        .iter()
+        .find(|record| record.completion_reason == "interrupted_by_restart")
+        .unwrap_or_else(|| panic!("no interrupted record: {records:#?}"));
+    assert_eq!(interrupted.task_kind, TaskKind::Subagent);
+    match &task_of(&resumed, child).status {
+        BackgroundTaskStatus::Failed { error } => {
+            assert!(error.contains("interrupted by a restart"), "{error}")
+        }
+        other => panic!("{other:?}"),
+    }
+    let next = resumed
+        .followup_retained_subagent(child, "again".into())
+        .await
+        .unwrap()
+        .expect("the child was kept for a follow-up");
+    let workspace = &resumed
+        .background()
+        .get(next)
+        .unwrap()
+        .child
+        .as_ref()
+        .unwrap()
+        .workspace;
+    assert!(same_dir(workspace, dir.path()), "{}", workspace.display());
+}
+
+/// A read-only custom agent is reopened as itself: its kind, and its tool
+/// limit, hold after the restart.
+#[tokio::test]
+async fn a_read_only_custom_agent_interrupted_by_a_restart_keeps_its_kind_and_tools() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let (parent, child) = crash_while_a_child_runs(
+        dir.path(),
+        AgentMode::ReadOnly,
+        custom_agent("reviewer", Some(slow_model())),
+        Some(vec!["grep".into()]),
+    )
+    .await;
+
+    let model = TierModel::new(&[]);
+    let mut resumed = resume_parent(dir.path(), parent, model.clone()).await;
+    let records = child_records(dir.path(), child).await;
+    let interrupted = records
+        .iter()
+        .find(|record| record.completion_reason == "interrupted_by_restart")
+        .unwrap_or_else(|| panic!("no interrupted record: {records:#?}"));
+    assert_eq!(interrupted.task_kind, TaskKind::Custom("reviewer".into()));
+    resumed
+        .followup_retained_subagent(child, "again".into())
+        .await
+        .unwrap()
+        .expect("the child was kept for a follow-up");
+    for _ in 0..200 {
+        if model.seen().iter().any(|seen| seen.last_user == "again") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let asked = model
+        .seen()
+        .into_iter()
+        .find(|seen| seen.last_user == "again")
+        .expect("the follow-up reached the model");
+    assert!(
+        asked.tools.contains(&"grep".to_string()),
+        "{:?}",
+        asked.tools
+    );
+    assert!(
+        !asked.tools.contains(&"bash".to_string()),
+        "{:?}",
+        asked.tools
+    );
+}
+
+/// A read-only child that finished before the restart is kept too: it takes
+/// a follow-up afterwards.
+#[tokio::test]
+async fn a_finished_read_only_child_takes_a_follow_up_after_a_restart() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = TierModel::new(&[]);
+    let (parent, child) = {
+        let mut session = session(dir.path(), model.clone()).await;
+        let (id, child) =
+            spawn_child(&mut session, AgentMode::ReadOnly, ChildProfile::default()).await;
+        assert!(matches!(
+            wait_terminal(&mut session, id).await,
+            BackgroundTaskStatus::Succeeded { .. }
+        ));
+        (session.session_id, child)
+    };
+    let mut resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    let next = resumed
+        .followup_retained_subagent(child, "again".into())
+        .await
+        .unwrap()
+        .expect("the finished child was kept for a follow-up");
+    assert!(matches!(
+        wait_terminal(&mut resumed, next).await,
+        BackgroundTaskStatus::Succeeded { .. }
+    ));
+    assert_eq!(child_records(dir.path(), child).await.len(), 2);
+}
+
+/// A read-only child owns no checkout — after a restart too: the repository
+/// it ran in is never offered for removal as the child's, whether it was
+/// interrupted or had finished.
+#[tokio::test]
+async fn a_reopened_read_only_child_owns_no_checkout() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let (parent, interrupted) =
+        crash_while_a_child_runs(dir.path(), AgentMode::ReadOnly, slow_profile(), None).await;
+    let resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    assert!(
+        resumed.descendant_worktrees().is_empty(),
+        "{interrupted}: {:?}",
+        resumed.descendant_worktrees()
+    );
+    drop(resumed);
+
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let parent = {
+        let mut session = session(dir.path(), TierModel::new(&[])).await;
+        let (id, _) = spawn_child(&mut session, AgentMode::ReadOnly, ChildProfile::default()).await;
+        wait_terminal(&mut session, id).await;
+        session.session_id
+    };
+    let resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    assert!(
+        resumed.descendant_worktrees().is_empty(),
+        "{:?}",
+        resumed.descendant_worktrees()
+    );
+}
+
+/// A writer reopened after a restart still owns its worktree: removing the
+/// parent removes it too.
+#[tokio::test]
+async fn a_reopened_writer_still_owns_its_worktree() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let (parent, child) =
+        crash_while_a_child_runs(dir.path(), AgentMode::Writer, slow_profile(), None).await;
+    let resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    let owned = resumed.descendant_worktrees();
+    assert_eq!(owned.len(), 1, "{owned:?}");
+    assert_eq!(owned[0].session_id, child);
+    assert!(!same_dir(&owned[0].path, dir.path()), "{owned:?}");
+}
+
+/// A parent journal written before read-only children's workspaces were
+/// recorded: a parent that spawned `child` (journals built as Forge wrote
+/// them then), and a child that was mid-turn with `profile` as its journaled
+/// agent profile, when they stopped.
+async fn old_journals_with_a_running_child(
+    dir: &std::path::Path,
+    profile: serde_json::Value,
+) -> (SessionId, SessionId) {
+    let journals = dir.join("j");
+    let parent = forge_durable::new_session_id();
+    let child = forge_durable::new_session_id();
+    let journal = Journal::open(&journals, parent).await.unwrap();
+    journal.append_session_created(parent).await.unwrap();
+    journal
+        .append_background_task_started_with_parent(
+            parent,
+            BackgroundTaskId(1),
+            "subagent",
+            "helper",
+            Some(child),
+            Some(parent),
+        )
+        .await
+        .unwrap();
+    drop(journal);
+    let journal = Journal::open(&journals, child).await.unwrap();
+    journal.append_session_created(child).await.unwrap();
+    journal.append_agent_profile(child, profile).await.unwrap();
+    journal
+        .append_user_message(child, "look around")
+        .await
+        .unwrap();
+    journal
+        .append_status(child, TaskLifecycle::Working)
+        .await
+        .unwrap();
+    drop(journal);
+    (parent, child)
+}
+
+/// From a journal written before the fix, an unfinished child whose own
+/// journal says it was read-only is still reopened, in the repository.
+#[tokio::test]
+async fn an_unrecorded_read_only_child_in_an_old_journal_is_reopened() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let (parent, child) =
+        old_journals_with_a_running_child(dir.path(), json!({"mode": "read_only"})).await;
+    let mut resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    let records = child_records(dir.path(), child).await;
+    assert!(
+        records
+            .iter()
+            .any(|record| record.completion_reason == "interrupted_by_restart"),
+        "{records:#?}"
+    );
+    let next = resumed
+        .followup_retained_subagent(child, "again".into())
+        .await
+        .unwrap()
+        .expect("reopened and kept");
+    let workspace = &resumed
+        .background()
+        .get(next)
+        .unwrap()
+        .child
+        .as_ref()
+        .unwrap()
+        .workspace;
+    assert!(same_dir(workspace, dir.path()), "{}", workspace.display());
+}
+
+/// From the same old journal, a writer is never reopened in the repository
+/// (a writer runs in a worktree of its own; one that crashed before it had
+/// one has nowhere to go): it is marked cancelled as before, and its own
+/// journal is left as it was.
+#[tokio::test]
+async fn an_unrecorded_writer_in_an_old_journal_is_not_reopened() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let (parent, child) =
+        old_journals_with_a_running_child(dir.path(), json!({"mode": "writer"})).await;
+    let mut resumed = resume_parent(dir.path(), parent, TierModel::new(&[])).await;
+    assert!(matches!(
+        task_of(&resumed, child).status,
+        BackgroundTaskStatus::Cancelled
+    ));
+    assert!(child_records(dir.path(), child).await.is_empty());
+    assert!(resumed
+        .followup_retained_subagent(child, "again".into())
+        .await
+        .unwrap()
+        .is_none());
 }
 
 /// A top-level session found running after a restart records `main`.
