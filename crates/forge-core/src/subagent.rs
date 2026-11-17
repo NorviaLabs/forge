@@ -188,7 +188,7 @@ impl AgentSession {
             agents_section: String::new(),
             agents_project_root: None,
             tracking: Default::default(),
-            models: crate::session_models::SessionModels::new(
+            models: crate::models::state::SessionModels::new(
                 crate::custom_agents::child_task_kind(&spec.profile),
             ),
             tier_resolver: self.tier_resolver.clone(),
@@ -343,7 +343,7 @@ impl AgentSession {
             agents_section: String::new(),
             agents_project_root: None,
             tracking: Default::default(),
-            models: crate::session_models::SessionModels::reopened(
+            models: crate::models::state::SessionModels::reopened(
                 state.agent_profile.as_ref(),
                 state.auto_model.as_ref(),
                 &state.auto_decisions,

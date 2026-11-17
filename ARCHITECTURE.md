@@ -224,7 +224,7 @@ provider's models the account can run (the tier table's runnable list); a
 pick needs 20 turns and two ranked candidates, and goes through the same
 child-model resolver as an explicit model; about one spawn in ten explores.
 The same ranking chooses the main session's model per turn when the user
-picks **Auto** (`forge-core::auto_model`; the decisions are made by
+picks **Auto** (`forge-core::models::auto`; the decisions are made by
 `AutoController::on_turn_start`/`on_turn_end`, which hold no session, and
 the session applies them). `choose_auto_model`, run as each
 turn starts (`transition_to_new_task`, before the first model request), asks

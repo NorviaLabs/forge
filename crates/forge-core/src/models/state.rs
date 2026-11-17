@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use forge_types::TaskKind;
 
-use crate::auto_model::{AutoController, AutoModelAdvisor};
 use crate::custom_agents::ChildModelResolver;
-use crate::model_choice::SubagentModelAdvisor;
+use crate::models::auto::{AutoController, AutoModelAdvisor};
+use crate::models::choice::SubagentModelAdvisor;
 use crate::tiers::ModelTierResolver;
 
 pub(crate) struct SessionModels {
@@ -124,7 +124,7 @@ impl crate::AgentSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auto_model::{AutoFallback, AutoModel, AutoStart, ModelEfforts};
+    use crate::models::auto::{AutoFallback, AutoModel, AutoStart, ModelEfforts};
     use crate::{ModelAdvice, ModelAdviceRequest};
 
     struct NoAdvice;

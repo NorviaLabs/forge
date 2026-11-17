@@ -2,14 +2,13 @@
 
 mod agent_coordinator;
 mod audit;
-mod auto_model;
 mod background;
 mod completion;
 mod custom_agents;
 mod host_questions;
 mod lifecycle;
-mod model_choice;
 mod model_selection;
+mod models;
 mod permission;
 mod persistence;
 mod queue;
@@ -32,10 +31,6 @@ pub use stream::{
 pub use agent_coordinator::{
     AgentActivity, AgentCoordinator, AgentCoordinatorConfig, AgentCoordinatorError, AgentSnapshot,
     AgentStatus, AgentWaitResult,
-};
-pub use auto_model::{
-    ladder, AutoDecision, AutoFallback, AutoModel, AutoModelAdvisor, AutoSource, AutoStart,
-    LadderMove, ModelEfforts, TurnEnd, SUCCESSES_TO_STEP_DOWN,
 };
 pub use background::{
     BackgroundApprovalRequest, BackgroundChildExecution, BackgroundControl, BackgroundRunId,
@@ -60,11 +55,16 @@ pub use forge_durable::{TurnRecord, TurnRecordRow};
 pub use forge_types::ModelTier;
 pub use host_questions::{HostAnswered, HostDecision, HostQuestion, HostQuestions};
 pub use lifecycle::{ActiveTaskState, TransitionError, TransitionReason};
-pub use model_choice::{
+pub use model_selection::ModelExecutionSelection;
+pub use models::auto::{
+    ladder, AutoDecision, AutoFallback, AutoModel, AutoModelAdvisor, AutoSource, AutoStart,
+    LadderMove, ModelEfforts, TurnEnd, SUCCESSES_TO_STEP_DOWN,
+};
+pub use models::choice::{
     ModelAdvice, ModelAdviceRequest, ModelChoice, ModelChoiceEvidence, ModelChoiceSource,
     RankedCandidate, SubagentModelAdvisor,
 };
-pub use model_selection::ModelExecutionSelection;
+pub use models::state::ModelServices;
 pub use permission::{egress_policy_for_workspace, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::{
@@ -78,7 +78,6 @@ pub use session::tools::{
     CompletedHitlExecution, CompletedToolApplication, ModelResponseApplication,
     PendingHitlExecution, PendingToolApplication,
 };
-pub use session_models::ModelServices;
 pub use subagent::{SubagentOutcome, SubagentSpec};
 pub use tiers::{ModelTierResolver, TierBasis, TierRequest, TierResolution};
 pub use turn_record::{TurnSignal, TurnSignalInbox, TurnSignalKind};
@@ -111,7 +110,6 @@ use crate::turn_state::TurnState;
 
 mod helpers;
 mod session;
-mod session_models;
 mod types;
 
 pub use helpers::{session_messages, session_title_hint, TURN_FAILED_MARKER};
@@ -259,8 +257,8 @@ pub struct AgentSession {
     /// Turn records and signals, the turn-scoped model tier, and a pending
     /// strong-tier escalation (see `turn_record` and `tiers`).
     tracking: turn_record::TurnTracking,
-    /// Its task kind, the model advisors, and Auto (see `session_models`).
-    models: session_models::SessionModels,
+    /// Its task kind, the model advisors, and Auto (see `models::state`).
+    models: models::state::SessionModels,
     /// Resolves model tiers. Installed by the session's owner and shared
     /// with the subagents this session spawns, which need it to escalate.
     tier_resolver: Option<Arc<dyn tiers::ModelTierResolver>>,
@@ -296,8 +294,6 @@ impl CtxTokensFingerprint {
     }
 }
 
-#[cfg(test)]
-mod auto_model_tests;
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]

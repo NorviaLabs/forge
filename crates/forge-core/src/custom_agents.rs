@@ -71,7 +71,7 @@ pub struct ChildProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<forge_types::ModelTier>,
     /// Why the child runs on its model, when the caller named no tier or
-    /// model and the session's advisor chose (see `model_choice`).
+    /// model and the session's advisor chose (see `models::choice`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_choice: Option<crate::ModelChoice>,
 }

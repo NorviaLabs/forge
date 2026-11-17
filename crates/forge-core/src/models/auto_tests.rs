@@ -271,7 +271,7 @@ fn auto_and_its_decisions_read_back_as_written() {
 
 use std::sync::Arc;
 
-use crate::auto_model::{AutoController, AutoStart, AutoTurnStart};
+use crate::models::auto::{AutoController, AutoStart, AutoTurnStart};
 use crate::AutoModelAdvisor;
 
 /// Starts every turn on `start`; knows `test/mid`'s and `test/big`'s

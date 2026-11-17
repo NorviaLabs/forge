@@ -274,7 +274,7 @@ impl AgentSession {
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
-            models: crate::session_models::SessionModels::new(forge_types::TaskKind::Main),
+            models: crate::models::state::SessionModels::new(forge_types::TaskKind::Main),
             tier_resolver: None,
             verification_commands: Default::default(),
         })
@@ -391,7 +391,7 @@ impl AgentSession {
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
-            models: crate::session_models::SessionModels::reopened(
+            models: crate::models::state::SessionModels::reopened(
                 state.agent_profile.as_ref(),
                 state.auto_model.as_ref(),
                 &state.auto_decisions,
