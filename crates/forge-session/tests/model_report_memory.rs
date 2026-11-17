@@ -8,10 +8,10 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use forge_durable::{new_session_id, Journal, TurnRecord};
+use forge_durable::{new_session_id, Journal};
 use forge_session::model_report::{model_report_in, ReportOptions};
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::TaskKind;
-use serde_json::json;
 
 struct Counting;
 
@@ -45,30 +45,17 @@ async fn reporting_on_a_large_journal_keeps_memory_small() {
     let session_id = new_session_id();
     let journal = Journal::open(dir.path(), session_id).await.unwrap();
     journal
-        .append_turn_record(&TurnRecord {
-            session_id,
-            parent_session_id: None,
-            task_id: 0,
-            started_at: None,
-            ended_at: chrono::Utc::now(),
-            model: "anthropic/claude-opus-4-1".into(),
-            profile_id: "anthropic".into(),
-            reasoning_effort: Some("high".into()),
-            tier: None,
-            task_kind: TaskKind::Main,
-            outcome: "completed".into(),
-            completion_reason: "edit_verified".into(),
-            escalated: false,
-            escalation_retry: false,
-            prompt_tokens: Some(1),
-            completion_tokens: Some(1),
-            cache_read_tokens: None,
-            cache_write_tokens: None,
-            model_calls: None,
-            duration_ms: Some(1),
-            waiting_ms: Some(0),
-            signals: json!([]),
-        })
+        .append_turn_record(
+            &TurnRecordBuilder::new(TaskKind::Main, "anthropic/claude-opus-4-1")
+                .session_id(session_id)
+                .task_id(0)
+                .ended_at(chrono::Utc::now())
+                .effort(Some("high"))
+                .tokens(Some(1), Some(1))
+                .model_calls(None)
+                .duration_ms(Some(1))
+                .build(),
+        )
         .await
         .unwrap();
     drop(journal);

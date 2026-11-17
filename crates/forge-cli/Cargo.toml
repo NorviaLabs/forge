@@ -25,6 +25,7 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 forge-durable = { workspace = true }
+forge-test-support = { workspace = true, features = ["turn-records"] }
 assert_cmd = "2"
 predicates = "3"
 portable-pty = { workspace = true }

@@ -16,5 +16,7 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# Its turn-record builder (it depends on this crate: a dev-only cycle).
+forge-test-support = { workspace = true, features = ["turn-records"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

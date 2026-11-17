@@ -9,36 +9,23 @@ use std::path::{Path, PathBuf};
 
 use chrono::{TimeZone, Utc};
 use forge_durable::{new_session_id, read_turn_records, Journal, TurnRecord};
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::{SessionId, TaskKind};
 use serde_json::json;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use sqlx::{ConnectOptions, Connection, Row};
 
 fn record(session_id: SessionId, parent: Option<SessionId>, kind: TaskKind) -> TurnRecord {
-    TurnRecord {
-        session_id,
-        parent_session_id: parent,
-        task_id: 1,
-        started_at: Some(Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 0).unwrap()),
-        ended_at: Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 5).unwrap(),
-        model: "anthropic/claude-opus-4-1".into(),
-        profile_id: "anthropic".into(),
-        reasoning_effort: Some("high".into()),
-        tier: None,
-        task_kind: kind,
-        outcome: "completed".into(),
-        completion_reason: "edit_verified".into(),
-        escalated: false,
-        escalation_retry: false,
-        prompt_tokens: Some(1_000),
-        completion_tokens: Some(200),
-        cache_read_tokens: Some(0),
-        cache_write_tokens: Some(0),
-        model_calls: Some(1),
-        duration_ms: Some(5_000),
-        waiting_ms: Some(0),
-        signals: json!([]),
-    }
+    TurnRecordBuilder::new(kind, "anthropic/claude-opus-4-1")
+        .session_id(session_id)
+        .parent(parent)
+        .started_at(Some(Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 0).unwrap()))
+        .ended_at(Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 5).unwrap())
+        .effort(Some("high"))
+        .tokens(Some(1_000), Some(200))
+        .cache_tokens(Some(0), Some(0))
+        .duration_ms(Some(5_000))
+        .build()
 }
 
 /// The `events` and `turn_records` tables exactly as Forge created them

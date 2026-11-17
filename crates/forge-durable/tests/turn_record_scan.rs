@@ -8,6 +8,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use forge_durable::{
     new_session_id, read_turn_records, scan_turn_records, Journal, TurnRecord, TurnRecordFilter,
 };
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::{SessionId, TaskKind};
 use serde_json::json;
 use sqlx::sqlite::SqliteConnectOptions;
@@ -18,30 +19,20 @@ fn at(hour: u32) -> DateTime<Utc> {
 }
 
 fn record(session_id: SessionId, kind: TaskKind, ended_at: DateTime<Utc>) -> TurnRecord {
-    TurnRecord {
-        session_id,
-        parent_session_id: None,
-        task_id: 1,
-        started_at: Some(ended_at - chrono::Duration::seconds(5)),
-        ended_at,
-        model: "anthropic/claude-opus-4-1".into(),
-        profile_id: "anthropic".into(),
-        reasoning_effort: Some("high".into()),
-        tier: Some("strong".into()),
-        task_kind: kind,
-        outcome: "completed".into(),
-        completion_reason: "edit_verified".into(),
-        escalated: true,
-        escalation_retry: false,
-        prompt_tokens: Some(1_000),
-        completion_tokens: Some(200),
-        cache_read_tokens: Some(5),
-        cache_write_tokens: Some(0),
-        model_calls: Some(2),
-        duration_ms: Some(5_000),
-        waiting_ms: Some(1_000),
-        signals: json!([{"kind": "verification_passed", "detail": "cargo test", "at_ms": 3}]),
-    }
+    TurnRecordBuilder::new(kind, "anthropic/claude-opus-4-1")
+        .session_id(session_id)
+        .started_at(Some(ended_at - chrono::Duration::seconds(5)))
+        .ended_at(ended_at)
+        .effort(Some("high"))
+        .tier(Some("strong"))
+        .escalated(true)
+        .tokens(Some(1_000), Some(200))
+        .cache_tokens(Some(5), Some(0))
+        .model_calls(Some(2))
+        .duration_ms(Some(5_000))
+        .waiting_ms(Some(1_000))
+        .signals(json!([{"kind": "verification_passed", "detail": "cargo test", "at_ms": 3}]))
+        .build()
 }
 
 async fn journal_with(dir: &Path, records: &[TurnRecord]) -> PathBuf {

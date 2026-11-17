@@ -9,16 +9,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use forge_core::{
     AutoFallback, AutoModelAdvisor, ChildModel, ChildModelRequest, ChildModelResolver, ModelEfforts,
 };
-use forge_durable::{new_session_id, TurnRecord};
+use forge_durable::TurnRecord;
 use forge_session::auto_models::{AutoSettings, EffortLookup, RankedAutoModels};
 use forge_session::model_report::RankingSnapshot;
 use forge_session::subagent_models::{RankingSource, RunnableModels};
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::TaskKind;
-use serde_json::json;
 
 const OPUS: &str = "anthropic/claude-opus-4-1";
 const SONNET: &str = "anthropic/claude-sonnet-4";
@@ -32,29 +31,12 @@ fn turns(
     failed: usize,
 ) -> Vec<TurnRecord> {
     (0..n)
-        .map(|i| TurnRecord {
-            session_id: new_session_id(),
-            parent_session_id: None,
-            task_id: i as u64,
-            started_at: None,
-            ended_at: Utc::now() - chrono::Duration::days(1),
-            model: model.into(),
-            profile_id: model.split('/').next().unwrap().into(),
-            reasoning_effort: effort.map(str::to_string),
-            tier: None,
-            task_kind: kind.clone(),
-            outcome: if i < failed { "failed" } else { "completed" }.into(),
-            completion_reason: "edit_verified".into(),
-            escalated: false,
-            escalation_retry: false,
-            prompt_tokens: Some(1000),
-            completion_tokens: Some(100),
-            cache_read_tokens: None,
-            cache_write_tokens: None,
-            model_calls: Some(1),
-            duration_ms: Some(10_000),
-            waiting_ms: Some(0),
-            signals: json!([]),
+        .map(|i| {
+            TurnRecordBuilder::new(kind.clone(), model)
+                .task_id(i as u64)
+                .effort(effort)
+                .completed(i >= failed)
+                .build()
         })
         .collect()
 }

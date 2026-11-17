@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 description = "Test-only fixtures shared across crates (e.g. a scripted-response HTTP mock server, git working copies)."
 
+[features]
+# A builder for turn records (`turn_records`), for the crates whose tests
+# write them. Off by default: this crate otherwise needs nothing beyond std.
+turn-records = ["dep:chrono", "dep:forge-durable", "dep:forge-types", "dep:serde_json"]
+
 [dependencies]
+chrono = { workspace = true, optional = true }
+forge-durable = { workspace = true, optional = true }
+forge-types = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

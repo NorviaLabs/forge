@@ -32,37 +32,18 @@ use forge_session::subagent_models::{
     AdvisorSettings, Exploration, JournalRanking, RankedSubagentModels, RankingSource,
     RunnableModels, MIN_KIND_TURNS, MIN_RANKED_GROUPS, WINDOW_DAYS,
 };
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::TaskKind;
 use serde_json::json;
 
 // ---------------------------------------------------------------- fixtures
 
 fn turn(kind: &TaskKind, model: &str, effort: Option<&str>, completed: bool) -> TurnRecord {
-    let provider = model.split_once('/').unwrap().0;
-    TurnRecord {
-        session_id: new_session_id(),
-        parent_session_id: None,
-        task_id: 1,
-        started_at: None,
-        ended_at: Utc::now() - chrono::Duration::days(1),
-        model: model.into(),
-        profile_id: provider.into(),
-        reasoning_effort: effort.map(str::to_string),
-        tier: None,
-        task_kind: kind.clone(),
-        outcome: if completed { "completed" } else { "failed" }.into(),
-        completion_reason: "edit_verified".into(),
-        escalated: !completed,
-        escalation_retry: false,
-        prompt_tokens: Some(1000),
-        completion_tokens: Some(100),
-        cache_read_tokens: None,
-        cache_write_tokens: None,
-        model_calls: Some(1),
-        duration_ms: Some(10_000),
-        waiting_ms: Some(0),
-        signals: json!([]),
-    }
+    TurnRecordBuilder::new(kind.clone(), model)
+        .effort(effort)
+        .completed(completed)
+        .escalated(!completed)
+        .build()
 }
 
 /// `n` turns of `model` @ `effort` for `kind`, `failed` of them failed.

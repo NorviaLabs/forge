@@ -26,6 +26,7 @@ use forge_session::model_report::{
     ranked_models_with_trust_store, KindReport, RankStatus, RankedModel, ReportOptions,
     UntrustedWorkspace, DEFAULT_MIN_TURNS,
 };
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::TaskKind;
 use serde_json::json;
 
@@ -97,30 +98,17 @@ struct Turn(TurnRecord);
 
 impl Turn {
     fn new(kind: &TaskKind, group: Group, tokens: u64, active_ms: u64) -> Self {
-        Self(TurnRecord {
-            session_id: new_session_id(),
-            parent_session_id: None,
-            task_id: 1,
-            started_at: Some(t0()),
-            ended_at: t0(),
-            model: group.model.into(),
-            profile_id: group.provider.into(),
-            reasoning_effort: group.effort.map(str::to_string),
-            tier: None,
-            task_kind: kind.clone(),
-            outcome: "completed".into(),
-            completion_reason: "edit_verified".into(),
-            escalated: false,
-            escalation_retry: false,
-            prompt_tokens: Some(tokens - 100),
-            completion_tokens: Some(100),
-            cache_read_tokens: Some(50_000),
-            cache_write_tokens: Some(0),
-            model_calls: Some(1),
-            duration_ms: Some(active_ms),
-            waiting_ms: Some(0),
-            signals: json!([]),
-        })
+        Self(
+            TurnRecordBuilder::new(kind.clone(), group.model)
+                .provider(group.provider)
+                .effort(group.effort)
+                .started_at(Some(t0()))
+                .ended_at(t0())
+                .tokens(Some(tokens - 100), Some(100))
+                .cache_tokens(Some(50_000), Some(0))
+                .duration_ms(Some(active_ms))
+                .build(),
+        )
     }
 
     fn failed(mut self) -> Self {

@@ -40,5 +40,5 @@ fake-provider = ["forge-model/fake-provider", "forge-config/fake-provider"]
 # The scripted fake provider for end-to-end journeys in tests.
 forge-model = { workspace = true, features = ["fake-provider"] }
 async-trait = { workspace = true }
-forge-test-support = { workspace = true }
+forge-test-support = { workspace = true, features = ["turn-records"] }
 tempfile = { workspace = true }

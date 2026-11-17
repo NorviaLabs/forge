@@ -691,6 +691,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
 
     mod subagent_model_wiring {
         use super::*;
+        use forge_test_support::turn_records::TurnRecordBuilder;
         use std::collections::{HashMap, HashSet};
         use std::path::PathBuf;
         use std::time::Duration;
@@ -747,30 +748,15 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             ] {
                 for i in 0..turns {
                     journal
-                        .append_turn_record(&forge_durable::TurnRecord {
-                            session_id: history,
-                            parent_session_id: None,
-                            task_id: i,
-                            started_at: None,
-                            ended_at: chrono::Utc::now() - chrono::Duration::days(1),
-                            model: model.into(),
-                            profile_id: "anthropic".into(),
-                            reasoning_effort: None,
-                            tier: None,
-                            task_kind: kind.clone(),
-                            outcome: if i < failed { "failed" } else { "completed" }.into(),
-                            completion_reason: "edit_verified".into(),
-                            escalated: i < failed,
-                            escalation_retry: false,
-                            prompt_tokens: Some(1000),
-                            completion_tokens: Some(100),
-                            cache_read_tokens: None,
-                            cache_write_tokens: None,
-                            model_calls: Some(1),
-                            duration_ms: Some(10_000),
-                            waiting_ms: Some(0),
-                            signals: json!([]),
-                        })
+                        .append_turn_record(
+                            &TurnRecordBuilder::new(kind.clone(), model)
+                                .session_id(history)
+                                .task_id(i)
+                                .provider("anthropic")
+                                .completed(i >= failed)
+                                .escalated(i < failed)
+                                .build(),
+                        )
                         .await
                         .unwrap();
                 }

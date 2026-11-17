@@ -23,6 +23,7 @@ use std::path::Path;
 use assert_cmd::Command;
 use chrono::Utc;
 use forge_durable::{new_session_id, Journal, TurnRecord};
+use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::TaskKind;
 use serde_json::{json, Value};
 
@@ -35,30 +36,17 @@ fn turn(
     active_ms: u64,
 ) -> TurnRecord {
     let ended_at = Utc::now() - chrono::Duration::days(1);
-    TurnRecord {
-        session_id: new_session_id(),
-        parent_session_id: None,
-        task_id: 1,
-        started_at: Some(ended_at - chrono::Duration::milliseconds(active_ms as i64)),
-        ended_at,
-        model: model.into(),
-        profile_id: provider.into(),
-        reasoning_effort: effort.map(str::to_string),
-        tier: None,
-        task_kind: kind.clone(),
-        outcome: "completed".into(),
-        completion_reason: "edit_verified".into(),
-        escalated: false,
-        escalation_retry: false,
-        prompt_tokens: Some(tokens - 500),
-        completion_tokens: Some(500),
-        cache_read_tokens: Some(0),
-        cache_write_tokens: Some(0),
-        model_calls: Some(1),
-        duration_ms: Some(active_ms),
-        waiting_ms: Some(0),
-        signals: json!([]),
-    }
+    TurnRecordBuilder::new(kind.clone(), model)
+        .provider(provider)
+        .effort(effort)
+        .started_at(Some(
+            ended_at - chrono::Duration::milliseconds(active_ms as i64),
+        ))
+        .ended_at(ended_at)
+        .tokens(Some(tokens - 500), Some(500))
+        .cache_tokens(Some(0), Some(0))
+        .duration_ms(Some(active_ms))
+        .build()
 }
 
 fn fixture() -> Vec<(TaskKind, Vec<TurnRecord>)> {

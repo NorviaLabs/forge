@@ -12,6 +12,13 @@
 //!   copy that most crates' tests need before they can exercise
 //!   repository-scoped behavior. Every crate that needed one had grown its own
 //!   private copy of the same three `git` invocations.
+//!
+//! With the `turn-records` feature, [`turn_records`] adds a builder for the
+//! turn records several crates' tests write (and depends on
+//! `forge-durable` for them).
+
+#[cfg(feature = "turn-records")]
+pub mod turn_records;
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
