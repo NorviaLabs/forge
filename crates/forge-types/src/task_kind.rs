@@ -83,6 +83,23 @@ impl FromStr for TaskKind {
     }
 }
 
+impl TaskKind {
+    /// The kind of a session's turns, from how it was started: a child
+    /// started as the custom agent `agent` is `custom:<agent>`; any other
+    /// child (or one whose agent name is not a valid one) `subagent`; a
+    /// top-level session `main`. The one rule: for a session being built,
+    /// and for one — or a turn record — read back from its journal.
+    pub fn of_session(is_child: bool, agent: Option<&str>) -> Self {
+        if !is_child {
+            return Self::Main;
+        }
+        match agent {
+            Some(name) if valid_agent_name(name) => Self::Custom(name.to_string()),
+            _ => Self::Subagent,
+        }
+    }
+}
+
 impl Serialize for TaskKind {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.collect_str(self)
@@ -93,5 +110,31 @@ impl<'de> Deserialize<'de> for TaskKind {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let text = String::deserialize(deserializer)?;
         text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one rule for what a session's turns are recorded as.
+    #[test]
+    fn a_sessions_kind_is_how_it_was_started() {
+        assert_eq!(TaskKind::of_session(false, None), TaskKind::Main);
+        assert_eq!(TaskKind::of_session(true, None), TaskKind::Subagent);
+        assert_eq!(
+            TaskKind::of_session(true, Some("reviewer")),
+            TaskKind::Custom("reviewer".into())
+        );
+        // A name no agent can have is not a kind: the child is a subagent.
+        assert_eq!(
+            TaskKind::of_session(true, Some("Not A Name")),
+            TaskKind::Subagent
+        );
+        // Only a child runs as an agent.
+        assert_eq!(
+            TaskKind::of_session(false, Some("reviewer")),
+            TaskKind::Main
+        );
     }
 }

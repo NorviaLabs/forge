@@ -250,18 +250,13 @@ or reasoning effort for the agent, pass `model` (`<provider>/<model>`) and `reas
 
 /// The task kind of a child started as the custom agent `name`.
 fn child_task_kind_for_agent(name: &str) -> forge_types::TaskKind {
-    format!("custom:{name}")
-        .parse()
-        .unwrap_or(forge_types::TaskKind::Subagent)
+    forge_types::TaskKind::of_session(true, Some(name))
 }
 
 /// The task kind of a child started with `profile`: `custom:<name>` for a
 /// named custom agent, in either mode; `subagent` for any other child.
 pub(crate) fn child_task_kind(profile: &ChildProfile) -> forge_types::TaskKind {
-    profile
-        .agent
-        .as_deref()
-        .map_or(forge_types::TaskKind::Subagent, child_task_kind_for_agent)
+    forge_types::TaskKind::of_session(true, profile.agent.as_deref())
 }
 
 /// The task kind of a session reopened from its journal, from the

@@ -113,21 +113,20 @@ fn parse_session(value: &str) -> Result<SessionId, JournalError> {
 /// whose journal has an `AgentProfile` event, or that has a parent, is a
 /// child; a child started as a named custom agent (its latest profile names
 /// the agent) is `custom:<agent>`, any other child `subagent`; everything
-/// else `main`. `agent_profile` is the latest `AgentProfile` payload.
+/// else `main` ([`TaskKind::of_session`], the rule a session being built
+/// uses too). `agent_profile` is the latest `AgentProfile` payload.
 ///
 /// The profile is checked first because it is in the child's own journal
 /// from its creation, while the parent link of a turn record depends on the
 /// parent being known when the turn ended.
 pub fn kind_from_journal(agent_profile: Option<&Value>, has_parent: bool) -> TaskKind {
-    match agent_profile {
-        Some(profile) => profile
-            .get("agent")
-            .and_then(Value::as_str)
-            .and_then(|agent| format!("custom:{agent}").parse().ok())
-            .unwrap_or(TaskKind::Subagent),
-        None if has_parent => TaskKind::Subagent,
-        None => TaskKind::Main,
-    }
+    // A journal with an agent profile is a child's.
+    TaskKind::of_session(
+        agent_profile.is_some() || has_parent,
+        agent_profile
+            .and_then(|profile| profile.get("agent"))
+            .and_then(Value::as_str),
+    )
 }
 
 async fn table_exists(conn: &mut SqliteConnection, table: &str) -> Result<bool, JournalError> {
