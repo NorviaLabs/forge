@@ -4668,8 +4668,14 @@ async fn independent_read_calls_execute_concurrently_and_apply_in_order() {
         .await
         .unwrap();
 
+    // The barrier is what proves the calls run at once: each waits for the
+    // other, so run one after another the first would wait forever. The
+    // timeout only turns that hang into a failure. It is generous because
+    // it spans the whole turn — the session's journal writes and its turn
+    // record too — which a busy machine (the full test suite) can slow past
+    // a second.
     tokio::time::timeout(
-        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(30),
         session.run_user_message_with_stream("read both", None),
     )
     .await
