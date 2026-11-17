@@ -516,7 +516,7 @@ impl AgentSession {
             detail: format!("{category}: {summary}"),
         });
         self.note_failure_category(category);
-        if category != "hitl_denied" {
+        if crate::turn_record::failure_reflects_on_model(category) {
             self.tracking.telemetry.work_failed = true;
         }
         // Decided now, so the failed turn's record says whether it escalated.

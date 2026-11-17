@@ -150,7 +150,7 @@ impl AgentSession {
                 // instead.
                 self.finalize_turn_failure(
                     "Forge stopped after repeated denied approvals for this turn.",
-                    "hitl_denied",
+                    crate::turn_record::HITL_DENIED,
                 )
                 .await?;
             }

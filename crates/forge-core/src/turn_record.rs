@@ -15,65 +15,11 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use forge_types::TaskLifecycle;
+pub use forge_types::{TurnOutcome, TurnSignalKind};
 use serde::{Deserialize, Serialize};
 
 use crate::tiers::{EscalationPlan, TierOverride};
 use crate::{AgentSession, LoopError, SessionTokenUsage, TransitionReason};
-
-/// Something observed during a turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnSignalKind {
-    /// A tool call paused for the user's approval.
-    ApprovalRequested,
-    /// The paused call asked to leave the sandbox.
-    SandboxEscalationRequested,
-    ApprovalGranted,
-    ApprovalDenied,
-    /// The agent asked the user a question.
-    QuestionAsked,
-    QuestionAnswered,
-    QuestionDismissed,
-    /// A test, check, lint or build command exited zero.
-    VerificationPassed,
-    /// A verification command exited non-zero or could not run.
-    VerificationFailed,
-    /// A verification command was still running when its result came back.
-    VerificationUnfinished,
-    /// A tool call reported an error.
-    ToolFailed,
-    /// The provider request failed.
-    ModelCallFailed,
-    /// The turn stopped on a runtime error other than the provider's (journal
-    /// I/O, an invalid transition, …).
-    RuntimeError,
-    /// The conversation was compacted to fit the context window.
-    ContextCompacted,
-    /// The turn switched to a model tier.
-    TierApplied,
-    /// A tier was asked for but nothing could be changed.
-    TierUnavailable,
-    /// This failed subagent turn will be re-run on the strong tier.
-    Escalated,
-    /// This failed subagent turn qualified, but was not re-run.
-    EscalationSkipped,
-    /// The user stopped the turn.
-    UserCancelled,
-    /// The parent agent interrupted this subagent's turn.
-    InterruptedByParent,
-    /// Forge restarted while the turn was running.
-    InterruptedByRestart,
-    /// The user sent a message while the turn was running (or waiting on
-    /// them). It is queued, and runs after this turn.
-    UserMessageQueued,
-    /// How this subagent's model was chosen, when its caller named no tier
-    /// or model: `<ranking|exploration|fallback>: <reason>`. On each of its
-    /// turns.
-    ModelChosen,
-    /// The model and effort Auto chose for this main-session turn, and why:
-    /// `<ranked|fallback|stepped_up|stepped_down>: <reason>`.
-    AutoModel,
-}
 
 /// One observation, with when it happened relative to the turn's start.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,20 +118,22 @@ pub(crate) struct TurnTracking {
 }
 
 fn outcome_name(lifecycle: TaskLifecycle) -> &'static str {
-    match lifecycle {
-        TaskLifecycle::Completed => "completed",
-        TaskLifecycle::Failed => "failed",
-        TaskLifecycle::Cancelled => "cancelled",
-        TaskLifecycle::Interrupted => "interrupted",
-        _ => "unknown",
-    }
+    TurnOutcome::of(lifecycle).as_str()
 }
 
 fn signal_name(kind: TurnSignalKind) -> String {
-    serde_json::to_value(kind)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_string))
-        .unwrap_or_else(|| format!("{kind:?}"))
+    kind.as_str().to_string()
+}
+
+/// The failure category of a turn the user ended by denying approvals again
+/// and again.
+pub(crate) const HITL_DENIED: &str = "hitl_denied";
+
+/// Whether a failed turn says something about its model: every failure but
+/// the user's repeated denials — what escalation re-runs, and what moves
+/// Auto up a step.
+pub(crate) fn failure_reflects_on_model(category: &str) -> bool {
+    category != HITL_DENIED
 }
 
 impl AgentSession {
@@ -476,5 +424,21 @@ mod tests {
             signal_name(TurnSignalKind::InterruptedByParent),
             "interrupted_by_parent"
         );
+    }
+
+    /// The user's repeated denials end a turn, but say nothing about the
+    /// model: neither escalation nor Auto's step-up counts them.
+    #[test]
+    fn only_the_users_denials_do_not_reflect_on_the_model() {
+        assert_eq!(HITL_DENIED, "hitl_denied");
+        assert!(!failure_reflects_on_model(HITL_DENIED));
+        for category in [
+            "no_final_answer",
+            "validation_exhausted",
+            "tool_exited_nonzero",
+            "turn_failure",
+        ] {
+            assert!(failure_reflects_on_model(category), "{category}");
+        }
     }
 }

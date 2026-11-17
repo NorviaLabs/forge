@@ -275,7 +275,7 @@ impl AgentSession {
     /// retry that fails again is not retried.
     pub(crate) fn plan_escalation(&mut self, category: &str, failure: &str) {
         if !self.is_subagent()
-            || category == "hitl_denied"
+            || !crate::turn_record::failure_reflects_on_model(category)
             || self.tracking.telemetry.escalation_retry
             || self.tracking.pending_escalation.is_some()
         {

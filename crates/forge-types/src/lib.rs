@@ -4,6 +4,7 @@ mod git;
 mod image;
 mod task_kind;
 mod tier;
+mod turn_vocabulary;
 
 pub use git::is_readonly_git_subcommand;
 pub use image::{
@@ -12,6 +13,7 @@ pub use image::{
 };
 pub use task_kind::{TaskKind, TaskKindError};
 pub use tier::ModelTier;
+pub use turn_vocabulary::{TurnOutcome, TurnSignalKind};
 
 /// Remove structural protocol control markers from final-answer text before
 /// persistence. Not phrase filtering — only known control envelopes.

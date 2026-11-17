@@ -38,7 +38,7 @@ use forge_config::Config;
 use std::sync::Arc;
 
 use forge_durable::{TurnRecord, TurnRecordFilter, TurnRecordView};
-use forge_types::TaskKind;
+use forge_types::{TaskKind, TurnOutcome, TurnSignalKind};
 use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -50,7 +50,9 @@ pub use crate::workspace_journals::{SkippedJournal, UntrustedWorkspace};
 pub const DEFAULT_MIN_TURNS: usize = 5;
 
 /// The completion reason of a turn a restart interrupted.
-const INTERRUPTED_BY_RESTART: &str = "interrupted_by_restart";
+const INTERRUPTED_BY_RESTART: &str = TurnSignalKind::InterruptedByRestart.as_str();
+/// The outcome of a turn the model finished.
+const COMPLETED: &str = TurnOutcome::Completed.as_str();
 
 /// What to report on.
 #[derive(Debug, Clone, PartialEq)]
@@ -206,13 +208,13 @@ struct SignalCounts {
 impl SignalCounts {
     fn count<'k>(kinds: impl IntoIterator<Item = &'k str>) -> Self {
         let mut counts = Self::default();
-        for kind in kinds {
+        for kind in kinds.into_iter().filter_map(TurnSignalKind::from_name) {
             match kind {
-                "verification_passed" => counts.verification_passed = true,
-                "verification_failed" => counts.verification_failed = true,
-                "approval_granted" => counts.approvals_granted += 1,
-                "approval_denied" => counts.approvals_denied += 1,
-                "user_message_queued" => counts.queued = true,
+                TurnSignalKind::VerificationPassed => counts.verification_passed = true,
+                TurnSignalKind::VerificationFailed => counts.verification_failed = true,
+                TurnSignalKind::ApprovalGranted => counts.approvals_granted += 1,
+                TurnSignalKind::ApprovalDenied => counts.approvals_denied += 1,
+                TurnSignalKind::UserMessageQueued => counts.queued = true,
                 _ => {}
             }
         }
@@ -270,7 +272,7 @@ impl<'a> TurnFacts<'a> {
             model: &record.model,
             profile_id: &record.profile_id,
             effort: record.reasoning_effort.as_deref(),
-            completed: record.outcome == "completed",
+            completed: record.outcome == COMPLETED,
             interrupted_by_restart: record.completion_reason == INTERRUPTED_BY_RESTART,
             escalated: record.escalated,
             tokens: tokens(record.prompt_tokens, record.completion_tokens),
@@ -286,7 +288,7 @@ impl<'a> TurnFacts<'a> {
             model: view.model,
             profile_id: view.profile_id,
             effort: view.reasoning_effort,
-            completed: view.outcome == "completed",
+            completed: view.outcome == COMPLETED,
             interrupted_by_restart: view.completion_reason == INTERRUPTED_BY_RESTART,
             escalated: view.escalated,
             tokens: tokens(view.prompt_tokens, view.completion_tokens),

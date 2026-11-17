@@ -12,9 +12,10 @@
 //! empty one when it is next opened. A journal written before turn records
 //! had a task kind gains the column when it is next opened, and its rows get
 //! the kind the journal itself shows (see [`kind_from_journal`]); the
-//! read-only reader works it out the same way without writing. The
-//! vocabulary of `outcome`, `completion_reason`, `tier` and `signals` belongs
-//! to `forge-core`; this crate stores it.
+//! read-only reader works it out the same way without writing. The names
+//! of `outcome` and of the `signals` kinds are `forge_types::TurnOutcome`
+//! and `forge_types::TurnSignalKind`; `completion_reason` and `tier` belong
+//! to `forge-core`. This crate stores them as text.
 
 use std::collections::HashMap;
 use std::path::Path;
