@@ -2,19 +2,29 @@
 //!
 //! Every turn — a top-level session's or a subagent's — that reaches a
 //! terminal state (completed, failed, cancelled, interrupted) writes one
-//! record: which model, effort and tier ran it, how it ended and why, whether
-//! it was escalated, what it cost in tokens and time, and the signals
-//! observed along the way (approvals, verification commands, cancellation…).
+//! record: which model, effort and tier ran it, what kind of task it was
+//! (`main`, `subagent`, `custom:<name>`), how it ended and why, whether it
+//! was escalated, what it cost in tokens and time, and the signals observed
+//! along the way (approvals, verification commands, cancellation…).
 //!
 //! Like `audit_events`, this is a local record, not replay input: resume never
 //! reads it, and a journal written before the table existed simply gains an
-//! empty one when it is next opened. The vocabulary of `outcome`,
-//! `completion_reason`, `tier` and `signals` belongs to `forge-core`; this
-//! crate stores it.
+//! empty one when it is next opened. A journal written before turn records
+//! had a task kind gains the column when it is next opened, and its rows get
+//! the kind the journal itself shows (see [`kind_from_journal`]); the
+//! read-only reader works it out the same way without writing. The
+//! vocabulary of `outcome`, `completion_reason`, `tier` and `signals` belongs
+//! to `forge-core`; this crate stores it.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use forge_types::TaskKind;
 use serde_json::Value;
-use sqlx::Row;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqliteRow};
+use sqlx::{ConnectOptions, Connection, Row};
 
 use crate::{Journal, JournalError, SessionId};
 
@@ -35,6 +45,9 @@ pub struct TurnRecord {
     pub reasoning_effort: Option<String>,
     /// The model tier in force, when one was asked for.
     pub tier: Option<String>,
+    /// What ran the turn: the top-level session, a built-in subagent, or a
+    /// named custom agent.
+    pub task_kind: TaskKind,
     /// `completed`, `failed`, `cancelled` or `interrupted`.
     pub outcome: String,
     /// Why it ended that way (the completion evaluator's category, or the
@@ -79,10 +92,404 @@ fn parse_ts(value: &str) -> Result<DateTime<Utc>, JournalError> {
         .map_err(|error| JournalError::Other(error.to_string()))
 }
 
+/// A column of a stored row. A missing column or a value of the wrong type
+/// (a corrupted or hand-made journal) is an error, never a panic.
+fn column<'r, T>(row: &'r SqliteRow, name: &str) -> Result<T, JournalError>
+where
+    T: sqlx::Decode<'r, sqlx::Sqlite> + sqlx::Type<sqlx::Sqlite>,
+{
+    Ok(row.try_get(name)?)
+}
+
 fn parse_session(value: &str) -> Result<SessionId, JournalError> {
     value
         .parse()
         .map_err(|error: uuid::Error| JournalError::Other(error.to_string()))
+}
+
+/// The kind of task a session is, from what its journal shows: a session
+/// whose journal has an `AgentProfile` event, or that has a parent, is a
+/// child; a child started as a named custom agent (its latest profile names
+/// the agent) is `custom:<agent>`, any other child `subagent`; everything
+/// else `main`. `agent_profile` is the latest `AgentProfile` payload.
+///
+/// The profile is checked first because it is in the child's own journal
+/// from its creation, while the parent link of a turn record depends on the
+/// parent being known when the turn ended.
+pub fn kind_from_journal(agent_profile: Option<&Value>, has_parent: bool) -> TaskKind {
+    match agent_profile {
+        Some(profile) => profile
+            .get("agent")
+            .and_then(Value::as_str)
+            .and_then(|agent| format!("custom:{agent}").parse().ok())
+            .unwrap_or(TaskKind::Subagent),
+        None if has_parent => TaskKind::Subagent,
+        None => TaskKind::Main,
+    }
+}
+
+async fn table_exists(conn: &mut SqliteConnection, table: &str) -> Result<bool, JournalError> {
+    let row =
+        sqlx::query("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?")
+            .bind(table)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(column::<i64>(&row, "n")? > 0)
+}
+
+async fn has_task_kind_column(conn: &mut SqliteConnection) -> Result<bool, JournalError> {
+    let rows = sqlx::query("PRAGMA table_info(turn_records)")
+        .fetch_all(&mut *conn)
+        .await?;
+    for row in &rows {
+        if column::<String>(row, "name")? == "task_kind" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The latest `AgentProfile` payload of each session, looked up once per
+/// session. A journal without an `events` table has none.
+#[derive(Default)]
+struct Profiles {
+    /// Whether the journal has an `events` table; checked the first time a
+    /// row needs its kind worked out (most journals never do).
+    has_events: Option<bool>,
+    /// Keyed by the session id as stored.
+    cache: HashMap<String, Option<Value>>,
+}
+
+impl Profiles {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    async fn kind(
+        &mut self,
+        conn: &mut SqliteConnection,
+        session_id: &str,
+        has_parent: bool,
+    ) -> Result<TaskKind, JournalError> {
+        if !self.cache.contains_key(session_id) {
+            let has_events = match self.has_events {
+                Some(has_events) => has_events,
+                None => {
+                    let has_events = table_exists(conn, "events").await?;
+                    self.has_events = Some(has_events);
+                    has_events
+                }
+            };
+            let profile = if has_events {
+                let row = sqlx::query(
+                    "SELECT payload FROM events WHERE session_id = ? AND event_type = 'agent_profile' \
+                     ORDER BY seq DESC LIMIT 1",
+                )
+                .bind(session_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                row.and_then(|row| column::<String>(&row, "payload").ok())
+                    .and_then(|payload| serde_json::from_str(&payload).ok())
+            } else {
+                None
+            };
+            self.cache.insert(session_id.to_string(), profile);
+        }
+        let profile = self.cache.get(session_id).and_then(Option::as_ref);
+        Ok(kind_from_journal(profile, has_parent))
+    }
+}
+
+/// A stored row, with the kind it was written with when it has one. A row
+/// without one (written before kinds existed, and not yet migrated) gets the
+/// kind the journal shows.
+async fn read_row(
+    conn: &mut SqliteConnection,
+    profiles: &mut Profiles,
+    row: &SqliteRow,
+    with_kind_column: bool,
+) -> Result<TurnRecordRow, JournalError> {
+    let session_id = parse_session(&column::<String>(row, "session_id")?)?;
+    let started_at: Option<String> = column(row, "started_at")?;
+    let ended_at: String = column(row, "ended_at")?;
+    let parent: Option<String> = column(row, "parent_session_id")?;
+    let parent_session_id = parent.as_deref().map(parse_session).transpose()?;
+    let signals: String = column(row, "signals")?;
+    let stored_kind: Option<String> = if with_kind_column {
+        column(row, "task_kind")?
+    } else {
+        None
+    };
+    let task_kind = match stored_kind.and_then(|kind| kind.parse().ok()) {
+        Some(kind) => kind,
+        None => {
+            profiles
+                .kind(conn, &session_id.to_string(), parent_session_id.is_some())
+                .await?
+        }
+    };
+    Ok(TurnRecordRow {
+        seq: column::<i64>(row, "seq")? as u64,
+        record: TurnRecord {
+            session_id,
+            parent_session_id,
+            task_id: column::<i64>(row, "task_id")? as u64,
+            started_at: started_at.as_deref().map(parse_ts).transpose()?,
+            ended_at: parse_ts(&ended_at)?,
+            model: column(row, "model")?,
+            profile_id: column(row, "profile_id")?,
+            reasoning_effort: column(row, "reasoning_effort")?,
+            tier: column(row, "tier")?,
+            task_kind,
+            outcome: column(row, "outcome")?,
+            completion_reason: column(row, "completion_reason")?,
+            escalated: column(row, "escalated")?,
+            escalation_retry: column(row, "escalation_retry")?,
+            prompt_tokens: opt_u64(column(row, "prompt_tokens")?),
+            completion_tokens: opt_u64(column(row, "completion_tokens")?),
+            cache_read_tokens: opt_u64(column(row, "cache_read_tokens")?),
+            cache_write_tokens: opt_u64(column(row, "cache_write_tokens")?),
+            model_calls: opt_u64(column(row, "model_calls")?)
+                .map(|calls| u32::try_from(calls).unwrap_or(u32::MAX)),
+            duration_ms: opt_u64(column(row, "duration_ms")?),
+            waiting_ms: opt_u64(column(row, "waiting_ms")?),
+            signals: serde_json::from_str(&signals)?,
+        },
+    })
+}
+
+async fn read_rows(
+    conn: &mut SqliteConnection,
+    rows: Vec<SqliteRow>,
+    with_kind_column: bool,
+) -> Result<Vec<TurnRecordRow>, JournalError> {
+    let mut profiles = Profiles::new();
+    let mut records = Vec::with_capacity(rows.len());
+    for row in &rows {
+        records.push(read_row(conn, &mut profiles, row, with_kind_column).await?);
+    }
+    Ok(records)
+}
+
+/// How long a read waits for a journal a running session is writing.
+const READ_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Open the journal at `db_path` for reading only, creating nothing (see
+/// [`read_turn_records`] for why an idle journal is opened immutable).
+async fn open_read_only(db_path: &Path) -> Result<SqliteConnection, JournalError> {
+    if !db_path.is_file() {
+        return Err(JournalError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no journal at {}", db_path.display()),
+        )));
+    }
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    let in_use = Path::new(&wal).exists();
+    Ok(SqliteConnectOptions::new()
+        .filename(db_path)
+        .read_only(true)
+        .immutable(!in_use)
+        .create_if_missing(false)
+        .busy_timeout(READ_BUSY_TIMEOUT)
+        .connect()
+        .await?)
+}
+
+/// Every turn record in the journal at `db_path`, oldest first, read without
+/// writing anything: no migration, no file created (a missing journal is an
+/// error), safe beside a session that has the journal open. Rows written
+/// before turn records had a kind get the kind the journal shows.
+///
+/// Journals are in WAL mode, and a read-only SQLite connection to a WAL
+/// database creates the `-wal` and `-shm` files when they are missing — and,
+/// being read-only, cannot remove them again. So a journal no session has
+/// open (no `-wal` file: SQLite removes it when the last connection closes)
+/// is read as immutable, which takes no locks and creates nothing. A journal
+/// in use already has both files; it is read through them, under the usual
+/// locks, so the rows a running session has written are seen.
+///
+/// The one gap: a session that opens an idle journal in the instant it is
+/// being read immutably is not seen by the read, which may then return
+/// stale rows or an error for that journal. The read never writes, so the
+/// journal itself cannot be harmed; a report read again is right.
+pub async fn read_turn_records(db_path: &Path) -> Result<Vec<TurnRecordRow>, JournalError> {
+    let mut conn = open_read_only(db_path).await?;
+    let result = async {
+        if !table_exists(&mut conn, "turn_records").await? {
+            return Ok(Vec::new());
+        }
+        let with_kind_column = has_task_kind_column(&mut conn).await?;
+        let rows = sqlx::query("SELECT * FROM turn_records ORDER BY seq")
+            .fetch_all(&mut conn)
+            .await?;
+        read_rows(&mut conn, rows, with_kind_column).await
+    }
+    .await;
+    conn.close().await?;
+    result
+}
+
+/// Which turn records [`scan_turn_records`] visits.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TurnRecordFilter {
+    /// Only turns that ended at or after this time.
+    pub ended_since: Option<DateTime<Utc>>,
+    /// Only turns of this kind (worked out from the journal for a row
+    /// without one).
+    pub task_kind: Option<TaskKind>,
+}
+
+/// What a report needs of one turn record, borrowed from the stored row.
+/// `signals` is the stored JSON array, for the caller to interpret: the
+/// vocabulary belongs to `forge-core`.
+#[derive(Debug, Clone, Copy)]
+pub struct TurnRecordView<'a> {
+    pub task_kind: &'a TaskKind,
+    pub ended_at: DateTime<Utc>,
+    pub model: &'a str,
+    pub profile_id: &'a str,
+    pub reasoning_effort: Option<&'a str>,
+    pub outcome: &'a str,
+    pub completion_reason: &'a str,
+    pub escalated: bool,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub waiting_ms: Option<u64>,
+    pub signals: &'a str,
+}
+
+/// Rows fetched per query: memory stays bounded by one page, however long
+/// the journal.
+const SCAN_PAGE: i64 = 512;
+
+/// The columns a [`TurnRecordView`] is built from.
+const SCAN_COLUMNS: &str = "seq, session_id, parent_session_id, ended_at, model, profile_id, \
+     reasoning_effort, outcome, completion_reason, escalated, prompt_tokens, \
+     completion_tokens, duration_ms, waiting_ms, signals";
+
+/// Visit every turn record in the journal at `db_path` that `filter` keeps,
+/// oldest first, read the way [`read_turn_records`] reads (nothing written
+/// or created) but streamed: rows are fetched a page at a time, only the
+/// columns a view needs, and the filters are applied in the query — rows
+/// they exclude are never handed over — then checked exactly (a timestamp
+/// stored with an offset other than UTC compares correctly). A row whose
+/// scanned columns do not decode is an error; rows visited before it have
+/// been visited. Only those columns are read and checked, and session ids
+/// are used as stored (to look up agent profiles), not parsed; use
+/// [`read_turn_records`] to check every column of every row.
+pub async fn scan_turn_records(
+    db_path: &Path,
+    filter: &TurnRecordFilter,
+    mut visit: impl FnMut(TurnRecordView<'_>),
+) -> Result<(), JournalError> {
+    let mut conn = open_read_only(db_path).await?;
+    let result = scan_rows(&mut conn, filter, &mut visit).await;
+    conn.close().await?;
+    result
+}
+
+async fn scan_rows(
+    conn: &mut SqliteConnection,
+    filter: &TurnRecordFilter,
+    visit: &mut impl FnMut(TurnRecordView<'_>),
+) -> Result<(), JournalError> {
+    // One query for the table's shape: no columns means no table.
+    let columns: Vec<String> = sqlx::query("SELECT name FROM pragma_table_info('turn_records')")
+        .fetch_all(&mut *conn)
+        .await?
+        .iter()
+        .map(|row| column(row, "name"))
+        .collect::<Result<_, _>>()?;
+    if columns.is_empty() {
+        return Ok(());
+    }
+    let with_kind_column = columns.iter().any(|name| name == "task_kind");
+
+    // Built only from the constant fragments below; values are bound.
+    let mut sql = format!("SELECT {SCAN_COLUMNS}");
+    if with_kind_column {
+        sql.push_str(", task_kind");
+    }
+    sql.push_str(" FROM turn_records WHERE seq > ?");
+    // Stored timestamps are RFC 3339, UTC for every row Forge writes, so
+    // they compare as text. A day of margin keeps a row stored with another
+    // offset (at most a day) in the query; the exact check is below.
+    let since_text = filter
+        .ended_since
+        .map(|since| (since - chrono::Duration::days(1)).to_rfc3339());
+    if since_text.is_some() {
+        sql.push_str(" AND ended_at >= ?");
+    }
+    // A row without a kind has its kind worked out below, so it is kept.
+    let kind_text = filter
+        .task_kind
+        .as_ref()
+        .filter(|_| with_kind_column)
+        .map(TaskKind::to_string);
+    if kind_text.is_some() {
+        sql.push_str(" AND (task_kind = ? OR task_kind IS NULL)");
+    }
+    sql.push_str(" ORDER BY seq LIMIT ?");
+
+    let mut profiles = Profiles::new();
+    let mut after = i64::MIN;
+    loop {
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str())).bind(after);
+        if let Some(since) = &since_text {
+            query = query.bind(since);
+        }
+        if let Some(kind) = &kind_text {
+            query = query.bind(kind);
+        }
+        let rows = query.bind(SCAN_PAGE).fetch_all(&mut *conn).await?;
+        for row in &rows {
+            after = column(row, "seq")?;
+            let ended_at = parse_ts(column(row, "ended_at")?)?;
+            if filter.ended_since.is_some_and(|since| ended_at < since) {
+                continue;
+            }
+            let stored: Option<&str> = if with_kind_column {
+                column(row, "task_kind")?
+            } else {
+                None
+            };
+            let task_kind = match stored.and_then(|kind| kind.parse().ok()) {
+                Some(kind) => kind,
+                None => {
+                    let session_id: &str = column(row, "session_id")?;
+                    let parent: Option<&str> = column(row, "parent_session_id")?;
+                    profiles.kind(conn, session_id, parent.is_some()).await?
+                }
+            };
+            if filter
+                .task_kind
+                .as_ref()
+                .is_some_and(|kind| kind != &task_kind)
+            {
+                continue;
+            }
+            visit(TurnRecordView {
+                task_kind: &task_kind,
+                ended_at,
+                model: column(row, "model")?,
+                profile_id: column(row, "profile_id")?,
+                reasoning_effort: column(row, "reasoning_effort")?,
+                outcome: column(row, "outcome")?,
+                completion_reason: column(row, "completion_reason")?,
+                escalated: column(row, "escalated")?,
+                prompt_tokens: opt_u64(column(row, "prompt_tokens")?),
+                completion_tokens: opt_u64(column(row, "completion_tokens")?),
+                duration_ms: opt_u64(column(row, "duration_ms")?),
+                waiting_ms: opt_u64(column(row, "waiting_ms")?),
+                signals: column(row, "signals")?,
+            });
+        }
+        if (rows.len() as i64) < SCAN_PAGE {
+            return Ok(());
+        }
+    }
 }
 
 impl Journal {
@@ -111,12 +518,83 @@ impl Journal {
                 model_calls INTEGER,
                 duration_ms INTEGER,
                 waiting_ms INTEGER,
-                signals TEXT NOT NULL
+                signals TEXT NOT NULL,
+                task_kind TEXT
             )
             "#,
         )
         .execute(&self.pool)
         .await?;
+        self.migrate_turn_record_kinds().await
+    }
+
+    /// Give a table from before task kinds the `task_kind` column, and every
+    /// row without a kind the kind the journal shows. Safe to run again: it
+    /// only touches rows that still have no kind, in one transaction.
+    ///
+    /// This runs on every open, so it must cost nothing once done: rows
+    /// without a kind are found through a partial index that holds only
+    /// them — empty after the fill-in, and never entered by a row written
+    /// with a kind — rather than by scanning the table. A row an older Forge
+    /// writes without a kind lands in it and is filled in on the next open.
+    /// The fill-in itself is one `UPDATE` per (session, has a parent), not
+    /// one per row: its kind depends on nothing else.
+    async fn migrate_turn_record_kinds(&self) -> Result<(), JournalError> {
+        let mut conn = self.pool.acquire().await?;
+        // One query for what the table already has, so a journal that needs
+        // nothing costs two statements: this and the probe below.
+        let schema = sqlx::query(
+            "SELECT \
+               (SELECT COUNT(*) FROM pragma_table_info('turn_records') \
+                WHERE name = 'task_kind') AS has_column, \
+               (SELECT COUNT(*) FROM sqlite_master \
+                WHERE type = 'index' AND name = 'turn_records_without_kind') AS has_index",
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        if column::<i64>(&schema, "has_column")? == 0 {
+            sqlx::query("ALTER TABLE turn_records ADD COLUMN task_kind TEXT")
+                .execute(&mut *conn)
+                .await?;
+        }
+        if column::<i64>(&schema, "has_index")? == 0 {
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS turn_records_without_kind \
+                 ON turn_records(session_id, parent_session_id) WHERE task_kind IS NULL",
+            )
+            .execute(&mut *conn)
+            .await?;
+        }
+        let any_pending = sqlx::query("SELECT 1 FROM turn_records WHERE task_kind IS NULL LIMIT 1")
+            .fetch_optional(&mut *conn)
+            .await?;
+        if any_pending.is_none() {
+            return Ok(());
+        }
+        let pending = sqlx::query(
+            "SELECT DISTINCT session_id, parent_session_id IS NOT NULL AS has_parent \
+             FROM turn_records WHERE task_kind IS NULL",
+        )
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut tx = conn.begin().await?;
+        let mut profiles = Profiles::new();
+        for group in pending {
+            let session_id: String = column(&group, "session_id")?;
+            let has_parent: bool = column(&group, "has_parent")?;
+            let kind = profiles.kind(&mut tx, &session_id, has_parent).await?;
+            sqlx::query(
+                "UPDATE turn_records SET task_kind = ? \
+                 WHERE task_kind IS NULL AND session_id = ? \
+                 AND (parent_session_id IS NOT NULL) = ?",
+            )
+            .bind(kind.to_string())
+            .bind(&session_id)
+            .bind(has_parent)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -126,12 +604,12 @@ impl Journal {
             r#"
             INSERT INTO turn_records (
                 session_id, parent_session_id, task_id, started_at, ended_at,
-                model, profile_id, reasoning_effort, tier, outcome,
+                model, profile_id, reasoning_effort, tier, task_kind, outcome,
                 completion_reason, escalated, escalation_retry, prompt_tokens,
                 completion_tokens, cache_read_tokens, cache_write_tokens,
                 model_calls, duration_ms, waiting_ms, signals
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             "#,
         )
         .bind(record.session_id.to_string())
@@ -143,6 +621,7 @@ impl Journal {
         .bind(&record.profile_id)
         .bind(record.reasoning_effort.as_deref())
         .bind(record.tier.as_deref())
+        .bind(record.task_kind.to_string())
         .bind(&record.outcome)
         .bind(&record.completion_reason)
         .bind(record.escalated)
@@ -165,49 +644,16 @@ impl Journal {
         &self,
         session_id: SessionId,
     ) -> Result<Vec<TurnRecordRow>, JournalError> {
+        let mut conn = self.pool.acquire().await?;
         let rows = sqlx::query(
             r#"
             SELECT * FROM turn_records WHERE session_id = ? ORDER BY seq
             "#,
         )
         .bind(session_id.to_string())
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *conn)
         .await?;
-        rows.into_iter()
-            .map(|row| {
-                let started_at: Option<String> = row.get("started_at");
-                let ended_at: String = row.get("ended_at");
-                let parent: Option<String> = row.get("parent_session_id");
-                let signals: String = row.get("signals");
-                Ok(TurnRecordRow {
-                    seq: row.get::<i64, _>("seq") as u64,
-                    record: TurnRecord {
-                        session_id,
-                        parent_session_id: parent.as_deref().map(parse_session).transpose()?,
-                        task_id: row.get::<i64, _>("task_id") as u64,
-                        started_at: started_at.as_deref().map(parse_ts).transpose()?,
-                        ended_at: parse_ts(&ended_at)?,
-                        model: row.get("model"),
-                        profile_id: row.get("profile_id"),
-                        reasoning_effort: row.get("reasoning_effort"),
-                        tier: row.get("tier"),
-                        outcome: row.get("outcome"),
-                        completion_reason: row.get("completion_reason"),
-                        escalated: row.get("escalated"),
-                        escalation_retry: row.get("escalation_retry"),
-                        prompt_tokens: opt_u64(row.get("prompt_tokens")),
-                        completion_tokens: opt_u64(row.get("completion_tokens")),
-                        cache_read_tokens: opt_u64(row.get("cache_read_tokens")),
-                        cache_write_tokens: opt_u64(row.get("cache_write_tokens")),
-                        model_calls: opt_u64(row.get("model_calls"))
-                            .map(|calls| u32::try_from(calls).unwrap_or(u32::MAX)),
-                        duration_ms: opt_u64(row.get("duration_ms")),
-                        waiting_ms: opt_u64(row.get("waiting_ms")),
-                        signals: serde_json::from_str(&signals)?,
-                    },
-                })
-            })
-            .collect()
+        read_rows(&mut conn, rows, true).await
     }
 }
 
@@ -228,6 +674,11 @@ mod tests {
             profile_id: "anthropic".into(),
             reasoning_effort: Some("high".into()),
             tier: Some("strong".into()),
+            task_kind: if parent.is_some() {
+                TaskKind::Subagent
+            } else {
+                TaskKind::Main
+            },
             outcome: "completed".into(),
             completion_reason: "edit_verified".into(),
             escalated: false,

@@ -156,4 +156,44 @@ through `AgentSession::fail_turn_on_error`, so no turn is left open and
 unrecorded. Like the audit table, it is a local record that resume never
 reads.
 
+Each turn record also names its task kind (`forge_types::TaskKind`): `main`
+for a top-level session, `subagent` for a built-in child (writer or
+read-only), `custom:<name>` for a child started as a custom agent. A session
+knows its kind from how it was built: `create` is `main`, `create_child`
+takes it from the spawn's profile, and a session reopened from its journal
+(`resume`, `resume_session`, `resume_child`) takes it from the journal's
+agent profile. A journal from before kinds existed gains the `task_kind`
+column when it is opened, its rows filled in by the same rule
+(`forge_durable::kind_from_journal`).
+
+`forge-session::model_report` reads those records back for `forge models
+report`.
+
+- **Whose journals.** The workspace's own journals are read only when the
+  workspace is trusted — the same trust `LaunchPlan` requires before any
+  session runs, so journals in an untrusted folder are not the user's (they
+  could have been committed to the repository). An explicitly named,
+  absolute journal directory needs no trust. The directory is found without
+  creating it: the repository-local one, or the application-data fallback
+  when that is where a repository Forge could not write to keeps its
+  sessions.
+- **Reading.** Every `<session>.db` there is read without being changed
+  (`forge_durable::scan_turn_records`): immutable when no session has the
+  journal open, so not even SQLite's `-wal`/`-shm` files appear; through the
+  WAL when one does, so its latest rows are seen (a session opening an idle
+  journal at that instant can make one read stale, never harm the journal).
+  Rows are streamed a page at a time into running totals, only the columns
+  the report uses, with the `--since` and `--kind` filters applied in the
+  query; several journals are read at a time. Entries that are symbolic
+  links, and journals with a value the report uses that does not decode (an
+  error, never a panic), are skipped and listed.
+- **Ranking.** Turns are grouped by kind and by (model, provider, effort) —
+  old provider names read as today's profile ids — and ranked per kind on
+  seven measures (completion, escalation, verification pass rate, approval
+  rate, queued messages, median tokens, median active time) by mean rank,
+  with a neutral rank for a measure a group has no data for; groups below
+  the minimum turn count are listed, unranked.
+- **Output.** The CLI prints names with control characters escaped: they
+  come from journals and provider catalogs, and must not drive the terminal.
+
 `forge-types` is the shared contract layer. `forge-test-support` is intentionally omitted from the runtime diagram because it is test-only infrastructure.

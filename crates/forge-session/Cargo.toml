@@ -9,6 +9,7 @@ description = "Frontend-independent session assembly for Forge"
 forge-config = { workspace = true }
 forge-connect = { workspace = true }
 forge-core = { workspace = true }
+forge-durable = { workspace = true }
 forge-governance = { workspace = true }
 forge-mcp = { workspace = true }
 forge-model = { workspace = true }

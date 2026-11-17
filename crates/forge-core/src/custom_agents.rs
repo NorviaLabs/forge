@@ -244,6 +244,28 @@ or reasoning effort for the agent, pass `model` (`<provider>/<model>`) and `reas
     prompt
 }
 
+/// The task kind of a child started with `profile`: `custom:<name>` for a
+/// named custom agent, in either mode; `subagent` for any other child.
+pub(crate) fn child_task_kind(profile: &ChildProfile) -> forge_types::TaskKind {
+    profile
+        .agent
+        .as_deref()
+        .and_then(|agent| format!("custom:{agent}").parse().ok())
+        .unwrap_or(forge_types::TaskKind::Subagent)
+}
+
+/// The task kind of a session reopened from its journal, from the
+/// `AgentProfile` its journal holds (see
+/// [`forge_durable::kind_from_journal`], the same rule turn records written
+/// before kinds existed are given). `is_child`: the session is reopened as
+/// some parent's child, so a journal from before profiles is `subagent`.
+pub(crate) fn kind_of_journaled_session(
+    agent_profile: Option<&serde_json::Value>,
+    is_child: bool,
+) -> forge_types::TaskKind {
+    forge_durable::kind_from_journal(agent_profile, is_child)
+}
+
 /// Append the role section a named agent's child runs under.
 pub(crate) fn append_role_section(prompt: &mut String, profile: &ChildProfile) {
     let Some(agent) = profile.agent.as_deref() else {

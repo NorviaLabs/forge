@@ -1,8 +1,10 @@
 //! Forge CLI. A bare `forge` opens the desktop app; `forge bench` runs one
-//! prompt headless for evaluations. `__egress-connect` is an internal helper
-//! git's SSH routing invokes on this executable.
+//! prompt headless for evaluations; `forge models report` ranks the models a
+//! workspace's sessions used, per kind of task. `__egress-connect` is an
+//! internal helper git's SSH routing invokes on this executable.
 
 mod launch;
+mod models;
 
 use std::{io::Read, path::PathBuf, time::Duration};
 
@@ -33,7 +35,8 @@ impl ExitCode {
     about = "Forge — an AI coding agent for the desktop.",
     long_about = "Forge — an AI coding agent for the desktop.\n\n\
                   Running `forge` opens the desktop app in the current directory, or in PATH \
-                  when given. `forge bench` runs one prompt without a window."
+                  when given. `forge bench` runs one prompt without a window. \
+                  `forge models report` ranks the models this workspace's sessions used."
 )]
 struct Cli {
     /// Folder to open in the desktop app. Defaults to the current directory.
@@ -74,6 +77,9 @@ struct BenchArgs {
 enum Command {
     /// Run one prompt through Forge without opening a window.
     Bench(BenchArgs),
+    /// Compare the models this workspace's sessions used.
+    #[command(subcommand)]
+    Models(models::ModelsCommand),
 }
 
 fn main() {
@@ -105,12 +111,18 @@ fn main() {
     }
 
     let cli = Cli::parse();
-    let Some(Command::Bench(args)) = cli.command else {
-        if !launch::display_available() {
-            eprintln!("No display available; the Forge desktop app needs a desktop session.");
-            std::process::exit(1);
+    let args = match cli.command {
+        Some(Command::Bench(args)) => args,
+        Some(Command::Models(command)) => {
+            std::process::exit(run_async(models::run(command)).code())
         }
-        std::process::exit(launch::run(cli.path.as_deref()));
+        None => {
+            if !launch::display_available() {
+                eprintln!("No display available; the Forge desktop app needs a desktop session.");
+                std::process::exit(1);
+            }
+            std::process::exit(launch::run(cli.path.as_deref()));
+        }
     };
 
     tracing_subscriber::fmt()
@@ -122,12 +134,17 @@ fn main() {
         .with_ansi(false)
         .init();
 
+    std::process::exit(run_async(run_bench(args)).code());
+}
+
+/// Run a command on a fresh Tokio runtime; an error is printed and fails.
+fn run_async(command: impl std::future::Future<Output = anyhow::Result<ExitCode>>) -> ExitCode {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("failed to build Tokio runtime");
     let code = runtime.block_on(async move {
-        match run_bench(args).await {
+        match command.await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("error: {e:#}");
@@ -136,7 +153,7 @@ fn main() {
         }
     });
     runtime.shutdown_timeout(Duration::ZERO);
-    std::process::exit(code.code());
+    code
 }
 
 async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {

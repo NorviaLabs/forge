@@ -14,6 +14,7 @@
 mod control;
 pub mod headless;
 mod launch;
+pub mod model_report;
 mod model_selection;
 pub mod model_tiers;
 mod project;

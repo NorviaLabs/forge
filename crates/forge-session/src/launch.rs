@@ -207,7 +207,7 @@ async fn session_config(
     }
 }
 
-fn is_trusted(trust_store: Option<&Path>, workspace: &Path) -> bool {
+pub(crate) fn is_trusted(trust_store: Option<&Path>, workspace: &Path) -> bool {
     match trust_store {
         Some(store) => forge_config::is_trusted_at(store, workspace),
         None => forge_config::is_trusted(workspace),

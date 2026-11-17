@@ -22,6 +22,16 @@ docs and reviews.
   can run; users never configure them. A failed subagent turn is re-run once
   on the strong tier (**escalation**).
 - **Turn record**: the one row a finished turn — top-level or subagent —
-  writes to its session's journal: model, effort, tier, outcome and reason,
-  escalation, tokens, duration, and the turn's **signals** (what happened
-  during it: approvals, verification commands, cancellation, …).
+  writes to its session's journal: model, effort, tier, **task kind**, outcome
+  and reason, escalation, tokens, duration, and the turn's **signals** (what
+  happened during it: approvals, verification commands, cancellation, …).
+- **Task kind**: what ran a turn — `main` (a top-level session), `subagent`
+  (a built-in subagent, writer or read-only alike) or `custom:<name>` (a
+  child started as that custom agent, in either mode). A turn recorded before
+  kinds existed gets the kind its journal shows: a child (an agent profile, or
+  a parent) naming an agent is `custom:<name>`, any other child `subagent`,
+  anything else `main`.
+- **Model report**: `forge models report` and
+  `forge_session::model_report` — turn records grouped by task kind and by
+  model, provider and effort, scored on seven measures and ranked per kind by
+  mean rank; groups with fewer than the minimum turns are **not enough data**.

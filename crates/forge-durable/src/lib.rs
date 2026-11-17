@@ -21,7 +21,10 @@ mod audit;
 mod turn_record;
 
 pub use audit::{AuditEntry, AuditKind, AuditRow};
-pub use turn_record::{TurnRecord, TurnRecordRow};
+pub use turn_record::{
+    kind_from_journal, read_turn_records, scan_turn_records, TurnRecord, TurnRecordFilter,
+    TurnRecordRow, TurnRecordView,
+};
 
 const REPLAY_CHECKPOINT_INTERVAL: u64 = 256;
 

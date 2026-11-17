@@ -157,6 +157,38 @@ keeps logs on stderr.
 `--approve-all` is intended only for an isolated evaluation checkout; without
 it, a tool request that needs human approval stops with an error.
 
+### Which model does best
+
+Every finished turn is recorded with the model, provider and effort that ran
+it and the kind of task it was: `main` (a top-level session), `subagent` (a
+built-in subagent, writer or read-only) or `custom:<name>` (a custom agent).
+`forge models report` ranks the models each kind of task used in a
+workspace:
+
+```sh
+forge models report --workspace /path/to/repository
+forge models report --kind custom:code-reviewer --since 30d --json
+```
+
+For each kind, turns are grouped by model, provider and effort and compared on
+completion rate, escalation rate, verification pass rate, approval rate, how
+often you queued a message mid-turn, median tokens and median active time
+(time spent waiting on you is not counted). The score is the mean of a group's
+rank on those seven measures, lower is better; a measure a group has no data
+for (no verification commands run, no approvals asked) counts as a middle
+rank. Turns a restart interrupted are left out. Groups with fewer turns than
+`--min-turns` (default 5) are listed with their numbers but not ranked.
+`--since` takes a date (`2025-06-01`) or a number of days or hours (`7d`,
+`24h`); `--journal` reads a journal directory instead of the workspace's own.
+The report only reads the journals: it creates and changes nothing.
+
+The workspace's own journals are read only once you have trusted the
+workspace in Forge: Forge runs no sessions in an untrusted folder, so journals
+found there (committed to a repository, say) are not yours and are refused.
+`--journal` names a directory explicitly and needs no trust. Journals that are
+symbolic links, or that cannot be read, are skipped with a warning, and names
+are printed with control characters escaped.
+
 ## Providers and models
 
 Forge includes native routes for:
@@ -590,7 +622,7 @@ reporting process.
 Forge is a Rust workspace. The main crates are:
 
 - `forge-desktop` — the desktop app (Tauri);
-- `forge-cli` — the `forge` command and `forge bench`;
+- `forge-cli` — the `forge` command, `forge bench` and `forge models report`;
 - `forge-core` — agent loop and session lifecycle;
 - `forge-model` — provider transports and message normalization;
 - `forge-connect` — provider profiles, credentials, and model catalog;

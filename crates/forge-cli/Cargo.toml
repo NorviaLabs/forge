@@ -3,7 +3,7 @@ name = "forge-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Forge CLI — launches the desktop app; `forge bench` runs one prompt headless"
+description = "Forge CLI — launches the desktop app; `forge bench` runs one prompt headless; `forge models report` ranks models"
 default-run = "forge"
 
 [[bin]]
@@ -11,6 +11,7 @@ name = "forge"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { workspace = true }
 forge-config = { workspace = true }
 forge-connect = { workspace = true }
 forge-session = { workspace = true }
@@ -23,6 +24,7 @@ anyhow = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+forge-durable = { workspace = true }
 assert_cmd = "2"
 predicates = "3"
 portable-pty = { workspace = true }

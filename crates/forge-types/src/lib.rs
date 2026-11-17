@@ -2,6 +2,7 @@
 
 mod git;
 mod image;
+mod task_kind;
 mod tier;
 
 pub use git::is_readonly_git_subcommand;
@@ -9,6 +10,7 @@ pub use image::{
     inspect_image, sample_png_bytes, sniff_allowed_image, ImageInspectError, ImageMeta, ImageRef,
     MAX_IMAGE_BYTES,
 };
+pub use task_kind::{TaskKind, TaskKindError};
 pub use tier::ModelTier;
 
 /// Remove structural protocol control markers from final-answer text before

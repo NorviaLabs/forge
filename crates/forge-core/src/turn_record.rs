@@ -264,6 +264,11 @@ impl AgentSession {
         self.tracking.inbox.clone()
     }
 
+    /// What this session's turns are recorded as.
+    pub fn task_kind(&self) -> &forge_types::TaskKind {
+        &self.task_kind
+    }
+
     /// The signals recorded so far in the current (or just-finished) turn.
     pub fn turn_signals(&self) -> &[TurnSignal] {
         &self.tracking.telemetry.signals
@@ -400,6 +405,7 @@ impl AgentSession {
             profile_id: selection.profile_id,
             reasoning_effort: selection.reasoning_effort,
             tier: tier.map(|tier| tier.as_str().to_string()),
+            task_kind: self.task_kind.clone(),
             outcome: outcome_name(to).to_string(),
             completion_reason,
             escalated: telemetry.escalated,

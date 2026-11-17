@@ -782,3 +782,125 @@ async fn the_agents_section_is_rewritten_only_when_the_agents_change() {
         "and the warning is current"
     );
 }
+
+// -------------------------------------------------------------- task kinds
+
+/// Started by name through `spawn_agent`, the agent's turns are recorded as
+/// `custom:<name>`; the parent's stay `main`.
+#[tokio::test]
+async fn the_turns_of_an_agent_started_by_name_are_recorded_as_that_agent() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    write_agent(dir.path(), "code-reviewer", REVIEWER);
+    let model = RoutingModel::new(json!({
+        "agent": "code-reviewer",
+        "message": "Review a.txt",
+    }));
+    let mut session = AgentSession::create(cfg(dir.path()), model, ToolRegistry::new())
+        .await
+        .unwrap();
+    session
+        .run_user_message_with_stream("Please review my change", None)
+        .await
+        .unwrap();
+    let id = session.background().list().next().unwrap().id;
+    wait_terminal(&mut session, id).await;
+    let child_id = session
+        .background()
+        .get(id)
+        .and_then(|task| task.child_session_id)
+        .unwrap();
+
+    let parent_records = session.turn_records().await.unwrap();
+    assert!(!parent_records.is_empty());
+    assert!(parent_records
+        .iter()
+        .all(|row| row.record.task_kind == forge_types::TaskKind::Main));
+
+    let journal = forge_durable::Journal::open(&dir.path().join(".forge/local/journal"), child_id)
+        .await
+        .unwrap();
+    let child_records = journal.turn_records(child_id).await.unwrap();
+    assert!(!child_records.is_empty());
+    for row in child_records {
+        assert_eq!(
+            row.record.task_kind,
+            forge_types::TaskKind::Custom("code-reviewer".into())
+        );
+    }
+}
+
+/// A child reopened from its journal — by its parent, or on its own — is
+/// still the kind it was started as.
+#[tokio::test]
+async fn a_reopened_child_keeps_its_task_kind() {
+    let dir = TempDir::new().unwrap();
+    write_agent(dir.path(), "test-fixer", FIXER);
+    let model = Arc::new(MockModelClient::script(vec![]));
+    let session = AgentSession::create(cfg(dir.path()), model.clone(), ToolRegistry::new())
+        .await
+        .unwrap();
+    assert_eq!(session.task_kind(), &forge_types::TaskKind::Main);
+
+    let custom = session
+        .subagent_spec_for(spawn_args(json!({"agent": "test-fixer", "message": "m"})))
+        .unwrap();
+    let built_in = session
+        .subagent_spec_for(spawn_args(
+            json!({"task_name": "helper", "message": "m", "mode": "read_only"}),
+        ))
+        .unwrap();
+    for (spec, kind) in [
+        (custom, forge_types::TaskKind::Custom("test-fixer".into())),
+        (built_in, forge_types::TaskKind::Subagent),
+    ] {
+        let child_id = forge_durable::new_session_id();
+        let child = session
+            .create_child(
+                child_id,
+                dir.path().to_path_buf(),
+                CancellationToken::new(),
+                &spec,
+            )
+            .await
+            .unwrap();
+        assert_eq!(child.task_kind(), &kind);
+        drop(child);
+
+        let resumed = session
+            .resume_child(child_id, dir.path().to_path_buf(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(resumed.task_kind(), &kind, "resumed by its parent");
+        drop(resumed);
+
+        // Opened on its own, a turn it runs is recorded as its kind, not
+        // as `main`.
+        let mut reopened = AgentSession::resume(
+            cfg(dir.path()),
+            Arc::new(MockModelClient::script(vec![text("Done.")])),
+            ToolRegistry::new(),
+            child_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened.task_kind(), &kind, "reopened on its own");
+        reopened
+            .run_user_message_with_stream("one more thing", None)
+            .await
+            .unwrap();
+        let records = reopened.turn_records().await.unwrap();
+        let last = records.last().expect("the turn was recorded");
+        assert_eq!(last.record.task_kind, kind, "recorded on its own");
+        drop(reopened);
+
+        // A live session switched to the child's id in place.
+        let mut current = AgentSession::create(cfg(dir.path()), model.clone(), ToolRegistry::new())
+            .await
+            .unwrap();
+        current.resume_session(child_id).await.unwrap();
+        assert_eq!(current.task_kind(), &kind, "resumed in place");
+        current.resume_session(session.session_id).await.unwrap();
+        assert_eq!(current.task_kind(), &forge_types::TaskKind::Main);
+    }
+}

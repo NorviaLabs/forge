@@ -247,6 +247,10 @@ pub struct AgentSession {
     /// Turn records and signals, the turn-scoped model tier, and a pending
     /// strong-tier escalation (see `turn_record` and `tiers`).
     tracking: turn_record::TurnTracking,
+    /// What this session's turns are recorded as: `main` for a top-level
+    /// session, `subagent` or `custom:<name>` for a child. Set when the
+    /// session is built or switched to another journal.
+    task_kind: forge_types::TaskKind,
     /// Resolves model tiers. Installed by the session's owner and shared
     /// with the subagents this session spawns, which need it to escalate.
     tier_resolver: Option<Arc<dyn tiers::ModelTierResolver>>,

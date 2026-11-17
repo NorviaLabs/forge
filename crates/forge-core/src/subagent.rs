@@ -188,6 +188,7 @@ impl AgentSession {
             agents_section: String::new(),
             agents_project_root: None,
             tracking: Default::default(),
+            task_kind: crate::custom_agents::child_task_kind(&spec.profile),
             tier_resolver: self.tier_resolver.clone(),
             verification_commands: self.verification_commands.clone(),
         };
@@ -340,6 +341,10 @@ impl AgentSession {
             agents_section: String::new(),
             agents_project_root: None,
             tracking: Default::default(),
+            task_kind: crate::custom_agents::kind_of_journaled_session(
+                state.agent_profile.as_ref(),
+                true,
+            ),
             tier_resolver: self.tier_resolver.clone(),
             verification_commands: self.verification_commands.clone(),
         };

@@ -16,7 +16,7 @@ use forge_model::{ModelClient, ModelError, ModelRequest};
 use forge_tools::{AgentMode, SpawnAgentArgs, ToolContext, ToolError, ToolRegistry};
 use forge_types::{
     BackgroundTaskId, HitlDecision, MessageRole, ModelResponse, ModelTier, SessionId,
-    SideEffectClass, TaskLifecycle, ToolCall, ToolOutput, Usage,
+    SideEffectClass, TaskKind, TaskLifecycle, ToolCall, ToolOutput, Usage,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -1179,4 +1179,203 @@ async fn an_ordinary_interrupted_turn_is_not_a_retry() {
     let record = &records(&resumed).await[0];
     assert!(!record.escalation_retry);
     assert_eq!(record.tier, None);
+}
+
+// -------------------------------------------------------------- task kinds
+
+/// A named custom agent's profile, for a child spawned directly.
+fn custom_agent(name: &str, model: Option<ChildModel>) -> ChildProfile {
+    ChildProfile {
+        agent: Some(name.into()),
+        capabilities: Some("read-only".into()),
+        instructions: Some("Review the change.".into()),
+        model,
+        ..ChildProfile::default()
+    }
+}
+
+fn slow_model() -> ChildModel {
+    ChildModel {
+        model: "test/slow".into(),
+        profile_id: "test".into(),
+        reasoning_effort: None,
+        context_window: None,
+        output_reserve: None,
+        image_input: None,
+    }
+}
+
+async fn spawn_child(
+    session: &mut AgentSession,
+    mode: AgentMode,
+    profile: ChildProfile,
+) -> (BackgroundTaskId, SessionId) {
+    let id = session
+        .spawn_subagent(SubagentSpec {
+            role: "helper".into(),
+            prompt: "look around".into(),
+            mode,
+            tool_allowlist: None,
+            profile,
+        })
+        .await
+        .unwrap();
+    let child = session
+        .background()
+        .get(id)
+        .and_then(|task| task.child_session_id)
+        .unwrap();
+    (id, child)
+}
+
+#[tokio::test]
+async fn a_main_turn_records_the_main_kind() {
+    let dir = TempDir::new().unwrap();
+    let model = TierModel::new(&[("test/mid", vec![text("Hello.")])]);
+    let mut session = session(dir.path(), model).await;
+    assert_eq!(session.task_kind(), &TaskKind::Main);
+    session
+        .run_user_message_with_stream("hi", None)
+        .await
+        .unwrap();
+    let records = records(&session).await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].task_kind, TaskKind::Main);
+}
+
+/// Built-in children are one kind, whether they write or only read.
+#[tokio::test]
+async fn writer_and_read_only_children_both_record_the_subagent_kind() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = TierModel::new(&[]);
+    let mut session = session(dir.path(), model).await;
+    for mode in [AgentMode::Writer, AgentMode::ReadOnly] {
+        let (id, child) = spawn_child(&mut session, mode, ChildProfile::default()).await;
+        wait_terminal(&mut session, id).await;
+        let records = child_records(dir.path(), child).await;
+        assert!(!records.is_empty(), "{mode:?}");
+        for record in &records {
+            assert_eq!(record.task_kind, TaskKind::Subagent, "{mode:?}");
+            assert_eq!(record.parent_session_id, Some(session.session_id));
+        }
+    }
+}
+
+/// A custom agent is its own kind, named after the agent, in either mode.
+#[tokio::test]
+async fn a_custom_agent_child_records_its_name_as_its_kind() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = TierModel::new(&[]);
+    let mut session = session(dir.path(), model).await;
+    for (mode, name) in [
+        (AgentMode::ReadOnly, "reviewer"),
+        (AgentMode::Writer, "test-fixer"),
+    ] {
+        let (id, child) = spawn_child(&mut session, mode, custom_agent(name, None)).await;
+        wait_terminal(&mut session, id).await;
+        let records = child_records(dir.path(), child).await;
+        assert!(!records.is_empty(), "{name}");
+        for record in &records {
+            assert_eq!(record.task_kind, TaskKind::Custom(name.into()));
+        }
+    }
+    // The parent's own turns stay `main`.
+    assert_eq!(session.task_kind(), &TaskKind::Main);
+}
+
+/// The strong-tier retry runs in the same child, so it is the same kind.
+#[tokio::test]
+async fn an_escalation_retry_keeps_its_childs_kind() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = TierModel::new(&[
+        ("test/small", vec![dangling()]),
+        ("test/big", vec![text("Fixed it on the strong tier.")]),
+    ]);
+    let mut session = session(dir.path(), model).await;
+    let resolution = session.resolve_model_tier(ModelTier::Fast, &session.model_selection());
+    let mut profile = custom_agent("test-fixer", Some(resolution.model));
+    profile.tier = Some(ModelTier::Fast);
+    let (id, child) = spawn_child(&mut session, AgentMode::Writer, profile).await;
+    assert!(matches!(
+        wait_terminal(&mut session, id).await,
+        BackgroundTaskStatus::Succeeded { .. }
+    ));
+    let records = child_records(dir.path(), child).await;
+    assert_eq!(records.len(), 2, "{records:#?}");
+    assert!(records[0].escalated && records[1].escalation_retry);
+    for record in &records {
+        assert_eq!(record.task_kind, TaskKind::Custom("test-fixer".into()));
+    }
+}
+
+/// A custom agent's child that a restart interrupts is reopened from its own
+/// journal; the record of the interrupted turn still names the agent.
+///
+/// A writer: a restart reopens an unfinished child through the workspace its
+/// parent recorded for it, and only a writer's worktree is recorded — a
+/// read-only child that a restart interrupts is marked cancelled in its
+/// parent without being reopened, so it writes no turn record.
+#[tokio::test]
+async fn a_custom_agent_child_interrupted_by_a_restart_keeps_its_kind() {
+    let dir = TempDir::new().unwrap();
+    init_repo(dir.path());
+    let model = TierModel::new(&[]);
+    let (parent, child) = {
+        let mut session = session(dir.path(), model.clone()).await;
+        let (_, child) = spawn_child(
+            &mut session,
+            AgentMode::Writer,
+            custom_agent("reviewer", Some(slow_model())),
+        )
+        .await;
+        for _ in 0..200 {
+            if !model.seen().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!model.seen().is_empty(), "the child's turn started");
+        (session.session_id, child)
+    };
+    let resumed = AgentSession::resume(
+        cfg(dir.path()),
+        TierModel::new(&[]),
+        ToolRegistry::new(),
+        parent,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resumed.task_kind(), &TaskKind::Main);
+    let records = child_records(dir.path(), child).await;
+    let interrupted = records
+        .iter()
+        .find(|record| record.completion_reason == "interrupted_by_restart")
+        .unwrap_or_else(|| panic!("no interrupted record: {records:#?}"));
+    assert_eq!(interrupted.task_kind, TaskKind::Custom("reviewer".into()));
+}
+
+/// A top-level session found running after a restart records `main`.
+#[tokio::test]
+async fn a_main_turn_interrupted_by_a_restart_records_the_main_kind() {
+    let dir = TempDir::new().unwrap();
+    let session_id = {
+        let mut session = session(dir.path(), TierModel::new(&[])).await;
+        session.append_user_message("long job").await.unwrap();
+        session.session_id
+    };
+    let resumed = AgentSession::resume(
+        cfg(dir.path()),
+        TierModel::new(&[]),
+        ToolRegistry::new(),
+        session_id,
+    )
+    .await
+    .unwrap();
+    let records = records(&resumed).await;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].completion_reason, "interrupted_by_restart");
+    assert_eq!(records[0].task_kind, TaskKind::Main);
 }
