@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use forge_types::TaskKind;
 
-use crate::auto_model::{AutoDecision, AutoModel, AutoModelAdvisor};
+use crate::auto_model::{AutoController, AutoModelAdvisor};
 use crate::custom_agents::ChildModelResolver;
 use crate::model_choice::SubagentModelAdvisor;
 use crate::tiers::ModelTierResolver;
@@ -21,12 +21,8 @@ pub(crate) struct SessionModels {
     /// Chooses the model of a child started without a tier or a model.
     /// Installed by the session's owner; a child has none (it cannot spawn).
     pub(crate) subagent_advisor: Option<Arc<dyn SubagentModelAdvisor>>,
-    /// Chooses where Auto turns start (the session's owner installs it).
-    pub(crate) auto_advisor: Option<Arc<dyn AutoModelAdvisor>>,
-    /// Auto, when the user chose it for this (top-level) session.
-    pub(crate) auto: Option<AutoModel>,
-    /// The model and effort Auto chose for each of its turns, and why.
-    pub(crate) auto_decisions: Vec<AutoDecision>,
+    /// Auto: its advisor, state and decisions.
+    pub(crate) auto: AutoController,
 }
 
 impl SessionModels {
@@ -35,9 +31,7 @@ impl SessionModels {
         Self {
             task_kind,
             subagent_advisor: None,
-            auto_advisor: None,
-            auto: None,
-            auto_decisions: Vec::new(),
+            auto: AutoController::default(),
         }
     }
 
@@ -67,11 +61,9 @@ impl SessionModels {
     ) {
         self.task_kind = crate::custom_agents::kind_of_journaled_session(agent_profile, is_child);
         if is_child {
-            self.auto = None;
-            self.auto_decisions = Vec::new();
+            self.auto.reopen(None, &[]);
         } else {
-            self.auto = crate::auto_model::auto_from_journal(auto);
-            self.auto_decisions = crate::auto_model::decisions_from_journal(auto_decisions);
+            self.auto.reopen(auto, auto_decisions);
         }
     }
 }
@@ -113,7 +105,7 @@ impl crate::AgentSession {
             self.models.subagent_advisor = subagent_advisor;
         }
         if auto_advisor.is_some() {
-            self.models.auto_advisor = auto_advisor;
+            self.models.auto.advisor = auto_advisor;
         }
     }
 
@@ -124,7 +116,7 @@ impl crate::AgentSession {
             child_models: self.child_model_resolver.clone(),
             tiers: self.tier_resolver.clone(),
             subagent_advisor: self.models.subagent_advisor.clone(),
-            auto_advisor: self.models.auto_advisor.clone(),
+            auto_advisor: self.models.auto.advisor.clone(),
         }
     }
 }
@@ -132,7 +124,7 @@ impl crate::AgentSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auto_model::{AutoFallback, AutoStart, ModelEfforts};
+    use crate::auto_model::{AutoFallback, AutoModel, AutoStart, ModelEfforts};
     use crate::{ModelAdvice, ModelAdviceRequest};
 
     struct NoAdvice;
@@ -161,7 +153,7 @@ mod tests {
     fn with_advisors(kind: TaskKind) -> SessionModels {
         let mut models = SessionModels::new(kind);
         models.subagent_advisor = Some(Arc::new(NoAdvice));
-        models.auto_advisor = Some(Arc::new(NoAdvice));
+        models.auto.advisor = Some(Arc::new(NoAdvice));
         models
     }
 
@@ -170,9 +162,9 @@ mod tests {
         let models = SessionModels::new(TaskKind::Subagent);
         assert_eq!(models.task_kind, TaskKind::Subagent);
         assert!(models.subagent_advisor.is_none());
-        assert!(models.auto_advisor.is_none());
-        assert!(models.auto.is_none());
-        assert!(models.auto_decisions.is_empty());
+        assert!(models.auto.advisor.is_none());
+        assert!(models.auto.state().is_none());
+        assert!(models.auto.decisions().is_empty());
     }
 
     /// Switching to another journal takes the kind and Auto from it; the
@@ -184,13 +176,13 @@ mod tests {
         let state = serde_json::json!(auto);
         models.reopen_from(None, Some(&state), &[], false);
         assert_eq!(models.task_kind, TaskKind::Main);
-        assert_eq!(models.auto, Some(auto));
+        assert_eq!(models.auto.state(), Some(&auto));
         assert!(models.subagent_advisor.is_some());
-        assert!(models.auto_advisor.is_some());
+        assert!(models.auto.advisor.is_some());
 
         // Auto turned off in the journal (a `null` state).
         models.reopen_from(None, Some(&serde_json::Value::Null), &[], false);
-        assert_eq!(models.auto, None);
+        assert_eq!(models.auto.state(), None);
     }
 
     /// A child's kind comes from its journaled profile, and it never runs
@@ -201,8 +193,8 @@ mod tests {
         let auto = serde_json::json!(AutoModel::new(fallback()));
         let models = SessionModels::reopened(Some(&profile), Some(&auto), &[], true);
         assert_eq!(models.task_kind, "custom:reviewer".parse().unwrap());
-        assert_eq!(models.auto, None);
-        assert!(models.auto_decisions.is_empty());
+        assert_eq!(models.auto.state(), None);
+        assert!(models.auto.decisions().is_empty());
 
         let plain = SessionModels::reopened(None, None, &[], true);
         assert_eq!(plain.task_kind, TaskKind::Subagent);

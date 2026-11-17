@@ -22,6 +22,7 @@
 //! position and the decisions are journaled, so a restart keeps them.
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -76,6 +77,22 @@ pub enum TurnEnd {
     /// Nothing about the model: a provider error, a denied approval, a
     /// cancellation, a turn on a tier the user asked for.
     Neutral,
+}
+
+impl TurnEnd {
+    /// What a turn that reached `lifecycle` says about its model.
+    /// `on_a_tier`: it ran on a tier the user asked for, so it says nothing
+    /// about Auto's choice. `work_failed`: its work failed — not a provider
+    /// error, not the user's denials
+    /// (`turn_record::failure_reflects_on_model`).
+    pub fn of(lifecycle: forge_types::TaskLifecycle, on_a_tier: bool, work_failed: bool) -> Self {
+        match lifecycle {
+            _ if on_a_tier => Self::Neutral,
+            forge_types::TaskLifecycle::Completed => Self::Succeeded,
+            forge_types::TaskLifecycle::Failed if work_failed => Self::Failed,
+            _ => Self::Neutral,
+        }
+    }
 }
 
 /// Auto, on: its fallback and where it stands on the ladder.
@@ -266,70 +283,85 @@ fn named(model: &ChildModel) -> String {
     )
 }
 
-impl crate::AgentSession {
-    /// Install the advisor that chooses where Auto turns start.
-    pub fn set_auto_model_advisor(&mut self, advisor: std::sync::Arc<dyn AutoModelAdvisor>) {
-        self.install_model_services(crate::ModelServices {
-            auto_advisor: Some(advisor),
-            ..Default::default()
-        });
-    }
+// ------------------------------------------------------------ controller
 
-    /// Turn Auto on, falling back on `fallback` when the evidence is thin.
-    /// Journaled, so it survives a restart. Starts at the bottom of the
-    /// ladder.
-    pub async fn set_auto_model(&mut self, fallback: AutoFallback) -> Result<(), crate::LoopError> {
-        let auto = AutoModel::new(fallback);
-        self.journal
-            .append_auto_model(self.session_id, serde_json::json!({ "state": auto }))
-            .await?;
-        self.models.auto = Some(auto);
-        Ok(())
-    }
+/// What the session knows as a turn starts, for Auto.
+pub(crate) struct AutoTurnStart<'a> {
+    pub(crate) task_id: u64,
+    /// How many of the user's messages there are: the turn answers the last.
+    pub(crate) user_message: usize,
+    pub(crate) thinking_enabled: bool,
+    /// The provider's strong-tier model for a start, when it has one.
+    pub(crate) strong: &'a dyn Fn(&ModelExecutionSelection) -> Option<ChildModel>,
+}
 
-    /// Turn Auto off (the user picked a model). Journaled.
-    pub async fn clear_auto_model(&mut self) -> Result<(), crate::LoopError> {
-        if self.models.auto.is_none() {
-            return Ok(());
-        }
-        self.journal
-            .append_auto_model(self.session_id, serde_json::json!({ "state": null }))
-            .await?;
-        self.models.auto = None;
-        Ok(())
-    }
+/// Auto's choice for a turn: the model to run it on, and the decision to
+/// record (then hand back with [`AutoController::decided`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AutoTurn {
+    pub(crate) rung: ChildModel,
+    pub(crate) decision: AutoDecision,
+}
 
-    /// Auto, when it is on.
-    pub fn auto_model(&self) -> Option<&AutoModel> {
-        self.models.auto.as_ref()
-    }
-
+/// Auto for one session: the advisor, Auto's state, its decisions, and the
+/// turn in progress. It decides, at [`Self::on_turn_start`] and
+/// [`Self::on_turn_end`]; the session does the rest — switches the model,
+/// records the signal, journals.
+#[derive(Default)]
+pub(crate) struct AutoController {
+    /// Chooses where Auto turns start (the session's owner installs it).
+    pub(crate) advisor: Option<Arc<dyn AutoModelAdvisor>>,
+    /// Auto, when the user chose it for this (top-level) session.
+    state: Option<AutoModel>,
     /// The model and effort Auto chose for each of its turns, and why.
-    pub fn auto_decisions(&self) -> &[AutoDecision] {
-        &self.models.auto_decisions
+    decisions: Vec<AutoDecision>,
+    /// The ladder's length, when Auto chose the model of the turn in
+    /// progress.
+    turn_steps: Option<usize>,
+}
+
+impl AutoController {
+    /// Auto, when it is on.
+    pub(crate) fn state(&self) -> Option<&AutoModel> {
+        self.state.as_ref()
+    }
+
+    pub(crate) fn decisions(&self) -> &[AutoDecision] {
+        &self.decisions
+    }
+
+    /// Turn Auto on (afresh), or off. The turn in progress is not
+    /// forgotten: if Auto is on when it ends, it counts.
+    pub(crate) fn set_state(&mut self, state: Option<AutoModel>) {
+        self.state = state;
+    }
+
+    /// Auto and its decisions as a journal recorded them (see
+    /// [`auto_from_journal`]); or none of either (`None`, `&[]`).
+    pub(crate) fn reopen(
+        &mut self,
+        state: Option<&serde_json::Value>,
+        decisions: &[serde_json::Value],
+    ) {
+        self.state = auto_from_journal(state);
+        self.decisions = decisions_from_journal(decisions);
     }
 
     /// A model's efforts, from the advisor (none without one).
     fn efforts_of(&self, model: &ChildModel) -> ModelEfforts {
-        self.models
-            .auto_advisor
+        self.advisor
             .as_ref()
             .map(|advisor| advisor.efforts(&model.model, &model.profile_id))
             .unwrap_or_default()
     }
 
-    /// At the start of a main-session turn with Auto on: work out the start
-    /// (ranked, or the fallback), the ladder from it, and run the turn on the
-    /// current step. Recorded as an `auto_model` signal and a journaled
-    /// decision.
-    pub(crate) async fn choose_auto_model(&mut self) -> Result<(), crate::LoopError> {
-        if self.is_subagent() {
-            return Ok(());
-        }
-        let Some(auto) = self.models.auto.clone() else {
-            return Ok(());
-        };
-        let start = match &self.models.auto_advisor {
+    /// A turn starts: with Auto on, work out the start (ranked, or the
+    /// fallback), the ladder from it, and the step to run the turn on.
+    /// `None` with Auto off.
+    pub(crate) fn on_turn_start(&mut self, turn: AutoTurnStart<'_>) -> Option<AutoTurn> {
+        self.turn_steps = None;
+        let auto = self.state.clone()?;
+        let start = match &self.advisor {
             Some(advisor) => advisor.start(&auto.fallback),
             None => AutoStart {
                 model: ChildModel {
@@ -349,10 +381,9 @@ impl crate::AgentSession {
             model: start.model.model.clone(),
             profile_id: start.model.profile_id.clone(),
             reasoning_effort: start.model.reasoning_effort.clone(),
-            thinking_enabled: self.thinking_enabled,
+            thinking_enabled: turn.thinking_enabled,
         };
-        let strong = self.resolve_model_tier(forge_types::ModelTier::Strong, &start_selection);
-        let strong = (strong.basis != crate::TierBasis::Unavailable).then_some(strong.model);
+        let strong = (turn.strong)(&start_selection);
         let strong_efforts = strong.as_ref().map(|model| self.efforts_of(model));
         let rungs = ladder(
             &start.model,
@@ -381,58 +412,130 @@ impl crate::AgentSession {
                 ),
             ),
         };
-        self.apply_resolved_model(&rung);
         let decision = AutoDecision {
-            task_id: self.active_task.task_id.0,
-            user_message: self.canonical_user_messages.len(),
+            task_id: turn.task_id,
+            user_message: turn.user_message,
             model: rung.model.clone(),
             profile_id: rung.profile_id.clone(),
             reasoning_effort: rung.reasoning_effort.clone(),
             source,
             step,
             steps: rungs.len(),
-            reason: reason.clone(),
+            reason,
         };
-        self.tracking.telemetry.auto_steps = Some(rungs.len());
+        self.turn_steps = Some(rungs.len());
+        Some(AutoTurn { rung, decision })
+    }
+
+    /// The session recorded `decision`.
+    pub(crate) fn decided(&mut self, decision: AutoDecision) {
+        self.decisions.push(decision);
+    }
+
+    /// The turn Auto started ended `end`: move along the ladder. The new
+    /// state, to journal, when it changed; `None` when it did not, or Auto
+    /// did not start this turn, or is off.
+    pub(crate) fn on_turn_end(&mut self, end: TurnEnd) -> Option<AutoModel> {
+        let steps = self.turn_steps.take()?;
+        let auto = self.state.as_mut()?;
+        let before = auto.clone();
+        auto.after_turn(end, steps.saturating_sub(1));
+        (*auto != before).then(|| auto.clone())
+    }
+}
+
+impl crate::AgentSession {
+    /// Install the advisor that chooses where Auto turns start.
+    pub fn set_auto_model_advisor(&mut self, advisor: std::sync::Arc<dyn AutoModelAdvisor>) {
+        self.install_model_services(crate::ModelServices {
+            auto_advisor: Some(advisor),
+            ..Default::default()
+        });
+    }
+
+    /// Turn Auto on, falling back on `fallback` when the evidence is thin.
+    /// Journaled, so it survives a restart. Starts at the bottom of the
+    /// ladder.
+    pub async fn set_auto_model(&mut self, fallback: AutoFallback) -> Result<(), crate::LoopError> {
+        let auto = AutoModel::new(fallback);
+        self.journal
+            .append_auto_model(self.session_id, serde_json::json!({ "state": auto }))
+            .await?;
+        self.models.auto.set_state(Some(auto));
+        Ok(())
+    }
+
+    /// Turn Auto off (the user picked a model). Journaled.
+    pub async fn clear_auto_model(&mut self) -> Result<(), crate::LoopError> {
+        if self.models.auto.state().is_none() {
+            return Ok(());
+        }
+        self.journal
+            .append_auto_model(self.session_id, serde_json::json!({ "state": null }))
+            .await?;
+        self.models.auto.set_state(None);
+        Ok(())
+    }
+
+    /// Auto, when it is on.
+    pub fn auto_model(&self) -> Option<&AutoModel> {
+        self.models.auto.state()
+    }
+
+    /// The model and effort Auto chose for each of its turns, and why.
+    pub fn auto_decisions(&self) -> &[AutoDecision] {
+        self.models.auto.decisions()
+    }
+
+    /// At the start of a main-session turn with Auto on: run the turn on the
+    /// step Auto chose ([`AutoController::on_turn_start`]), recorded as an
+    /// `auto_model` signal and a journaled decision.
+    pub(crate) async fn choose_auto_model(&mut self) -> Result<(), crate::LoopError> {
+        if self.is_subagent() {
+            return Ok(());
+        }
+        // Out of the session while it decides, so it can ask the session
+        // for the strong tier.
+        let mut auto = std::mem::take(&mut self.models.auto);
+        let strong = |start: &ModelExecutionSelection| {
+            let strong = self.resolve_model_tier(forge_types::ModelTier::Strong, start);
+            (strong.basis != crate::TierBasis::Unavailable).then_some(strong.model)
+        };
+        let turn = auto.on_turn_start(AutoTurnStart {
+            task_id: self.active_task.task_id.0,
+            user_message: self.canonical_user_messages.len(),
+            thinking_enabled: self.thinking_enabled,
+            strong: &strong,
+        });
+        self.models.auto = auto;
+        let Some(AutoTurn { rung, decision }) = turn else {
+            return Ok(());
+        };
+        self.apply_resolved_model(&rung);
         self.record_signal(
             crate::TurnSignalKind::AutoModel,
-            Some(format!("{source}: {reason}")),
+            Some(format!("{}: {}", decision.source, decision.reason)),
         );
         self.journal
             .append_auto_model(self.session_id, serde_json::json!({ "decision": decision }))
             .await?;
-        self.models.auto_decisions.push(decision);
+        self.models.auto.decided(decision);
         Ok(())
     }
 
-    /// At the end of a turn Auto chose the model of: move along the ladder
-    /// for what the turn says about the model. A turn the user put on a tier
-    /// says nothing about Auto's choice. Journaled when Auto changed; never
+    /// At the end of a turn: what it says about the model
+    /// ([`TurnEnd::of`]) moves Auto along the ladder
+    /// ([`AutoController::on_turn_end`]). Journaled when Auto changed; never
     /// fails the turn.
     pub(crate) async fn move_auto_model(&mut self, to: forge_types::TaskLifecycle) {
-        let Some(steps) = self.tracking.telemetry.auto_steps.take() else {
-            return;
-        };
         let on_a_tier = self
             .turn_signals()
             .iter()
             .any(|signal| signal.kind == crate::TurnSignalKind::TierApplied);
-        let end = match to {
-            _ if on_a_tier => TurnEnd::Neutral,
-            forge_types::TaskLifecycle::Completed => TurnEnd::Succeeded,
-            forge_types::TaskLifecycle::Failed if self.tracking.telemetry.work_failed => {
-                TurnEnd::Failed
-            }
-            _ => TurnEnd::Neutral,
-        };
-        let Some(auto) = self.models.auto.as_mut() else {
+        let end = TurnEnd::of(to, on_a_tier, self.tracking.telemetry.work_failed);
+        let Some(auto) = self.models.auto.on_turn_end(end) else {
             return;
         };
-        let before = auto.clone();
-        auto.after_turn(end, steps.saturating_sub(1));
-        if *auto == before {
-            return;
-        }
         let state = serde_json::json!({ "state": auto });
         if let Err(error) = self.journal.append_auto_model(self.session_id, state).await {
             tracing::warn!(%error, session = %self.session_id, "could not record Auto's step");

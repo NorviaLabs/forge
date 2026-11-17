@@ -266,3 +266,205 @@ fn auto_and_its_decisions_read_back_as_written() {
     assert_eq!(AutoSource::SteppedDown.to_string(), "stepped_down");
     assert_eq!(AutoSource::Ranked.to_string(), "ranked");
 }
+
+// ------------------------------------------------------------ controller
+
+use std::sync::Arc;
+
+use crate::auto_model::{AutoController, AutoStart, AutoTurnStart};
+use crate::AutoModelAdvisor;
+
+/// Starts every turn on `start`; knows `test/mid`'s and `test/big`'s
+/// efforts.
+struct Advisor {
+    start: ChildModel,
+    ranked: bool,
+}
+
+impl AutoModelAdvisor for Advisor {
+    fn start(&self, _fallback: &AutoFallback) -> AutoStart {
+        AutoStart {
+            model: self.start.clone(),
+            ranked: self.ranked,
+            reason: format!("{} ranks first", self.start.model),
+            evidence: None,
+        }
+    }
+
+    fn efforts(&self, model: &str, _profile_id: &str) -> ModelEfforts {
+        match model {
+            MID => mid_efforts(),
+            BIG => big_efforts(),
+            _ => ModelEfforts::default(),
+        }
+    }
+}
+
+fn small_fallback() -> AutoFallback {
+    AutoFallback {
+        model: SMALL.into(),
+        profile_id: "test".into(),
+        reasoning_effort: Some("low".into()),
+    }
+}
+
+/// Auto on, starting on mid @ medium (ranked), with big @ high as the
+/// strong tier: a ladder of 4 steps.
+fn controller() -> AutoController {
+    let mut auto = AutoController::default();
+    auto.advisor = Some(Arc::new(Advisor {
+        start: model(MID, Some("medium")),
+        ranked: true,
+    }));
+    auto.set_state(Some(AutoModel::new(small_fallback())));
+    auto
+}
+
+fn big_high(_start: &crate::ModelExecutionSelection) -> Option<ChildModel> {
+    Some(model(BIG, Some("high")))
+}
+
+fn turn(task_id: u64) -> AutoTurnStart<'static> {
+    AutoTurnStart {
+        task_id,
+        user_message: task_id as usize,
+        thinking_enabled: true,
+        strong: &big_high,
+    }
+}
+
+/// Start a turn, accept its decision, and say how it went: the decision.
+fn run(auto: &mut AutoController, task_id: u64, end: TurnEnd) -> AutoDecision {
+    let started = auto.on_turn_start(turn(task_id)).expect("Auto is on");
+    auto.decided(started.decision.clone());
+    auto.on_turn_end(end);
+    started.decision
+}
+
+#[test]
+fn with_auto_off_turns_are_left_alone() {
+    let mut auto = AutoController::default();
+    assert!(auto.on_turn_start(turn(1)).is_none());
+    assert_eq!(auto.on_turn_end(TurnEnd::Failed), None);
+    assert!(auto.decisions().is_empty());
+}
+
+/// A turn starts on the ranked start, the decision says so, and the model
+/// to run on is the ladder's first step.
+#[test]
+fn a_turn_starts_on_the_ranked_start() {
+    let mut auto = controller();
+    let started = auto.on_turn_start(turn(7)).unwrap();
+    assert_eq!(
+        (
+            started.rung.model.as_str(),
+            started.rung.reasoning_effort.as_deref()
+        ),
+        (MID, Some("medium"))
+    );
+    let decision = &started.decision;
+    assert_eq!(decision.source, AutoSource::Ranked);
+    assert_eq!((decision.step, decision.steps), (0, 4));
+    assert_eq!((decision.task_id, decision.user_message), (7, 7));
+    assert_eq!(decision.reason, "test/mid ranks first");
+    // Not a decision until the session has recorded it.
+    assert!(auto.decisions().is_empty());
+    auto.decided(started.decision.clone());
+    assert_eq!(auto.decisions(), [started.decision]);
+}
+
+/// Without an advisor the fallback is the start, and the ladder is only as
+/// long as what is known of it.
+#[test]
+fn without_an_advisor_a_turn_starts_on_the_fallback() {
+    let mut auto = AutoController::default();
+    auto.set_state(Some(AutoModel::new(small_fallback())));
+    let started = auto.on_turn_start(turn(1)).unwrap();
+    assert_eq!(started.rung.model, SMALL);
+    assert_eq!(started.decision.source, AutoSource::Fallback);
+    assert_eq!(
+        started.decision.reason,
+        "no ranking of models is available to this session"
+    );
+    // Without an advisor no model's efforts are known: the start, then the
+    // strong tier.
+    assert_eq!(started.decision.steps, 2);
+}
+
+/// A failed turn moves the next one up a step; two successes bring it back
+/// down. The new state is returned to be journaled; an unchanged one is
+/// not.
+#[test]
+fn failures_step_up_and_successes_step_down() {
+    let mut auto = controller();
+    let first = auto.on_turn_start(turn(1)).unwrap();
+    auto.decided(first.decision);
+    let moved = auto.on_turn_end(TurnEnd::Failed).expect("moved up");
+    assert_eq!(moved.position, 1);
+    assert_eq!(auto.state().unwrap().position, 1);
+
+    let second = run(&mut auto, 2, TurnEnd::Succeeded);
+    assert_eq!(second.source, AutoSource::SteppedUp);
+    assert_eq!(
+        (second.model.as_str(), second.reasoning_effort.as_deref()),
+        (MID, Some("high"))
+    );
+    assert_eq!(
+        auto.state().unwrap().position,
+        1,
+        "one success is not enough"
+    );
+
+    let third = run(&mut auto, 3, TurnEnd::Succeeded);
+    assert_eq!(third.source, AutoSource::SteppedUp);
+    assert_eq!(auto.state().unwrap().position, 0, "two successes step down");
+
+    let fourth = auto.on_turn_start(turn(4)).unwrap();
+    assert_eq!(fourth.decision.source, AutoSource::Ranked);
+    auto.decided(fourth.decision);
+    assert_eq!(auto.on_turn_end(TurnEnd::Neutral), None, "nothing moved");
+    assert_eq!(auto.decisions().len(), 4);
+}
+
+/// Only a turn Auto started moves the ladder: ending another turn (Auto
+/// turned on mid-turn) changes nothing.
+#[test]
+fn only_a_turn_auto_started_moves_the_ladder() {
+    let mut auto = controller();
+    assert_eq!(auto.on_turn_end(TurnEnd::Failed), None);
+    assert_eq!(auto.state().unwrap().position, 0);
+
+    // And a turn's end counts once.
+    let started = auto.on_turn_start(turn(1)).unwrap();
+    auto.decided(started.decision);
+    assert!(auto.on_turn_end(TurnEnd::Failed).is_some());
+    assert_eq!(auto.on_turn_end(TurnEnd::Failed), None);
+    assert_eq!(auto.state().unwrap().position, 1);
+}
+
+/// What a finished turn says about the model that ran it.
+#[test]
+fn a_turns_end_is_read_from_how_it_ended() {
+    use forge_types::TaskLifecycle::{Cancelled, Completed, Failed, Interrupted};
+    assert_eq!(TurnEnd::of(Completed, false, false), TurnEnd::Succeeded);
+    assert_eq!(TurnEnd::of(Failed, false, true), TurnEnd::Failed);
+    // A provider error or the user's denials: the work did not fail.
+    assert_eq!(TurnEnd::of(Failed, false, false), TurnEnd::Neutral);
+    assert_eq!(TurnEnd::of(Cancelled, false, false), TurnEnd::Neutral);
+    assert_eq!(TurnEnd::of(Interrupted, false, false), TurnEnd::Neutral);
+    // A turn on a tier the user asked for says nothing about Auto's choice.
+    assert_eq!(TurnEnd::of(Completed, true, false), TurnEnd::Neutral);
+    assert_eq!(TurnEnd::of(Failed, true, true), TurnEnd::Neutral);
+}
+
+/// Turning Auto off forgets the turn in progress; the decisions stay.
+#[test]
+fn turning_auto_off_leaves_the_turn_alone() {
+    let mut auto = controller();
+    let started = auto.on_turn_start(turn(1)).unwrap();
+    auto.decided(started.decision);
+    auto.set_state(None);
+    assert_eq!(auto.on_turn_end(TurnEnd::Failed), None);
+    assert!(auto.state().is_none());
+    assert_eq!(auto.decisions().len(), 1);
+}

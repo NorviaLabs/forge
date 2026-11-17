@@ -93,8 +93,6 @@ pub(crate) struct TurnTelemetry {
     cancel_reason: Option<TurnSignalKind>,
     pub(crate) escalated: bool,
     pub(crate) escalation_retry: bool,
-    /// Auto chose this turn's model, on a ladder of this many steps.
-    pub(crate) auto_steps: Option<usize>,
     /// The turn's work failed (the completion evaluator's verdict, not a
     /// provider error or the user's denials): Auto steps up.
     pub(crate) work_failed: bool,
