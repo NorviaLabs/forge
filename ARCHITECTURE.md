@@ -211,7 +211,8 @@ reason, evidence) goes into the child's profile, so it is journaled with the
 `AgentProfile` and survives a resume, and comes back in the `spawn_agent`
 result and as a `model_chosen` signal on each of the child's turns.
 `forge-session::subagent_models` is the advisor `open_session_with_model`
-installs (not for the offline mock): a `model_report::RankingSnapshot` of the
+installs (not for the offline mock), reading the ranking kept by
+`forge-session::model_ranking`: a `model_report::RankingSnapshot` of the
 last 90 days, shared by the project's sessions, built and rebuilt (after 60 s)
 in the background so a spawn never waits. Rebuilds are incremental
 (`JournalRanking` keeps each journal's totals with the size and time of its
@@ -227,7 +228,7 @@ picks **Auto** (`forge-core::auto_model`). `choose_auto_model`, run as each
 turn starts (`transition_to_new_task`, before the first model request), asks
 the session's `AutoModelAdvisor` for the start — the ranked best for `main`
 work on the fallback's provider (`forge-session::auto_models`, sharing
-`subagent_models`' ranking, cache, thresholds and rules, without
+`model_ranking`'s ranking, cache, thresholds and rules with subagents, without
 exploration), or the fallback — builds the step-up ladder from it (`ladder`:
 the start's higher efforts from the catalog, then the tier resolver's strong
 model and its efforts), and puts the turn on the current step; the decision

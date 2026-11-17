@@ -15,6 +15,7 @@ pub mod auto_models;
 mod control;
 pub mod headless;
 mod launch;
+pub mod model_ranking;
 pub mod model_report;
 mod model_selection;
 pub mod model_tiers;
@@ -215,18 +216,18 @@ fn install_model_advisors_with(
     models: Arc<model_selection::CatalogChildModels>,
     trust_store: Option<&std::path::Path>,
 ) {
-    let runnable: Arc<dyn subagent_models::RunnableModels> = match tiers {
+    let runnable: Arc<dyn model_ranking::RunnableModels> = match tiers {
         Some(table) => table,
-        None => Arc::new(subagent_models::UnknownRunnableModels),
+        None => Arc::new(model_ranking::UnknownRunnableModels),
     };
     // One source and one cache: the two advisors never build twice.
-    let source: Arc<dyn subagent_models::RankingSource> =
-        Arc::new(subagent_models::JournalRanking::for_workspace(
+    let source: Arc<dyn model_ranking::RankingSource> =
+        Arc::new(model_ranking::JournalRanking::for_workspace(
             journal_dir.to_path_buf(),
             cfg.workspace_root().to_path_buf(),
             trust_store.map(std::path::Path::to_path_buf),
         ));
-    let cache = subagent_models::shared_cache(journal_dir);
+    let cache = model_ranking::shared_cache(journal_dir);
     let settings = subagent_models::settings_for(cfg, trust_store);
     let auto = auto_models::RankedAutoModels::with_cache(
         source.clone(),
@@ -884,7 +885,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
 
         async fn ranking_built(journals: &std::path::Path) {
             for _ in 0..500 {
-                if subagent_models::shared_cache(journals).is_built() {
+                if model_ranking::shared_cache(journals).is_built() {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -964,7 +965,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             assert_eq!(result["model_choice"]["source"], "fallback");
             let reason = result["model_choice"]["reason"].as_str().unwrap();
             assert!(reason.contains("not trusted"), "{reason}");
-            assert!(!subagent_models::shared_cache(&world.journals).is_built());
+            assert!(!model_ranking::shared_cache(&world.journals).is_built());
         }
 
         #[tokio::test]
@@ -1051,7 +1052,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             let mut first = parent_session(&world, Arc::new(Delegating(Default::default()))).await;
             install(&world, &mut first);
             ranking_built(&world.journals).await;
-            let cache = subagent_models::shared_cache(&world.journals);
+            let cache = model_ranking::shared_cache(&world.journals);
             let built_at = cache.built_at();
 
             let mut second = parent_session(&world, Arc::new(Delegating(Default::default()))).await;
@@ -1059,7 +1060,7 @@ auth_mode = { api_key = { tui_always_prompt = true } }
             tokio::time::sleep(Duration::from_millis(100)).await;
             assert!(Arc::ptr_eq(
                 &cache,
-                &subagent_models::shared_cache(&world.journals)
+                &model_ranking::shared_cache(&world.journals)
             ));
             assert_eq!(cache.built_at(), built_at, "a fresh ranking is not rebuilt");
         }
