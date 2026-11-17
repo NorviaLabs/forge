@@ -220,6 +220,24 @@ pub trait RuntimeStorage {
     /// read-only callers (does this file exist yet?) that must not trigger
     /// lazy initialization just by checking.
     fn path_for_read(&self, kind: RuntimeDataKind) -> Option<PathBuf>;
+
+    /// Where a category's data already is, found without creating anything:
+    /// the usual place when it exists; else the application-data fallback
+    /// when the data went there (the repository could not be written to);
+    /// else the usual place. For readers of data written earlier, which
+    /// must look where the writers put it.
+    fn path_for_existing(&self, kind: RuntimeDataKind) -> Option<PathBuf> {
+        let usual = self.path_for_read(kind)?;
+        if usual.is_dir() {
+            return Some(usual);
+        }
+        let fallback =
+            forge_data_dir().map(|base| base.join(self.identity().as_str()).join(kind.subdir()));
+        Some(match fallback {
+            Some(fallback) if fallback.is_dir() => fallback,
+            _ => usual,
+        })
+    }
 }
 
 pub struct LocalRuntimeStorage {
@@ -524,6 +542,45 @@ mod tests {
             &exclude_path,
             EXCLUDE_PATTERN
         ));
+    }
+
+    /// Where data already is, found without creating anything: the usual
+    /// place; or the application-data fallback when that is where it went.
+    #[test]
+    fn path_for_existing_finds_the_data_where_it_is_without_creating_it() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let storage = LocalRuntimeStorage::new(dir.path());
+        let usual = storage.path_for_read(RuntimeDataKind::Session).unwrap();
+
+        // Nothing anywhere: the usual place, and nothing created.
+        assert_eq!(
+            storage.path_for_existing(RuntimeDataKind::Session),
+            Some(usual.clone())
+        );
+        assert!(!dir.path().join(".forge").exists());
+
+        // Sessions that went to the fallback are found there.
+        let fallback = forge_data_dir()
+            .unwrap()
+            .join(storage.identity().as_str())
+            .join("sessions");
+        std::fs::create_dir_all(&fallback).unwrap();
+        assert_eq!(
+            storage.path_for_existing(RuntimeDataKind::Session),
+            Some(fallback.clone())
+        );
+        assert!(!dir.path().join(".forge").exists());
+
+        // Once the usual place exists, it wins.
+        let written = storage.path_for(RuntimeDataKind::Session).unwrap();
+        assert_eq!(
+            storage
+                .path_for_existing(RuntimeDataKind::Session)
+                .map(|p| p.canonicalize().unwrap()),
+            Some(written.canonicalize().unwrap())
+        );
+        let _ = std::fs::remove_dir_all(fallback.parent().unwrap());
     }
 
     #[test]

@@ -25,6 +25,7 @@ mod snapshot;
 pub mod subagent_models;
 mod supervisor;
 mod topology;
+pub mod workspace_journals;
 
 pub use forge_storage::RepositoryRuntimeStorage;
 
@@ -94,17 +95,43 @@ pub struct OpenedSession {
 /// legacy runtime files were found already tracked by Git (never silently
 /// migrated or altered).
 pub fn resolve_journal_dir(cfg: &Config) -> (std::path::PathBuf, Vec<String>) {
+    journal_dir(cfg, JournalDirFor::Writing)
+}
+
+/// What a journal directory is wanted for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JournalDirFor {
+    /// A session is about to write: the directory is made ready (created,
+    /// git-excluded), falling back to application data when it cannot be.
+    Writing,
+    /// Reading what sessions wrote: nothing is created, and the directory
+    /// is wherever they put it (see `RuntimeStorage::path_for_existing`).
+    Reading,
+}
+
+/// Where `cfg`'s workspace keeps its session journals, for `purpose`, and
+/// any notices about it. One rule for writers and readers, so they agree.
+pub(crate) fn journal_dir(
+    cfg: &Config,
+    purpose: JournalDirFor,
+) -> (std::path::PathBuf, Vec<String>) {
     let topology = ProjectTopology::detect(cfg.workspace_root()).ok();
     if cfg.journal.path == forge_config::default_journal_path() {
         if let Some(storage) = topology.as_ref().and_then(|t| t.storage().ok()) {
-            let Ok(dir) = storage.path_for(RuntimeDataKind::Session) else {
-                return (cfg.journal_dir(), Vec::new());
-            };
-            let mut notices = Vec::new();
-            if let Some(reason) = storage.fallback_reason() {
-                notices.push(reason);
+            match purpose {
+                JournalDirFor::Writing => {
+                    let Ok(dir) = storage.path_for(RuntimeDataKind::Session) else {
+                        return (cfg.journal_dir(), Vec::new());
+                    };
+                    let notices = storage.fallback_reason().into_iter().collect();
+                    return (dir, notices);
+                }
+                JournalDirFor::Reading => {
+                    if let Some(dir) = storage.path_for_existing(RuntimeDataKind::Session) {
+                        return (dir, Vec::new());
+                    }
+                }
             }
-            return (dir, notices);
         }
     }
     let configured = std::path::PathBuf::from(&cfg.journal.path);

@@ -38,9 +38,10 @@ use forge_core::{
 use forge_types::TaskKind;
 
 use crate::model_report::{
-    list_session_journals, read_journals, Aggregator, GroupRef, RankedModel, RankingSnapshot,
-    ReportOptions, DEFAULT_MIN_TURNS,
+    read_journals, Aggregator, GroupRef, RankedModel, RankingSnapshot, ReportOptions,
+    DEFAULT_MIN_TURNS,
 };
+use crate::workspace_journals::WorkspaceJournals;
 
 /// How far back the turns a choice is based on go.
 pub const WINDOW_DAYS: u32 = 90;
@@ -71,10 +72,9 @@ pub const FULL_REBUILD_EVERY: Duration = Duration::from_secs(3600);
 /// that changed since the last — a workspace's history is mostly idle
 /// journals — and every journal at most every [`FULL_REBUILD_EVERY`].
 pub struct JournalRanking {
-    journal_dir: PathBuf,
-    /// The workspace whose trust every build checks again, and the trust
-    /// store (`None`: the user's own).
-    trust: Option<(PathBuf, Option<PathBuf>)>,
+    /// The journals, and the trust reading them takes — checked again at
+    /// every build.
+    journals: WorkspaceJournals,
     full_rebuild_every: Duration,
     kept: Arc<tokio::sync::Mutex<KeptTotals>>,
     reads: Arc<std::sync::atomic::AtomicUsize>,
@@ -116,9 +116,13 @@ impl FileStamp {
 impl JournalRanking {
     /// The journals in `journal_dir`, read whatever the trust.
     pub fn new(journal_dir: PathBuf) -> Self {
+        Self::reading(WorkspaceJournals::at(journal_dir))
+    }
+
+    /// The journals `journals` may read, as they may read them.
+    pub fn reading(journals: WorkspaceJournals) -> Self {
         Self {
-            journal_dir,
-            trust: None,
+            journals,
             full_rebuild_every: FULL_REBUILD_EVERY,
             kept: Arc::default(),
             reads: Arc::default(),
@@ -133,10 +137,11 @@ impl JournalRanking {
         workspace: PathBuf,
         trust_store: Option<PathBuf>,
     ) -> Self {
-        Self {
-            trust: Some((workspace, trust_store)),
-            ..Self::new(journal_dir)
-        }
+        Self::reading(WorkspaceJournals::for_workspace(
+            journal_dir,
+            workspace,
+            trust_store,
+        ))
     }
 
     /// Read every journal again this often (rather than every hour).
@@ -153,20 +158,14 @@ impl JournalRanking {
 
 impl RankingSource for JournalRanking {
     fn build(&self) -> SnapshotFuture {
-        let journal_dir = self.journal_dir.clone();
-        let trust = self.trust.clone();
+        let journals = self.journals.clone();
         let full_rebuild_every = self.full_rebuild_every;
         let kept = self.kept.clone();
         let reads = self.reads.clone();
         Box::pin(async move {
-            if let Some((workspace, store)) = &trust {
-                if !crate::launch::is_trusted(store.as_deref(), workspace) {
-                    return Err(crate::model_report::UntrustedWorkspace {
-                        workspace: workspace.clone(),
-                    }
-                    .into());
-                }
-            }
+            // Before anything kept is touched: an untrusted build changes
+            // nothing. (The listing checks again.)
+            journals.check_trust()?;
             let mut kept = kept.lock().await;
             let full = kept
                 .last_full
@@ -176,7 +175,7 @@ impl RankingSource for JournalRanking {
                 kept.since = Some(Utc::now() - chrono::Duration::days(i64::from(WINDOW_DAYS)));
                 kept.last_full = Some(Instant::now());
             }
-            let (journals, _) = list_session_journals(&journal_dir).await?;
+            let journals = journals.list().await?.journals;
             // A set: a workspace can hold thousands of journals.
             let listed: std::collections::HashSet<&PathBuf> = journals.iter().collect();
             kept.journals.retain(|path, _| listed.contains(path));
@@ -258,7 +257,7 @@ pub struct AdvisorSettings {
 pub fn settings_for(cfg: &Config, trust_store: Option<&Path>) -> AdvisorSettings {
     AdvisorSettings {
         mode: cfg.subagents.model_selection,
-        trusted: crate::launch::is_trusted(trust_store, cfg.workspace_root()),
+        trusted: crate::workspace_journals::is_workspace_trusted(trust_store, cfg.workspace_root()),
         exploration: Exploration::OneIn {
             n: EXPLORE_ONE_IN,
             seed: uuid::Uuid::new_v4().as_u64_pair().0,

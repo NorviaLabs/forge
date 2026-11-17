@@ -169,14 +169,18 @@ column when it is opened, its rows filled in by the same rule
 `forge-session::model_report` reads those records back for `forge models
 report`.
 
-- **Whose journals.** The workspace's own journals are read only when the
+- **Whose journals.** Everything that reads a workspace's journals outside
+  a session — this report and the model ranking below — lists them through
+  `forge-session::workspace_journals::WorkspaceJournals`, which holds the
+  rules in one place. The workspace's own journals are read only when the
   workspace is trusted — the same trust `LaunchPlan` requires before any
   session runs, so journals in an untrusted folder are not the user's (they
   could have been committed to the repository). An explicitly named,
   absolute journal directory needs no trust. The directory is found without
-  creating it: the repository-local one, or the application-data fallback
-  when that is where a repository Forge could not write to keeps its
-  sessions.
+  creating it, by the same resolver sessions write through (`journal_dir`;
+  `RuntimeStorage::path_for_existing`): the repository-local one, or the
+  application-data fallback when that is where a repository Forge could not
+  write to keeps its sessions.
 - **Reading.** Every `<session>.db` there is read without being changed
   (`forge_durable::scan_turn_records`): immutable when no session has the
   journal open, so not even SQLite's `-wal`/`-shm` files appear; through the

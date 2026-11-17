@@ -33,19 +33,18 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use chrono::{DateTime, NaiveDate, Utc};
 use forge_config::Config;
 use std::sync::Arc;
 
 use forge_durable::{TurnRecord, TurnRecordFilter, TurnRecordView};
-use forge_storage::RuntimeDataKind;
 use forge_types::TaskKind;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::ProjectTopology;
+use crate::workspace_journals::{JournalListing, WorkspaceJournals};
+pub use crate::workspace_journals::{SkippedJournal, UntrustedWorkspace};
 
 /// Fewer turns than this and a group is listed but not ranked.
 pub const DEFAULT_MIN_TURNS: usize = 5;
@@ -144,13 +143,6 @@ pub struct KindReport {
     /// Turns counted across every group of the kind.
     pub turns: usize,
     pub models: Vec<RankedModel>,
-}
-
-/// A journal the report could not read.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SkippedJournal {
-    pub path: PathBuf,
-    pub error: String,
 }
 
 /// The report for a journal directory.
@@ -699,7 +691,8 @@ pub async fn ranking_snapshot_in(
         since,
         ..ReportOptions::default()
     };
-    let (totals, skipped) = totals_in(journal_dir, &options).await?;
+    let (totals, skipped) =
+        totals_in(&WorkspaceJournals::at(journal_dir.to_path_buf()), &options).await?;
     for journal in &skipped {
         tracing::debug!(path = %journal.path.display(), error = %journal.error, "journal left out of the ranking");
     }
@@ -707,15 +700,6 @@ pub async fn ranking_snapshot_in(
 }
 
 // ------------------------------------------------------------ the journals
-
-/// Whether `path` is named like a session journal: `<session uuid>.db`.
-fn is_session_journal_name(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext == "db")
-        && path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.parse::<uuid::Uuid>().is_ok())
-}
 
 /// The report for every session journal in `journal_dir`. A missing
 /// directory is an empty report (and is not created); a journal that cannot
@@ -726,9 +710,17 @@ pub async fn model_report_in(
     journal_dir: &Path,
     options: &ReportOptions,
 ) -> anyhow::Result<ModelReport> {
-    let (totals, skipped) = totals_in(journal_dir, options).await?;
+    report_of(&WorkspaceJournals::at(journal_dir.to_path_buf()), options).await
+}
+
+/// The report for `journals`, refused as their listing is.
+async fn report_of(
+    journals: &WorkspaceJournals,
+    options: &ReportOptions,
+) -> anyhow::Result<ModelReport> {
+    let (totals, skipped) = totals_in(journals, options).await?;
     Ok(ModelReport {
-        journal_dir: journal_dir.to_path_buf(),
+        journal_dir: journals.dir().to_path_buf(),
         since: options.since,
         min_turns: options.min_turns,
         kinds: totals.finish(options.min_turns),
@@ -736,13 +728,16 @@ pub async fn model_report_in(
     })
 }
 
-/// The running totals of every session journal in `journal_dir`, and the
-/// journals skipped (see [`model_report_in`]).
+/// The running totals of every session journal `journals` may read, and
+/// the journals skipped (see [`WorkspaceJournals::list`]) or unreadable.
 async fn totals_in(
-    journal_dir: &Path,
+    journals: &WorkspaceJournals,
     options: &ReportOptions,
 ) -> anyhow::Result<(Aggregator, Vec<SkippedJournal>)> {
-    let (journals, mut skipped) = list_session_journals(journal_dir).await?;
+    let JournalListing {
+        journals,
+        mut skipped,
+    } = journals.list().await?;
     let mut totals = Aggregator::default();
     for (path, read) in read_journals(journals, options).await? {
         match read {
@@ -752,60 +747,6 @@ async fn totals_in(
     }
     skipped.sort_by(|a, b| a.path.cmp(&b.path));
     Ok((totals, skipped))
-}
-
-/// The session journals in `journal_dir` that may be read, in path order,
-/// and those that may not (a missing directory: none of either): a symbolic
-/// link is not followed; a journal the repository tracks was committed by
-/// someone (the directory is only git-excluded), not a session run here;
-/// and when Git cannot tell which are tracked, none is read.
-pub(crate) async fn list_session_journals(
-    journal_dir: &Path,
-) -> anyhow::Result<(Vec<PathBuf>, Vec<SkippedJournal>)> {
-    let mut journals = Vec::new();
-    let mut skipped = Vec::new();
-    if !journal_dir.is_dir() {
-        return Ok((journals, skipped));
-    }
-    let tracked = {
-        let dir = journal_dir.to_path_buf();
-        tokio::task::spawn_blocking(move || forge_storage::tracked_files(&dir)).await?
-    };
-    for entry in std::fs::read_dir(journal_dir)
-        .with_context(|| format!("could not list {}", journal_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        if !is_session_journal_name(&path) {
-            continue;
-        }
-        // The entry's own type: a symbolic link is not followed.
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink() {
-            skipped.push(SkippedJournal {
-                path,
-                error: "a symbolic link, not a journal file: not followed".into(),
-            });
-        } else if file_type.is_file() {
-            match &tracked {
-                Ok(None) => journals.push(path),
-                Ok(Some(names)) if !names.contains(&entry.file_name()) => journals.push(path),
-                Ok(Some(_)) => skipped.push(SkippedJournal {
-                    path,
-                    error: "committed to the repository, not a session run here: not read".into(),
-                }),
-                Err(error) => skipped.push(SkippedJournal {
-                    path,
-                    error: format!(
-                        "cannot tell whether it was committed to the repository ({error}): \
-                         not read"
-                    ),
-                }),
-            }
-        }
-    }
-    journals.sort();
-    Ok((journals, skipped))
 }
 
 /// Each of `journals`' totals, read [`CONCURRENT_JOURNALS`] at a time; an
@@ -879,52 +820,7 @@ async fn read_journal(path: &Path, options: &ReportOptions) -> Result<Aggregator
 /// fallback does (the repository could not be written to), that is where
 /// the sessions went.
 pub fn report_journal_dir(cfg: &Config) -> PathBuf {
-    let topology = ProjectTopology::detect(cfg.workspace_root()).ok();
-    if cfg.journal.path == forge_config::default_journal_path() {
-        let storage = topology.as_ref().and_then(|t| t.storage().ok());
-        if let Some(storage) = storage {
-            if let Some(dir) = storage.path_for_read(RuntimeDataKind::Session) {
-                if dir.is_dir() {
-                    return dir;
-                }
-                let fallback = forge_storage::forge_data_dir().and_then(|base| {
-                    dir.file_name()
-                        .map(|sub| base.join(storage.identity().as_str()).join(sub))
-                });
-                return match fallback {
-                    Some(fallback) if fallback.is_dir() => fallback,
-                    _ => dir,
-                };
-            }
-        }
-    }
-    let configured = PathBuf::from(&cfg.journal.path);
-    if configured.is_absolute() {
-        return configured;
-    }
-    match topology {
-        Some(topology) => topology.root().join(configured),
-        None => cfg.journal_dir(),
-    }
-}
-
-/// The workspace is not trusted, and the journals asked for are the
-/// workspace's own: Forge wrote none of them, so they are not read.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "`{}` is not trusted: Forge runs no sessions in a workspace you have not trusted, \
-     so any journals there are not yours",
-    workspace.display()
-)]
-pub struct UntrustedWorkspace {
-    pub workspace: PathBuf,
-}
-
-/// Whether `cfg` asks for the workspace's own journals (the default
-/// location, or a path relative to the workspace) rather than a directory
-/// named explicitly.
-fn reads_workspace_journals(cfg: &Config) -> bool {
-    !Path::new(&cfg.journal.path).is_absolute()
+    crate::journal_dir(cfg, crate::JournalDirFor::Reading).0
 }
 
 /// The report for `cfg`'s workspace. Refused with [`UntrustedWorkspace`]
@@ -941,16 +837,7 @@ pub async fn model_report_with_trust_store(
     options: &ReportOptions,
     trust_store: Option<PathBuf>,
 ) -> anyhow::Result<ModelReport> {
-    let workspace = cfg.workspace_root();
-    if reads_workspace_journals(cfg)
-        && !crate::launch::is_trusted(trust_store.as_deref(), workspace)
-    {
-        return Err(UntrustedWorkspace {
-            workspace: workspace.to_path_buf(),
-        }
-        .into());
-    }
-    model_report_in(&report_journal_dir(cfg), options).await
+    report_of(&WorkspaceJournals::for_config(cfg, trust_store), options).await
 }
 
 /// The models for one kind in `cfg`'s workspace, with their turn counts:
