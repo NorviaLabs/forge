@@ -7,7 +7,9 @@
 //! machine had written them: sessions it never ran, histories with words it
 //! never said. So a `.forge/local` holding anything Git tracks is not used
 //! at all (see `LocalRuntimeStorage`); nor is one whose contents Git cannot
-//! vouch for. Asked once per repository per process.
+//! vouch for; nor one reached through a symbolic link (`.forge` or
+//! `.forge/local` itself), which Git would not look through. Asked once per
+//! repository per process.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,6 +32,11 @@ pub(crate) enum LocalDirVerdict {
     Tracked(Vec<PathBuf>),
     /// Git could not say (its error).
     Unknown(String),
+    /// `.forge` or `.forge/local` (this one) is a symbolic link: through it
+    /// a repository could hand over files it committed elsewhere, which Git
+    /// does not list under `.forge/local` — and Forge would write wherever
+    /// it points.
+    Linked(PathBuf),
 }
 
 impl LocalDirVerdict {
@@ -65,6 +72,14 @@ impl LocalDirVerdict {
                     names.join(", ")
                 ))
             }
+            Self::Linked(link) => Some(format!(
+                "`{}` is a symbolic link: Forge does not follow it for its runtime state (a \
+                 repository could point it at files it committed), so it does not use \
+                 `.forge/local`. Runtime state is kept in Forge's application-data directory \
+                 instead. To use `.forge/local` again, make it a plain directory and restart \
+                 Forge.",
+                link.display()
+            )),
             Self::Unknown(error) => Some(format!(
                 "Forge could not tell whether `.forge/local` holds files committed to the \
                  repository (Git: {}), so it does not use it. {fix}",
@@ -77,8 +92,17 @@ impl LocalDirVerdict {
 /// Runs Git in a directory with arguments.
 pub(crate) type Git<'a> = dyn FnMut(&Path, &[&str]) -> std::io::Result<Output> + 'a;
 
-/// Ask Git, in the repository at `root`, what it tracks in `.forge/local`.
+/// Whether `.forge/local` in the repository at `root` is Forge's own: not
+/// reached through a symbolic link (checked without following one), and
+/// holding nothing Git — asked with `git` — tracks.
 pub(crate) fn check_with(root: &Path, git: &mut Git<'_>) -> LocalDirVerdict {
+    for part in [".forge", LOCAL_DIR] {
+        let is_link = std::fs::symlink_metadata(root.join(part))
+            .is_ok_and(|meta| meta.file_type().is_symlink());
+        if is_link {
+            return LocalDirVerdict::Linked(PathBuf::from(part));
+        }
+    }
     let output = match git(root, &["ls-files", "-z", "--", LOCAL_DIR]) {
         Ok(output) => output,
         Err(error) => return LocalDirVerdict::Unknown(format!("could not run git: {error}")),
@@ -257,6 +281,32 @@ mod tests {
             output(128, b"", b"fatal: bad \x1b]0;x\x07 path")
         });
         assert!(!failed.notice().unwrap().contains('\x1b'));
+    }
+
+    /// A `.forge` or `.forge/local` that is a symbolic link is not used,
+    /// whatever Git says: through it a repository could hand over files it
+    /// committed elsewhere, which Git does not list under `.forge/local`.
+    #[test]
+    fn a_symbolic_link_is_not_used_whatever_git_says() {
+        for linked in [".forge", ".forge/local"] {
+            let root = tempfile::tempdir().unwrap();
+            let target = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(root.path().join(".forge")).unwrap();
+            if linked == ".forge" {
+                std::fs::remove_dir(root.path().join(".forge")).unwrap();
+            }
+            std::os::unix::fs::symlink(target.path(), root.path().join(linked)).unwrap();
+            let verdict = check_with(root.path(), &mut |_, _| output(0, b"", b""));
+            assert_eq!(verdict, LocalDirVerdict::Linked(PathBuf::from(linked)));
+            let notice = verdict.notice().unwrap();
+            assert!(notice.contains("symbolic link"), "{notice}");
+            assert!(notice.contains(&format!("`{linked}`")), "{notice}");
+        }
+        // Real directories are Forge's as usual.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".forge/local")).unwrap();
+        let verdict = check_with(root.path(), &mut |_, _| output(0, b"", b""));
+        assert_eq!(verdict, LocalDirVerdict::Clean);
     }
 
     /// One Git run per repository per process, however many times storage

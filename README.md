@@ -411,8 +411,10 @@ repository's runtime state in the application-data directory instead, says
 so when the project opens (and in `forge models report`), and changes
 nothing in `.forge/local`. To use it again, run
 `git rm -r --cached .forge/local`, commit, and restart Forge. The same
-applies when Git cannot tell what it tracks there. Folders that are not Git
-repositories keep their `.forge/local` as it is.
+applies when Git cannot tell what it tracks there, and when `.forge` or
+`.forge/local` is a symbolic link (Forge does not follow one for its runtime
+state). Folders that are not Git repositories keep their `.forge/local` as
+it is.
 
 ### MCP servers
 

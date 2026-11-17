@@ -704,6 +704,42 @@ mod tests {
         remove_app_data(&storage);
     }
 
+    /// A committed `.forge` that is a symbolic link (to a directory the
+    /// repository also commits, say) is not followed: `.forge/local` is not
+    /// used, and nothing is written where the link points.
+    #[test]
+    fn a_committed_symbolic_link_is_not_followed() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let elsewhere = TempDir::new().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join(".forge")).unwrap();
+        run(dir.path(), &["add", ".forge"]);
+        run(dir.path(), &["commit", "-q", "-m", "link"]);
+        let storage = LocalRuntimeStorage::new(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::ApplicationData);
+        storage.path_for(RuntimeDataKind::Session).unwrap();
+        assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+        remove_app_data(&storage);
+    }
+
+    /// A `.forge/local` that is a symbolic link is not followed either, and
+    /// the notice says why.
+    #[test]
+    fn a_linked_forge_local_is_not_followed() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let elsewhere = TempDir::new().unwrap();
+        std::fs::create_dir(dir.path().join(".forge")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join(".forge/local")).unwrap();
+        let storage = LocalRuntimeStorage::new(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::ApplicationData);
+        let notice = storage.fallback_reason().expect("a notice");
+        assert!(notice.contains("symbolic link"), "{notice}");
+        storage.path_for(RuntimeDataKind::Session).unwrap();
+        assert_eq!(std::fs::read_dir(elsewhere.path()).unwrap().count(), 0);
+        remove_app_data(&storage);
+    }
+
     /// A committed name is shown escaped: it cannot drive a terminal.
     #[test]
     fn a_committed_name_is_escaped_in_the_notice() {
