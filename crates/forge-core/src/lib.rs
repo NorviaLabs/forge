@@ -110,6 +110,7 @@ use crate::turn_state::TurnState;
 
 mod helpers;
 mod session;
+mod session_models;
 mod types;
 
 pub use helpers::{session_messages, session_title_hint, TURN_FAILED_MARKER};
@@ -257,19 +258,8 @@ pub struct AgentSession {
     /// Turn records and signals, the turn-scoped model tier, and a pending
     /// strong-tier escalation (see `turn_record` and `tiers`).
     tracking: turn_record::TurnTracking,
-    /// Chooses where Auto turns start (the session's owner installs it).
-    auto_advisor: Option<Arc<dyn auto_model::AutoModelAdvisor>>,
-    /// Auto, when the user chose it for this (top-level) session.
-    auto_model: Option<auto_model::AutoModel>,
-    /// The model and effort Auto chose for each of its turns, and why.
-    auto_decisions: Vec<auto_model::AutoDecision>,
-    /// Chooses the model of a child started without a tier or a model.
-    /// Installed by the session's owner; a child has none (it cannot spawn).
-    model_advisor: Option<Arc<dyn model_choice::SubagentModelAdvisor>>,
-    /// What this session's turns are recorded as: `main` for a top-level
-    /// session, `subagent` or `custom:<name>` for a child. Set when the
-    /// session is built or switched to another journal.
-    task_kind: forge_types::TaskKind,
+    /// Its task kind, the model advisors, and Auto (see `session_models`).
+    models: session_models::SessionModels,
     /// Resolves model tiers. Installed by the session's owner and shared
     /// with the subagents this session spawns, which need it to escalate.
     tier_resolver: Option<Arc<dyn tiers::ModelTierResolver>>,

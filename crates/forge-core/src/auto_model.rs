@@ -269,7 +269,7 @@ fn named(model: &ChildModel) -> String {
 impl crate::AgentSession {
     /// Install the advisor that chooses where Auto turns start.
     pub fn set_auto_model_advisor(&mut self, advisor: std::sync::Arc<dyn AutoModelAdvisor>) {
-        self.auto_advisor = Some(advisor);
+        self.models.auto_advisor = Some(advisor);
     }
 
     /// Turn Auto on, falling back on `fallback` when the evidence is thin.
@@ -280,35 +280,36 @@ impl crate::AgentSession {
         self.journal
             .append_auto_model(self.session_id, serde_json::json!({ "state": auto }))
             .await?;
-        self.auto_model = Some(auto);
+        self.models.auto = Some(auto);
         Ok(())
     }
 
     /// Turn Auto off (the user picked a model). Journaled.
     pub async fn clear_auto_model(&mut self) -> Result<(), crate::LoopError> {
-        if self.auto_model.is_none() {
+        if self.models.auto.is_none() {
             return Ok(());
         }
         self.journal
             .append_auto_model(self.session_id, serde_json::json!({ "state": null }))
             .await?;
-        self.auto_model = None;
+        self.models.auto = None;
         Ok(())
     }
 
     /// Auto, when it is on.
     pub fn auto_model(&self) -> Option<&AutoModel> {
-        self.auto_model.as_ref()
+        self.models.auto.as_ref()
     }
 
     /// The model and effort Auto chose for each of its turns, and why.
     pub fn auto_decisions(&self) -> &[AutoDecision] {
-        &self.auto_decisions
+        &self.models.auto_decisions
     }
 
     /// A model's efforts, from the advisor (none without one).
     fn efforts_of(&self, model: &ChildModel) -> ModelEfforts {
-        self.auto_advisor
+        self.models
+            .auto_advisor
             .as_ref()
             .map(|advisor| advisor.efforts(&model.model, &model.profile_id))
             .unwrap_or_default()
@@ -322,10 +323,10 @@ impl crate::AgentSession {
         if self.is_subagent() {
             return Ok(());
         }
-        let Some(auto) = self.auto_model.clone() else {
+        let Some(auto) = self.models.auto.clone() else {
             return Ok(());
         };
-        let start = match &self.auto_advisor {
+        let start = match &self.models.auto_advisor {
             Some(advisor) => advisor.start(&auto.fallback),
             None => AutoStart {
                 model: ChildModel {
@@ -397,7 +398,7 @@ impl crate::AgentSession {
         self.journal
             .append_auto_model(self.session_id, serde_json::json!({ "decision": decision }))
             .await?;
-        self.auto_decisions.push(decision);
+        self.models.auto_decisions.push(decision);
         Ok(())
     }
 
@@ -421,7 +422,7 @@ impl crate::AgentSession {
             }
             _ => TurnEnd::Neutral,
         };
-        let Some(auto) = self.auto_model.as_mut() else {
+        let Some(auto) = self.models.auto.as_mut() else {
             return;
         };
         let before = auto.clone();

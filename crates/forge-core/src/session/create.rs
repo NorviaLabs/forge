@@ -82,10 +82,12 @@ impl AgentSession {
             detail: format!("seq={}", state.last_seq),
         }];
         self.journal = SessionPersistence::new(journal);
-        self.task_kind =
-            crate::custom_agents::kind_of_journaled_session(state.agent_profile.as_ref(), false);
-        self.auto_model = crate::auto_model::auto_from_journal(state.auto_model.as_ref());
-        self.auto_decisions = crate::auto_model::decisions_from_journal(&state.auto_decisions);
+        self.models.reopen_from(
+            state.agent_profile.as_ref(),
+            state.auto_model.as_ref(),
+            &state.auto_decisions,
+            false,
+        );
         let credential_env_names = std::sync::Arc::clone(&self.tool_ctx.credential_env_names);
         self.tool_ctx = ToolContext::new(active_root)
             .with_session_id(session_id)
@@ -272,11 +274,7 @@ impl AgentSession {
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
-            model_advisor: None,
-            auto_advisor: None,
-            auto_model: None,
-            auto_decisions: Vec::new(),
-            task_kind: forge_types::TaskKind::Main,
+            models: crate::session_models::SessionModels::new(forge_types::TaskKind::Main),
             tier_resolver: None,
             verification_commands: Default::default(),
         })
@@ -393,12 +391,10 @@ impl AgentSession {
             agents_section: custom_agents.section.clone(),
             agents_project_root: Some(custom_agents.project_root.clone()),
             tracking: Default::default(),
-            model_advisor: None,
-            auto_advisor: None,
-            auto_model: crate::auto_model::auto_from_journal(state.auto_model.as_ref()),
-            auto_decisions: crate::auto_model::decisions_from_journal(&state.auto_decisions),
-            task_kind: crate::custom_agents::kind_of_journaled_session(
+            models: crate::session_models::SessionModels::reopened(
                 state.agent_profile.as_ref(),
+                state.auto_model.as_ref(),
+                &state.auto_decisions,
                 false,
             ),
             tier_resolver: None,

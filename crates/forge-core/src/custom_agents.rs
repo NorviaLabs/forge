@@ -551,7 +551,7 @@ impl AgentSession {
         &self,
         kind: forge_types::TaskKind,
     ) -> (Option<ChildModel>, Option<crate::ModelChoice>) {
-        let Some(advisor) = &self.model_advisor else {
+        let Some(advisor) = &self.models.subagent_advisor else {
             return (None, None);
         };
         // The model the user chose, not a tier this turn switched to.
@@ -566,7 +566,7 @@ impl AgentSession {
     /// Install the advisor that chooses the model of a child started without
     /// a tier or a model.
     pub fn set_subagent_model_advisor(&mut self, advisor: Arc<dyn crate::SubagentModelAdvisor>) {
-        self.model_advisor = Some(advisor);
+        self.models.subagent_advisor = Some(advisor);
     }
 }
 
