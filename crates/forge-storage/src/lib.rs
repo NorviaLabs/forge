@@ -9,11 +9,18 @@
 //! directory otherwise. No other component should construct these paths
 //! independently — see [`RuntimeStorage`].
 //!
+//! A `.forge/local` that holds anything Git tracks is not used at all: the
+//! exclude rule keeps Forge's files out of commits, but cannot stop someone
+//! committing files there (`git add -f`), and a clone would then read them
+//! as this machine's own sessions. Such a repository's runtime state goes
+//! to application data instead, with a notice (see `local_dir`).
+//!
 //! The rest of `.forge/` (`rules/`, `agents/`, `skills/`, `workflows/`) is
 //! project-owned and untouched by this crate — it stays Git-visible.
 
 mod exclude;
 mod git;
+mod local_dir;
 mod migrate;
 mod resolver;
 pub mod worktree;

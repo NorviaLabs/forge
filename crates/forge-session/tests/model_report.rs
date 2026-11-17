@@ -23,8 +23,8 @@ use chrono::{DateTime, TimeZone, Utc};
 use forge_durable::{new_session_id, Journal, TurnRecord};
 use forge_session::model_report::{
     build_report, model_report_in, model_report_with_trust_store, parse_since,
-    ranked_models_with_trust_store, KindReport, RankStatus, RankedModel, ReportOptions,
-    UntrustedWorkspace, DEFAULT_MIN_TURNS,
+    ranked_models_with_trust_store, report_notices, KindReport, RankStatus, RankedModel,
+    ReportOptions, UntrustedWorkspace, DEFAULT_MIN_TURNS,
 };
 use forge_test_support::turn_records::TurnRecordBuilder;
 use forge_types::TaskKind;
@@ -1171,9 +1171,50 @@ async fn many_journals_give_the_same_report_every_time() {
     }
 }
 
+/// A repository whose `.forge/local` holds committed files does not get it
+/// used: the workspace keeps its sessions in application data, and that is
+/// what the report reads — none of `.forge/local`'s journals, committed or
+/// not — saying why.
+#[tokio::test]
+async fn a_committed_forge_local_is_not_read_and_the_report_says_why() {
+    let repo = tempfile::tempdir().unwrap();
+    init_repo(repo.path());
+    let sessions = repo.path().join(".forge/local/sessions");
+    write_journals(&sessions, all_turns()).await;
+    settle(&sessions).await;
+    git(repo.path(), &["add", "-f", ".forge"]);
+    git(repo.path(), &["commit", "-q", "-m", "add journals"]);
+    let mine: Vec<TurnRecord> = subagent_turns().into_iter().map(|t| t.0).collect();
+    write_journals(&sessions, mine).await;
+    settle(&sessions).await;
+
+    let cfg = repo_config(repo.path());
+    let (_trust, store) = trust_store(&[repo.path()]);
+    let report = model_report_with_trust_store(&cfg, &options(), Some(store))
+        .await
+        .unwrap();
+    let app_data = forge_storage::forge_data_dir().unwrap();
+    assert!(
+        report.journal_dir.starts_with(&app_data),
+        "{}",
+        report.journal_dir.display()
+    );
+    assert!(report.kinds.is_empty(), "{:?}", report.kinds);
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let notices = report_notices(&cfg);
+    assert!(
+        notices.iter().any(|n| n.contains("`.forge/local` holds")),
+        "{notices:?}"
+    );
+    assert!(!report.journal_dir.exists(), "reading created nothing");
+}
+
 /// A journal committed to the repository is not a session this machine ran
-/// (`.forge/local` is only git-excluded, so `git add -f` gets past it): even
-/// in a trusted repository it is skipped, and listed as committed.
+/// (`.forge/local` is only git-excluded, so `git add -f` gets past it): in
+/// a directory read directly it is skipped, and listed as committed — a
+/// second line of defence, since the workspace's own journals are not read
+/// from a `.forge/local` Git tracks anything in at all (see
+/// `a_committed_forge_local_is_not_read_and_the_report_says_why`).
 #[tokio::test]
 async fn journals_committed_to_a_trusted_repository_are_skipped_not_counted() {
     let repo = tempfile::tempdir().unwrap();
@@ -1192,10 +1233,7 @@ async fn journals_committed_to_a_trusted_repository_are_skipped_not_counted() {
     write_journals(&sessions, mine.clone()).await;
     settle(&sessions).await;
 
-    let (_trust, store) = trust_store(&[repo.path()]);
-    let report = model_report_with_trust_store(&repo_config(repo.path()), &options(), Some(store))
-        .await
-        .unwrap();
+    let report = model_report_in(&sessions, &options()).await.unwrap();
     assert_eq!(report.kinds, build_report(mine, &options()));
     let mut skipped: Vec<PathBuf> = report.skipped.iter().map(|s| s.path.clone()).collect();
     skipped.sort();
@@ -1206,7 +1244,8 @@ async fn journals_committed_to_a_trusted_repository_are_skipped_not_counted() {
 }
 
 /// Inside a repository whose tracked files git cannot list, no journal can
-/// be told apart from a committed one: none is read.
+/// be told apart from a committed one: none is read (from a directory read
+/// directly; the workspace's own `.forge/local` is then not read at all).
 #[tokio::test]
 async fn when_git_cannot_tell_which_journals_are_committed_none_are_read() {
     let repo = tempfile::tempdir().unwrap();
@@ -1216,10 +1255,7 @@ async fn when_git_cannot_tell_which_journals_are_committed_none_are_read() {
     settle(&sessions).await;
     std::fs::write(repo.path().join(".git/index"), "not an index").unwrap();
 
-    let (_trust, store) = trust_store(&[repo.path()]);
-    let report = model_report_with_trust_store(&repo_config(repo.path()), &options(), Some(store))
-        .await
-        .unwrap();
+    let report = model_report_in(&sessions, &options()).await.unwrap();
     assert!(report.kinds.is_empty(), "{:?}", report.kinds);
     assert!(!report.skipped.is_empty());
     assert!(

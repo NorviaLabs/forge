@@ -125,7 +125,8 @@ async fn an_untrusted_workspaces_journals_cannot_be_listed() {
 
 /// Every listing rule, in one place: committed journals, symbolic links and
 /// files that are not session journals are not listed; the first two are
-/// reported as skipped.
+/// reported as skipped. (Read directly: a workspace's own `.forge/local` is
+/// not read at all once Git tracks anything in it — `forge_storage`.)
 #[tokio::test]
 async fn a_listing_keeps_only_the_sessions_run_here() {
     let workspace = repo();
@@ -141,12 +142,10 @@ async fn a_listing_keeps_only_the_sessions_run_here() {
     std::os::unix::fs::symlink(&target, &link).unwrap();
     std::fs::write(sessions.join("notes.txt"), "x").unwrap();
 
-    let scratch = tempfile::tempdir().unwrap();
-    let journals = WorkspaceJournals::for_config(
-        &config(workspace.path()),
-        Some(store(scratch.path(), &[workspace.path()])),
-    );
-    let listing = journals.list().await.unwrap();
+    let listing = WorkspaceJournals::at(sessions.clone())
+        .list()
+        .await
+        .unwrap();
     assert_eq!(listing.journals, [mine]);
     let mut skipped: Vec<(PathBuf, bool)> = listing
         .skipped

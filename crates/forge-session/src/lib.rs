@@ -129,7 +129,10 @@ pub(crate) fn journal_dir(
                 }
                 JournalDirFor::Reading => {
                     if let Some(dir) = storage.path_for_existing(RuntimeDataKind::Session) {
-                        return (dir, Vec::new());
+                        // Why the sessions are not in `.forge/local`, when a
+                        // reader can already tell (it was committed to).
+                        let notices = storage.fallback_reason().into_iter().collect();
+                        return (dir, notices);
                     }
                 }
             }

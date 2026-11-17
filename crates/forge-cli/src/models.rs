@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
 use forge_config::{Config, ConfigOverrides};
 use forge_session::model_report::{
-    model_report, parse_since, KindReport, ModelReport, RankedModel, ReportOptions,
+    model_report, parse_since, report_notices, KindReport, ModelReport, RankedModel, ReportOptions,
     UntrustedWorkspace, DEFAULT_MIN_TURNS,
 };
 use forge_types::TaskKind;
@@ -94,6 +94,9 @@ pub(crate) async fn run(command: ModelsCommand) -> anyhow::Result<ExitCode> {
             return Err(error);
         }
     };
+    for notice in report_notices(&cfg) {
+        eprintln!("warning: {}", printable(&notice));
+    }
     for skipped in &report.skipped {
         eprintln!(
             "warning: skipped {}: {}",

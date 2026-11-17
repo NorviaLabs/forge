@@ -179,6 +179,13 @@ pub fn report_journal_dir(cfg: &Config) -> PathBuf {
     crate::journal_dir(cfg, crate::JournalDirFor::Reading).0
 }
 
+/// What the user should know about where [`report_journal_dir`] found the
+/// journals: why they are not in `.forge/local`, when the repository
+/// committed files there (see `forge_storage`). Empty as a rule.
+pub fn report_notices(cfg: &Config) -> Vec<String> {
+    crate::journal_dir(cfg, crate::JournalDirFor::Reading).1
+}
+
 /// The report for `cfg`'s workspace. Refused with [`UntrustedWorkspace`]
 /// when the workspace's own journals are asked for and the user has not
 /// trusted it.

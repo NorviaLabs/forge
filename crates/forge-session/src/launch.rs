@@ -523,6 +523,115 @@ mod tests {
         }
     }
 
+    fn git(repo: &Path, args: &[&str]) {
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    /// A repository that commits its `.forge/local` — the session list and
+    /// the journals — does not plant those sessions in a clone: the clone
+    /// lists none of them and cannot open one, keeps its own sessions in
+    /// application data, and says why.
+    #[tokio::test]
+    async fn sessions_committed_to_a_repository_are_not_a_clones_own() {
+        // Where the sessions really ran, in Forge's usual `.forge/local`.
+        let mut origin = Fixture::new(true);
+        origin.cfg.journal.path = forge_config::default_journal_path();
+        let opened = open_session(&origin.cfg, SessionTarget::New).await.unwrap();
+        let planted = opened.session.session_id;
+        drop(opened);
+        let control = origin.control().await;
+        control
+            .register_session(
+                NewRepositorySession {
+                    session_id: planted,
+                    label: "planted".into(),
+                    workspace: origin.repo.path().to_path_buf(),
+                    branch: "main".into(),
+                    ownership: WorktreeOwnership::Primary,
+                    slot: None,
+                    model_id: "mock".into(),
+                    profile_id: String::new(),
+                    reasoning_effort: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let control_db = control.path().to_path_buf();
+        drop(control);
+        let local = origin.repo.path().join(".forge/local");
+        let journal = local.join(format!("sessions/{planted}.db"));
+        assert!(journal.is_file(), "the session ran in .forge/local");
+        wait_closed(&journal).await;
+        wait_closed(&control_db).await;
+        git(origin.repo.path(), &["add", "-f", ".forge/local"]);
+        git(origin.repo.path(), &["commit", "-q", "-m", "sessions"]);
+
+        // Someone clones the repository, and trusts it.
+        let elsewhere = TempDir::new().unwrap();
+        let cloned = elsewhere.path().join("clone");
+        git(
+            elsewhere.path(),
+            &[
+                "clone",
+                "-q",
+                &origin.repo.path().display().to_string(),
+                "clone",
+            ],
+        );
+        assert!(cloned
+            .join(format!(".forge/local/sessions/{planted}.db"))
+            .is_file());
+        let mut cfg = Config {
+            resolved_workspace: cloned.clone(),
+            workspace_root: Some(cloned.display().to_string()),
+            ..Default::default()
+        };
+        cfg.model.mock = true;
+        let trust = TempDir::new().unwrap();
+        let store = trust.path().join("trust.toml");
+        forge_config::grant_trust_at(&store, &cloned).unwrap();
+
+        let launched = LaunchPlan::prepare_with_trust_store(&cfg, Some(store.clone()))
+            .await
+            .unwrap()
+            .launch(LaunchTarget::Continue)
+            .await
+            .unwrap();
+        let own = launched.opened.session.session_id;
+        assert_ne!(own, planted, "the committed session is not continued");
+        assert!(launched.bootstrap.session(planted).await.is_err());
+        assert!(
+            launched
+                .notices
+                .iter()
+                .any(|notice| notice.contains("`.forge/local` holds")),
+            "{:?}",
+            launched.notices
+        );
+        let storage = crate::RepositoryRuntimeStorage::new(&cloned).unwrap();
+        let app_data = forge_storage::forge_data_dir()
+            .unwrap()
+            .join(storage.identity().as_str());
+        assert!(app_data.join(format!("sessions/{own}.db")).is_file());
+        drop(launched);
+
+        // Nor can it be opened by its id.
+        let resumed = LaunchPlan::prepare_with_trust_store(&cfg, Some(store))
+            .await
+            .unwrap()
+            .launch(LaunchTarget::Resume(planted))
+            .await;
+        assert!(resumed.is_err(), "the committed session is not resumable");
+        let _ = std::fs::remove_dir_all(app_data);
+    }
+
     #[tokio::test]
     async fn prepare_reports_whether_trust_is_needed() {
         let untrusted = Fixture::new(false);

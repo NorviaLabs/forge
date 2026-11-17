@@ -404,6 +404,16 @@ possible, or in the platform application-data directory outside a Git
 repository. `FORGE_DATA_DIR` replaces that directory; `cargo test` and
 `cargo run` in this repository set it to `target/forge-data`. Runtime data is not source code and should not be committed.
 
+Forge does not use a `.forge/local` that holds anything Git tracks: files
+committed there are not sessions this machine ran (a repository could
+otherwise hand you a session list and histories it made up). It keeps that
+repository's runtime state in the application-data directory instead, says
+so when the project opens (and in `forge models report`), and changes
+nothing in `.forge/local`. To use it again, run
+`git rm -r --cached .forge/local`, commit, and restart Forge. The same
+applies when Git cannot tell what it tracks there. Folders that are not Git
+repositories keep their `.forge/local` as it is.
+
 ### MCP servers
 
 MCP servers can be configured in a trusted user config or an explicitly

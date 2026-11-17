@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::exclude::{ensure_managed_block, resolve_exclude_path, ExcludeError};
 use crate::git::{detect_repo_info, GitTopology, RepoInfo};
+use crate::local_dir::LocalDirVerdict;
 use crate::migrate::{migrate_legacy_runtime_files, MigrationRecord};
 
 /// The Forge-managed exclude pattern. Deliberately narrow: excludes only
@@ -247,6 +248,9 @@ pub struct LocalRuntimeStorage {
     effective_mode: OnceCell<StorageMode>,
     fallback_reason: RefCell<Option<String>>,
     migration_report: RefCell<Vec<MigrationRecord>>,
+    /// Whether the repository's `.forge/local` is Forge's own (see
+    /// `local_dir`); asked the first time the mode is needed.
+    local_dir: OnceCell<LocalDirVerdict>,
 }
 
 /// Forge's application-data directory: `$FORGE_DATA_DIR` when set and
@@ -274,6 +278,7 @@ impl LocalRuntimeStorage {
             effective_mode: OnceCell::new(),
             fallback_reason: RefCell::new(None),
             migration_report: RefCell::new(Vec::new()),
+            local_dir: OnceCell::new(),
         }
     }
 
@@ -296,6 +301,7 @@ impl LocalRuntimeStorage {
             effective_mode: OnceCell::new(),
             fallback_reason: RefCell::new(None),
             migration_report: RefCell::new(Vec::new()),
+            local_dir: OnceCell::new(),
         };
         let _ = storage.effective_mode.set(StorageMode::DirectoryLocal);
         storage
@@ -324,9 +330,35 @@ impl LocalRuntimeStorage {
 
     fn desired_mode(&self) -> StorageMode {
         match self.repo_info.topology {
-            GitTopology::Normal | GitTopology::LinkedWorktree => StorageMode::RepositoryLocal,
+            GitTopology::Normal | GitTopology::LinkedWorktree => {
+                if self
+                    .local_dir_verdict()
+                    .is_none_or(LocalDirVerdict::is_clean)
+                {
+                    StorageMode::RepositoryLocal
+                } else {
+                    // Committed runtime state is not this machine's: not used.
+                    StorageMode::ApplicationData
+                }
+            }
             GitTopology::Bare | GitTopology::NotAGitRepo => StorageMode::ApplicationData,
         }
+    }
+
+    /// What Git says about the repository's `.forge/local`: `None` outside
+    /// a working tree.
+    fn local_dir_verdict(&self) -> Option<&LocalDirVerdict> {
+        if !matches!(
+            self.repo_info.topology,
+            GitTopology::Normal | GitTopology::LinkedWorktree
+        ) {
+            return None;
+        }
+        let root = self.repo_info.worktree_root.as_deref()?;
+        Some(
+            self.local_dir
+                .get_or_init(|| crate::local_dir::verdict(root)),
+        )
     }
 
     fn try_repository_local(&self) -> Result<PathBuf, StorageError> {
@@ -381,7 +413,14 @@ impl RuntimeStorage for LocalRuntimeStorage {
     }
 
     fn fallback_reason(&self) -> Option<String> {
-        self.fallback_reason.borrow().clone()
+        if let Some(reason) = self.fallback_reason.borrow().clone() {
+            return Some(reason);
+        }
+        // Known before anything is set up, so read-only callers can say it.
+        if self.storage_mode() != StorageMode::ApplicationData {
+            return None;
+        }
+        self.local_dir_verdict().and_then(LocalDirVerdict::notice)
     }
 
     fn ensure_ready(&self) -> Result<(), StorageError> {
@@ -542,6 +581,153 @@ mod tests {
             &exclude_path,
             EXCLUDE_PATTERN
         ));
+    }
+
+    // ------------------------------------------ committed runtime state
+
+    /// Commit `relative` (under the repository) with `git add -f`, as a
+    /// repository planting runtime state would.
+    fn commit_forced(repo: &Path, relative: &str) {
+        let path = repo.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "planted").unwrap();
+        run(repo, &["add", "-f", "--", relative]);
+        run(repo, &["commit", "-q", "-m", "planted"]);
+    }
+
+    /// Every file under `dir`, relative to it, sorted.
+    fn files_under(dir: &Path) -> Vec<PathBuf> {
+        fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out);
+                } else {
+                    out.push(path.strip_prefix(root).unwrap().to_path_buf());
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, dir, &mut out);
+        out.sort();
+        out
+    }
+
+    fn remove_app_data(storage: &impl RuntimeStorage) {
+        let _ =
+            std::fs::remove_dir_all(forge_data_dir().unwrap().join(storage.identity().as_str()));
+    }
+
+    /// A repository that commits files into `.forge/local` (the control
+    /// database, say, listing sessions it made up) does not get them used:
+    /// runtime state goes to application data — for writers and for
+    /// read-only callers alike, decided before anything is set up — and
+    /// `.forge/local` is left exactly as it is. The notice names the file
+    /// and the fix.
+    #[test]
+    fn committed_runtime_state_is_not_used() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_forced(dir.path(), ".forge/local/control/sessions.db");
+        let app_data = forge_data_dir().unwrap();
+
+        let storage = LocalRuntimeStorage::new(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::ApplicationData);
+        let read = storage.path_for_read(RuntimeDataKind::Control).unwrap();
+        assert!(read.starts_with(&app_data), "{}", read.display());
+        let notice = storage.fallback_reason().expect("a notice");
+        assert!(
+            notice.contains("\".forge/local/control/sessions.db\""),
+            "{notice}"
+        );
+        assert!(
+            notice.contains("git rm -r --cached .forge/local"),
+            "{notice}"
+        );
+
+        let written = storage.path_for(RuntimeDataKind::Session).unwrap();
+        assert!(written.starts_with(&app_data), "{}", written.display());
+        assert_eq!(storage.storage_mode(), StorageMode::ApplicationData);
+        assert_eq!(storage.fallback_reason(), Some(notice));
+        assert_eq!(
+            files_under(&dir.path().join(".forge/local")),
+            [PathBuf::from("control/sessions.db")]
+        );
+        let exclude =
+            std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap_or_default();
+        assert!(!exclude.contains(EXCLUDE_PATTERN), "{exclude}");
+
+        // The repository-group storage follows the same rule.
+        let group = RepositoryRuntimeStorage::new(dir.path()).unwrap();
+        assert_eq!(group.storage_mode(), StorageMode::ApplicationData);
+        assert!(group
+            .path_for_read(RuntimeDataKind::Session)
+            .unwrap()
+            .starts_with(&app_data));
+        remove_app_data(&storage);
+    }
+
+    /// Forge's own files there — untracked, git-excluded — are the usual
+    /// case: `.forge/local` is used.
+    #[test]
+    fn untracked_runtime_state_is_forges_own() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        let sessions = dir.path().join(".forge/local/sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(sessions.join("mine.db"), "x").unwrap();
+        let storage = LocalRuntimeStorage::new(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::RepositoryLocal);
+        assert_eq!(
+            storage
+                .path_for(RuntimeDataKind::Session)
+                .unwrap()
+                .canonicalize()
+                .unwrap(),
+            sessions.canonicalize().unwrap()
+        );
+        assert!(storage.fallback_reason().is_none());
+    }
+
+    /// Fail closed: when Git cannot list what it tracks (a broken index),
+    /// `.forge/local` is not used either.
+    #[test]
+    fn when_git_cannot_tell_forge_local_is_not_used() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join(".git/index"), "not an index").unwrap();
+        let storage = LocalRuntimeStorage::new(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::ApplicationData);
+        let notice = storage.fallback_reason().expect("a notice");
+        assert!(notice.contains("could not tell"), "{notice}");
+        assert!(!dir.path().join(".forge").exists());
+        remove_app_data(&storage);
+    }
+
+    /// A committed name is shown escaped: it cannot drive a terminal.
+    #[test]
+    fn a_committed_name_is_escaped_in_the_notice() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        commit_forced(dir.path(), ".forge/local/evil\x1b]0;owned\x07.db");
+        let storage = LocalRuntimeStorage::new(dir.path());
+        let notice = storage.fallback_reason().expect("a notice");
+        assert!(
+            !notice.contains('\x1b') && !notice.contains('\x07'),
+            "{notice:?}"
+        );
+        assert!(notice.contains("evil"), "{notice}");
+        remove_app_data(&storage);
+    }
+
+    /// A folder that is not a Git repository keeps its `.forge/local`: there
+    /// is no Git to ask what was committed.
+    #[test]
+    fn a_directory_project_is_not_checked() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalRuntimeStorage::directory_local(dir.path());
+        assert_eq!(storage.storage_mode(), StorageMode::DirectoryLocal);
+        assert!(storage.fallback_reason().is_none());
     }
 
     /// Where data already is, found without creating anything: the usual

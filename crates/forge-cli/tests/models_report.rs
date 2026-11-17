@@ -381,6 +381,46 @@ fn an_empty_trusted_workspace_has_no_turn_records_and_is_left_untouched() {
     );
 }
 
+/// A repository that committed its `.forge/local` does not get it read: the
+/// report says why on stderr, and the JSON on stdout stays JSON.
+#[test]
+fn a_committed_forge_local_is_explained_on_stderr() {
+    let workspace = Workspace::empty();
+    let dir = workspace.dir.path();
+    let git = |args: &[&str]| {
+        assert!(std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .status()
+            .unwrap()
+            .success());
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "forge@example.test"]);
+    git(&["config", "user.name", "Forge Test"]);
+    std::fs::create_dir_all(dir.join(".forge/local/control")).unwrap();
+    std::fs::write(dir.join(".forge/local/control/sessions.db"), "planted").unwrap();
+    git(&["add", "-f", ".forge/local"]);
+    git(&["commit", "-q", "-m", "planted"]);
+    let user = IsolatedUser::trusting(&[dir]);
+    let mut command = Command::cargo_bin("forge").unwrap();
+    command
+        .args(["models", "report", "--json", "--workspace"])
+        .arg(dir);
+    user.apply(&mut command);
+    let output = command.assert().success().get_output().clone();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`.forge/local` holds"), "{stderr}");
+    assert!(
+        stderr.contains("git rm -r --cached .forge/local"),
+        "{stderr}"
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let journal_dir = report["journal_dir"].as_str().unwrap();
+    assert!(!journal_dir.contains(".forge/local"), "{journal_dir}");
+}
+
 /// Without trust there is nothing of the user's to report: the command says
 /// why and how to read a journal directory anyway, and touches nothing.
 #[test]
