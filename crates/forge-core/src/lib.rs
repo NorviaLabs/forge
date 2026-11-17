@@ -65,6 +65,7 @@ pub use models::choice::{
     RankedCandidate, SubagentModelAdvisor,
 };
 pub use models::state::ModelServices;
+pub use models::wording::model_at_effort;
 pub use permission::{egress_policy_for_workspace, EgressRuntime};
 pub use queue::{QueuedTask, TaskQueue};
 pub use session::compaction::{

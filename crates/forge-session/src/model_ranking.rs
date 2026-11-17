@@ -542,8 +542,12 @@ fn is_known_effort(effort: &str) -> bool {
 
 /// `model @ effort`, the provider's default effort as `default`.
 pub(crate) fn named(model: &str, effort: Option<&str>) -> String {
-    format!("{model} @ {}", effort.unwrap_or("default"))
+    forge_core::model_at_effort(model, effort)
 }
+
+/// Why an advisor does not read an untrusted workspace's journals.
+pub(crate) const UNTRUSTED_WORKSPACE: &str =
+    "the workspace is not trusted, so its journals are not used to choose models";
 
 /// No list of the account's models: every model is unknown.
 pub struct UnknownRunnableModels;

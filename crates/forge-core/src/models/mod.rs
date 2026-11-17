@@ -14,6 +14,7 @@
 pub(crate) mod auto;
 pub(crate) mod choice;
 pub(crate) mod state;
+pub(crate) mod wording;
 
 #[cfg(test)]
 mod auto_tests;

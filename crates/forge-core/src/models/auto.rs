@@ -276,11 +276,7 @@ pub(crate) fn decisions_from_journal(decisions: &[serde_json::Value]) -> Vec<Aut
 
 /// `model @ effort`, the model's default effort as `default`.
 fn named(model: &ChildModel) -> String {
-    format!(
-        "{} @ {}",
-        model.model,
-        model.reasoning_effort.as_deref().unwrap_or("default")
-    )
+    super::wording::model_at_effort(&model.model, model.reasoning_effort.as_deref())
 }
 
 // ------------------------------------------------------------ controller
@@ -373,7 +369,7 @@ impl AutoController {
                     image_input: None,
                 },
                 ranked: false,
-                reason: "no ranking of models is available to this session".into(),
+                reason: super::wording::NO_RANKING.into(),
                 evidence: None,
             },
         };
@@ -398,18 +394,11 @@ impl AutoController {
             (0, _) => (AutoSource::Fallback, start.reason.clone()),
             (_, Some(LadderMove::Down)) => (
                 AutoSource::SteppedDown,
-                format!(
-                    "step {step} of {top} above the start ({}), lowered after \
-                     {SUCCESSES_TO_STEP_DOWN} successful turns",
-                    named(&start.model)
-                ),
+                super::wording::stepped_down(step, top, &named(&start.model)),
             ),
             _ => (
                 AutoSource::SteppedUp,
-                format!(
-                    "step {step} of {top} above the start ({}), after a failed turn",
-                    named(&start.model)
-                ),
+                super::wording::stepped_up(step, top, &named(&start.model)),
             ),
         };
         let decision = AutoDecision {

@@ -205,12 +205,7 @@ impl SubagentModelAdvisor for RankedSubagentModels {
             );
         }
         if !self.settings.trusted {
-            return fallback(
-                kind,
-                "the workspace is not trusted, so its journals are not used to choose models"
-                    .into(),
-                None,
-            );
+            return fallback(kind, crate::model_ranking::UNTRUSTED_WORKSPACE.into(), None);
         }
         let snapshot = match self.ranking.current(kind) {
             Ok(snapshot) => snapshot,

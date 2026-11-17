@@ -130,11 +130,7 @@ impl AutoModelAdvisor for RankedAutoModels {
     fn start(&self, fallback: &AutoFallback) -> AutoStart {
         let kind = TaskKind::Main;
         if !self.settings.trusted {
-            return self.fallback(
-                fallback,
-                "the workspace is not trusted, so its journals are not used to choose models"
-                    .into(),
-            );
+            return self.fallback(fallback, crate::model_ranking::UNTRUSTED_WORKSPACE.into());
         }
         let snapshot = match self.ranking.current(&kind) {
             Ok(snapshot) => snapshot,
