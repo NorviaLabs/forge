@@ -32,6 +32,7 @@ webpki-roots = "1"
 base64 = "0.22"
 # `glob` on an SSH target matches the host's file list here.
 globset = "0.4"
+libc = { workspace = true }
 
 [features]
 # A real sshd behind a freezable relay, for the SSH target's tests here and
@@ -41,3 +42,4 @@ test-support = []
 [dev-dependencies]
 forge-tools = { path = ".", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+forge-test-support = { workspace = true, features = ["schema-check"] }

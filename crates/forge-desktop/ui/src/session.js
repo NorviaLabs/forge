@@ -32,6 +32,7 @@ export function emptySnapshot() {
     githubIssue: null,
     githubPr: "",
     agentWarnings: [],
+    computerUse: { browser: null, controlling_screen: false },
   };
 }
 
@@ -79,6 +80,8 @@ export function snapshotFrom(event, record) {
     githubIssue: event.github_issue_number ?? null,
     githubPr: event.github_pr_url ?? "",
     agentWarnings: event.agent_warnings ?? [],
+    // The session's browser and whether it holds the screen.
+    computerUse: event.computer_use ?? { browser: null, controlling_screen: false, app: null },
   };
 }
 

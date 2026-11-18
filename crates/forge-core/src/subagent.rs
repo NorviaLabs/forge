@@ -205,6 +205,7 @@ impl AgentSession {
             verification_commands: self.verification_commands.clone(),
             // A child works where its parent does, under the same rules.
             execution_target: self.execution_target.clone(),
+            web_app: Default::default(),
         };
         if !child.execution_target.is_local() {
             child.describe_target_in_prompt();
@@ -369,6 +370,7 @@ impl AgentSession {
             verification_commands: self.verification_commands.clone(),
             // A child works where its parent does, under the same rules.
             execution_target: self.execution_target.clone(),
+            web_app: Default::default(),
         };
         if !child.execution_target.is_local() {
             child.describe_target_in_prompt();

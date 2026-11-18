@@ -12,9 +12,12 @@ use tokio::process::Command;
 use crate::registry::ToolContext;
 use crate::{Tool, ToolError};
 
+/// A built-in tool's input schema, generated from its argument type and
+/// compacted (see [`crate::compact_schema`]): what the model is sent, and
+/// what its calls are validated against.
 pub(crate) fn schema_for<T: JsonSchema>() -> Value {
     let s = schemars::schema_for!(T);
-    serde_json::to_value(s).unwrap_or_else(|_| json!({"type": "object"}))
+    crate::compact_schema(serde_json::to_value(s).unwrap_or_else(|_| json!({"type": "object"})))
 }
 
 /// Put a freshly built command in its own process group so a single signal can
@@ -621,6 +624,7 @@ async fn run_shell_command_inner(
             confined,
             egress_label,
             credential_env_names,
+            ingress: None,
         })
         .await?;
     let confined_run = spec.confined();
@@ -800,10 +804,10 @@ impl Tool for BashTool {
         "Run a shell command in the workspace directory. \
 Do not use this for listing, file search, content search, file reads, or git. \
 Use `ls`, `glob`, `grep`, `read_file`, or `git` instead. \
-Do not background commands with `&`, `nohup`, or `disown`: use `background_run` \
-for long-running work, or `exec_command` followed by `write_stdin` when you \
-need to poll an interactive session. Never use `ps` or `pgrep` to find a \
-Forge-managed command. \
+Processes it starts in the background (`&`, `nohup`, `setsid`) stop when it \
+returns: use `background_run` for long-running work, `app_start` for a web \
+app, or `exec_command` followed by `write_stdin` when you need to poll an \
+interactive session. Never use `ps` or `pgrep` to find a Forge-managed command. \
 A host(...) grant projects HTTPS identity for that host into the confined \
 spawn. Git over SSH and commit signing work through the user's own keys, \
 which stay outside the sandbox. The repository's .git, hooks and config \
@@ -2704,6 +2708,24 @@ mod tests {
         assert!(bash.contains("write_stdin"));
         assert!(bash.contains("Never use `ps` or `pgrep`"));
         assert!(background.contains("Forge tracks"));
+    }
+
+    /// What the sandbox now does is in the words the model reads: nothing a
+    /// command starts outlives it.
+    #[test]
+    fn shell_tools_say_leftovers_stop_with_the_command() {
+        let bash = BashTool.description();
+        assert!(bash.contains("stop when it returns"), "{bash}");
+        assert!(bash.contains("app_start"), "{bash}");
+        let exec = crate::default_builtins()
+            .into_iter()
+            .find(|tool| tool.name() == "exec_command")
+            .unwrap();
+        assert!(
+            exec.description().contains("stop when the session ends"),
+            "{}",
+            exec.description()
+        );
     }
 
     #[test]

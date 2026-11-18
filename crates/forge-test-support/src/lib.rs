@@ -17,6 +17,8 @@
 //! turn records several crates' tests write (and depends on
 //! `forge-durable` for them).
 
+#[cfg(feature = "schema-check")]
+pub mod schema_check;
 #[cfg(feature = "turn-records")]
 pub mod turn_records;
 

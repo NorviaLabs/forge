@@ -497,6 +497,7 @@ async fn start(
             confined: !ctx.unconfined_shell,
             egress_label: ctx.tool_call_id.as_deref(),
             credential_env_names: &ctx.credential_env_names,
+            ingress: None,
         })
         .await?;
     let confined = spec.confined();
@@ -659,7 +660,7 @@ impl Tool for ExecCommandTool {
         "exec_command"
     }
     fn description(&self) -> &str {
-        "Start a sandboxed shell command with pipe or PTY output, retaining a session for polling or input. Use the returned session_id with write_stdin to poll; do not use ps or pgrep."
+        "Start a sandboxed shell command with pipe or PTY output, retaining a session for polling or input. Use the returned session_id with write_stdin to poll; do not use ps or pgrep. Processes it starts stop when the session ends."
     }
     fn input_schema(&self) -> Value {
         schema_for::<ExecCommandArgs>()

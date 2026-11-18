@@ -7,6 +7,7 @@
   import { modal } from "../modal.js";
   import { invoke } from "../ipc.js";
   import { grantGroups, projectName, withoutGrant } from "../grants.js";
+  import { mergeSettings, settingsModel } from "../computer.js";
 
   let { onClose, onProviders, onAgents, themes = [], theme = $bindable("forge-dark"), sound = $bindable(true), remoteStatus = null, section = null } = $props();
 
@@ -14,12 +15,37 @@
   let grants = $state(null);
   let grantsError = $state("");
 
+  // Web check, browser control and desktop control, from the user's own
+  // config.
+  let computer = $state(null);
+  let computerError = $state("");
+  let choosingProgram = $state(false);
+  let programPath = $state("");
+  const computerModel = $derived(computer ? settingsModel(computer) : null);
+
   onMount(async () => {
     // Opened from the footer's remote item: start at that section.
     if (section === "remote") document.getElementById("settings-remote")?.scrollIntoView({ block: "start" });
     try { grants = await invoke("sandbox_grants"); }
     catch (cause) { grantsError = `Could not read sandbox permissions: ${cause}`; }
+    try { computer = await invoke("computer_use_settings"); }
+    catch (cause) { computerError = `Could not read computer use settings: ${cause}`; }
   });
+
+  // Save one change; on a refusal the switches go back to what is saved.
+  async function saveComputer(change) {
+    if (!computer) return;
+    computerError = "";
+    const next = mergeSettings(computer.settings, change);
+    try {
+      await invoke("save_computer_use_settings", { settings: next });
+      computer = await invoke("computer_use_settings");
+      choosingProgram = false;
+    } catch (cause) {
+      computerError = String(cause);
+      computer = { ...computer };
+    }
+  }
 
   async function revoke(project, kind, value) {
     grantsError = "";
@@ -47,6 +73,70 @@
           {#each themes as entry}<option value={entry.id}>{entry.name}</option>{/each}
         </select>
       </label>
+
+      <h3>Computer use</h3>
+      {#if computerError}<p class="note error" role="alert">{computerError}</p>{/if}
+      {#if computerModel}
+        <!-- The program serves web check and browser control alike. -->
+        <div class="row">
+          <span class="what">
+            <span id="browser-label">Browser</span>
+            {#if computerModel.browserProblem}
+              <span class="note warn">{computerModel.browserProblem}</span>
+            {:else}
+              <span class="note path">{computerModel.browserPath}</span>
+            {/if}
+          </span>
+          <span class="controls">
+            {#if computerModel.browserOptions.length}
+              <select
+                class="field"
+                aria-labelledby="browser-label"
+                disabled={computerModel.browserRowDisabled}
+                value={computerModel.selectedBrowser}
+                onchange={(event) => saveComputer({ browser: { executable: event.currentTarget.value } })}
+              >
+                {#each computerModel.browserOptions as option (option.value)}
+                  <option value={option.value}>{option.label}</option>
+                {/each}
+              </select>
+            {/if}
+            <button class="btn" type="button" disabled={computerModel.browserRowDisabled} onclick={() => { choosingProgram = true; programPath = computerModel.selectedBrowser; }}>Choose a program…</button>
+          </span>
+        </div>
+        {#if choosingProgram}
+          <form class="row sub" onsubmit={(event) => { event.preventDefault(); saveComputer({ browser: { executable: programPath } }); }}>
+            <input class="field" bind:value={programPath} placeholder="/usr/bin/chromium" aria-label="Browser program, full path" />
+            <button class="btn" type="submit">Use</button>
+            <button class="btn" type="button" onclick={() => (choosingProgram = false)}>Cancel</button>
+          </form>
+        {/if}
+        <label class:disabled={computerModel.webCheckDisabled}>
+          <span class="what">
+            <span>Web check</span>
+            <span class="note">{computerModel.webCheckNote}</span>
+          </span>
+          <input type="checkbox" disabled={computerModel.webCheckDisabled} checked={computerModel.webCheckEnabled} onchange={(event) => saveComputer({ web_check: { enabled: event.currentTarget.checked } })} />
+        </label>
+        <label class:disabled={computerModel.browserControlDisabled}>
+          <span class="what">
+            <span>Browser control</span>
+            <span class="note">{computerModel.browserNote}</span>
+          </span>
+          <input type="checkbox" disabled={computerModel.browserControlDisabled} checked={computerModel.browserEnabled} onchange={(event) => saveComputer({ browser: { enabled: event.currentTarget.checked } })} />
+        </label>
+        <label class="sub" class:disabled={computerModel.browserSubrowsDisabled}>
+          <span>Show the browser window</span>
+          <input type="checkbox" disabled={computerModel.browserSubrowsDisabled} checked={computerModel.showWindow} onchange={(event) => saveComputer({ browser: { headless: !event.currentTarget.checked } })} />
+        </label>
+        <label class:disabled={computerModel.desktopDisabled}>
+          <span class="what">
+            <span>Desktop control</span>
+            <span class="note">{computerModel.desktopNote}</span>
+          </span>
+          <input type="checkbox" disabled={computerModel.desktopDisabled} checked={computerModel.desktopEnabled} onchange={(event) => saveComputer({ desktop: { enabled: event.currentTarget.checked } })} />
+        </label>
+      {/if}
 
       <h3>Notifications</h3>
       <label>
@@ -216,6 +306,45 @@
     flex: none;
     padding: 0 8px;
     font-size: var(--text-sm);
+  }
+
+  .sub {
+    padding-left: 24px;
+  }
+
+  .sub.disabled,
+  label.disabled {
+    opacity: 0.6;
+  }
+
+  .controls {
+    display: flex;
+    gap: 8px;
+    flex: none;
+  }
+
+  .controls select {
+    width: 150px;
+  }
+
+  form.sub {
+    justify-content: flex-start;
+    gap: 8px;
+  }
+
+  form.sub .field {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .note.warn {
+    color: var(--warning);
+  }
+
+  .note.path {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    overflow-wrap: anywhere;
   }
 
   input[type="checkbox"] {

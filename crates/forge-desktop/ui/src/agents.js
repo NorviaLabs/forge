@@ -10,6 +10,8 @@ export const CAPABILITIES = [
   { id: "write", label: "Write", hint: "Edits files and uses git, in its own worktree." },
   { id: "exec", label: "Exec", hint: "Runs shell commands in the sandbox, in its own worktree." },
   { id: "network", label: "Network", hint: "Fetches web pages; its commands may reach allowed hosts." },
+  { id: "browser", label: "Browser", hint: "Drives a browser page by page, when browser control is on. Form submits ask first." },
+  { id: "desktop", label: "Desktop", hint: "Sees the screen and uses mouse and keyboard, when desktop control is on and you allow it." },
 ];
 
 // Tools never given to an agent: agents cannot start agents.

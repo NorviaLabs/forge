@@ -2305,3 +2305,75 @@ async fn a_confined_shell_may_change_hooks_and_config_and_they_stay_confined() {
     assert!(ws.path().join("ran").exists(), "the hook ran");
     assert!(!escaped.exists(), "the hook wrote outside the sandbox");
 }
+
+// ---------------------------------------------------------------------------
+// Nothing a command starts outlives it: each runs in its own process space.
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "linux")]
+/// A command that leaves two loops behind — a `&` child and a `setsid` one —
+/// each rewriting a marker file; the markers' paths are unique to the test.
+fn leftover_loops(marks: &Path) -> String {
+    format!(
+        "(while true; do date > {plain}; sleep 0.1; done) >/dev/null 2>&1 & \
+         setsid sh -c 'while true; do date > {detached}; sleep 0.1; done' >/dev/null 2>&1 & \
+         sleep 0.4; echo started",
+        plain = marks.join("plain.mark").display(),
+        detached = marks.join("detached.mark").display(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+/// Whether the loops still write their markers; stops them either way.
+fn loops_still_running(marks: &Path) -> (bool, bool) {
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let seen = |name: &str| {
+        std::fs::metadata(marks.join(name))
+            .and_then(|meta| meta.modified())
+            .ok()
+    };
+    let before = (seen("plain.mark"), seen("detached.mark"));
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after = (seen("plain.mark"), seen("detached.mark"));
+    let _ = Command::new("pkill")
+        .args(["-f", &marks.display().to_string()])
+        .status();
+    assert!(before.0.is_some() && before.1.is_some(), "the loops ran");
+    (before.0 != after.0, before.1 != after.1)
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn bash_leftovers_stop_when_it_returns() {
+    require_sandbox!();
+    let ws = workspace();
+    let output = run_shell_command(&leftover_loops(ws.path()), ws.path())
+        .await
+        .unwrap();
+    assert!(output.content.contains("started"), "{}", output.content);
+    assert_eq!(
+        loops_still_running(ws.path()),
+        (false, false),
+        "(& child, setsid child) still running after bash returned"
+    );
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn exec_command_leftovers_stop_when_the_session_ends() {
+    require_sandbox!();
+    let ws = workspace();
+    let output = exec_command(ws.path(), &leftover_loops(ws.path()))
+        .await
+        .unwrap();
+    assert!(
+        output.exit_code.is_some(),
+        "the session ended: {}",
+        output.content
+    );
+    assert_eq!(
+        loops_still_running(ws.path()),
+        (false, false),
+        "(& child, setsid child) still running after the session ended"
+    );
+}

@@ -223,7 +223,15 @@ fn is_git_tool(tool: &str) -> bool {
 pub fn is_shell_tool(tool: &str) -> bool {
     matches!(
         tool,
-        "bash" | "sh" | "shell" | "cmd" | "powershell" | "exec" | "background_run" | "exec_command"
+        "bash"
+            | "sh"
+            | "shell"
+            | "cmd"
+            | "powershell"
+            | "exec"
+            | "background_run"
+            | "exec_command"
+            | "app_start"
     )
 }
 
@@ -539,6 +547,23 @@ mod tests {
         assert!(!rule.matches(&call("write_file", json!({"path": "src/../.env"}))));
         assert!(!rule.matches(&call("write_file", json!({"path": "../src/lib.rs"}))));
         assert!(!rule.matches(&call("write_file", json!({"path": "/src/lib.rs"}))));
+    }
+
+    /// `app_start` runs its `command` like `bash`: shell rules cover it.
+    #[test]
+    fn app_start_is_a_shell_tool() {
+        assert!(is_shell_tool("app_start"));
+        assert!(!is_shell_tool("app_stop"));
+        assert!(!is_shell_tool("web_check"));
+        let rule = PatternRule::parse("bash(npm run *)").unwrap();
+        assert!(rule.matches(&call(
+            "app_start",
+            json!({"command": "npm run dev", "port": 5173})
+        )));
+        assert!(!rule.matches(&call(
+            "app_start",
+            json!({"command": "rm -rf /", "port": 5173})
+        )));
     }
 
     #[test]

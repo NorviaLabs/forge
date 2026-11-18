@@ -368,6 +368,7 @@ async fn a_privileged_request_offers_the_device_only_a_denial() {
         denied_host: None,
         denied_path: None,
         target: None,
+        consent: None,
     };
     let approval = forge_remote::supervisor::remote_approval(&escalation);
     assert_eq!(

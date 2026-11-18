@@ -1,6 +1,7 @@
 <script>
   import { chord, isChord } from "../keys.js";
   import { approvalHeading } from "../target.js";
+  import { confirmText, riskLabel as riskLabelFor } from "../computer.js";
 
   let { approval, onDecide, savedDraft = null, onDraft = null } = $props();
 
@@ -39,13 +40,7 @@
   // as refusals, and a sandbox or network request says so in words.
   const isDeny = (option) => option.decision === "deny" || option.decision === "deny_with_note";
   const primaryDecision = $derived(approval.options.find((option) => !isDeny(option))?.decision);
-  const riskLabel = $derived(
-    approval.kind === "sandbox_escalation"
-      ? "Sandbox escalation"
-      : approval.kind === "network_host"
-        ? "Network access"
-        : "",
-  );
+  const riskLabel = $derived(riskLabelFor(approval.kind));
 
   // Two shortcuts reach the card from anywhere in the window, the composer
   // included. They take the same path as a click, so a privileged option
@@ -108,6 +103,14 @@
     <strong>{approval.tool}</strong>
   </header>
   <pre>{approval.arguments}</pre>
+  {#if approval.facts?.length}
+    <dl class="facts">
+      {#each approval.facts as fact (fact.label)}
+        <dt>{fact.label}</dt>
+        <dd>{fact.value}</dd>
+      {/each}
+    </dl>
+  {/if}
   {#if approval.target}
     <!-- On an SSH host nothing is sandboxed: say so where the decision is made. -->
     <p class="reason">{approval.reason} It runs on {approval.target} <span class="risk inline">outside Forge's sandbox</span>, with that machine's network and credentials.</p>
@@ -117,19 +120,7 @@
 
   {#if confirm}
     <div class="confirm" role="alertdialog" aria-label="Confirm this grant">
-      <p class="risk">
-        {confirm.decision === "allow_host_for_session" || confirm.decision === "allow_host_always"
-          ? "This opens network access the sandbox refused."
-          : confirm.decision === "approve_all" && approval.target
-            ? `Every command in this session will run on ${approval.target} without asking, outside Forge's sandbox.`
-          : confirm.decision === "approve_all"
-            ? "Every review prompt in this session will be approved automatically. The sandbox stays on."
-            : confirm.decision === "allow_path_for_session" || confirm.decision === "allow_path_always"
-              ? "Sandboxed commands will be able to write this directory. The sandbox stays on."
-            : confirm.decision === "trust_program"
-              ? "This program will run outside the sandbox in this project from now on, without asking."
-              : "This command runs outside the filesystem sandbox."}
-      </p>
+      <p class="risk">{confirmText(confirm.decision, approval.kind, approval.target)}</p>
       <p class="detail">{confirm.help}</p>
       <div class="actions">
         <button type="button" class="btn danger" onclick={() => send(confirm, true)}>
@@ -173,7 +164,9 @@
         {#if allowOption}<kbd>{chord("A", { shift: true })}</kbd> {allowOption.label.toLowerCase()}{/if}{#if allowOption && denyOption} · {/if}{#if denyOption}<kbd>{chord("D", { shift: true })}</kbd> deny{/if}
       </span>
     </div>
-    {#if privileged}
+    {#if approval.kind === "screen_control"}
+      <p class="footnote">Screen control is never approved automatically, including with Approve all.</p>
+    {:else if privileged}
       <p class="footnote">
         An option that runs outside the sandbox or opens a host asks you to confirm before it
         is sent.
@@ -241,6 +234,25 @@
     font-size: var(--text-sm);
     line-height: 20px;
     white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .facts {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 2px 12px;
+    margin: 0;
+    font-size: var(--text-sm);
+    line-height: 20px;
+  }
+
+  .facts dt {
+    color: var(--muted);
+  }
+
+  .facts dd {
+    margin: 0;
+    color: var(--text);
     overflow-wrap: anywhere;
   }
 

@@ -770,6 +770,14 @@ impl EgressShared {
         }
     }
 
+    /// This state, refusing undecided hosts instead of asking about them.
+    /// Its asker is its own, so a later `set_asker` on the session's state
+    /// does not reach it either.
+    fn without_asker(mut self) -> Self {
+        self.asker = Arc::new(RwLock::new(None));
+        self
+    }
+
     /// The attribution label connections through this endpoint carry when
     /// no call label is set.
     pub fn label(&self) -> Option<&str> {
@@ -1313,6 +1321,26 @@ impl EgressInvocation {
             return Ok(None);
         };
         let proxy = EgressProxy::start_with_shared(shared.for_invocation(label)).await?;
+        Ok(Some(Self {
+            proxy,
+            grant: None,
+            held: Vec::new(),
+        }))
+    }
+
+    /// As [`Self::start_tcp_labeled`], for a caller whose traffic is not the
+    /// user's to be asked about host by host (a browser loading a page's
+    /// third-party resources): a host no rule decides is refused at once
+    /// instead of being put to the session's asker.
+    pub async fn start_tcp_labeled_without_asking(
+        template: Option<&crate::sandbox::EgressGrant>,
+        label: Option<&str>,
+    ) -> io::Result<Option<Self>> {
+        let Some(shared) = template.and_then(|grant| grant.control.as_ref()) else {
+            return Ok(None);
+        };
+        let proxy =
+            EgressProxy::start_with_shared(shared.for_invocation(label).without_asker()).await?;
         Ok(Some(Self {
             proxy,
             grant: None,
@@ -3367,6 +3395,44 @@ mod tests {
         // Granted now: the next connection is not asked about.
         let status = connect_line(proxy.addr().port(), "held.invalid:443").await;
         assert!(!status.contains("403"), "{status}");
+    }
+
+    /// The browser's endpoint never asks: a page's third-party hosts (or
+    /// hosts a hostile page names) must not turn into prompts. It still
+    /// follows the live policy, grants included.
+    #[tokio::test]
+    async fn an_endpoint_that_never_asks_refuses_undecided_hosts_at_once() {
+        let shared = EgressShared::new(
+            EgressPolicy::new(),
+            EgressOptions {
+                hold_timeout: Duration::from_secs(5),
+                ..EgressOptions::default()
+            },
+        );
+        let (asker, mut asks) = tokio::sync::mpsc::unbounded_channel();
+        shared.set_asker(Some(asker));
+        let grant = crate::sandbox::EgressGrant {
+            proxy_port: 0,
+            socket_path: std::env::temp_dir().join("unused-never-asks.sock"),
+            control: Some(shared.clone()),
+        };
+        let Some(endpoint) =
+            EgressInvocation::start_tcp_labeled_without_asking(Some(&grant), Some("browser"))
+                .await
+                .unwrap()
+        else {
+            panic!("a grant with live control starts an endpoint");
+        };
+        let started = std::time::Instant::now();
+        assert!(!endpoint.shared().admit("click-allow.invalid", 443).await);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "refused, not held"
+        );
+        assert!(asks.try_recv().is_err(), "nobody was asked");
+        shared.grant_host("allowed.invalid");
+        assert!(endpoint.shared().admit("allowed.invalid", 443).await);
+        assert_eq!(endpoint.label(), Some("browser"));
     }
 
     /// "Once" covers the invocation that asked and nothing after it.

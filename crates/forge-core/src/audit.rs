@@ -129,6 +129,7 @@ impl AgentSession {
                 "kind": payload.kind(),
                 "reason": payload.reason,
                 "denied_host": payload.denied_host,
+                "consent_subject": payload.consent.as_ref().map(|consent| &consent.scope),
             }),
         ));
     }
@@ -205,6 +206,28 @@ impl AgentSession {
         ));
     }
 
+    /// A tool's consent request granted: screen control, or form submits on
+    /// one site, for the session or (`once`) for this call.
+    pub(crate) fn audit_consent_grant(
+        &self,
+        call_id: &str,
+        tool: &str,
+        consent: &forge_types::ConsentRequest,
+        once: bool,
+    ) {
+        self.audit.queue(entry(
+            AuditKind::PatternGrant,
+            Some(call_id),
+            Some(tool),
+            json!({
+                "consent": consent.kind.as_str(),
+                "scope": if once { "call" } else { "session" },
+                "subject": consent.scope,
+                "source": "approval",
+            }),
+        ));
+    }
+
     pub(crate) fn audit_approve_all(&self, call_id: &str) {
         self.audit.queue(entry(
             AuditKind::ApproveAll,
@@ -228,6 +251,7 @@ impl AgentSession {
                 ("sandbox_denied", None, denied_host.clone())
             }
             Err(forge_tools::ToolError::Validation(_)) => ("validation_error", None, None),
+            Err(forge_tools::ToolError::ConsentRequired(_)) => ("consent_required", None, None),
             Err(_) => ("execution_error", None, None),
         };
         self.audit.queue(entry(

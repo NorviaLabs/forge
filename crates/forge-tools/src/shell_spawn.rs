@@ -47,6 +47,10 @@ pub struct ShellSpawnRequest<'a> {
     /// Credential env names from the session's loaded profiles, stripped in
     /// addition to the built-in vendor aliases and `FORGE_*_API_KEY`.
     pub credential_env_names: &'a [String],
+    /// A server the command runs, offered to the host: the directory its
+    /// socket goes in and its port (see `SandboxPolicy::with_ingress`).
+    /// Confined only.
+    pub ingress: Option<(&'a Path, u16)>,
 }
 
 /// The spawn decisions for one shell command.
@@ -129,6 +133,7 @@ impl ShellSpawnSpec {
             confined: requested_confined,
             egress_label,
             credential_env_names,
+            ingress,
         } = request;
         if requested_confined {
             if let Err(unavailable) = crate::sandbox::availability() {
@@ -137,6 +142,22 @@ impl ShellSpawnSpec {
                     reason: unavailable.reason(),
                     denied_host: None,
                 });
+            }
+        }
+        if ingress.is_some() {
+            if !requested_confined {
+                return Err(ToolError::Execution(
+                    "an app is offered to the host only from inside the sandbox; it cannot \
+                     run unconfined"
+                        .into(),
+                ));
+            }
+            if cfg!(target_os = "linux") && !crate::sandbox::relay_available() {
+                return Err(ToolError::Execution(
+                    "starting the app needs socat, which relays it out of the sandbox; \
+                     install socat (for example `apt install socat`)"
+                        .into(),
+                ));
             }
         }
         let mut egress_invocation = if requested_confined {
@@ -206,6 +227,9 @@ impl ShellSpawnSpec {
         }
         if let Some(session_tmp) = session_tmp {
             policy = policy.with_session_tmp(session_tmp);
+        }
+        if let Some((dir, port)) = ingress {
+            policy = policy.with_ingress(dir, port);
         }
         if let Some((broker, _)) = &ssh_broker {
             policy = policy.with_loopback_port(broker.addr().port());
@@ -444,6 +468,7 @@ mod tests {
             confined,
             egress_label: Some("call-1"),
             credential_env_names: &[],
+            ingress: None,
         }
     }
 
@@ -456,6 +481,53 @@ mod tests {
             .map(|(name, _)| name.clone())
             .collect();
         (spec.confined(), spec.env_remove().to_vec(), names)
+    }
+
+    /// An app is offered to the host only from inside the sandbox.
+    #[tokio::test]
+    async fn an_ingress_is_refused_unconfined() {
+        let workspace = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let request = ShellSpawnRequest {
+            ingress: Some((dir.path(), 5173)),
+            ..request(ShellSpawnMode::Run, workspace.path(), tmp.path(), false)
+        };
+        let Err(ToolError::Execution(message)) = ShellSpawnSpec::build(request).await else {
+            panic!("an unconfined ingress must be refused");
+        };
+        assert!(message.contains("sandbox"), "{message}");
+    }
+
+    /// The ingress reaches the sandbox policy: the relay listens in the
+    /// directory. Without socat the spawn is refused and says why.
+    #[tokio::test]
+    // The ingress relay is Linux-only (`SandboxPolicy::with_ingress`).
+    #[cfg(target_os = "linux")]
+    async fn an_ingress_reaches_the_sandbox() {
+        if crate::sandbox::availability().is_err() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let request = ShellSpawnRequest {
+            ingress: Some((dir.path(), 5173)),
+            ..request(ShellSpawnMode::Run, workspace.path(), tmp.path(), true)
+        };
+        match ShellSpawnSpec::build(request).await {
+            Ok(spec) => {
+                assert!(crate::sandbox::relay_available());
+                let script = spec.args().last().unwrap();
+                assert!(script.contains("UNIX-LISTEN:"), "{script}");
+                assert!(script.contains("TCP:127.0.0.1:5173"), "{script}");
+            }
+            Err(ToolError::Execution(message)) => {
+                assert!(!crate::sandbox::relay_available());
+                assert!(message.contains("socat"), "{message}");
+            }
+            Err(other) => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[tokio::test]

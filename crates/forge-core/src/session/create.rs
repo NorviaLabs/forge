@@ -281,6 +281,7 @@ impl AgentSession {
             tier_resolver: None,
             verification_commands: Default::default(),
             execution_target: forge_types::ExecutionTarget::Local,
+            web_app: Default::default(),
         })
     }
 
@@ -404,6 +405,7 @@ impl AgentSession {
             tier_resolver: None,
             verification_commands: Default::default(),
             execution_target: forge_types::ExecutionTarget::Local,
+            web_app: Default::default(),
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());

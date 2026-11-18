@@ -9,6 +9,9 @@ description = "Test-only fixtures shared across crates (e.g. a scripted-response
 # A builder for turn records (`turn_records`), for the crates whose tests
 # write them. Off by default: this crate otherwise needs nothing beyond std.
 turn-records = ["dep:chrono", "dep:forge-durable", "dep:forge-types", "dep:serde_json"]
+# Checking that a compacted tool schema validates exactly as the generated
+# one (`schema_check`), for crates whose tools' schemas are compacted.
+schema-check = ["dep:serde_json"]
 
 [dependencies]
 chrono = { workspace = true, optional = true }

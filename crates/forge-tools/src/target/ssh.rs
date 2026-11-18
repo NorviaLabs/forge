@@ -1400,6 +1400,8 @@ impl Target for SshTarget {
                 confined: false,
                 egress_label: None,
                 credential_env_names: &[],
+                // An SSH run has no sandbox, hence no ingress relay.
+                ingress: None,
             })
             .await?;
         let remote = remote.expect("an SSH run has a remote half");

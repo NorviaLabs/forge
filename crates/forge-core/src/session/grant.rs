@@ -39,6 +39,16 @@ pub enum GrantRejection {
     /// personal rule was written about this machine.
     #[error("a command on another machine is allowed for this session, not always")]
     NotKeptForRemote,
+    /// A consent request is answered with its own grant, or refused; never
+    /// by approve-all, a pattern, a host or a directory.
+    #[error("a consent request is allowed for the session, or refused")]
+    ConsentOnly,
+    /// Screen control is granted for the session, never for one call.
+    #[error("screen control is allowed for the session, not once")]
+    ConsentNotOnce,
+    /// A consent grant on a prompt that asked for no consent.
+    #[error("this approval asks for no consent")]
+    NoConsent,
 }
 
 /// The grant a resolved decision applied, for a frontend to report.
@@ -54,6 +64,13 @@ pub enum AppliedGrant {
     Program { program: String },
     /// Sandboxed commands may write `dir`.
     Directory { dir: String },
+    /// A tool's consent request was granted: for the session, or `once`
+    /// for this call.
+    Consent {
+        kind: forge_types::ConsentKind,
+        scope: String,
+        once: bool,
+    },
 }
 
 /// What [`AgentSession::apply_grant_decision`] did.
@@ -89,6 +106,16 @@ pub fn validate_grant_decision(
     decision: &GrantDecision,
 ) -> Result<(), GrantRejection> {
     let kind = payload.kind();
+    if let Some(consent) = &payload.consent {
+        return match decision {
+            GrantDecision::Deny
+            | GrantDecision::DenyWithNote(_)
+            | GrantDecision::AllowConsentForSession => Ok(()),
+            GrantDecision::AllowOnce if consent.kind.allows_once() => Ok(()),
+            GrantDecision::AllowOnce => Err(GrantRejection::ConsentNotOnce),
+            _ => Err(GrantRejection::ConsentOnly),
+        };
+    }
     match decision {
         GrantDecision::Deny | GrantDecision::DenyWithNote(_) => Ok(()),
         GrantDecision::AllowOnce if kind == ApprovalKind::NetworkHost => {
@@ -137,6 +164,7 @@ pub fn validate_grant_decision(
             Err(GrantRejection::ApproveAllEscalation)
         }
         GrantDecision::ApproveAll => Ok(()),
+        GrantDecision::AllowConsentForSession => Err(GrantRejection::NoConsent),
     }
 }
 
@@ -201,7 +229,33 @@ impl AgentSession {
             persist_error: None,
         };
         match decision {
-            GrantDecision::Deny | GrantDecision::DenyWithNote(_) | GrantDecision::AllowOnce => {}
+            GrantDecision::Deny | GrantDecision::DenyWithNote(_) => {}
+            GrantDecision::AllowOnce => {
+                if let Some(consent) = &payload.consent {
+                    self.tool_ctx
+                        .consents
+                        .grant_once(consent.kind, &consent.scope, call_id);
+                    self.audit_consent_grant(call_id, &payload.tool, consent, true);
+                    outcome.grant = AppliedGrant::Consent {
+                        kind: consent.kind,
+                        scope: consent.scope.clone(),
+                        once: true,
+                    };
+                }
+            }
+            GrantDecision::AllowConsentForSession => {
+                let consent = payload
+                    .consent
+                    .as_ref()
+                    .expect("validated: a consent request");
+                self.tool_ctx.consents.grant(consent.kind, &consent.scope);
+                self.audit_consent_grant(call_id, &payload.tool, consent, false);
+                outcome.grant = AppliedGrant::Consent {
+                    kind: consent.kind,
+                    scope: consent.scope.clone(),
+                    once: false,
+                };
+            }
             GrantDecision::ApproveAll => {
                 if !self.set_approve_all(true) {
                     return Err(LoopError::Other(
@@ -365,6 +419,7 @@ mod tests {
             denied_host: None,
             denied_path: None,
             target: None,
+            consent: None,
         }
     }
 

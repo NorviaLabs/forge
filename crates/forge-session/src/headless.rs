@@ -44,6 +44,9 @@ impl std::fmt::Display for ApprovalRequired {
 impl std::error::Error for ApprovalRequired {}
 
 /// Tool-result text the model sees when approve-all refuses an escalation.
+/// What the agent is told when an unattended run refuses a consent request.
+pub const CONSENT_REFUSED_UNATTENDED: &str = "this run is unattended, so nobody can allow screen control or a form submit; it was not done. Finish without it.";
+
 pub const UNCONFINED_REFUSED_UNDER_APPROVE_ALL: &str = "this command needed to run outside the sandbox, which approve-all never approves in headless mode; it was not run. Find a way to do this inside the workspace sandbox.";
 
 /// Run one user prompt through the normal session loop until it completes or
@@ -135,6 +138,11 @@ async fn run_headless_turns(
                     }
                 }
                 ApprovalKind::Governance => GrantDecision::AllowOnce,
+                // Nobody is watching: never hand over the screen or submit a
+                // form on approve-all's say-so.
+                ApprovalKind::ScreenControl | ApprovalKind::FormSubmit => {
+                    GrantDecision::DenyWithNote(CONSENT_REFUSED_UNATTENDED.into())
+                }
             },
         };
         session
@@ -308,6 +316,86 @@ mod tests {
             ran_unconfined.load(Ordering::SeqCst),
             response.text,
         )
+    }
+
+    /// Asks for consent to submit a form until it has it.
+    struct ConsentAsker {
+        acted: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ConsentAsker {
+        fn name(&self) -> &str {
+            "browser_submit"
+        }
+        fn description(&self) -> &str {
+            "submits with consent"
+        }
+        fn input_schema(&self) -> serde_json::Value {
+            json!({"type": "object"})
+        }
+        fn side_effect_class(&self) -> SideEffectClass {
+            SideEffectClass::Network
+        }
+        async fn call(
+            &self,
+            ctx: &ToolContext,
+            _args: serde_json::Value,
+        ) -> Result<ToolOutput, ToolError> {
+            let kind = forge_tools::ConsentKind::FormSubmit;
+            if ctx
+                .consents
+                .check(kind, "example.com", ctx.tool_call_id.as_deref())
+            {
+                self.acted.store(true, Ordering::SeqCst);
+                return Ok(ToolOutput::success("submitted"));
+            }
+            Err(ToolError::ConsentRequired(Box::new(
+                forge_tools::ConsentRequest::new(kind, "example.com", "Submit"),
+            )))
+        }
+    }
+
+    /// An unattended run never submits a form or takes the screen on its
+    /// own say-so: approve-all refuses consent requests, and says why.
+    #[tokio::test]
+    async fn approve_all_refuses_consent_requests() {
+        let dir = tempdir().unwrap();
+        let cfg = LoopConfig {
+            workspace: dir.path().to_path_buf(),
+            journal_dir: dir.path().join("journal"),
+            enable_context_lifecycle: true,
+            enable_governance: true,
+            ..Default::default()
+        };
+        let acted = Arc::new(AtomicBool::new(false));
+        let mut tools = ToolRegistry::new();
+        tools.register(Arc::new(ConsentAsker {
+            acted: acted.clone(),
+        }));
+        let script = vec![
+            ModelResponse {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "s1".into(),
+                    name: "browser_submit".into(),
+                    arguments: json!({}),
+                }],
+                usage: None,
+                thinking: None,
+            },
+            text("done"),
+        ];
+        let mut session =
+            AgentSession::create(cfg, Arc::new(MockModelClient::script(script)), tools)
+                .await
+                .unwrap();
+        run_headless_in(&mut session, "go", ApprovalPolicy::ApproveAll)
+            .await
+            .unwrap();
+        assert!(!acted.load(Ordering::SeqCst));
+        let result = tool_result(&session);
+        assert!(result.contains("unattended"), "{result}");
     }
 
     #[tokio::test]

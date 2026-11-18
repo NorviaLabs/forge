@@ -28,6 +28,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 tempfile = { version = "3", optional = true }
+forge-browser = { path = "../forge-browser" }
 forge-config = { path = "../forge-config" }
 forge-core = { path = "../forge-core" }
 forge-connect = { path = "../forge-connect" }
@@ -40,6 +41,7 @@ forge-search = { path = "../forge-search" }
 # The `__egress-connect` helper git's SSH routing invokes on this executable.
 forge-tools = { path = "../forge-tools" }
 forge-types = { path = "../forge-types" }
+forge-screen = { path = "../forge-screen" }
 forge-workspace = { path = "../forge-workspace" }
 # Diagnostics on stderr, off unless FORGE_LOG is set (e.g. FORGE_LOG=forge::timing=debug).
 tracing-subscriber = { workspace = true }
@@ -57,5 +59,5 @@ rfd = { version = "=0.17.2", default-features = false, features = ["gtk3", "comm
 [dev-dependencies]
 # Constructing a session snapshot in the bridge's roster tests.
 chrono = "0.4"
-# SSH config fixtures.
+# Scratch config files in the SSH and computer-use settings tests.
 tempfile = "3"

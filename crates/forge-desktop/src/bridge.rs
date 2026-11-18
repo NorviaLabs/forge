@@ -97,6 +97,9 @@ pub enum DesktopEvent {
         /// The model and effort Auto chose for each of its turns, and why;
         /// `user_message` places each one in the conversation.
         auto_turns: Vec<forge_core::AutoDecision>,
+        /// The session's browser, and whether it holds the screen: the
+        /// strips above the composer.
+        computer_use: forge_session::computer_use::ComputerUseStatus,
     },
     /// The sessions the supervisor owns, in switcher order.
     Roster {
@@ -399,6 +402,9 @@ pub struct ApprovalView {
     /// card's second confirmation step.
     pub privileged: bool,
     pub kind: &'static str,
+    /// What a consent request means (Sees, Sends, Controls…), in order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<FactView>,
     pub options: Vec<ApprovalOption>,
     /// The SSH host the call would run on; `None` on this machine.
     pub target: Option<String>,
@@ -406,6 +412,38 @@ pub struct ApprovalView {
     /// describes, so a decision cannot land on a replacement request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+}
+
+/// One labelled line of a consent request.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FactView {
+    pub label: String,
+    pub value: String,
+}
+
+/// The `GrantDecision` a decision name from the page stands for.
+pub fn grant_decision(name: &str, note: Option<String>) -> Result<GrantDecision, String> {
+    Ok(match name {
+        "deny" => GrantDecision::Deny,
+        "deny_with_note" => {
+            let note = note.unwrap_or_default().trim().to_string();
+            if note.is_empty() {
+                return Err("a note is required for this choice".into());
+            }
+            GrantDecision::DenyWithNote(note)
+        }
+        "allow_once" => GrantDecision::AllowOnce,
+        "allow_pattern_for_session" => GrantDecision::AllowPatternForSession,
+        "allow_pattern_always" => GrantDecision::AllowPatternAlways,
+        "allow_host_for_session" => GrantDecision::AllowHostForSession,
+        "allow_host_always" => GrantDecision::AllowHostAlways,
+        "approve_all" => GrantDecision::ApproveAll,
+        "trust_program" => GrantDecision::TrustProgram,
+        "allow_path_for_session" => GrantDecision::AllowPathForSession,
+        "allow_path_always" => GrantDecision::AllowPathAlways,
+        "allow_consent_for_session" => GrantDecision::AllowConsentForSession,
+        other => return Err(format!("unknown decision `{other}`")),
+    })
 }
 
 /// One `ask_user_question` call waiting on the operator.
@@ -466,7 +504,7 @@ pub struct BackgroundView {
     /// replacement that reused the same task id.
     pub run_id: String,
     pub label: String,
-    /// `shell` or `subagent`.
+    /// `shell`, `subagent` or `app`.
     pub kind: String,
     /// `queued`, `running`, `waiting_for_approval`, `succeeded`, `failed` or
     /// `cancelled`.
@@ -482,6 +520,8 @@ pub struct BackgroundView {
     pub agent: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// For a running app: where this machine reaches it (the Open link).
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -571,54 +611,65 @@ fn plan_view(snapshot: &SessionRuntimeSnapshot) -> Option<PlanView> {
 fn background_views(
     details: Option<&forge_session::SessionDetailsSnapshot>,
 ) -> Vec<BackgroundView> {
-    use forge_core::{BackgroundTaskKind, BackgroundTaskStatus};
     details
         .map(|details| details.background.as_slice())
         .unwrap_or_default()
         .iter()
-        .map(|task| {
-            let (status, detail, awaiting_approval) = match &task.status {
-                BackgroundTaskStatus::Queued => ("queued", String::new(), false),
-                BackgroundTaskStatus::Running => ("running", String::new(), false),
-                BackgroundTaskStatus::WaitingForApproval { payload } => {
-                    ("waiting_for_approval", payload.reason.clone(), true)
-                }
-                BackgroundTaskStatus::Succeeded { summary } => {
-                    ("succeeded", summary.clone(), false)
-                }
-                BackgroundTaskStatus::Failed { error } => ("failed", error.clone(), false),
-                BackgroundTaskStatus::Cancelled => ("cancelled", String::new(), false),
-            };
-            let (kind, subject) = match &task.kind {
-                BackgroundTaskKind::Shell { command } => ("shell", command.clone()),
-                BackgroundTaskKind::Subagent { role, prompt } => {
-                    ("subagent", format!("{role}: {prompt}"))
-                }
-            };
-            BackgroundView {
-                id: task.id.0,
-                run_id: task.run_id.to_string(),
-                label: escape_invisible(&task.label),
-                kind: kind.into(),
-                status: status.into(),
-                detail: escape_invisible(if detail.is_empty() { &subject } else { &detail }),
-                latest_message: escape_invisible(task.latest_message.as_deref().unwrap_or("")),
-                awaiting_approval,
-                child_session_id: task.child_session_id,
-                approval: task.pending_approval.as_ref().map(child_approval_view),
-                agent: task
-                    .child
-                    .as_ref()
-                    .and_then(|child| child.agent.as_deref())
-                    .map(escape_invisible),
-                model: task.child.as_ref().and_then(|child| child.model.clone()),
-                effort: task
-                    .child
-                    .as_ref()
-                    .and_then(|child| child.reasoning_effort.clone()),
-            }
-        })
+        .map(background_view)
         .collect()
+}
+
+fn background_view(task: &forge_session::BackgroundTaskSnapshot) -> BackgroundView {
+    use forge_core::{BackgroundTaskKind, BackgroundTaskStatus};
+    let (status, detail, awaiting_approval) = match &task.status {
+        BackgroundTaskStatus::Queued => ("queued", String::new(), false),
+        BackgroundTaskStatus::Running => ("running", String::new(), false),
+        BackgroundTaskStatus::WaitingForApproval { payload } => {
+            ("waiting_for_approval", payload.reason.clone(), true)
+        }
+        BackgroundTaskStatus::Succeeded { summary } => ("succeeded", summary.clone(), false),
+        BackgroundTaskStatus::Failed { error } => ("failed", error.clone(), false),
+        BackgroundTaskStatus::Cancelled => ("cancelled", String::new(), false),
+    };
+    let (kind, subject) = match &task.kind {
+        BackgroundTaskKind::Shell { command } => ("shell", command.clone()),
+        BackgroundTaskKind::Subagent { role, prompt } => ("subagent", format!("{role}: {prompt}")),
+        // Where this machine reaches the app, and its port in the sandbox.
+        BackgroundTaskKind::App { port, url, .. } if !url.is_empty() => {
+            ("app", format!("{url} → sandbox port {port}"))
+        }
+        BackgroundTaskKind::App { command, .. } => ("app", command.clone()),
+    };
+    // Only a running app can be opened.
+    let url = match (&task.kind, &task.status) {
+        (BackgroundTaskKind::App { url, .. }, BackgroundTaskStatus::Running) if !url.is_empty() => {
+            Some(format!("http://{url}/"))
+        }
+        _ => None,
+    };
+    BackgroundView {
+        id: task.id.0,
+        run_id: task.run_id.to_string(),
+        label: escape_invisible(&task.label),
+        kind: kind.into(),
+        status: status.into(),
+        detail: escape_invisible(if detail.is_empty() { &subject } else { &detail }),
+        latest_message: escape_invisible(task.latest_message.as_deref().unwrap_or("")),
+        awaiting_approval,
+        child_session_id: task.child_session_id,
+        approval: task.pending_approval.as_ref().map(child_approval_view),
+        agent: task
+            .child
+            .as_ref()
+            .and_then(|child| child.agent.as_deref())
+            .map(escape_invisible),
+        model: task.child.as_ref().and_then(|child| child.model.clone()),
+        effort: task
+            .child
+            .as_ref()
+            .and_then(|child| child.reasoning_effort.clone()),
+        url,
+    }
 }
 
 fn token_view(details: Option<&forge_session::SessionDetailsSnapshot>) -> TokenView {
@@ -640,19 +691,54 @@ fn token_view(details: Option<&forge_session::SessionDetailsSnapshot>) -> TokenV
 }
 
 fn approval_view(payload: &HitlPayload) -> ApprovalView {
-    let arguments = serde_json::to_string_pretty(&payload.args_redacted)
-        .unwrap_or_else(|_| payload.args_redacted.to_string());
+    // A consent request shows what will happen, in words the tool chose,
+    // not its raw arguments.
+    let (arguments, reason, facts) = match &payload.consent {
+        Some(consent) => {
+            let reason = match consent.kind {
+                forge_types::ConsentKind::ScreenControl if !consent.reason.is_empty() => format!(
+                    "The agent asked to see your screen to \u{201c}{}\u{201d}.",
+                    consent.reason
+                ),
+                forge_types::ConsentKind::ScreenControl => {
+                    "The agent asked to see and use your screen.".to_string()
+                }
+                forge_types::ConsentKind::FormSubmit => {
+                    "Submitting can create, send, buy or change something on the site, as you."
+                        .to_string()
+                }
+            };
+            let facts = consent
+                .facts
+                .iter()
+                .map(|fact| FactView {
+                    label: escape_invisible(&fact.label),
+                    value: escape_invisible(&fact.value),
+                })
+                .collect();
+            (consent.summary.clone(), reason, facts)
+        }
+        None => (
+            serde_json::to_string_pretty(&payload.args_redacted)
+                .unwrap_or_else(|_| payload.args_redacted.to_string()),
+            payload.reason.clone(),
+            Vec::new(),
+        ),
+    };
     ApprovalView {
         call_id: payload.call_id.clone(),
         tool: escape_invisible(&payload.tool),
         arguments: escape_invisible(&arguments),
-        reason: escape_invisible(&payload.reason),
+        reason: escape_invisible(&reason),
         privileged: requires_native_confirm(payload),
         kind: match payload.kind() {
             ApprovalKind::NetworkHost => "network_host",
             ApprovalKind::SandboxEscalation => "sandbox_escalation",
             ApprovalKind::Governance => "governance",
+            ApprovalKind::ScreenControl => "screen_control",
+            ApprovalKind::FormSubmit => "form_submit",
         },
+        facts,
         options: approval_options(payload),
         target: payload.target.as_deref().map(escape_invisible),
         request_id: None,
@@ -884,7 +970,19 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .as_ref()
             .map(|details| details.auto_decisions.clone())
             .unwrap_or_default(),
+        computer_use: computer_use_status(snapshot.task.session_id),
     }
+}
+
+/// The session's browser and screen, as the strips show them. The page's
+/// title and URL come from a website: invisible characters are shown.
+fn computer_use_status(session_id: SessionId) -> forge_session::computer_use::ComputerUseStatus {
+    let mut status = forge_session::computer_use::ComputerUse::global().status(session_id);
+    if let Some(browser) = status.browser.as_mut() {
+        browser.title = escape_invisible(&browser.title);
+        browser.url = escape_invisible(&browser.url);
+    }
+    status
 }
 
 /// Translate one supervisor event. `None` for events the skeleton does not
@@ -1012,6 +1110,26 @@ impl DesktopState {
     /// Put another open project on screen.
     pub fn switch_to(&self, project: forge_session::OpenProjectRef) {
         self.active.send_replace(project);
+    }
+
+    /// Every folder an agent can write to: each open project and each live
+    /// session's workspace (managed worktrees live elsewhere).
+    async fn open_project_roots(&self) -> Vec<std::path::PathBuf> {
+        let mut roots = Vec::new();
+        let Ok(open) = self.projects.open_projects().await else {
+            return roots;
+        };
+        for project in open {
+            roots.push(project.project.root.clone());
+            if let Ok(snapshots) = project.snapshots().await {
+                roots.extend(
+                    snapshots
+                        .into_iter()
+                        .map(|snapshot| snapshot.session.workspace_root),
+                );
+            }
+        }
+        roots
     }
 
     /// The project on screen, for its custom agents.
@@ -2380,26 +2498,7 @@ pub async fn decide_approval(
             "this decision runs outside the sandbox or opens a host; confirm it first".into(),
         );
     }
-    let decision = match decision.as_str() {
-        "deny" => GrantDecision::Deny,
-        "deny_with_note" => {
-            let note = note.unwrap_or_default().trim().to_string();
-            if note.is_empty() {
-                return Err("a note is required for this choice".into());
-            }
-            GrantDecision::DenyWithNote(note)
-        }
-        "allow_once" => GrantDecision::AllowOnce,
-        "allow_pattern_for_session" => GrantDecision::AllowPatternForSession,
-        "allow_pattern_always" => GrantDecision::AllowPatternAlways,
-        "allow_host_for_session" => GrantDecision::AllowHostForSession,
-        "allow_host_always" => GrantDecision::AllowHostAlways,
-        "approve_all" => GrantDecision::ApproveAll,
-        "trust_program" => GrantDecision::TrustProgram,
-        "allow_path_for_session" => GrantDecision::AllowPathForSession,
-        "allow_path_always" => GrantDecision::AllowPathAlways,
-        other => return Err(format!("unknown decision `{other}`").into()),
-    };
+    let decision = grant_decision(&decision, note)?;
     project
         .handle
         .submit(SupervisorCommand::DecideApproval {
@@ -3437,6 +3536,75 @@ pub fn revoke_sandbox_grant(
     Ok(())
 }
 
+/// Settings → Computer use: the saved settings and what this machine has.
+#[tauri::command]
+pub async fn computer_use_settings() -> Result<crate::computer_use::ComputerUseSettingsView, String>
+{
+    tokio::task::spawn_blocking(|| {
+        let path = forge_config::user_config_file()
+            .ok_or_else(|| "there is no user configuration directory".to_string())?;
+        let settings =
+            forge_config::read_computer_use_settings(&path).map_err(|error| error.to_string())?;
+        let browsers = forge_browser::discover_all(std::env::var_os("PATH").as_deref());
+        Ok(crate::computer_use::settings_view(
+            settings,
+            browsers,
+            forge_screen::session_support().and_then(|()| forge_screen::connect().map(drop)),
+            crate::computer_use::web_check_support(
+                cfg!(target_os = "linux"),
+                forge_tools::sandbox::availability().map_err(|unavailable| unavailable.reason()),
+                forge_tools::sandbox::relay_available(),
+            ),
+        ))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Save Settings → Computer use to the user's config, and apply it to every
+/// open session.
+#[tauri::command]
+pub async fn save_computer_use_settings(
+    state: State<'_, DesktopState>,
+    settings: forge_config::ComputerUseSettings,
+) -> Result<forge_config::ComputerUseSettings, String> {
+    // The agent can write files in any open project: a browser program
+    // there is refused.
+    let project_roots = state.open_project_roots().await;
+    tokio::task::spawn_blocking(move || {
+        let path = forge_config::user_config_file()
+            .ok_or_else(|| "there is no user configuration directory".to_string())?;
+        crate::computer_use::save(&path, settings, &project_roots)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Close the session's browser (the "Browser open" strip, or the palette).
+#[tauri::command]
+pub async fn close_browser(session_id: SessionId) -> Result<bool, String> {
+    Ok(forge_session::computer_use::ComputerUse::global()
+        .close_browser(session_id)
+        .await)
+}
+
+/// Open the session's running app in the user's own browser (the Activity
+/// link, or the palette). The address comes from the session, never from
+/// the page.
+#[tauri::command]
+pub fn open_app(session_id: SessionId) -> Result<String, String> {
+    let status = forge_session::computer_use::ComputerUse::global().status(session_id);
+    let url = crate::computer_use::app_url(&status)?;
+    forge_connect::try_open_browser(&url);
+    Ok(url)
+}
+
+/// End the session's control of the screen (Stop, or the palette).
+#[tauri::command]
+pub fn stop_screen_control(session_id: SessionId) -> Result<bool, String> {
+    Ok(forge_session::computer_use::ComputerUse::global().stop_screen(session_id))
+}
+
 /// Custom agents of the project on screen and of the user, with the files
 /// that did not load.
 #[tauri::command]
@@ -4388,6 +4556,20 @@ mod tests {
         assert_eq!(json["skill_descriptions"], serde_json::json!([]));
     }
 
+    /// The strips above the composer follow each session snapshot.
+    #[test]
+    fn a_session_snapshot_carries_its_computer_use_status() {
+        let snapshot = snapshot(
+            SessionId::new_v4(),
+            "s",
+            SessionLifecycle::Active,
+            forge_session::SupervisorTurnState::Idle,
+        );
+        let json = serde_json::to_value(session_event(&snapshot)).unwrap();
+        assert_eq!(json["computer_use"]["controlling_screen"], false, "{json}");
+        assert!(json["computer_use"]["browser"].is_null(), "{json}");
+    }
+
     fn payload(sandbox_escalation: bool, denied_host: Option<&str>) -> HitlPayload {
         HitlPayload {
             call_id: "call-1".into(),
@@ -4399,6 +4581,7 @@ mod tests {
             denied_host: denied_host.map(str::to_string),
             denied_path: None,
             target: None,
+            consent: None,
         }
     }
 
@@ -4637,6 +4820,137 @@ mod tests {
         assert!(failure.message.contains("devbox"), "{failure:?}");
     }
 
+    fn consent_payload(kind: forge_types::ConsentKind) -> HitlPayload {
+        let (tool, scope, summary) = match kind {
+            forge_types::ConsentKind::ScreenControl => (
+                "desktop_screenshot",
+                "screen",
+                "Control your screen, mouse and keyboard for this session",
+            ),
+            forge_types::ConsentKind::FormSubmit => (
+                "browser_submit",
+                "localhost:5173",
+                "Submit \u{201c}Create account\u{201d} on localhost:5173/signup",
+            ),
+        };
+        HitlPayload {
+            tool: tool.into(),
+            args_redacted: serde_json::json!({"ref": "e9"}),
+            consent: Some(Box::new(
+                forge_types::ConsentRequest::new(kind, scope, summary)
+                    .with_fact("Sees", "Your primary display (2560 × 1440)")
+                    .with_fact("Never", "Forge's own window")
+                    .with_reason("check the exported PDF"),
+            )),
+            ..payload(false, None)
+        }
+    }
+
+    #[test]
+    fn screen_control_offers_a_confirmed_turn_grant_only() {
+        let payload = consent_payload(forge_types::ConsentKind::ScreenControl);
+        let options = approval_options(&payload);
+        let decisions: Vec<&str> = options.iter().map(|o| o.decision.as_str()).collect();
+        assert_eq!(
+            decisions,
+            ["allow_consent_for_session", "deny", "deny_with_note"]
+        );
+        assert_eq!(options[0].label, "Allow for this turn");
+        assert!(
+            options[0].privileged,
+            "the grant needs the card's confirmation"
+        );
+        assert_eq!(options[1].label, "Don't allow");
+        assert_eq!(options[2].label, "Don't allow, and say why");
+        assert!(requires_native_confirm(&payload));
+    }
+
+    #[test]
+    fn a_form_submit_offers_once_or_the_site_for_the_session() {
+        let payload = consent_payload(forge_types::ConsentKind::FormSubmit);
+        let options = approval_options(&payload);
+        let labels: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Submit once",
+                "Allow submits on localhost:5173 this session",
+                "Don't submit",
+                "Don't submit, and say why"
+            ]
+        );
+        let decisions: Vec<&str> = options.iter().map(|o| o.decision.as_str()).collect();
+        assert_eq!(
+            decisions,
+            [
+                "allow_once",
+                "allow_consent_for_session",
+                "deny",
+                "deny_with_note"
+            ]
+        );
+        assert!(options.iter().all(|option| !option.privileged));
+        assert!(!requires_native_confirm(&payload));
+    }
+
+    /// The card shows what will happen, not the tool's raw arguments.
+    #[test]
+    fn a_consent_card_shows_the_request() {
+        let view = approval_view(&consent_payload(forge_types::ConsentKind::ScreenControl));
+        assert_eq!(view.kind, "screen_control");
+        assert_eq!(
+            view.arguments,
+            "Control your screen, mouse and keyboard for this session"
+        );
+        assert_eq!(
+            view.facts,
+            vec![
+                FactView {
+                    label: "Sees".into(),
+                    value: "Your primary display (2560 × 1440)".into()
+                },
+                FactView {
+                    label: "Never".into(),
+                    value: "Forge's own window".into()
+                },
+            ]
+        );
+        assert!(
+            view.reason
+                .contains("\u{201c}check the exported PDF\u{201d}"),
+            "{}",
+            view.reason
+        );
+        assert!(view.privileged);
+
+        let submit = approval_view(&consent_payload(forge_types::ConsentKind::FormSubmit));
+        assert_eq!(submit.kind, "form_submit");
+        assert!(submit.arguments.starts_with("Submit"));
+        assert!(submit.reason.contains("as you"), "{}", submit.reason);
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["facts"][0]["label"], "Sees");
+        let plain = serde_json::to_value(approval_view(&payload(false, None))).unwrap();
+        assert!(plain.get("facts").is_none(), "no facts, no field");
+    }
+
+    #[test]
+    fn decision_names_map_to_grants() {
+        assert_eq!(
+            grant_decision("allow_consent_for_session", None),
+            Ok(GrantDecision::AllowConsentForSession)
+        );
+        assert_eq!(
+            grant_decision("allow_once", None),
+            Ok(GrantDecision::AllowOnce)
+        );
+        assert_eq!(
+            grant_decision("deny_with_note", Some(" not now ".into())),
+            Ok(GrantDecision::DenyWithNote("not now".into()))
+        );
+        assert!(grant_decision("deny_with_note", Some("  ".into())).is_err());
+        assert!(grant_decision("grant_everything", None).is_err());
+    }
+
     #[test]
     fn grant_options_match_the_kind_of_request() {
         let governance = approval_options(&payload(false, None));
@@ -4861,5 +5175,95 @@ mod tests {
             escape_invisible("\u{2066}x\u{2069}\u{FEFF}"),
             "⟨U+2066⟩x⟨U+2069⟩⟨U+FEFF⟩"
         );
+    }
+
+    fn app_task(
+        status: forge_core::BackgroundTaskStatus,
+        latest: Option<&str>,
+    ) -> forge_session::BackgroundTaskSnapshot {
+        forge_session::BackgroundTaskSnapshot {
+            id: forge_types::BackgroundTaskId(3),
+            run_id: forge_core::BackgroundRunId::nil(),
+            label: "App · npm run dev".into(),
+            kind: forge_core::BackgroundTaskKind::App {
+                command: "npm run dev".into(),
+                port: 5173,
+                url: "127.0.0.1:43817".into(),
+            },
+            shell: None,
+            child: None,
+            pending_approval: None,
+            status,
+            child_session_id: None,
+            latest_message: latest.map(str::to_string),
+            worktree_path: None,
+            worktree_branch: None,
+            started_at: chrono::Utc::now(),
+            finished_at: None,
+        }
+    }
+
+    /// The Activity card of a running app: where this machine reaches it,
+    /// the port inside the sandbox, the app's last line, and the Open link.
+    #[test]
+    fn a_running_app_shows_where_it_is_reached() {
+        let view = background_view(&app_task(
+            forge_core::BackgroundTaskStatus::Running,
+            Some("VITE v5.4.2  ready in 412 ms"),
+        ));
+        assert_eq!(view.kind, "app");
+        assert_eq!(view.status, "running");
+        assert_eq!(view.label, "App · npm run dev");
+        assert_eq!(view.detail, "127.0.0.1:43817 → sandbox port 5173");
+        assert_eq!(view.latest_message, "VITE v5.4.2  ready in 412 ms");
+        assert_eq!(view.url.as_deref(), Some("http://127.0.0.1:43817/"));
+    }
+
+    /// A finished app says how it ended, and has nothing left to open.
+    #[test]
+    fn a_finished_app_says_how_it_ended() {
+        let stopped = background_view(&app_task(
+            forge_core::BackgroundTaskStatus::Succeeded {
+                summary: "stopped".into(),
+            },
+            Some("old line"),
+        ));
+        assert_eq!(
+            (stopped.status.as_str(), stopped.detail.as_str()),
+            ("succeeded", "stopped")
+        );
+        assert_eq!(stopped.url, None);
+        let crashed = background_view(&app_task(
+            forge_core::BackgroundTaskStatus::Failed {
+                error: "exited with code 1\nError: Cannot find module 'vite'".into(),
+            },
+            None,
+        ));
+        assert_eq!(crashed.status, "failed");
+        assert!(crashed.detail.starts_with("exited with code 1"));
+        assert_eq!(crashed.url, None);
+        // After a restart the address is gone.
+        let mut interrupted = app_task(forge_core::BackgroundTaskStatus::Cancelled, None);
+        interrupted.kind = forge_core::BackgroundTaskKind::App {
+            command: String::new(),
+            port: 0,
+            url: String::new(),
+        };
+        let view = background_view(&interrupted);
+        assert_eq!(view.url, None);
+        assert_eq!(view.status, "cancelled");
+    }
+
+    /// Other tasks have no Open link.
+    #[test]
+    fn only_an_app_has_a_url() {
+        let mut shell = app_task(forge_core::BackgroundTaskStatus::Running, None);
+        shell.kind = forge_core::BackgroundTaskKind::Shell {
+            command: "cargo test".into(),
+        };
+        let view = background_view(&shell);
+        assert_eq!(view.kind, "shell");
+        assert_eq!(view.detail, "cargo test");
+        assert_eq!(view.url, None);
     }
 }

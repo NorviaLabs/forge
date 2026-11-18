@@ -83,8 +83,7 @@ Supports Add/Update/Delete File, optional `*** Move to:`, `@@` hunks, and `*** E
     }
 
     fn input_schema(&self) -> Value {
-        let schema = schemars::schema_for!(ApplyPatchArgs);
-        serde_json::to_value(schema).unwrap_or_else(|_| serde_json::json!({"type": "object"}))
+        crate::builtins::schema_for::<ApplyPatchArgs>()
     }
 
     fn side_effect_class(&self) -> SideEffectClass {

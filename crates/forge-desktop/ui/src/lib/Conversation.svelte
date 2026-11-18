@@ -342,7 +342,7 @@
 
   .turn.tool .who {
     display: grid;
-    grid-template-columns: 96px minmax(0, 1fr);
+    grid-template-columns: 136px minmax(0, 1fr);
     align-items: center;
     gap: 8px;
     height: 24px;
@@ -375,7 +375,7 @@
 
   /* Padding, not margin: a margin would collapse through the card's edge. */
   .message.tool {
-    margin: 0 12px 0 116px;
+    margin: 0 12px 0 156px;
     overflow: hidden;
   }
 

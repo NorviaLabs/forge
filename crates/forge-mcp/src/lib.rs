@@ -2535,6 +2535,7 @@ done
     }
 
     #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn process_alive(pid: &str) -> bool {
         std::process::Command::new("/bin/kill")
             .args(["-0", pid])
@@ -2546,6 +2547,7 @@ done
     /// Wait up to 5s for `pid` to go away. A killed process whose parent
     /// died is briefly a zombie until init reaps it, hence the polling.
     #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     async fn process_gone(pid: &str) -> bool {
         for _ in 0..100 {
             if !process_alive(pid) {
@@ -2556,19 +2558,45 @@ done
         false
     }
 
+    /// The host pid of the `/bin/sleep {seconds}` process, found by its
+    /// command line. A sandboxed server runs in its own process space, so
+    /// the pid it sees (`$!`) is not the host's.
+    #[cfg(target_os = "linux")]
+    async fn host_pid_of_sleep(seconds: &str) -> Option<String> {
+        let wanted = format!("/bin/sleep\0{seconds}\0");
+        for _ in 0..100 {
+            for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if !name.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
+                if std::fs::read(entry.path().join("cmdline"))
+                    .is_ok_and(|cmdline| cmdline == wanted.as_bytes())
+                {
+                    return Some(name);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
     /// A grandchild the server forked is killed with the server when the
     /// client is dropped — sandboxed or not.
     #[tokio::test]
-    #[cfg(unix)]
+    // Finds the grandchild by scanning /proc (Linux).
+    #[cfg(target_os = "linux")]
     async fn dropping_the_client_kills_the_servers_grandchildren() {
         for sandboxed in [false, true] {
             if sandboxed && forge_tools::sandbox::availability().is_err() {
                 continue;
             }
             let workspace = tempfile::tempdir().unwrap();
+            // A duration no other process uses, to find it on the host.
+            let seconds = format!("{}{}", 300_000 + std::process::id(), u8::from(sandboxed));
             let probe = write_probe(
                 workspace.path(),
-                "/bin/sleep 300 >/dev/null 2>&1 &\necho grandchild=$!\n",
+                &format!("/bin/sleep {seconds} >/dev/null 2>&1 &\necho started\n"),
             );
             let server = fixture_server_running();
             let mut cfg = fixture_cfg(&server);
@@ -2588,16 +2616,10 @@ done
                 .result
                 .unwrap()
                 .content;
-            let pid = report
-                .split("grandchild=")
-                .nth(1)
-                .map(|rest| {
-                    rest.chars()
-                        .take_while(char::is_ascii_digit)
-                        .collect::<String>()
-                })
-                .filter(|pid| !pid.is_empty())
-                .unwrap_or_else(|| panic!("no grandchild pid: {report}"));
+            assert!(report.contains("started"), "{report}");
+            let pid = host_pid_of_sleep(&seconds).await.unwrap_or_else(|| {
+                panic!("no grandchild `sleep {seconds}` found (sandboxed={sandboxed})")
+            });
             assert!(
                 process_alive(&pid),
                 "grandchild {pid} should be running before the drop"

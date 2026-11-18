@@ -56,6 +56,14 @@ jobs:
       # a regression there costs every new Linux user the sandbox silently.
       - name: Test the installer
         run: sh install/test-installer.sh
+      # Browser and desktop control are tested against a real browser and a
+      # real X server (a private Xvfb per test). Without them those tests
+      # skip; FORGE_REQUIRE_COMPUTER_TESTS below turns a skip into a failure.
+      # The runner image ships Google Chrome.
+      - name: Install computer-use test dependencies
+        run: |
+          sudo apt-get install -y xvfb
+          echo "FORGE_TEST_CHROMIUM=$(command -v google-chrome || command -v chromium)" >> "$GITHUB_ENV"
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Lint
@@ -69,6 +77,10 @@ jobs:
       # rather than one per push.
       - name: Run tests
         run: cargo test --workspace --all-targets --locked --no-fail-fast
+        env:
+          FORGE_REQUIRE_COMPUTER_TESTS: "1"
+      - name: Test the web UI helpers
+        run: cd crates/forge-desktop/ui && node --test src/*.test.js
 
   # The Tauri desktop app (crates/forge-desktop). The `test` job already
   # lints and tests it on Linux; this job adds macOS, the self-test feature,

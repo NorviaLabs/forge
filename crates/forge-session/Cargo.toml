@@ -6,6 +6,7 @@ license.workspace = true
 description = "Frontend-independent session assembly for Forge"
 
 [dependencies]
+forge-browser = { workspace = true }
 forge-config = { workspace = true }
 forge-connect = { workspace = true }
 forge-core = { workspace = true }
@@ -17,6 +18,7 @@ forge-storage = { workspace = true }
 forge-workspace = { workspace = true }
 forge-tools = { workspace = true }
 forge-types = { workspace = true }
+forge-screen = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }

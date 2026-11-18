@@ -4,6 +4,7 @@ mod agent_coordinator;
 mod audit;
 mod background;
 mod completion;
+mod computer_use;
 mod custom_agents;
 mod host_questions;
 mod lifecycle;
@@ -21,6 +22,7 @@ mod turn;
 mod turn_record;
 pub(crate) mod turn_state;
 mod verification;
+mod web_app;
 mod work;
 
 pub use stream::{
@@ -268,6 +270,9 @@ pub struct AgentSession {
     verification_commands: Arc<Vec<String>>,
     /// Where the tools run; `tool_ctx.target` is its connection.
     execution_target: forge_types::ExecutionTarget,
+    /// The web app `app_start` runs: how it is run, how long it may take to
+    /// answer, and which start is the latest.
+    web_app: web_app::SessionWebApp,
 }
 
 #[derive(Debug)]
@@ -300,6 +305,8 @@ impl CtxTokensFingerprint {
 #[cfg(test)]
 mod compaction_tests;
 #[cfg(test)]
+mod computer_use_tests;
+#[cfg(test)]
 mod custom_agents_tests;
 #[cfg(all(test, unix))]
 mod mcp_egress_tests;
@@ -309,3 +316,6 @@ mod remote_target_tests;
 mod tests;
 #[cfg(test)]
 mod turn_record_tests;
+// The host side of the ingress relay is Linux-only.
+#[cfg(all(test, target_os = "linux"))]
+mod web_app_tests;

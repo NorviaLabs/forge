@@ -13,6 +13,7 @@
 
 pub mod approvals;
 pub mod auto_models;
+pub mod computer_use;
 mod control;
 pub mod headless;
 mod launch;
@@ -351,6 +352,9 @@ async fn open_session_with_model(
     model: Arc<dyn ModelClient>,
 ) -> anyhow::Result<OpenedSession> {
     let mut tools = ToolRegistry::new();
+    // Browser and desktop control: always registered, offered only while
+    // turned on in the user's settings (which can change while it runs).
+    let computer_use = computer_use::ComputerUse::global().install(&mut tools, cfg);
 
     let mut notices = cfg.refused_key_notices();
     // One live egress state for the whole session, built before the MCP
@@ -430,6 +434,8 @@ async fn open_session_with_model(
     if !cfg.model.mock {
         session.install_model_services(model_services(cfg, &journal_dir).await);
     }
+    // How long an app started with `app_start` may take to answer.
+    session.set_web_ready_timeout(cfg.web.ready_timeout());
     // The project's own validation command counts as verification in the
     // turn records.
     if let Some(command) = &cfg.validation.command {
@@ -456,6 +462,11 @@ async fn open_session_with_model(
     // `host(...)` policy; later `apply_egress_policy` calls replace that
     // policy in place, so the servers keep following it.
     session.adopt_egress_state(egress_state).await;
+    computer_use::ComputerUse::global().register(
+        session.session_id,
+        computer_use,
+        &session.web_app_slot(),
+    );
 
     Ok(OpenedSession { session, notices })
 }

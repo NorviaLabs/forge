@@ -110,4 +110,9 @@ pub const DESKTOP_COMMANDS: &[&str] = &[
     "remote_pair_cancel",
     "remote_pair_decide",
     "remote_revoke",
+    "computer_use_settings",
+    "save_computer_use_settings",
+    "close_browser",
+    "stop_screen_control",
+    "open_app",
 ];

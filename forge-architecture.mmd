@@ -13,6 +13,8 @@ flowchart TB
         tools[forge-tools\nValidated tool protocol and execution]
         mcp[forge-mcp\nMCP client bridge]
         model[forge-model\nNative provider transports]
+        browser[forge-browser\nBrowser control over CDP]
+        screen[forge-screen\nDesktop control, X11 backend]
     end
 
     subgraph services[Workspace and policy services]
@@ -75,6 +77,12 @@ flowchart TB
     tools --> config
     tools --> types
     mcp --> tools
+    session --> browser
+    session --> screen
+    browser --> tools
+    screen --> tools
+    desktop --> browser
+    desktop --> screen
     mcp --> config
     model --> connect
     model --> config

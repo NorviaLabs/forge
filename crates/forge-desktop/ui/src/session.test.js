@@ -229,3 +229,10 @@ test("a snapshot carries Auto and each Auto turn's decision", () => {
   assert.equal(emptySnapshot().info.auto, null);
   assert.deepEqual(emptySnapshot().info.autoTurns, []);
 });
+
+test("a snapshot carries the session's browser and screen status", () => {
+  const status = { browser: { browser: "Chromium", url: "http://localhost:5173/", title: "App", tabs: 1 }, controlling_screen: true };
+  const shown = snapshotFrom(session("a", { computer_use: status }), defaultView());
+  assert.deepEqual(shown.computerUse, status);
+  assert.deepEqual(snapshotFrom(session("a"), defaultView()).computerUse, { browser: null, controlling_screen: false, app: null });
+});

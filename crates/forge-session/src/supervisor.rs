@@ -5638,6 +5638,7 @@ mod tests {
                 denied_host: None,
                 denied_path: None,
                 target: None,
+                consent: None,
             });
             snapshot.clone()
         };
@@ -8778,6 +8779,7 @@ mod tests {
                         denied_host: None,
                         denied_path: None,
                         target: None,
+                        consent: None,
                     },
                 }),
                 decision: HitlDecision::Approve,
@@ -11856,6 +11858,7 @@ mod tests {
                         denied_host: None,
                         denied_path: None,
                         target: None,
+                        consent: None,
                     },
                 }),
                 decision: HitlDecision::Deny,

@@ -579,6 +579,19 @@ impl AgentSession {
             return self.next_tool_application(pending).await;
         }
         for mut execution in completed.executions {
+            // A tool asked for consent: that is an approval, whatever
+            // approve-all says (it never answers one).
+            if let Err(ToolError::ConsentRequired(request)) = &execution.result {
+                let request = (**request).clone();
+                if !parallel {
+                    pending.budget = execution.budget;
+                }
+                self.turn.restore_validation_budget(pending.budget);
+                return self
+                    .enter_consent_hitl(execution.call.clone(), request)
+                    .await
+                    .map(ModelResponseApplication::Finished);
+            }
             if let Err(ToolError::SandboxDenied {
                 content,
                 reason,
@@ -1000,6 +1013,28 @@ impl AgentSession {
             self.record_denied_tool(&call, output).await?;
             return Ok(ToolExecutionStart::Finished(None));
         }
+        // Computer use: never for a child that was not given it by name,
+        // and only while it is turned on, supported, and the model can see
+        // what it returns.
+        if !crate::computer_use::computer_use_tool_permitted(
+            self.is_subagent(),
+            self.tool_limit.as_deref(),
+            &call.name,
+        ) {
+            let output =
+                ToolOutput::denied(format!("`{}` is not available to this agent", call.name));
+            self.record_denied_tool(&call, output).await?;
+            return Ok(ToolExecutionStart::Finished(None));
+        }
+        if let Some(reason) = self
+            .tools
+            .get(&call.name)
+            .and_then(|tool| crate::computer_use::unavailable_reason(tool.as_ref(), &self.tool_ctx))
+        {
+            self.record_denied_tool(&call, ToolOutput::denied(reason))
+                .await?;
+            return Ok(ToolExecutionStart::Finished(None));
+        }
         if call.name == "request_unconfined_retry" {
             if let Some(host) = self.execution_target.host() {
                 // Nothing on the host is sandboxed: there is no boundary to
@@ -1049,6 +1084,7 @@ impl AgentSession {
                         denied_host: None,
                         denied_path: None,
                         target: self.approval_target(&call.name),
+                        consent: None,
                     };
                     self.journal
                         .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
@@ -1124,6 +1160,16 @@ impl AgentSession {
         if call.name == "background_run" {
             return Ok(Some(ToolExecutionStart::Finished(
                 self.dispatch_background_run(call).await?,
+            )));
+        }
+        if call.name == "app_start" {
+            return Ok(Some(ToolExecutionStart::Finished(
+                self.dispatch_app_start(call).await?,
+            )));
+        }
+        if call.name == "app_stop" {
+            return Ok(Some(ToolExecutionStart::Finished(
+                self.dispatch_app_stop(call).await?,
             )));
         }
         if call.name == "ask_user_question" {
@@ -1556,6 +1602,18 @@ impl AgentSession {
             self.dispatch_background_run(call).await?;
             return Ok(None);
         }
+        if call.name == "app_start" || call.name == "app_stop" {
+            self.turn.record_call(call.clone());
+            if append_intent {
+                self.journal_tool_intent(call).await?;
+            }
+            if call.name == "app_start" {
+                self.dispatch_app_start(call).await?;
+            } else {
+                self.dispatch_app_stop(call).await?;
+            }
+            return Ok(None);
+        }
         if call.name == "ask_user_question" {
             self.turn.record_call(call.clone());
             self.dispatch_ask_user_question(call).await?;
@@ -1607,6 +1665,13 @@ impl AgentSession {
         // that the gateway refused a host for asks for that host next, as the
         // ungated path does: the approval covered running the call, not the
         // host. The same call is kept to re-run once the host is granted.
+        // An approved call can still ask for consent (screen control ended
+        // between the approval and the run): ask again rather than fail.
+        if let Err(ToolError::ConsentRequired(request)) = &result {
+            let request = (**request).clone();
+            self.enter_consent_hitl(call, request).await?;
+            return Ok(());
+        }
         if let Err(ToolError::SandboxDenied {
             content,
             reason,
@@ -1722,6 +1787,7 @@ impl AgentSession {
             denied_host: denied_host.clone(),
             denied_path,
             target: None,
+            consent: None,
         };
         self.journal
             .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
@@ -1754,6 +1820,64 @@ impl AgentSession {
         };
         Ok(ApplyOutcome::Hitl(ModelResponse {
             text,
+            tool_calls: vec![call],
+            usage: None,
+            thinking: None,
+        }))
+    }
+}
+
+impl AgentSession {
+    /// Park `call` on the user's answer to its consent request. Approving
+    /// grants the consent and re-runs the original call; approve-all never
+    /// answers it.
+    async fn enter_consent_hitl(
+        &mut self,
+        call: ToolCall,
+        request: forge_types::ConsentRequest,
+    ) -> Result<ApplyOutcome, LoopError> {
+        self.turn
+            .pending_hitl_calls
+            .insert(call.id.clone(), call.clone());
+        let reason = if request.reason.is_empty() {
+            format!("`{}` needs your consent", call.name)
+        } else {
+            request.reason.clone()
+        };
+        let payload = HitlPayload {
+            call_id: call.id.clone(),
+            tool: call.name.clone(),
+            args_redacted: self.governance.redact_args(&call.arguments),
+            reason,
+            failure: None,
+            sandbox_escalation: false,
+            denied_host: None,
+            denied_path: None,
+            target: self.approval_target(&call.name),
+            consent: Some(Box::new(request)),
+        };
+        self.journal
+            .append_hitl_wait(self.session_id, &serde_json::to_value(&payload).unwrap())
+            .await?;
+        self.enter_waiting(
+            WaitReason::Approval {
+                request_id: payload.call_id.clone(),
+                payload: payload.clone(),
+            },
+            TransitionReason::HitlWait,
+        )
+        .await?;
+        self.events.push(TurnEvent {
+            kind: "hitl_wait".into(),
+            detail: payload.tool.clone(),
+        });
+        self.turn.push_evidence(
+            EvidenceEntry::new(ExecutionEvent::WaitingForUser)
+                .operation_id(call.id.clone())
+                .tool_name(call.name.clone()),
+        );
+        Ok(ApplyOutcome::Hitl(ModelResponse {
+            text: format!("Awaiting the user's consent for {}", call.name),
             tool_calls: vec![call],
             usage: None,
             thinking: None,

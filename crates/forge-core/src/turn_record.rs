@@ -167,9 +167,32 @@ impl AgentSession {
     ) {
         use forge_types::ExecutionOutcome;
         match result {
-            Err(forge_tools::ToolError::SandboxDenied { .. }) => return,
+            Err(forge_tools::ToolError::SandboxDenied { .. })
+            | Err(forge_tools::ToolError::ConsentRequired(_)) => return,
             Ok(output) if matches!(output.outcome, Some(ExecutionOutcome::Denied { .. })) => return,
             _ => {}
+        }
+        // A web check that ran says whether the pages work; one that could
+        // not run (no app, bad arguments) is a failed tool like any other.
+        if call.name == "web_check" {
+            if let Ok(output) = result {
+                if let Some(code) = output.exit_code {
+                    let pages: Vec<&str> = call.arguments["pages"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|page| page["path"].as_str())
+                        .collect();
+                    let label = crate::truncate(&format!("web_check {}", pages.join(", ")), 80);
+                    let kind = if code == 0 {
+                        TurnSignalKind::VerificationPassed
+                    } else {
+                        TurnSignalKind::VerificationFailed
+                    };
+                    self.record_signal(kind, Some(label));
+                    return;
+                }
+            }
         }
         let command = match call.name.as_str() {
             "bash" => call.arguments.get("command"),

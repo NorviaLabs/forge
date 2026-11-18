@@ -391,6 +391,12 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
 }
 
+/// Whether the in-sandbox relay program (socat) is installed: without it a
+/// confined command has no route out and no app can be offered in.
+pub fn relay_available() -> bool {
+    socat_path().is_some()
+}
+
 /// Where `socat` lives, if it is installed.
 ///
 /// Used as the relay that makes the egress proxy reachable from inside the
@@ -502,6 +508,60 @@ pub struct SandboxPolicy {
     /// A Forge-owned directory for package-manager caches, writable and kept
     /// across sessions. See [`Self::with_tool_cache`].
     tool_cache: Option<PathBuf>,
+    /// A server the process runs, offered to the host through a socket in
+    /// a directory. See [`Self::with_ingress`].
+    ingress: Option<Ingress>,
+}
+
+/// A server inside the sandbox, relayed out through a Unix socket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ingress {
+    dir: PathBuf,
+    port: u16,
+}
+
+/// The file name of the ingress socket in its directory.
+pub const INGRESS_SOCKET_NAME: &str = "app.sock";
+
+/// The in-sandbox relay commands that run before the payload: the egress
+/// relay (a loopback TCP port onto the gateway's socket, waited for) and the
+/// ingress relay (a socket onto the app's loopback port). Each ends in a
+/// separator, so the payload's `exec` follows directly.
+fn relay_prelude(socat: &str, egress_socket: Option<&str>, ingress: Option<(&str, u16)>) -> String {
+    let mut script = String::new();
+    if let Some(socket) = egress_socket {
+        // Listen, then wait until the port answers: the command may reach
+        // for the network at once.
+        script.push_str(&format!(
+            "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork \
+             UNIX-CONNECT:{socket} >/dev/null 2>&1 & \
+             for _ in 1 2 3 4 5 6 7 8 9 10; do \
+             {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} >/dev/null 2>&1 && break; \
+             sleep 0.1; done; ",
+            port = SANDBOX_PROXY_PORT,
+            socket = shell_quote(socket),
+        ));
+    }
+    if let Some((socket, port)) = ingress {
+        // Not waited for: nothing answers until the app listens, and the
+        // host keeps trying until it does. `unlink-early` replaces a stale
+        // socket; `mode=600` keeps other users off it.
+        script.push_str(&format!(
+            "{socat} UNIX-LISTEN:{socket},fork,unlink-early,mode=600 \
+             TCP:127.0.0.1:{port} >/dev/null 2>&1 & ",
+            socket = shell_quote(socket),
+        ));
+    }
+    script
+}
+
+/// Whether socat can take `path` as one address argument: no separators
+/// (`,` `:`), no quoting or spacing, nothing the shell would expand.
+fn socat_addressable(path: &str) -> bool {
+    path.starts_with('/')
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '+'))
 }
 
 /// Whether `dir` may be granted to sandboxed commands for writing (D5,
@@ -710,7 +770,30 @@ impl SandboxPolicy {
             tool_cache: None,
             extra_write_paths: Vec::new(),
             extra_loopback_ports: Vec::new(),
+            ingress: None,
         }
+    }
+
+    /// Offer a server the process runs on loopback `port` to the host.
+    ///
+    /// Under `--unshare-net` the host cannot reach the sandbox's loopback.
+    /// Inside, a relay listens on [`INGRESS_SOCKET_NAME`] in `dir` (bound in
+    /// writable) and forwards each connection to `127.0.0.1:port`; the host
+    /// connects to that socket. The server itself stays confined. Linux
+    /// only: on macOS no sandbox is built for such a policy yet.
+    pub fn with_ingress(mut self, dir: impl AsRef<Path>, port: u16) -> Self {
+        self.ingress = (port != 0).then(|| Ingress {
+            dir: dir.as_ref().to_path_buf(),
+            port,
+        });
+        self
+    }
+
+    /// The socket the host connects to, when an ingress is set.
+    pub fn ingress_socket(&self) -> Option<PathBuf> {
+        self.ingress
+            .as_ref()
+            .map(|ingress| ingress.dir.join(INGRESS_SOCKET_NAME))
     }
 
     /// Open the whole git dir for writing, hooks and config included.
@@ -1239,6 +1322,11 @@ fn deny_read_rule(deny: &ReadDeny) -> Option<String> {
 /// Apple Event sending remains denied so confined commands cannot drive
 /// unconfined GUI apps.
 pub fn seatbelt_profile(policy: &SandboxPolicy) -> Option<String> {
+    // No inbound rule exists yet: build nothing rather than a sandbox in
+    // which the app could not be reached.
+    if policy.ingress.is_some() {
+        return None;
+    }
     let canonical_root = policy.workspace_root.canonicalize().ok()?;
     let root = sbpl_literal(&canonical_root)?;
     let mut profile = String::from(
@@ -1568,6 +1656,20 @@ fn bubblewrap_invocation_for(
     let bwrap = bwrap_path()?;
     let root = policy.workspace_root.canonicalize().ok()?;
     let root = root.to_str()?.to_string();
+    // The ingress directory must exist (it is bound in) and be a path socat
+    // reads as one address; and something must listen on it.
+    let ingress = match &policy.ingress {
+        Some(ingress) => {
+            let dir = ingress.dir.canonicalize().ok()?;
+            let dir = dir.to_str()?.to_string();
+            if !Path::new(&dir).is_dir() || !socat_addressable(&dir) {
+                return None;
+            }
+            let socket = format!("{dir}/{INGRESS_SOCKET_NAME}");
+            Some((socat_path()?, dir, socket, ingress.port))
+        }
+        None => None,
+    };
 
     // Order is the security property here, and bwrap applies operations in
     // sequence with the last one winning. The sequence below is not arbitrary:
@@ -1593,6 +1695,15 @@ fn bubblewrap_invocation_for(
         "--proc".into(),
         "/proc".into(),
         "--unshare-net".into(),
+        // Its own process space, ended with the command: everything it
+        // started (a `&` or `setsid` child included) ends when it does, and
+        // `/proc` shows only its own processes. `--unshare-pid` alone is not
+        // enough — bwrap's reaper would stay as PID 1 with the leftovers;
+        // `--die-with-parent` takes it down when bwrap exits (and ends the
+        // sandbox if Forge dies). Not `--as-pid-1`: a command as PID 1
+        // ignores signals it has no handler for, Ctrl-C included.
+        "--unshare-pid".into(),
+        "--die-with-parent".into(),
     ];
 
     // Mask the directories where user data and Unix sockets live.
@@ -1739,69 +1850,66 @@ fn bubblewrap_invocation_for(
         }
     }
 
-    // A long-lived argv payload (an MCP server) must not outlive Forge: if
-    // bwrap is killed, the sandboxed child is killed with it.
-    if matches!(payload, Payload::Argv { .. }) {
-        args.push("--die-with-parent".into());
+    // The ingress relay creates its socket here. Last, so no carve-out
+    // above can hide it.
+    if let Some((_, dir, _, _)) = &ingress {
+        args.extend(["--bind".into(), dir.clone(), dir.clone()]);
     }
 
     args.extend(["--chdir".into(), root, "--".into()]);
 
-    let (shell, command) = match payload {
-        Payload::Shell { shell, command } => (shell, command),
+    // Relays run first, inside the namespace, then `exec` hands over to the
+    // payload so it keeps the shell's pid and signals reach it; the relays
+    // die with the namespace.
+    //
+    // The relays' stdout and stderr go to /dev/null, and this is not
+    // tidiness. A backgrounded process inherits the pipes, so a caller
+    // reading the command's output to EOF — which is what
+    // `Command::output()` does — waits on the relays too. They run for the
+    // lifetime of the sandbox, so that wait never ends: every sandboxed
+    // command with a relay would hang forever rather than return. Closing
+    // their ends is what lets the caller see EOF when the command finishes.
+    let relay_socat = relay
+        .as_ref()
+        .map(|(socat, _)| *socat)
+        .or(ingress.as_ref().map(|(socat, _, _, _)| *socat));
+    let prelude = relay_socat.map(|socat| {
+        relay_prelude(
+            socat,
+            relay.as_ref().map(|(_, socket)| socket.as_str()),
+            ingress
+                .as_ref()
+                .map(|(_, _, socket, port)| (socket.as_str(), *port)),
+        )
+    });
+
+    match payload {
         Payload::Argv {
             program,
             args: program_args,
         } => {
-            if let Some((socat, socket)) = relay {
-                // Same relay as the shell shape below, then `exec "$@"`
-                // so the program replaces the shell and is never
+            if let Some(prelude) = prelude {
+                // `exec "$@"` so the program replaces the shell and is never
                 // re-parsed by it — its arguments stay argv elements.
-                let script = format!(
-                    "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork \
-                     UNIX-CONNECT:{socket} >/dev/null 2>&1 & \
-                     for _ in 1 2 3 4 5 6 7 8 9 10; do \
-                     {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} >/dev/null 2>&1 && break; \
-                     sleep 0.1; done; exec \"$@\"",
-                    port = SANDBOX_PROXY_PORT,
-                    socket = shell_quote(&socket),
-                );
-                args.extend(["/bin/sh".into(), "-c".into(), script, "sh".into()]);
+                args.extend([
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    format!("{prelude}exec \"$@\""),
+                    "sh".into(),
+                ]);
             }
             args.push(program.to_string());
             args.extend(program_args.iter().cloned());
-            return Some((bwrap.to_string(), args));
         }
-    };
-
-    match relay {
-        Some((socat, socket)) => {
-            // Start the relay, wait for it to listen, then hand over to the
-            // command. `exec` so the command keeps the shell's pid and signals
-            // reach it; the relay dies with the namespace.
-            //
-            // The relay's stdout and stderr go to /dev/null, and this is not
-            // tidiness. A backgrounded process inherits the pipes, so a caller
-            // reading the command's output to EOF — which is what
-            // `Command::output()` does — waits on the relay too. The relay runs
-            // for the lifetime of the sandbox, so that wait never ends: every
-            // sandboxed command with egress would hang forever rather than
-            // return. Closing its ends is what lets the caller see EOF when the
-            // command itself finishes.
-            let script = format!(
-                "{socat} TCP-LISTEN:{port},bind=127.0.0.1,reuseaddr,fork \
-                 UNIX-CONNECT:{socket} >/dev/null 2>&1 & \
-                 for _ in 1 2 3 4 5 6 7 8 9 10; do \
-                 {socat} -u OPEN:/dev/null TCP:127.0.0.1:{port} >/dev/null 2>&1 && break; \
-                 sleep 0.1; done; exec {shell} -c {command}",
-                port = SANDBOX_PROXY_PORT,
-                command = shell_quote(command),
-            );
-            args.extend([shell.to_string(), "-c".into(), script]);
-        }
-        None => {
-            args.extend([shell.to_string(), "-c".into(), command.to_string()]);
-        }
+        Payload::Shell { shell, command } => match prelude {
+            Some(prelude) => {
+                let script = format!("{prelude}exec {shell} -c {}", shell_quote(command));
+                args.extend([shell.to_string(), "-c".into(), script]);
+            }
+            None => {
+                args.extend([shell.to_string(), "-c".into(), command.to_string()]);
+            }
+        },
     }
 
     Some((bwrap.to_string(), args))
@@ -3166,6 +3274,402 @@ mod relay_tests {
         // Both spellings, because tools disagree about which they read.
         assert!(env.iter().any(|(n, _)| n == "HTTP_PROXY"));
         assert!(env.iter().any(|(n, _)| n == "http_proxy"));
+    }
+
+    // ------------------------------------------------------------ ingress
+
+    #[test]
+    fn the_ingress_relay_listens_on_the_socket_and_forwards_to_the_app_port() {
+        let script = relay_prelude("/usr/bin/socat", None, Some(("/tmp/s/app.sock", 5173)));
+        assert!(
+            script.contains(
+                "/usr/bin/socat UNIX-LISTEN:'/tmp/s/app.sock',fork,unlink-early,mode=600 \
+                 TCP:127.0.0.1:5173 >/dev/null 2>&1 &"
+            ),
+            "{script}"
+        );
+        assert!(!script.contains("TCP-LISTEN"), "no egress relay: {script}");
+    }
+
+    /// The egress relay keeps its shape: listen on the proxy port, wait
+    /// until it answers, then go on.
+    #[test]
+    fn the_egress_relay_listens_and_is_waited_for() {
+        let script = relay_prelude("/usr/bin/socat", Some("/tmp/e/egress.sock"), None);
+        assert!(
+            script.starts_with(&format!(
+                "/usr/bin/socat TCP-LISTEN:{SANDBOX_PROXY_PORT},bind=127.0.0.1,reuseaddr,fork \
+                 UNIX-CONNECT:'/tmp/e/egress.sock' >/dev/null 2>&1 & "
+            )),
+            "{script}"
+        );
+        assert!(script.ends_with("sleep 0.1; done; "), "{script}");
+        assert!(
+            !script.contains("UNIX-LISTEN"),
+            "no ingress relay: {script}"
+        );
+    }
+
+    #[test]
+    fn egress_and_ingress_relays_start_together() {
+        let script = relay_prelude(
+            "/usr/bin/socat",
+            Some("/tmp/e/egress.sock"),
+            Some(("/tmp/s/app.sock", 3000)),
+        );
+        assert!(script.contains("TCP-LISTEN:"), "{script}");
+        assert!(script.contains("UNIX-LISTEN:'/tmp/s/app.sock'"), "{script}");
+        assert!(script.contains("TCP:127.0.0.1:3000"), "{script}");
+    }
+
+    #[test]
+    fn the_ingress_socket_is_named_in_its_directory() {
+        let ws = workspace();
+        let dir = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 5173);
+        assert_eq!(
+            policy.ingress_socket(),
+            Some(dir.path().join(INGRESS_SOCKET_NAME))
+        );
+        assert_eq!(
+            SandboxPolicy::for_workspace(ws.path()).ingress_socket(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ingress_needs_a_port() {
+        let ws = workspace();
+        let dir = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 0);
+        assert_eq!(policy.ingress_socket(), None);
+    }
+
+    /// Without socat nothing could listen on the socket: fail closed rather
+    /// than start an app nobody can reach.
+    #[test]
+    fn ingress_without_a_relay_yields_no_invocation() {
+        if socat_path().is_some() {
+            return; // this host has socat, so the negative case is unobservable
+        }
+        if bwrap_path().is_none() {
+            return;
+        }
+        let ws = workspace();
+        let dir = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 5173);
+        assert!(bubblewrap_invocation("sh", "true", &policy).is_none());
+    }
+
+    /// socat splits its addresses on `,` and `:`: a directory whose path
+    /// holds one could make the relay listen somewhere else. Refused.
+    #[test]
+    fn an_ingress_dir_socat_cannot_address_yields_no_invocation() {
+        if bwrap_path().is_none() {
+            return;
+        }
+        let ws = workspace();
+        let parent = workspace();
+        for name in ["a,b", "a:b", "a b", "a'b"] {
+            let dir = parent.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(&dir, 5173);
+            assert!(
+                bubblewrap_invocation("sh", "true", &policy).is_none(),
+                "{name}"
+            );
+        }
+    }
+
+    /// The Seatbelt profile has no inbound rule yet: no sandbox is built
+    /// for a policy with an ingress, so nothing runs half-configured.
+    #[test]
+    fn macos_builds_no_profile_with_an_ingress() {
+        let ws = workspace();
+        let dir = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 5173);
+        assert!(seatbelt_profile(&policy).is_none());
+        assert!(seatbelt_profile(&SandboxPolicy::for_workspace(ws.path())).is_some());
+    }
+
+    /// The socket's directory is writable inside (the relay creates the
+    /// socket there), bound after the read-only carve-outs so none of them
+    /// can hide it.
+    #[test]
+    fn the_ingress_dir_is_bound_writable_after_the_carve_outs() {
+        let ws = workspace();
+        let dir = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 5173);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &policy) else {
+            return; // bwrap or socat not installed on this host
+        };
+        let canonical = dir.path().canonicalize().unwrap();
+        let canonical = canonical.to_str().unwrap();
+        let bind = args
+            .windows(3)
+            .position(|w| w[0] == "--bind" && w[1] == canonical && w[2] == canonical)
+            .expect("the ingress dir must be bound writable");
+        let last_carve_out = args.iter().rposition(|a| a == "--ro-bind-try").unwrap_or(0);
+        assert!(bind > last_carve_out, "{args:?}");
+        let script = args.last().unwrap();
+        assert!(script.contains("UNIX-LISTEN:"), "{script}");
+        assert!(script.ends_with("exec sh -c 'true'"), "{script}");
+    }
+
+    /// An app, like every command, runs in its own process space that ends
+    /// with it.
+    #[test]
+    fn an_app_gets_its_own_process_space() {
+        let ws = workspace();
+        let dir = workspace();
+        let app = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 5173);
+        let Some((_, args)) = bubblewrap_invocation("sh", "true", &app) else {
+            return; // bwrap or socat not installed on this host
+        };
+        let dashdash = args.iter().position(|a| a == "--").unwrap();
+        for flag in ["--unshare-pid", "--die-with-parent"] {
+            assert!(
+                args[..dashdash].iter().any(|a| a == flag),
+                "{flag}: {args:?}"
+            );
+        }
+        let Some((_, plain)) =
+            bubblewrap_invocation("sh", "true", &SandboxPolicy::for_workspace(ws.path()))
+        else {
+            return;
+        };
+        assert!(plain.iter().any(|a| a == "--unshare-pid"), "{plain:?}");
+        assert!(plain.iter().any(|a| a == "--die-with-parent"), "{plain:?}");
+    }
+
+    /// Every command runs in its own process space, whatever it is: a
+    /// shell command or a program, with or without a route out.
+    #[test]
+    fn every_command_gets_its_own_process_space() {
+        let ws = workspace();
+        let dir = workspace();
+        let sock = dir.path().join("egress.sock");
+        std::fs::write(&sock, b"").unwrap();
+        let plain = SandboxPolicy::for_workspace(ws.path());
+        let with_egress = SandboxPolicy::for_workspace(ws.path()).with_egress_socket(&sock);
+        let program_args = vec!["--x".to_string()];
+        let mut checked = 0;
+        for (name, policy) in [("plain", &plain), ("egress", &with_egress)] {
+            for invocation in [
+                bubblewrap_invocation("sh", "true", policy),
+                bubblewrap_invocation_for(
+                    Payload::Argv {
+                        program: "server",
+                        args: &program_args,
+                    },
+                    policy,
+                ),
+            ] {
+                // Egress needs socat on this host; what cannot be built is
+                // not run at all.
+                let Some((_, args)) = invocation else {
+                    continue;
+                };
+                let dashdash = args.iter().position(|a| a == "--").unwrap();
+                for flag in ["--unshare-pid", "--die-with-parent"] {
+                    assert_eq!(
+                        args[..dashdash].iter().filter(|a| *a == flag).count(),
+                        1,
+                        "{name}: {flag} once: {args:?}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        if bwrap_path().is_some() {
+            assert!(checked >= 2, "the plain shapes at least");
+        }
+    }
+
+    fn run_confined(command: &str) -> Option<std::process::Output> {
+        if availability().is_err() {
+            return None; // needs bubblewrap
+        }
+        let ws = workspace();
+        let (program, args) =
+            wrap_shell_command("sh", command, &SandboxPolicy::for_workspace(ws.path()))?;
+        let output = std::process::Command::new(program)
+            .args(args)
+            .current_dir(ws.path())
+            .output()
+            .unwrap();
+        Some(output)
+    }
+
+    /// What a command leaves behind — a `&` child, a `setsid` child — stops
+    /// when the command returns, instead of writing on unseen.
+    #[test]
+    fn leftovers_stop_when_the_command_returns() {
+        if availability().is_err() {
+            return;
+        }
+        let markers = workspace();
+        let plain = markers.path().join("plain");
+        let detached = markers.path().join("detached");
+        let ws = workspace();
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_write_path(markers.path());
+        let command = format!(
+            "(while true; do date > {plain}; sleep 0.1; done) >/dev/null 2>&1 & \
+             setsid sh -c 'while true; do date > {detached}; sleep 0.1; done' >/dev/null 2>&1 & \
+             sleep 0.5; echo done",
+            plain = plain.display(),
+            detached = detached.display(),
+        );
+        let (program, args) = wrap_shell_command("sh", &command, &policy).unwrap();
+        let output = std::process::Command::new(program)
+            .args(args)
+            .current_dir(ws.path())
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "done");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let seen = |path: &Path| std::fs::metadata(path).unwrap().modified().unwrap();
+        let (plain_before, detached_before) = (seen(&plain), seen(&detached));
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let still_running = (
+            seen(&plain) != plain_before,
+            seen(&detached) != detached_before,
+        );
+        // Clean up what the old behaviour leaves behind before judging.
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &markers.path().display().to_string()])
+            .status();
+        assert_eq!(
+            still_running,
+            (false, false),
+            "(& child, setsid child) still running"
+        );
+    }
+
+    /// The sandbox sees its own processes only, not the host's.
+    #[test]
+    fn a_command_sees_only_its_own_processes() {
+        let Some(output) = run_confined("ls /proc | grep -c '^[0-9]'") else {
+            return;
+        };
+        let count: usize = String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(count < 10, "{count} processes visible");
+    }
+
+    /// A command's exit code and output come through unchanged.
+    #[test]
+    fn exit_codes_and_output_are_unchanged() {
+        let Some(output) = run_confined("echo out; echo err >&2; exit 7") else {
+            return;
+        };
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "out\n");
+        assert_eq!(String::from_utf8_lossy(&output.stderr), "err\n");
+    }
+
+    /// End to end: a child the app detaches (`setsid`) dies when the app is
+    /// stopped (its process group killed), instead of running on unseen.
+    #[test]
+    fn a_detached_child_dies_with_the_app() {
+        use std::os::unix::process::CommandExt;
+        if availability().is_err() || socat_path().is_none() {
+            return; // needs bubblewrap and socat (CI installs both)
+        }
+        let ws = workspace();
+        let dir = workspace();
+        let marker = ws.path().join("alive");
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), 5173);
+        let (program, args) = wrap_shell_command(
+            "sh",
+            "setsid sh -c 'while true; do date > alive; sleep 0.1; done' & exec sleep 1000",
+            &policy,
+        )
+        .expect("a sandbox with an ingress");
+        let child = std::process::Command::new(program)
+            .args(args)
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut child = child;
+        for _ in 0..50 {
+            if marker.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(marker.exists(), "the detached child started");
+        // What stopping the app does: kill its process group.
+        // SAFETY: kill has no memory effects; the pid is our child's group.
+        unsafe { libc_kill(-(child.id() as i32), 9) };
+        let _ = child.wait();
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let before = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let after = std::fs::metadata(&marker).unwrap().modified().unwrap();
+        assert_eq!(before, after, "the detached child must be gone");
+    }
+
+    extern "C" {
+        #[link_name = "kill"]
+        fn libc_kill(pid: i32, signal: i32) -> i32;
+    }
+
+    /// End to end: a server in the sandbox answers through the socket, and
+    /// the host cannot reach its port directly.
+    #[test]
+    fn a_sandboxed_server_is_reachable_only_through_the_ingress_socket() {
+        use std::io::{Read, Write};
+        if availability().is_err() || socat_path().is_none() {
+            return; // needs bubblewrap and socat (CI installs both)
+        }
+        let ws = workspace();
+        std::fs::write(ws.path().join("index.html"), "hello from the sandbox").unwrap();
+        let dir = workspace();
+        let port = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            probe.local_addr().unwrap().port()
+        };
+        let policy = SandboxPolicy::for_workspace(ws.path()).with_ingress(dir.path(), port);
+        let socket = policy.ingress_socket().unwrap();
+        let (program, args) = wrap_shell_command(
+            "sh",
+            &format!("exec python3 -m http.server {port} --bind 127.0.0.1"),
+            &policy,
+        )
+        .expect("a sandbox with an ingress");
+        let mut child = std::process::Command::new(program)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut body = String::new();
+        for _ in 0..100 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&socket) else {
+                continue;
+            };
+            let _ = stream.write_all(b"GET /index.html HTTP/1.0\r\n\r\n");
+            body.clear();
+            let _ = stream.read_to_string(&mut body);
+            if body.contains("hello from the sandbox") {
+                break;
+            }
+        }
+        let direct = std::net::TcpStream::connect(("127.0.0.1", port));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(body.contains("hello from the sandbox"), "{body}");
+        assert!(
+            direct.is_err(),
+            "the app's port must not be open on the host"
+        );
     }
 
     #[test]

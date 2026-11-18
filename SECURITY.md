@@ -44,7 +44,11 @@ workspace, the per-session temp directory, a read-only Rust toolchain runtime,
 and only the command's resolved user-installed executables, with network
 access only through a host-filtering egress proxy. Cargo state and XDG client
 configuration are session-local; other home data remains outside the
-boundary.
+boundary. On Linux each command also runs in its own process space: it sees
+only its own processes, and whatever it starts — background jobs, detached
+children — is stopped when it ends, is cancelled, or when Forge exits. (macOS
+has no equivalent; there a command's process group is stopped, but a child
+that leaves the group can outlive it.)
 Forge does not attempt to classify a command as safe or dangerous before
 running it; that judgement is the thing we are trying not to depend on.
 
@@ -90,6 +94,42 @@ results, and output from MCP servers all enter the model's context. Text in any 
 them can attempt to steer the agent. The sandbox is what limits where a steered
 agent can get to; where a prompt does appear, read it rather than clicking
 through.
+
+**Browser and desktop control act outside the sandbox, as you.** Both are off
+until you turn them on in your own config. With desktop control the agent sees
+your screen (screenshots go to your model provider) and sends real mouse and
+keyboard input to any application but Forge itself: a terminal it can type
+into is a terminal it can run commands in. What bounds it is your consent,
+which lasts one turn; one controlling session at a time; taking control back by
+moving the mouse; and a check, by the X server's own record of each window's
+owner, that keeps it off Forge's window and so off its own approval prompts
+(checked before every keystroke; a display that cannot tell owners is refused). The
+agent's browser uses a fresh profile and sends all traffic, `localhost`
+included, through the session's egress gateway (no direct WebRTC, DNS or
+QUIC; hosts a page pulls in are refused without prompting you); form submits need your
+consent, password fields are refused, and it is driven over a pipe rather than
+a debugging port another local process could attach to. Web pages are
+untrusted content like any other.
+
+**Web check keeps the app in the sandbox.** `app_start` runs the app confined
+like any command. Inside the sandbox a relay (socat) listens on a socket in a
+private directory and forwards to the app's port; Forge offers that socket to
+this machine on a random `127.0.0.1` port only while the app runs, and carries
+only connections made by your own user account. The socket's directory is a
+fresh private one that nothing the sandbox sees contains; Forge still opens the
+socket without following links, checks it is a socket of yours, and connects to
+exactly that file, so a swapped-in link to a host socket (Docker's, D-Bus)
+reaches nothing. Everything the app starts runs in its own process space and
+stops with it. **Open in your browser** loads the app — code from the repository
+and its packages — in your real browser, with your profile: treat it like
+running the dev server yourself. The checker browser is headless with a fresh
+profile, and reaches only the app's exact address: everything else, other
+loopback ports and `localhost` included, goes to a proxy that refuses it (no
+local DNS, QUIC or non-proxied WebRTC). Pages, console messages and the app's
+output are untrusted content, marked as data for the model; like command output
+they are not scrubbed of secrets. Screenshots (here, and from browser and
+desktop control) are written to a private folder of Forge's that no sandbox can
+see.
 
 **MCP servers run outside the sandbox.** They are separate processes that Forge
 starts but does not confine, so an MCP tool is as privileged as the server
@@ -197,6 +237,14 @@ In scope:
   folder and session temp; anything of this machine (environment, SSH agent,
   files) reaching the host; a host name or path from the page or the model
   being read by `ssh` or a shell as anything but a name
+
+- Browser or desktop control acting without the consent it requires: a form
+  submitted, or the screen controlled, without being allowed; desktop input
+  reaching Forge's own window; the agent's browser reaching a host the egress
+  policy refuses
+- Web check reaching beyond the app: the checker browser reaching any other
+  host or local service, or the host side of the app's relay connecting to
+  anything but the app's own socket
 - Vulnerabilities in our dependency set that are reachable from Forge
 
 Out of scope:

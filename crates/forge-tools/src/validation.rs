@@ -115,8 +115,23 @@ fn coerce_args(schema: &Value, args: &mut Value) {
 }
 
 /// Compile a schema into a reusable validator.
+/// The draft a schema is read as when it does not name one: Draft 2020-12,
+/// what the built-in schemas are generated as (their `$schema` is dropped by
+/// `compact_schema`). `None` for a schema that names its draft, which is
+/// detected from it.
+pub(crate) fn assumed_draft(schema: &Value) -> Option<jsonschema::Draft> {
+    schema
+        .get("$schema")
+        .is_none()
+        .then_some(jsonschema::Draft::Draft202012)
+}
+
 pub fn compile_validator(schema: &Value) -> Result<Validator, String> {
-    Validator::new(schema).map_err(|e| e.to_string())
+    match assumed_draft(schema) {
+        Some(draft) => jsonschema::options().with_draft(draft).build(schema),
+        None => Validator::new(schema),
+    }
+    .map_err(|e| e.to_string())
 }
 
 /// Validate `args` against a JSON Schema object. Fail closed.
@@ -248,6 +263,47 @@ impl ValidationBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A schema that names no draft is read as Draft 2020-12 (what the
+    /// built-in schemas are generated as), whatever `jsonschema` defaults
+    /// to; one that names its draft (an MCP server's) keeps it.
+    #[test]
+    fn a_schema_without_a_draft_is_read_as_2020_12() {
+        assert_eq!(
+            assumed_draft(&serde_json::json!({"type": "object"})),
+            Some(jsonschema::Draft::Draft202012)
+        );
+        assert_eq!(
+            assumed_draft(&serde_json::json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object"
+            })),
+            None,
+            "a declared draft is detected, not assumed"
+        );
+    }
+
+    /// Guards: the same, by behaviour. `prefixItems` is a 2020-12 keyword;
+    /// a draft-07 `items` array checks each position.
+    #[test]
+    fn drafts_validate_by_their_own_rules() {
+        let undeclared = compile_validator(&serde_json::json!({
+            "type": "array",
+            "prefixItems": [{"type": "integer"}]
+        }))
+        .unwrap();
+        assert!(!undeclared.is_valid(&serde_json::json!(["x"])));
+        assert!(undeclared.is_valid(&serde_json::json!([1])));
+
+        let draft_07 = compile_validator(&serde_json::json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "array",
+            "items": [{"type": "integer"}]
+        }))
+        .unwrap();
+        assert!(!draft_07.is_valid(&serde_json::json!(["x"])));
+        assert!(draft_07.is_valid(&serde_json::json!([1, "anything after"])));
+    }
     use serde_json::json;
 
     fn read_file_schema() -> Value {

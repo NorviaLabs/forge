@@ -12,6 +12,7 @@
 mod agents;
 mod bridge;
 mod commands_list;
+mod computer_use;
 mod github;
 mod last_turn;
 mod pinned;

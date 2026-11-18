@@ -299,7 +299,24 @@ const SESSIONLESS_COMMANDS: &[&str] = &[
     "remote_pair_cancel",
     "remote_pair_decide",
     "remote_revoke",
+    "computer_use_settings",
+    "save_computer_use_settings",
 ];
+
+/// Settings → Computer use, the Close browser and Stop buttons, and the
+/// running app's Open link.
+#[test]
+fn computer_use_commands_are_exposed() {
+    for command in [
+        "computer_use_settings",
+        "save_computer_use_settings",
+        "close_browser",
+        "stop_screen_control",
+        "open_app",
+    ] {
+        assert!(DESKTOP_COMMANDS.contains(&command), "{command}");
+    }
+}
 
 /// A session command that reads "the selected session" from the backend can
 /// land on a session the operator is not looking at. Every bridge command

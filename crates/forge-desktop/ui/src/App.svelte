@@ -5,6 +5,7 @@
   import { failureAction } from "./failure.js";
   import { chord, isMac } from "./keys.js";
   import { applyEvent, emptySnapshot, snapshotFrom, waitingNote } from "./session.js";
+  import { browserStrip, paletteItems as computerPaletteItems, runningAppTask, screenStrip, tookBackScreen } from "./computer.js";
   import { listen } from "@tauri-apps/api/event";
   import Conversation from "./lib/Conversation.svelte";
   import Changes from "./lib/Changes.svelte";
@@ -130,6 +131,11 @@
   let railButton = $state();
   let screenAnnouncement = $state("");
   const approval = $derived(snapshot.approval);
+  // Browser and desktop control for the session on screen.
+  const computerUse = $derived(snapshot.computerUse);
+  const browserStripView = $derived(browserStrip(computerUse));
+  const screenStripView = $derived(screenStrip(computerUse, turnState));
+  const takeoverNote = $derived(screenStripView ? null : tookBackScreen(messages));
   const hostQuestions = $derived(snapshot.hostQuestions);
   const question = $derived(snapshot.question);
   const approveAll = $derived(snapshot.approveAll);
@@ -482,6 +488,15 @@
         action: () => openDiff(path, "last_turn"),
       });
     }
+    const computerActions = {
+      "computer:stop-screen": stopScreenControl,
+      "computer:close-browser": closeBrowser,
+      "computer:stop-app": stopApp,
+      "computer:open-app": openApp,
+    };
+    for (const item of computerPaletteItems(computerUse)) {
+      items.push({ ...item, group: "Session", action: computerActions[item.id] });
+    }
     items.push(
       {
         id: "action:terminal",
@@ -632,6 +647,35 @@
     }, 3000);
     return () => clearInterval(timer);
   });
+
+  // The strips' buttons and the palette: end screen control, close the
+  // browser. The next snapshot shows the result; fetch it now.
+  async function refreshSession() {
+    if (!sessionId) return;
+    try {
+      const fresh = await invoke("current_session", { sessionId });
+      if (fresh?.session_id === sessionId) applySession(fresh);
+    } catch {}
+  }
+
+  async function stopScreenControl() {
+    if (await command("stop_screen_control", { sessionId })) await refreshSession();
+  }
+
+  async function closeBrowser() {
+    if (await command("close_browser", { sessionId })) await refreshSession();
+  }
+
+  // The app the agent started with app_start: Stop is the task's own Stop.
+  async function stopApp() {
+    const task = runningAppTask(background);
+    if (task) await command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id });
+  }
+
+  // Opens the session's own app; the address comes from the backend.
+  async function openApp() {
+    await command("open_app", { sessionId });
+  }
 
   // A missed event leaves the page on a stale turn state. The bridge resyncs
   // broadcast lag, but also fetch the live snapshot when the window returns
@@ -2206,6 +2250,23 @@
         </div>
       {/if}
 
+      {#if screenStripView}
+        <div class="control-strip" role="status">
+          <span class="state-dot {screenStripView.dot}" aria-hidden="true"></span>
+          <span class="control-text"><b>{screenStripView.title}</b> · <span class:waiting-word={screenStripView.dot === "waiting"}>{screenStripView.word}</span>{#if screenStripView.dot !== "waiting"} · {screenStripView.hint}{/if}</span>
+          <button type="button" class="btn" onclick={stopScreenControl}>Stop</button>
+        </div>
+      {:else if takeoverNote}
+        <p class="control-strip" role="status"><span class="control-text wrap">{takeoverNote}</span></p>
+      {/if}
+
+      {#if browserStripView}
+        <div class="control-strip" role="status">
+          <span class="control-text"><b>{browserStripView.title}</b> · {browserStripView.detail}</span>
+          <button type="button" class="btn" onclick={closeBrowser}>Close browser</button>
+        </div>
+      {/if}
+
       {#if waitNote}
         <p class="wait-note" role="status">
           <span class="state-dot waiting" aria-hidden="true"></span>
@@ -2374,6 +2435,7 @@
             onCancelBackground={(task) => command("cancel_background", { sessionId, taskId: task.id, runId: task.run_id })}
             onOpenChild={(task) => openChild(task)}
             onInsertTask={(task) => insertTask(task)}
+            onOpenApp={openApp}
             onResolveChild={(taskId, approve, callId, requestId, confirmed) =>
               command("resolve_child_approval", { sessionId, taskId, approve, callId, requestId, confirmed })}
           />
@@ -3076,6 +3138,19 @@
     color: var(--muted); font-size: var(--text-sm);
   }
   .queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Browser open / Controlling your screen: the queue strip's shape. */
+  .control-strip {
+    display: flex; align-items: center; gap: 8px;
+    width: calc(100% - 68px); max-width: 720px; margin: 0 auto 8px; padding: 4px 4px 4px 12px; min-height: 34px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface);
+    color: var(--secondary); font-size: var(--text-sm);
+  }
+  .control-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .control-text.wrap { white-space: normal; padding: 4px 0; }
+  .control-text b { color: var(--text); font-weight: 500; }
+  .control-strip .btn { height: 24px; padding: 0 8px; flex: none; }
+  .waiting-word { color: var(--warning); }
 
   /* A wait with no card of its own: what the session needs, in words. */
   .wait-note {

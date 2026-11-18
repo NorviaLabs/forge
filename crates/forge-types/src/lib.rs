@@ -1,5 +1,6 @@
 //! Shared types for Forge (Phase 1 + 2).
 
+mod consent;
 mod git;
 mod image;
 pub mod target;
@@ -8,6 +9,7 @@ mod tier;
 mod turn_vocabulary;
 pub use target::ExecutionTarget;
 
+pub use consent::{ConsentFact, ConsentKind, ConsentRequest};
 pub use git::is_readonly_git_subcommand;
 pub use image::{
     inspect_image, sample_png_bytes, sniff_allowed_image, ImageInspectError, ImageMeta, ImageRef,
@@ -1000,6 +1002,10 @@ pub struct HitlPayload {
     /// it keeps persistent ("always") grants off the card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
+    /// A tool asked for consent mid-call (screen control, a form submit).
+    /// Wins over every other kind: the card shows the request's facts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<Box<ConsentRequest>>,
 }
 
 /// What a pending approval is asking for, which decides the choices a
@@ -1013,12 +1019,23 @@ pub enum ApprovalKind {
     SandboxEscalation,
     /// A governance rule asked for operator review of the call.
     Governance,
+    /// A tool asked to see and drive the user's screen.
+    ScreenControl,
+    /// A tool asked to submit a form in the agent's browser.
+    FormSubmit,
 }
 
 impl HitlPayload {
-    /// The kind of request. A denied host wins over the escalation flag, the
-    /// same precedence every frontend used.
+    /// The kind of request. A consent request wins over everything; then a
+    /// denied host wins over the escalation flag, the same precedence every
+    /// frontend used.
     pub fn kind(&self) -> ApprovalKind {
+        if let Some(consent) = &self.consent {
+            return match consent.kind {
+                ConsentKind::ScreenControl => ApprovalKind::ScreenControl,
+                ConsentKind::FormSubmit => ApprovalKind::FormSubmit,
+            };
+        }
         if self.denied_host.is_some() {
             ApprovalKind::NetworkHost
         } else if self.sandbox_escalation {
@@ -1065,6 +1082,9 @@ pub enum GrantDecision {
     /// invocation of its program outside the sandbox in this project without
     /// asking. Only for a sandbox escalation of a simple command.
     TrustProgram,
+    /// Grant a tool's consent request (screen control, form submits on one
+    /// site) until the session ends or the grant is revoked.
+    AllowConsentForSession,
 }
 
 impl GrantDecision {
@@ -1086,6 +1106,7 @@ impl GrantDecision {
             Self::TrustProgram => "trust_program",
             Self::AllowPathForSession => "allow_path_for_session",
             Self::AllowPathAlways => "allow_path_always",
+            Self::AllowConsentForSession => "allow_consent_for_session",
         }
     }
 }
@@ -1173,6 +1194,72 @@ pub struct BackgroundTaskId(pub u64);
 mod tests {
     use super::*;
 
+    fn legacy_payload_json() -> serde_json::Value {
+        serde_json::json!({
+            "call_id": "c1",
+            "tool": "bash",
+            "args_redacted": {"command": "ls"},
+            "reason": "review",
+            "sandbox_escalation": false
+        })
+    }
+
+    /// A journal written before consent requests existed still loads, and
+    /// the payload keeps its old kind.
+    #[test]
+    fn a_payload_without_consent_still_loads() {
+        let payload: HitlPayload = serde_json::from_value(legacy_payload_json()).unwrap();
+        assert!(payload.consent.is_none());
+        assert_eq!(payload.kind(), ApprovalKind::Governance);
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(
+            json.get("consent").is_none(),
+            "absent consent is not written"
+        );
+    }
+
+    /// A consent request decides the kind, over a host or an escalation flag.
+    #[test]
+    fn a_consent_request_decides_the_kind() {
+        let mut payload: HitlPayload = serde_json::from_value(legacy_payload_json()).unwrap();
+        payload.consent = Some(Box::new(ConsentRequest::new(
+            ConsentKind::ScreenControl,
+            "screen",
+            "s",
+        )));
+        payload.sandbox_escalation = true;
+        payload.denied_host = Some("example.com".into());
+        assert_eq!(payload.kind(), ApprovalKind::ScreenControl);
+        payload.consent = Some(Box::new(ConsentRequest::new(
+            ConsentKind::FormSubmit,
+            "localhost:5173",
+            "s",
+        )));
+        assert_eq!(payload.kind(), ApprovalKind::FormSubmit);
+        let json = serde_json::to_value(&payload).unwrap();
+        let back: HitlPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(back.consent, payload.consent);
+    }
+
+    #[test]
+    fn the_consent_grant_has_a_stable_name_and_is_an_approval() {
+        let decision = GrantDecision::AllowConsentForSession;
+        assert_eq!(decision.as_str(), "allow_consent_for_session");
+        assert!(decision.is_approval());
+        assert_eq!(
+            serde_json::to_value(&decision).unwrap(),
+            "allow_consent_for_session"
+        );
+        assert_eq!(
+            serde_json::to_value(ApprovalKind::ScreenControl).unwrap(),
+            "screen_control"
+        );
+        assert_eq!(
+            serde_json::to_value(ApprovalKind::FormSubmit).unwrap(),
+            "form_submit"
+        );
+    }
+
     #[test]
     fn session_name_from_prompt_uses_natural_spacing() {
         assert_eq!(
@@ -1231,6 +1318,7 @@ mod tests {
                 denied_host: None,
                 denied_path: None,
                 target: None,
+                consent: None,
             },
         };
         assert_eq!(approval.request_id(), "r1");

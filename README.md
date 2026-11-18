@@ -601,11 +601,131 @@ Depending on configuration, the agent can use tools for:
 - fast file and content search;
 - coordinating isolated child agents and reviewing their status;
 - starting [custom agents](#custom-agents) by name;
+- driving a browser, and seeing and using your screen, when you turn them on
+  ([browser and desktop control](#browser-and-desktop-control));
+- running your web app in the sandbox and checking that its pages work
+  ([web check](#web-check));
 - configured MCP tools.
 
 Tool arguments are validated before execution, and shell commands are confined
 by the OS sandbox rather than judged for danger beforehand. Forge does not
-treat model output as trusted input.
+treat model output as trusted input. On Linux nothing a command starts outlives
+it: background processes stop when the command returns (long-running work goes
+through `background_run`, or `app_start` for a web app).
+
+## Browser and desktop control
+
+Two separate features let the agent work outside the editor. Both are **off by
+default** and act outside the OS sandbox as you, so only you can turn them on:
+in **Settings → Computer use**, or in your user config (a project's
+`forge.toml` cannot; the key is refused with a notice).
+
+```toml
+# <user config dir>/forge/config.toml
+[browser]
+enabled = true
+executable = "/usr/bin/chromium"   # optional: detected when unset
+headless = false                   # true: no window
+
+[desktop]
+enabled = true
+```
+
+Changes apply to open sessions from their next message.
+
+**Browser control** (`browser_navigate`, `browser_snapshot`,
+`browser_screenshot`, `browser_click`, `browser_type`, `browser_press_key`,
+`browser_scroll`, `browser_select`, `browser_submit`, `browser_tabs`) drives
+an installed Chromium-family browser: Google Chrome, Chromium, Brave, Microsoft
+Edge or Vivaldi. Forge starts it on first use with a fresh profile (none of your
+cookies, logins or extensions) and talks to it over a private pipe, not a
+debugging port. The agent reads a page as its visible elements, each with a
+ref, and acts with real clicks, double-clicks, typing, keys and scrolling. It
+follows new tabs and dismisses dialogs.
+
+- All of the browser's traffic goes through the session's network gateway,
+  `localhost` included: a host not allowed by your [network
+  permissions](#network-egress) asks first, as a shell command's would.
+- **Submitting a form asks you**, showing what would be sent where. Allow it
+  once, or for the site the form sends to for the session (the card says when
+  that is a different site from the page). A click or Enter that would submit is
+  refused and the agent is told to use `browser_submit`. (JavaScript-only
+  buttons that are not form submits are ordinary clicks.)
+- The agent never types into a password field; it asks you to type it in the
+  browser window.
+- Downloads are refused. The browser closes with the session, or with **Close
+  browser** above the composer.
+
+**Desktop control** (`desktop_screenshot`, `desktop_click`, `desktop_move`,
+`desktop_scroll`, `desktop_type`, `desktop_key`) lets the agent see your
+primary display and use your mouse and keyboard. It needs a model that can see
+images, and it works on Linux with X11 (a Wayland session is reported as
+unsupported; macOS is not supported yet).
+
+- The first use in a turn asks you, saying what the agent will see, where the
+  screenshots go, and when control ends. Control lasts until the turn ends;
+  the next turn asks again. Approve all never answers it, and a child agent
+  never inherits it.
+- One session holds the screen at a time.
+- **Move the mouse to take control back**: the agent stops and must ask again.
+  **Stop** above the composer and the command palette end it too.
+- The agent can never click or type into Forge's own window, nor into a window
+  whose owner Forge cannot tell (this needs the X server's X-Resource
+  extension, which Xorg has). Typing stops if Forge's window takes the focus.
+- The browser sends nothing around the gateway: no direct WebRTC traffic, no
+  DNS lookups of its own, no QUIC. Hosts a page pulls in that your permissions
+  do not allow are blocked without asking (the tool output lists them); only
+  the page the agent opens asks.
+- Screenshots are sent to your model provider. Only the latest three are sent
+  with each request.
+
+Custom agents get these tools only with the `browser` or `desktop`
+capability. Unattended runs (`forge bench --approve-all`) refuse both consents.
+
+## Web check
+
+After changing a web UI, the agent can run the app and prove its pages work.
+Web check is **on by default** (Linux for now) and needs a Chrome-family
+browser and `socat`; turn it off in **Settings → Computer use** or in your user
+config:
+
+```toml
+# <user config dir>/forge/config.toml
+[web_check]
+enabled = false
+```
+
+- **`app_start`** `{command, port}` starts the app **in the sandbox**, like any
+  command (same network permissions, same approval rules as `bash`), and
+  waits until it answers on `port`. Forge offers it to this machine only on a
+  random `127.0.0.1` port while it runs: the app itself stays sandboxed. If it
+  exits or never answers, the agent gets its last output lines, and a hint when
+  the output names another port. The app shows in **Activity** with **Stop**
+  and **Open in your browser** (also in the command palette); one app runs at
+  a time, and it stops with the session.
+- **`web_check`** opens pages of that app in a separate headless browser that
+  can reach **only the app**: other hosts, and other services on this machine,
+  are blocked and listed but do not fail the check. Per page it waits until
+  the page settles, runs optional steps (`click`, `type`, `press`, by CSS
+  selector or `text=Label`) and expectations (text visible, selector visible,
+  title contains), at 1280×800 and optionally 390×844. It fails on an HTTP error, a
+  console error, an uncaught exception, a failed request to the app, a step that
+  cannot be done or an unmet expectation, and answers with the evidence and a
+  screenshot. Its result is recorded as a verification step of the turn.
+- **`app_stop`** stops the app and its checker browser.
+
+Beyond the rules that apply to any command, nothing here asks first: the app
+is confined and the checker reaches nothing else. The agent decides when to check; the tool's description asks it to
+after changing UI code. Child agents and custom agents are never given these
+tools. A project can describe its app in `forge.toml`, which the agent is told:
+
+```toml
+[web]
+start = "npm run dev"
+port = 5173
+path = "/"                 # the first page to check
+ready_timeout_secs = 60    # how long the app may take to answer (1–600)
+```
 
 ## Custom agents
 
@@ -653,6 +773,8 @@ You are a careful code reviewer. Report findings as a list.
   | `write` | `edit`, `write_file`, `apply_patch`, `git` | in its own worktree, one writer at a time |
   | `exec` | `bash`, `exec_command`, `write_stdin` | in its own worktree; its commands have **no network** unless `network` is listed |
   | `network` | `web_fetch` and network MCP tools; with `exec`, the session's network gateway for its commands | |
+  | `browser` | the `browser_*` tools (browser control must be on); keeps the session's network gateway for the browser | |
+  | `desktop` | the `desktop_*` tools (desktop control must be on; the user still allows it) | |
 
   `exec` without `write` removes the file-editing tools, but the agent's shell
   commands can still change files in its own worktree.

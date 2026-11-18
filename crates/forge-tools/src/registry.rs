@@ -107,6 +107,12 @@ pub struct ToolContext {
     /// Where shell commands run and files live: this machine (the default)
     /// or a remote host. Every workspace tool goes through it.
     pub target: Arc<dyn crate::target::Target>,
+    /// Consents the user granted in this session (screen control, form
+    /// submits). Fresh per session; never shared with a child agent.
+    pub consents: Arc<crate::consent::SessionConsents>,
+    /// The web app `app_start` runs for this session, which `web_check`
+    /// opens. Fresh per session; never shared with a child agent.
+    pub web_app: Arc<crate::web_app::WebAppSlot>,
 }
 
 impl ToolContext {
@@ -124,6 +130,8 @@ impl ToolContext {
             tool_call_id: None,
             credential_env_names: Arc::from(Vec::<String>::new()),
             target: Arc::new(crate::target::LocalTarget),
+            consents: crate::consent::SessionConsents::new(),
+            web_app: crate::web_app::WebAppSlot::new(),
         }
     }
 
@@ -505,6 +513,14 @@ impl ToolRegistry {
         let tools: Vec<_> = self.tools.values().cloned().collect();
         for tool in tools {
             tool.cancel_session(session_id).await;
+        }
+    }
+
+    /// Tell every tool the session's turn is over (see [`Tool::turn_ended`]).
+    pub async fn turn_ended(&self, session_id: forge_types::SessionId) {
+        let tools: Vec<_> = self.tools.values().cloned().collect();
+        for tool in tools {
+            tool.turn_ended(session_id).await;
         }
     }
 

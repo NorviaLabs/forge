@@ -67,7 +67,17 @@ impl AgentSession {
         // Requests share the transcript in the usual case. Image availability is
         // checked at request time, so only requests with missing attachments pay
         // the copy-on-write cost needed to add the model-visible fallback note.
-        let messages = self.messages.shared();
+        // Old computer-use screenshots are stale and cost over a thousand
+        // tokens each on every request: only the latest few are sent. The
+        // transcript keeps them all; only this request's copy is pruned, and
+        // only when there is something to prune.
+        let messages = match crate::computer_use::prune_screenshots(
+            &self.messages,
+            crate::computer_use::SCREENSHOTS_KEPT,
+        ) {
+            Some(pruned) => pruned.into(),
+            None => self.messages.shared(),
+        };
         ModelRequest {
             messages,
             tools,
@@ -102,7 +112,41 @@ impl AgentSession {
             });
         }
         visible.retain(|tool| self.tool_within_limit(&tool.name));
+        self.retain_usable_tools(&mut visible);
         self.defer_mcp_tool_schemas(visible)
+    }
+
+    /// Drop tools this session cannot use right now: computer use a child
+    /// was not given, and tools that are switched off, unsupported here, or
+    /// need a model that sees images. A tool the transcript already calls
+    /// stays declared (providers reject a call to an undeclared tool); a
+    /// call to it is refused at execution instead.
+    fn retain_usable_tools(&self, visible: &mut Vec<forge_types::ToolDescriptor>) {
+        let is_subagent = self.is_subagent();
+        let limit = self.tool_limit.as_deref();
+        visible.retain(|descriptor| {
+            crate::computer_use::computer_use_tool_permitted(is_subagent, limit, &descriptor.name)
+        });
+        let unusable: Vec<String> = visible
+            .iter()
+            .filter(|descriptor| {
+                self.tools.get(&descriptor.name).is_some_and(|tool| {
+                    crate::computer_use::unavailable_reason(tool.as_ref(), &self.tool_ctx).is_some()
+                })
+            })
+            .map(|descriptor| descriptor.name.clone())
+            .collect();
+        if unusable.is_empty() {
+            return;
+        }
+        let called: std::collections::HashSet<&str> = self
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().map(|c| c.name.as_str()))
+            .collect();
+        visible.retain(|descriptor| {
+            !unusable.contains(&descriptor.name) || called.contains(descriptor.name.as_str())
+        });
     }
 
     /// Batteries-included token optimization, no configuration required:
@@ -889,7 +933,17 @@ impl AgentSession {
         stream_tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, LoopError> {
         self.reset_turn_cancel();
-        TurnCoordinator::run(self, stream_tx).await
+        let result = TurnCoordinator::run(self, stream_tx).await;
+        self.notify_turn_ended().await;
+        result
+    }
+
+    /// A turn that is not paused on the user is over: tools holding
+    /// something for it (the screen) let it go.
+    async fn notify_turn_ended(&self) {
+        if self.active_task.lifecycle != TaskLifecycle::Waiting {
+            self.tools.turn_ended(self.session_id).await;
+        }
     }
 
     /// Drive a turn after the caller has already opened and retained the
@@ -901,6 +955,8 @@ impl AgentSession {
         &mut self,
         stream_tx: Option<StreamEventTx>,
     ) -> Result<ModelResponse, LoopError> {
-        TurnCoordinator::run(self, stream_tx).await
+        let result = TurnCoordinator::run(self, stream_tx).await;
+        self.notify_turn_ended().await;
+        result
     }
 }

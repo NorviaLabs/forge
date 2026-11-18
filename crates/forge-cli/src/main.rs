@@ -209,6 +209,13 @@ async fn run_bench(args: BenchArgs) -> anyhow::Result<ExitCode> {
                     "governance_approval",
                     "tool_call_requires_operator_approval",
                 ),
+                forge_types::ApprovalKind::ScreenControl => (
+                    "screen_control_consent",
+                    "the_user_must_allow_screen_control",
+                ),
+                forge_types::ApprovalKind::FormSubmit => {
+                    ("form_submit_consent", "the_user_must_allow_the_submit")
+                }
             };
             println!(
                 "{}",

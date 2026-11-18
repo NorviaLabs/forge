@@ -364,7 +364,13 @@ fn invoke_handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'stat
         bridge::remote_pair_start,
         bridge::remote_pair_cancel,
         bridge::remote_pair_decide,
-        bridge::remote_revoke
+        bridge::remote_revoke,
+        bridge::shell_close,
+        bridge::computer_use_settings,
+        bridge::save_computer_use_settings,
+        bridge::close_browser,
+        bridge::stop_screen_control,
+        bridge::open_app
     ]
 }
 

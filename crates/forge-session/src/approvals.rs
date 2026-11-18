@@ -13,7 +13,7 @@ use serde::Serialize;
 pub fn requires_native_confirm(payload: &HitlPayload) -> bool {
     matches!(
         payload.kind(),
-        ApprovalKind::SandboxEscalation | ApprovalKind::NetworkHost
+        ApprovalKind::SandboxEscalation | ApprovalKind::NetworkHost | ApprovalKind::ScreenControl
     )
 }
 
@@ -126,6 +126,67 @@ pub fn approval_options(payload: &HitlPayload) -> Vec<ApprovalOption> {
                 ));
             }
         }
+        ApprovalKind::ScreenControl => {
+            options.push(option(
+                "allow_consent_for_session",
+                "Allow for this turn".into(),
+                "screen control",
+                "The agent sees your screen and uses your mouse and keyboard until this turn \
+                 ends, you press Stop, or you move the mouse. The next turn asks again.",
+                true,
+            ));
+            options.push(option(
+                "deny",
+                "Don't allow".into(),
+                "",
+                "The agent is told it may not use the screen.",
+                false,
+            ));
+            options.push(option(
+                "deny_with_note",
+                "Don't allow, and say why".into(),
+                "",
+                "The note reaches the agent as the tool result.",
+                false,
+            ));
+            return options;
+        }
+        ApprovalKind::FormSubmit => {
+            let site = payload
+                .consent
+                .as_ref()
+                .map(|consent| escape_invisible(&consent.scope))
+                .unwrap_or_else(|| "this site".into());
+            options.push(option(
+                "allow_once",
+                "Submit once".into(),
+                "",
+                "Submits this form. The next submit asks again.",
+                false,
+            ));
+            options.push(option(
+                "allow_consent_for_session",
+                format!("Allow submits on {site} this session"),
+                &format!("form submits on {site}"),
+                "Forms on this site are submitted without asking until the session ends.",
+                false,
+            ));
+            options.push(option(
+                "deny",
+                "Don't submit".into(),
+                "",
+                "The agent is told the form was not submitted.",
+                false,
+            ));
+            options.push(option(
+                "deny_with_note",
+                "Don't submit, and say why".into(),
+                "",
+                "The note reaches the agent as the tool result.",
+                false,
+            ));
+            return options;
+        }
         // A command on an SSH host: nothing there is sandboxed, and a
         // personal rule is about this machine, so no "always".
         ApprovalKind::Governance if payload.target.is_some() => {
@@ -232,6 +293,7 @@ mod tests {
             denied_host: denied_host.map(str::to_string),
             denied_path: None,
             target: None,
+            consent: None,
         }
     }
 

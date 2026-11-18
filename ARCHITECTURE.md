@@ -17,6 +17,8 @@ flowchart TB
         tools[forge-tools\nValidated tool protocol and execution]
         mcp[forge-mcp\nMCP client bridge]
         model[forge-model\nNative provider transports]
+        browser[forge-browser\nBrowser control over CDP]
+        screen[forge-screen\nDesktop control, X11 backend]
     end
 
     subgraph services[Workspace and policy services]
@@ -77,6 +79,12 @@ flowchart TB
     tools --> types
     mcp --> tools
     mcp --> config
+    session --> browser
+    session --> screen
+    browser --> tools
+    screen --> tools
+    desktop --> browser
+    desktop --> screen
     model --> connect
     model --> config
     model --> types
@@ -105,7 +113,7 @@ flowchart TB
     classDef external fill:#5c4033,stroke:#f4a261,color:#fff
 
     class desktop,cli,session,remote entry
-    class core,tools,mcp,model runtime
+    class core,tools,mcp,model,browser,screen runtime
     class context,workspace,search,governance,connect,config service
     class durable,storage,types data
     class providers,mcpservers,repo,local,device,sshhost external
@@ -164,6 +172,49 @@ gates commands through `forge-governance`, the unconfined retry is withdrawn,
 the system prompt says where commands run, and only read-only child agents
 start. `forge-desktop` lists hosts from `~/.ssh/config` and refuses its
 local-only commands (files, Git, terminal, GitHub) for a remote session.
+
+Built-in tool schemas are generated from each tool's argument type and
+passed through `forge_tools::compact_schema` (the shared `schema_for`
+helper): the generator's boilerplate (`$schema`, titles, `default: null`,
+number formats such as `uint32`) is removed and `$defs` are written in place,
+which saves about 700 tokens on every request. The compacted schema is also
+what calls are validated against; `schema_tests` checks that every built-in
+still accepts and refuses exactly what its generated schema did. MCP tools'
+schemas come from their servers and are sent as they are.
+
+Browser and desktop control span the layers too. `forge-browser` finds an
+installed Chromium-family browser, starts it per session with a fresh profile
+and `--remote-debugging-pipe`, routes its traffic through a labelled endpoint
+of the session's egress gateway, and exposes the `browser_*` tools (a page is
+read by `snapshot.js` in an isolated world). `forge-screen` puts the platform
+behind one `ScreenBackend` trait (Linux X11 via `x11rb`: core-protocol capture,
+XTEST input, RandR, X-Resource owner pids; macOS is a stub) and exposes the
+`desktop_*` tools with the screen lease, takeover detection and the
+Forge-window guard. A tool that needs the user's say-so returns
+`ToolError::ConsentRequired`; `forge-core` turns it into an approval (never
+answered by approve-all), records grants in the session's `SessionConsents`,
+hides tools that are switched off or need image input, keeps them from built-in
+children, and sends only the latest screenshots. `forge-session`'s
+`ComputerUse` registry installs the tools in every opened session and applies
+saved settings live; `forge-config` owns the user-only `[browser]`/`[desktop]`
+sections.
+
+Web check spans them as well. `forge-sandbox`'s `SandboxPolicy::with_ingress`
+binds a private directory into the sandbox and starts a socat relay there
+(`UNIX-LISTEN` on `app.sock` → the app's loopback port) before the command.
+`forge-tools` owns the host side: `ingress::IngressRelay` (a random
+`127.0.0.1` port joined to that socket, opened without following links) and
+`web_app` (the `AppRunner` that spawns the app confined, its bounded log, and
+the per-session `WebAppSlot` the tools share). `forge-core` intercepts
+`app_start`/`app_stop` like `background_run`: the app is a background task of
+kind `App` (stopping it on purpose succeeds, exiting by itself fails), and a
+`web_check` result becomes a verification signal of the turn.
+`forge-browser`'s `checker` drives a separate headless browser whose only
+direct route is the app's address (everything else meets `deny_proxy`), and
+`web_check` declares the three tools and turns page reports into the answer.
+`forge-session`'s `ComputerUse` registry installs them with the project's
+`[web]` section and the user-only `[web_check]` switch; the desktop app shows
+the app in Activity and opens it only through `open_app`.
 
 Custom agents span the layers: `forge-config::agents` owns the file format,
 both scopes, validation and the capability rules; `forge-core::custom_agents`

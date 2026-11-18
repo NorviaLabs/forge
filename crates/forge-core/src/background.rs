@@ -28,6 +28,13 @@ pub enum BackgroundTaskKind {
     Shell { command: String },
     /// An independent nested agent loop with its own `AgentSession`.
     Subagent { role: String, prompt: String },
+    /// The web app `app_start` runs in the sandbox: its command, the port
+    /// it listens on inside, and where the host reaches it.
+    App {
+        command: String,
+        port: u16,
+        url: String,
+    },
 }
 
 impl BackgroundTaskKind {
@@ -36,6 +43,7 @@ impl BackgroundTaskKind {
         match self {
             BackgroundTaskKind::Shell { .. } => "shell",
             BackgroundTaskKind::Subagent { .. } => "subagent",
+            BackgroundTaskKind::App { .. } => "app",
         }
     }
 }
@@ -664,6 +672,10 @@ pub enum BackgroundTaskOutcome {
     /// child's own `TaskLifecycle`), so `finish_background_task` doesn't
     /// re-derive it from an `is_error` flag.
     Subagent(crate::subagent::SubagentOutcome),
+    /// The app `app_start` ran has ended. Carries its final status:
+    /// stopped on purpose is `Succeeded`, exiting by itself or never
+    /// answering is `Failed`.
+    App(BackgroundTaskStatus),
     /// **Not terminal.** A subagent entered `TaskLifecycle::Waiting` on a
     /// HITL request. Sent on the same channel as the terminal outcome
     /// because a subagent may hit several of these before finishing —
@@ -758,6 +770,13 @@ impl AgentSession {
                 BackgroundTaskKind::Subagent {
                     role: task.label.clone(),
                     prompt: String::new(),
+                }
+            } else if task.kind == "app" {
+                // The app died with the process; its address is gone too.
+                BackgroundTaskKind::App {
+                    command: String::new(),
+                    port: 0,
+                    url: String::new(),
                 }
             } else {
                 BackgroundTaskKind::Shell {
@@ -1167,6 +1186,18 @@ impl AgentSession {
                     format!("Background task '{label}' was cancelled"),
                 )
             }
+            // Stopped on purpose is nothing for the agent to continue with;
+            // an app that failed on its own is, like a failed shell job.
+            Some(BackgroundTaskOutcome::App(status)) => {
+                let summary = match &status {
+                    BackgroundTaskStatus::Failed { error } => {
+                        format!("App '{label}' failed: {error}")
+                    }
+                    _ => format!("App '{label}' stopped"),
+                };
+                queue_completion = matches!(status, BackgroundTaskStatus::Failed { .. });
+                (status, summary)
+            }
             Some(BackgroundTaskOutcome::Subagent(outcome)) => {
                 queue_completion = matches!(outcome.status, BackgroundTaskStatus::Succeeded { .. });
                 let summary = format!("Subagent '{label}' finished: {}", outcome.summary);
@@ -1245,6 +1276,7 @@ mod tests {
                 denied_host: None,
                 denied_path: None,
                 target: None,
+                consent: None,
             },
         };
         control.track_hitl(
@@ -1288,6 +1320,7 @@ mod tests {
                 denied_host: None,
                 denied_path: None,
                 target: None,
+                consent: None,
             },
         };
         let pending = Arc::new(Mutex::new(Some(request.clone())));
@@ -1611,6 +1644,50 @@ mod tests {
             assert!(
                 !marker.exists(),
                 "cancelled background shell tree still executed its side effect"
+            );
+        }
+
+        /// A child that left the job's process group (`setsid`) is stopped
+        /// with the job too: the job runs in its own process space.
+        #[tokio::test]
+        // Process namespaces are Linux-only.
+        #[cfg(target_os = "linux")]
+        async fn cancelling_a_background_shell_stops_a_detached_child() {
+            let dir = tempdir().unwrap();
+            let marker = dir.path().join("detached-marker");
+            let mut s = session(dir.path()).await;
+            s.set_workspace_trusted(true);
+            assert!(s.set_approve_all(true));
+            let command = format!(
+                "setsid sh -c 'while true; do date > {}; sleep 0.1; done' >/dev/null 2>&1 & sleep 30",
+                marker.display()
+            );
+            let id = s
+                .spawn_background_shell(command, "detached".into())
+                .await
+                .unwrap();
+            for _ in 0..50 {
+                if marker.exists() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(marker.exists(), "the detached child started");
+            assert!(s.cancel_background_task(id));
+            assert_eq!(
+                wait_terminal(&mut s, id).await,
+                super::BackgroundTaskStatus::Cancelled
+            );
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let before = std::fs::metadata(&marker).unwrap().modified().unwrap();
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let after = std::fs::metadata(&marker).unwrap().modified().unwrap();
+            let _ = std::process::Command::new("pkill")
+                .args(["-f", &marker.display().to_string()])
+                .status();
+            assert_eq!(
+                before, after,
+                "the detached child outlived the cancelled job"
             );
         }
 

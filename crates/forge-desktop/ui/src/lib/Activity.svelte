@@ -3,6 +3,7 @@
   // background jobs and child agents it started, and the prompts waiting
   // their turn. Always one click from the conversation, never in a dialog.
   import Icon from "./Icon.svelte";
+  import { canInsertResult, taskDetail } from "../computer.js";
 
   let {
     sessionId = "",
@@ -17,6 +18,7 @@
     onOpenChild,
     onInsertTask,
     onResolveChild,
+    onOpenApp,
   } = $props();
 
   let confirmChild = $state("");
@@ -40,7 +42,7 @@
   {#if empty}
     <div class="empty">
       <strong>Nothing in the background</strong>
-      <p>The plan the agent publishes, the shell jobs and child agents it starts, and prompts you queue while a turn runs all appear here.</p>
+      <p>The plan the agent publishes, the shell jobs, apps and child agents it starts, and prompts you queue while a turn runs all appear here.</p>
     </div>
   {/if}
   {#if plan && plan.items.length > 0}
@@ -75,7 +77,7 @@
                 {#if task.agent}Agent <span class="mono">{task.agent}</span>{/if}{#if task.agent && task.model} · {/if}{#if task.model}<span class="mono">{task.model}</span>{/if}{#if task.effort} · {task.effort} effort{/if}
               </p>
             {/if}
-            {#if task.detail}<p class="task-detail mono">{task.detail}</p>{/if}
+            {#if taskDetail(task)}<p class="task-detail mono">{taskDetail(task)}</p>{/if}
             {#if task.approval}<pre class="task-detail mono">{`${task.approval.tool}\n${task.approval.arguments}`}</pre>{/if}
             <div class="row">
               {#if task.awaiting_approval && task.approval}
@@ -97,7 +99,10 @@
               {#if task.child_session_id}
                 <button type="button" class="link" onclick={() => onOpenChild(task)}>Read the transcript</button>
               {/if}
-              {#if ["succeeded", "failed", "cancelled"].includes(task.status) && (task.latest_message || task.detail)}
+              {#if task.url}
+                <button type="button" class="link" onclick={() => onOpenApp?.(task)}>Open in your browser</button>
+              {/if}
+              {#if canInsertResult(task)}
                 <button type="button" class="link" onclick={() => onInsertTask(task)}>Insert the result</button>
               {/if}
             </div>

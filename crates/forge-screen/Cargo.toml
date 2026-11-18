@@ -1,0 +1,32 @@
+[package]
+name = "forge-screen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Desktop control for Forge: see the screen and drive the mouse and keyboard."
+
+[dependencies]
+async-trait = { workspace = true }
+forge-config = { workspace = true }
+forge-tools = { workspace = true }
+forge-types = { workspace = true }
+libc = { workspace = true }
+png = "0.18"
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Pure-Rust X11 client: core protocol capture, XTEST input, RandR for the
+# primary output, X-Resource for the owner of a window.
+x11rb = { version = "0.13", default-features = false, features = ["xtest", "randr", "res"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+forge-test-support = { workspace = true, features = ["schema-check"] }
+tokio = { workspace = true }

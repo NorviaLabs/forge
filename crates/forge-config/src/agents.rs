@@ -58,13 +58,16 @@ pub const AGENT_NAME_MAX_LEN: usize = 64;
 pub const USER_AGENTS_DIR_ENV: &str = "FORGE_USER_AGENTS_DIR";
 
 /// Tools a custom agent is never given, whatever its `tools` list says:
-/// agents cannot start or coordinate further agents, or start detached
-/// background jobs.
+/// agents cannot start or coordinate further agents, start detached
+/// background jobs, or run and check the session's web app.
 pub const NEVER_DELEGATED_TOOLS: &[&str] = &[
     "spawn_agent",
     "send_message",
     "wait_agent",
     "background_run",
+    "app_start",
+    "app_stop",
+    "web_check",
 ];
 
 /// Meta-class tools an agent may be given in any mode.
@@ -109,14 +112,20 @@ pub enum Capability {
     Write,
     Exec,
     Network,
+    /// Drive the agent's browser (`browser_*` tools).
+    Browser,
+    /// See the screen and use the mouse and keyboard (`desktop_*` tools).
+    Desktop,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 4] = [
+    pub const ALL: [Capability; 6] = [
         Capability::ReadOnly,
         Capability::Write,
         Capability::Exec,
         Capability::Network,
+        Capability::Browser,
+        Capability::Desktop,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -125,6 +134,8 @@ impl Capability {
             Self::Write => "write",
             Self::Exec => "exec",
             Self::Network => "network",
+            Self::Browser => "browser",
+            Self::Desktop => "desktop",
         }
     }
 
@@ -170,7 +181,8 @@ impl AgentDefinition {
     /// Whether the agent's sandboxed commands get the session's network
     /// gateway.
     pub fn network(&self) -> bool {
-        self.has(Capability::Network)
+        // A browser reaches sites only through the gateway.
+        self.has(Capability::Network) || self.has(Capability::Browser)
     }
 
     /// `mode` as written in files and shown to the model: `read-only`,
@@ -793,6 +805,11 @@ fn write_atomically(target: &Path, text: &str) -> Result<(), AgentError> {
     result
 }
 
+/// Tools of the `browser` capability.
+pub const BROWSER_TOOL_PREFIX: &str = "browser_";
+/// Tools of the `desktop` capability.
+pub const DESKTOP_TOOL_PREFIX: &str = "desktop_";
+
 /// Whether `mode` lets an agent use `tool`, whose side-effect class is
 /// `class`. Reading is always allowed; each other class needs its
 /// capability; orchestration tools are never allowed.
@@ -801,6 +818,14 @@ pub fn capability_permits(mode: &[Capability], tool: &str, class: SideEffectClas
         return false;
     }
     let has = |capability| mode.contains(&capability);
+    // Computer-use tools go by name, before their class: a browser snapshot
+    // only reads, but driving a browser is its own capability.
+    if tool.starts_with(BROWSER_TOOL_PREFIX) {
+        return has(Capability::Browser);
+    }
+    if tool.starts_with(DESKTOP_TOOL_PREFIX) {
+        return has(Capability::Desktop);
+    }
     if tool == UNCONFINED_RETRY_TOOL {
         return has(Capability::Exec) && has(Capability::Network);
     }
@@ -1345,6 +1370,81 @@ mod tests {
             assert!(!capability_permits(&everything, tool, Exec), "{tool}");
             assert!(!capability_permits(&everything, tool, Meta), "{tool}");
         }
+    }
+
+    /// The web app tools belong to the session the user works in: a custom
+    /// agent is never given them, whatever its capabilities.
+    #[test]
+    fn web_app_tools_are_never_delegated() {
+        use SideEffectClass::*;
+        let everything = [
+            Capability::Write,
+            Capability::Exec,
+            Capability::Network,
+            Capability::Browser,
+            Capability::Desktop,
+        ];
+        for (tool, class) in [
+            ("app_start", Exec),
+            ("app_stop", Exec),
+            ("web_check", Network),
+        ] {
+            assert!(NEVER_DELEGATED_TOOLS.contains(&tool), "{tool}");
+            assert!(!capability_permits(&everything, tool, class), "{tool}");
+        }
+    }
+
+    /// Computer-use tools are gated by name, before their side-effect
+    /// class: `browser_snapshot` only reads, yet a read-only agent must not
+    /// drive a browser.
+    #[test]
+    fn computer_use_tools_need_their_own_capability() {
+        use SideEffectClass::*;
+        assert_eq!(Capability::parse("browser"), Some(Capability::Browser));
+        assert_eq!(Capability::parse("desktop"), Some(Capability::Desktop));
+        assert_eq!(Capability::Browser.as_str(), "browser");
+        assert_eq!(Capability::Desktop.as_str(), "desktop");
+
+        let read_only = [Capability::ReadOnly];
+        let everything_else = [Capability::Write, Capability::Exec, Capability::Network];
+        for mode in [&read_only[..], &everything_else[..]] {
+            assert!(!capability_permits(mode, "browser_snapshot", Read));
+            assert!(!capability_permits(mode, "browser_click", Network));
+            assert!(!capability_permits(mode, "desktop_screenshot", Read));
+            assert!(!capability_permits(mode, "desktop_click", Exec));
+        }
+
+        let browser = [Capability::Browser];
+        assert!(capability_permits(&browser, "browser_snapshot", Read));
+        assert!(capability_permits(&browser, "browser_submit", Network));
+        assert!(!capability_permits(&browser, "desktop_click", Exec));
+        assert!(!capability_permits(&browser, "web_fetch", Network));
+        assert!(!capability_permits(&browser, "bash", Exec));
+
+        let desktop = [Capability::Desktop];
+        assert!(capability_permits(&desktop, "desktop_screenshot", Read));
+        assert!(capability_permits(&desktop, "desktop_type", Exec));
+        assert!(!capability_permits(&desktop, "browser_click", Network));
+    }
+
+    #[test]
+    fn read_only_stands_alone_against_the_new_capabilities_too() {
+        assert!(validate_mode(&[Capability::ReadOnly, Capability::Browser]).is_err());
+        assert!(validate_mode(&[Capability::ReadOnly, Capability::Desktop]).is_err());
+        assert!(validate_mode(&[Capability::Browser, Capability::Desktop]).is_ok());
+    }
+
+    /// A browser reaches sites through the session's network gateway, so
+    /// an agent with `browser` keeps the gateway; `desktop` alone does not.
+    #[test]
+    fn the_browser_capability_keeps_the_network_gateway() {
+        let mut agent = definition("surfer");
+        agent.mode = vec![Capability::Browser];
+        assert!(agent.network());
+        assert!(!agent.needs_worktree());
+        agent.mode = vec![Capability::Desktop];
+        assert!(!agent.network());
+        assert!(!agent.needs_worktree());
     }
 
     #[test]

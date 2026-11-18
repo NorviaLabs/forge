@@ -27,5 +27,8 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 forge-mcp = { workspace = true }
+# A second connection to a session's journal, to make one kind of append
+# fail in tests.
+sqlx = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

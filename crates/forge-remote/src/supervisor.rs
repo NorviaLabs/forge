@@ -455,6 +455,8 @@ pub fn remote_approval(payload: &HitlPayload) -> RemoteApproval {
         kind: match payload.kind() {
             ApprovalKind::NetworkHost => "network_host",
             ApprovalKind::SandboxEscalation => "sandbox_escalation",
+            ApprovalKind::ScreenControl => "screen_control",
+            ApprovalKind::FormSubmit => "form_submit",
             ApprovalKind::Governance => "governance",
         }
         .to_string(),
@@ -583,6 +585,7 @@ mod tests {
             denied_host: denied_host.map(str::to_string),
             denied_path: None,
             target: None,
+            consent: None,
         }
     }
 

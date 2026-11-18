@@ -114,6 +114,12 @@
     "allow-remote-pair-start",
     "allow-remote-pair-cancel",
     "allow-remote-pair-decide",
-    "allow-remote-revoke"
+    "allow-remote-revoke",
+    "allow-shell-close",
+    "allow-computer-use-settings",
+    "allow-save-computer-use-settings",
+    "allow-close-browser",
+    "allow-stop-screen-control",
+    "allow-open-app"
   ]
 }

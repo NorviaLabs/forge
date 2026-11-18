@@ -20,6 +20,9 @@ members = [
     "crates/forge-search",
     # Remote control: a paired device follows sessions over pinned TLS.
     "crates/forge-remote",
+    # Computer use: browser control and desktop control.
+    "crates/forge-browser",
+    "crates/forge-screen",
     # The Tauri desktop app, the product. On Linux it needs WebKitGTK and GTK
     # development packages (see .github/workflows/ci.yml).
     "crates/forge-desktop",
@@ -82,6 +85,8 @@ forge-test-support = { path = "crates/forge-test-support" }
 forge-storage = { path = "crates/forge-storage" }
 forge-search = { path = "crates/forge-search" }
 forge-remote = { path = "crates/forge-remote" }
+forge-browser = { path = "crates/forge-browser" }
+forge-screen = { path = "crates/forge-screen" }
 sha2 = "0.10"
 hex = "0.4"
 
