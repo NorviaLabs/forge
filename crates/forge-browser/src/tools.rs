@@ -704,7 +704,10 @@ mod tests {
                 headless: true,
             },
             ManagerOptions {
-                path_var: Some(dir.path().as_os_str().to_owned()),
+                locator: crate::locator::BrowserLocator::new(crate::discovery::BrowserSearch {
+                    path_var: Some(dir.path().as_os_str().to_owned()),
+                    applications: Vec::new(),
+                }),
                 ..ManagerOptions::default()
             },
         )

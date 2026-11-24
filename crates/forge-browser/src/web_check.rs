@@ -7,7 +7,6 @@
 //! with pass or fail and the evidence.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -24,7 +23,7 @@ use serde_json::Value;
 use crate::checker::{
     CheckerBrowser, Expect, PageReport, PageSpec, Screenshot, Step, Viewport, DESKTOP, MOBILE,
 };
-use crate::discovery::{discover, DiscoveryError, FoundBrowser};
+use crate::locator::BrowserLocator;
 
 /// The web check tools, in the order the model sees them.
 pub const WEB_TOOL_NAMES: [&str; 3] = ["app_start", "app_stop", "web_check"];
@@ -36,16 +35,14 @@ pub const MAX_STEPS: usize = 20;
 /// How long one `web_check` call may take in all; pages left when it runs
 /// out are reported as not checked.
 const CHECK_BUDGET: Duration = Duration::from_secs(180);
-/// How long a discovery result is reused.
-const DISCOVERY_TTL: Duration = Duration::from_secs(30);
 
 /// How the manager finds and starts browsers (tests narrow both).
 #[derive(Debug, Clone)]
 pub struct WebCheckOptions {
     /// Extra browser switches (a test machine's).
     pub extra_args: Vec<String>,
-    /// `PATH` to look for a browser on; the process's when `None`.
-    pub path_var: Option<OsString>,
+    /// The program lookup shared with browser control.
+    pub locator: Arc<BrowserLocator>,
     /// Offer the tools only where the sandbox can relay an app out
     /// (socat on Linux). Tests that bring their own app turn it off.
     pub require_relay: bool,
@@ -61,7 +58,7 @@ impl Default for WebCheckOptions {
     fn default() -> Self {
         Self {
             extra_args: Vec::new(),
-            path_var: None,
+            locator: BrowserLocator::host(),
             require_relay: true,
             idle_close: IDLE_CLOSE,
         }
@@ -69,14 +66,12 @@ impl Default for WebCheckOptions {
 }
 
 type Slot = Arc<tokio::sync::Mutex<Option<CheckerBrowser>>>;
-type Discovered = Result<FoundBrowser, DiscoveryError>;
 
 /// The checker browsers of one opened session (its children share them).
 pub struct WebCheckManager {
     settings: Mutex<(WebCheckConfig, BrowserConfig)>,
     web: WebConfig,
     options: WebCheckOptions,
-    found: Mutex<Option<(BrowserConfig, Instant, Discovered)>>,
     checkers: Mutex<HashMap<SessionId, Slot>>,
     /// When each session's checker last finished a check.
     last_used: Mutex<HashMap<SessionId, Instant>>,
@@ -102,7 +97,6 @@ impl WebCheckManager {
             settings: Mutex::new((web_check, browser)),
             web,
             options,
-            found: Mutex::new(None),
             checkers: Mutex::new(HashMap::new()),
             last_used: Mutex::new(HashMap::new()),
             shots: Default::default(),
@@ -121,22 +115,9 @@ impl WebCheckManager {
         &self.web
     }
 
-    fn found(&self) -> Discovered {
+    fn found(&self) -> Result<crate::discovery::FoundBrowser, crate::discovery::DiscoveryError> {
         let browser = lock(&self.settings).1.clone();
-        let mut cache = lock(&self.found);
-        if let Some((cached_for, at, result)) = cache.as_ref() {
-            if *cached_for == browser && at.elapsed() < DISCOVERY_TTL {
-                return result.clone();
-            }
-        }
-        let path_var = self
-            .options
-            .path_var
-            .clone()
-            .or_else(|| std::env::var_os("PATH"));
-        let result = discover(browser.executable.as_deref(), path_var.as_deref());
-        *cache = Some((browser, Instant::now(), result.clone()));
-        result
+        self.options.locator.resolve(&browser)
     }
 
     /// The browser program a check would start.
@@ -981,6 +962,13 @@ mod tests {
         dir
     }
 
+    fn test_locator(dir: &tempfile::TempDir) -> Arc<crate::locator::BrowserLocator> {
+        crate::locator::BrowserLocator::new(crate::discovery::BrowserSearch {
+            path_var: Some(dir.path().as_os_str().to_owned()),
+            applications: Vec::new(),
+        })
+    }
+
     fn manager_with(
         enabled: bool,
         dir: &tempfile::TempDir,
@@ -991,7 +979,7 @@ mod tests {
             BrowserConfig::default(),
             web,
             WebCheckOptions {
-                path_var: Some(dir.path().as_os_str().to_owned()),
+                locator: test_locator(dir),
                 require_relay: false,
                 ..WebCheckOptions::default()
             },
@@ -1228,7 +1216,7 @@ mod tests {
             BrowserConfig::default(),
             WebConfig::default(),
             WebCheckOptions {
-                path_var: Some(dir.path().as_os_str().to_owned()),
+                locator: test_locator(&dir),
                 require_relay: true,
                 ..WebCheckOptions::default()
             },

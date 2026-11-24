@@ -14,13 +14,18 @@ pub mod deny_proxy;
 pub mod discovery;
 pub mod keys;
 pub mod launch;
+pub mod locator;
 pub mod manager;
 mod page;
+mod setup;
 pub mod snapshot;
 mod tools;
 pub mod web_check;
 
-pub use discovery::{discover, discover_all, DiscoveryError, FoundBrowser};
+pub use discovery::{
+    discover, discover_all, executable_path, BrowserSearch, DiscoveryError, FoundBrowser,
+};
+pub use locator::BrowserLocator;
 pub use manager::{BrowserManager, BrowserStatus, ManagerOptions};
 pub use tools::{browser_tools, BROWSER_TOOL_NAMES};
 pub use web_check::{web_tools, WebCheckManager, WebCheckOptions, WEB_TOOL_NAMES};

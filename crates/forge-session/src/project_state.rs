@@ -202,6 +202,7 @@ mod tests {
             queued_prompts: Vec::new(),
             interrupted_prompts: Vec::new(),
             host_questions: Vec::new(),
+            computer_use: Default::default(),
         };
         assert_eq!(SessionView::of(&snapshot).summary.target, target);
         task.target = forge_types::ExecutionTarget::Local;

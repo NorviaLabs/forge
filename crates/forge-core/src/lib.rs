@@ -273,6 +273,9 @@ pub struct AgentSession {
     /// The web app `app_start` runs: how it is run, how long it may take to
     /// answer, and which start is the latest.
     web_app: web_app::SessionWebApp,
+    /// What the assembler attached (computer use). The session owns it, so
+    /// it drops with the session rather than living in a process-wide table.
+    services: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 #[derive(Debug)]

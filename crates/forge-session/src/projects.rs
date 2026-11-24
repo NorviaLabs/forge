@@ -213,6 +213,38 @@ impl OpenProjectRef {
         Ok(supervisor.journal_dir())
     }
 
+    /// Apply saved computer-use settings to this project's open sessions.
+    pub async fn apply_computer_use(
+        &self,
+        settings: &forge_config::ComputerUseSettings,
+    ) -> Result<(), TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        supervisor.apply_computer_use(settings).await;
+        Ok(())
+    }
+
+    /// Close the session's browser. `false` when none is running.
+    pub async fn close_browser(&self, session_id: SessionId) -> Result<bool, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.close_browser(session_id).await)
+    }
+
+    /// End the session's control of the screen.
+    pub async fn stop_screen(&self, session_id: SessionId) -> Result<bool, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.stop_screen(session_id).await)
+    }
+
+    /// Where this machine reaches the session's running app.
+    pub async fn app_url(&self, session_id: SessionId) -> Result<Option<String>, TargetError> {
+        let guard = self.supervisor.read().await;
+        let supervisor = guard.as_ref().ok_or(TargetError::ShuttingDown)?;
+        Ok(supervisor.app_url(session_id).await)
+    }
+
     /// Whether the session is live in this project.
     fn lists(&self, session_id: SessionId) -> bool {
         self.handle

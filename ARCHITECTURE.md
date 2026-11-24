@@ -194,10 +194,10 @@ Forge-window guard. A tool that needs the user's say-so returns
 `ToolError::ConsentRequired`; `forge-core` turns it into an approval (never
 answered by approve-all), records grants in the session's `SessionConsents`,
 hides tools that are switched off or need image input, keeps them from built-in
-children, and sends only the latest screenshots. `forge-session`'s
-`ComputerUse` registry installs the tools in every opened session and applies
-saved settings live; `forge-config` owns the user-only `[browser]`/`[desktop]`
-sections.
+children, and sends only the latest screenshots. Each opened session owns its
+browser, desktop, and web-check handles (a child shares its parent's); saved
+settings are applied to the sessions a project still has open.
+`forge-config` owns the user-only `[browser]`/`[desktop]` sections.
 
 Web check spans them as well. `forge-sandbox`'s `SandboxPolicy::with_ingress`
 binds a private directory into the sandbox and starts a socat relay there

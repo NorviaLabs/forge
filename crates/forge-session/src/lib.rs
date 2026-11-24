@@ -354,7 +354,8 @@ async fn open_session_with_model(
     let mut tools = ToolRegistry::new();
     // Browser and desktop control: always registered, offered only while
     // turned on in the user's settings (which can change while it runs).
-    let computer_use = computer_use::ComputerUse::global().install(&mut tools, cfg);
+    // The session owns the handles; they drop with it.
+    let computer_use = computer_use::install(&mut tools, cfg);
 
     let mut notices = cfg.refused_key_notices();
     // One live egress state for the whole session, built before the MCP
@@ -410,6 +411,7 @@ async fn open_session_with_model(
             source.fork().await.map_err(|e| anyhow::anyhow!(e))?
         }
     };
+    session.set_service(Arc::new(computer_use));
     // A session that has no model yet starts on the last selection (a
     // resumed or forked one keeps its own).
     let (start_model, start_profile, start_effort) = starting_model(cfg);
@@ -462,11 +464,6 @@ async fn open_session_with_model(
     // `host(...)` policy; later `apply_egress_policy` calls replace that
     // policy in place, so the servers keep following it.
     session.adopt_egress_state(egress_state).await;
-    computer_use::ComputerUse::global().register(
-        session.session_id,
-        computer_use,
-        &session.web_app_slot(),
-    );
 
     Ok(OpenedSession { session, notices })
 }

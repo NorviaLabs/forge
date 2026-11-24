@@ -75,7 +75,7 @@ pub fn settings_view(
         .map(str::trim)
         .filter(|path| !path.is_empty());
     let browser_problem = match chosen {
-        Some(path) if !is_executable(Path::new(path)) => Some(format!(
+        Some(path) if forge_browser::executable_path(Path::new(path)).is_none() => Some(format!(
             "The chosen browser {path} is missing or cannot be run."
         )),
         None if browsers.is_empty() => {
@@ -92,13 +92,6 @@ pub fn settings_view(
     }
 }
 
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
 /// Check settings from the page before they are saved: a chosen browser
 /// must be an absolute path to an executable file; blank means detect.
 pub fn checked_settings(
@@ -111,17 +104,18 @@ pub fn checked_settings(
         .take()
         .map(|path| path.trim().to_string())
         .filter(|path| !path.is_empty());
-    if let Some(path) = &executable {
+    let stored = if let Some(path) = &executable {
         let as_path = Path::new(path);
         if !as_path.is_absolute() {
             return Err(format!("choose the browser by its full path, not `{path}`"));
         }
-        if !is_executable(as_path) {
-            return Err(format!("{path} is not a program that can be run"));
-        }
+        // A macOS .app bundle is stored as the executable inside it: that is
+        // the process launch attaches the DevTools pipes to.
+        let resolved = forge_browser::executable_path(as_path)
+            .ok_or_else(|| format!("{path} is not a program that can be run"))?;
         // Runs outside the sandbox: not a program the agent could have
         // written (anything in an open project), nor one others can change.
-        let real = std::fs::canonicalize(as_path).map_err(|error| error.to_string())?;
+        let real = std::fs::canonicalize(&resolved).map_err(|error| error.to_string())?;
         for root in project_roots {
             let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
             if real.starts_with(&root) {
@@ -145,12 +139,16 @@ pub fn checked_settings(
                 ));
             }
         }
-    }
-    input.browser.executable = executable;
+        Some(resolved.display().to_string())
+    } else {
+        None
+    };
+    input.browser.executable = stored;
     Ok(input)
 }
 
-/// Check, write to `config_path`, and apply to every open session.
+/// Check the settings and write them to `config_path`. The caller applies
+/// them to open sessions.
 pub fn save(
     config_path: &Path,
     input: ComputerUseSettings,
@@ -159,7 +157,6 @@ pub fn save(
     let settings = checked_settings(input, project_roots)?;
     forge_config::write_computer_use_settings(config_path, &settings)
         .map_err(|error| format!("could not save the settings: {error}"))?;
-    forge_session::computer_use::ComputerUse::global().apply_settings(&settings);
     Ok(settings)
 }
 
@@ -288,6 +285,17 @@ mod tests {
 
         let ok = checked_settings(with(Some(program.to_str().unwrap())), &[]).unwrap();
         assert_eq!(ok.browser.executable.as_deref(), program.to_str());
+        let bundle = dir.path().join("Chromium.app");
+        let inner = bundle.join("Contents/MacOS/Chromium");
+        std::fs::create_dir_all(inner.parent().unwrap()).unwrap();
+        std::fs::write(&inner, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&inner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let from_bundle = checked_settings(with(Some(bundle.to_str().unwrap())), &[]).unwrap();
+        assert_eq!(
+            from_bundle.browser.executable.as_deref(),
+            inner.to_str(),
+            "a bundle is stored as the executable inside it"
+        );
         assert_eq!(
             checked_settings(with(Some("  ")), &[])
                 .unwrap()

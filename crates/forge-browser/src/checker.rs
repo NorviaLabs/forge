@@ -611,37 +611,12 @@ impl CheckerBrowser {
             .as_str()
             .unwrap_or_default()
             .to_string();
-        let targets = cdp
-            .call("Target.getTargets", json!({}))
+        let target = crate::setup::ensure_page_target(cdp)
             .await
             .map_err(failed)?;
-        let existing = targets["targetInfos"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|info| info["type"] == "page")
-            .and_then(|info| info["targetId"].as_str().map(str::to_string));
-        let target = match existing {
-            Some(target) => target,
-            None => cdp
-                .call("Target.createTarget", json!({"url": "about:blank"}))
-                .await
-                .map_err(failed)?["targetId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string(),
-        };
-        let attached = cdp
-            .call(
-                "Target.attachToTarget",
-                json!({"targetId": target, "flatten": true}),
-            )
+        let session = crate::setup::attach_target(cdp, &target)
             .await
             .map_err(failed)?;
-        let session = attached["sessionId"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
         let seen = Arc::new(Mutex::new(Seen::default()));
         // Subscribed before the domains are on, so nothing is missed.
         let listener = tokio::spawn(listen(

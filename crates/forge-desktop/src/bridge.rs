@@ -970,14 +970,16 @@ fn session_event(snapshot: &SessionRuntimeSnapshot) -> DesktopEvent {
             .as_ref()
             .map(|details| details.auto_decisions.clone())
             .unwrap_or_default(),
-        computer_use: computer_use_status(snapshot.task.session_id),
+        computer_use: computer_use_status(&snapshot.computer_use),
     }
 }
 
 /// The session's browser and screen, as the strips show them. The page's
 /// title and URL come from a website: invisible characters are shown.
-fn computer_use_status(session_id: SessionId) -> forge_session::computer_use::ComputerUseStatus {
-    let mut status = forge_session::computer_use::ComputerUse::global().status(session_id);
+fn computer_use_status(
+    status: &forge_session::computer_use::ComputerUseStatus,
+) -> forge_session::computer_use::ComputerUseStatus {
+    let mut status = status.clone();
     if let Some(browser) = status.browser.as_mut() {
         browser.title = escape_invisible(&browser.title);
         browser.url = escape_invisible(&browser.url);
@@ -3545,7 +3547,7 @@ pub async fn computer_use_settings() -> Result<crate::computer_use::ComputerUseS
             .ok_or_else(|| "there is no user configuration directory".to_string())?;
         let settings =
             forge_config::read_computer_use_settings(&path).map_err(|error| error.to_string())?;
-        let browsers = forge_browser::discover_all(std::env::var_os("PATH").as_deref());
+        let browsers = forge_browser::discover_all(&forge_browser::BrowserSearch::host());
         Ok(crate::computer_use::settings_view(
             settings,
             browsers,
@@ -3571,38 +3573,59 @@ pub async fn save_computer_use_settings(
     // The agent can write files in any open project: a browser program
     // there is refused.
     let project_roots = state.open_project_roots().await;
-    tokio::task::spawn_blocking(move || {
+    let settings = tokio::task::spawn_blocking(move || {
         let path = forge_config::user_config_file()
             .ok_or_else(|| "there is no user configuration directory".to_string())?;
         crate::computer_use::save(&path, settings, &project_roots)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())??;
+    if let Ok(open) = state.projects.open_projects().await {
+        for project in open {
+            project
+                .apply_computer_use(&settings)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(settings)
 }
 
 /// Close the session's browser (the "Browser open" strip, or the palette).
 #[tauri::command]
-pub async fn close_browser(session_id: SessionId) -> Result<bool, String> {
-    Ok(forge_session::computer_use::ComputerUse::global()
-        .close_browser(session_id)
-        .await)
+pub async fn close_browser(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<bool, SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    Ok(project.close_browser(session_id).await?)
 }
 
 /// Open the session's running app in the user's own browser (the Activity
 /// link, or the palette). The address comes from the session, never from
 /// the page.
 #[tauri::command]
-pub fn open_app(session_id: SessionId) -> Result<String, String> {
-    let status = forge_session::computer_use::ComputerUse::global().status(session_id);
-    let url = crate::computer_use::app_url(&status)?;
+pub async fn open_app(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<String, SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    let url = project
+        .app_url(session_id)
+        .await?
+        .ok_or_else(|| SessionFailure::from("no app is running in this session"))?;
     forge_connect::try_open_browser(&url);
     Ok(url)
 }
 
 /// End the session's control of the screen (Stop, or the palette).
 #[tauri::command]
-pub fn stop_screen_control(session_id: SessionId) -> Result<bool, String> {
-    Ok(forge_session::computer_use::ComputerUse::global().stop_screen(session_id))
+pub async fn stop_screen_control(
+    state: State<'_, DesktopState>,
+    session_id: SessionId,
+) -> Result<bool, SessionFailure> {
+    let project = state.project_for(session_id).await?;
+    Ok(project.stop_screen(session_id).await?)
 }
 
 /// Custom agents of the project on screen and of the user, with the files
@@ -4380,6 +4403,7 @@ mod tests {
             queued_prompts: Vec::new(),
             interrupted_prompts: Vec::new(),
             host_questions: Vec::new(),
+            computer_use: Default::default(),
         }
     }
 

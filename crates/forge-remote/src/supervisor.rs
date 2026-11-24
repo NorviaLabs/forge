@@ -835,6 +835,7 @@ mod tests {
             queued_prompts: vec![(1, "next prompt".into())],
             interrupted_prompts: Vec::new(),
             host_questions: Vec::new(),
+            computer_use: Default::default(),
         }
     }
 

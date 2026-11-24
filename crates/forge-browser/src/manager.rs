@@ -7,9 +7,7 @@
 //! desktop app's "Browser open" strip.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use forge_config::BrowserConfig;
 use forge_tools::egress::EgressInvocation;
@@ -17,7 +15,8 @@ use forge_tools::{ToolContext, ToolError};
 use forge_types::SessionId;
 use serde::Serialize;
 
-use crate::discovery::{discover, DiscoveryError, FoundBrowser};
+use crate::discovery::{DiscoveryError, FoundBrowser};
+use crate::locator::BrowserLocator;
 use crate::page::BrowserSession;
 
 /// How the manager starts browsers. Tests relax `require_egress` and add
@@ -30,8 +29,8 @@ pub struct ManagerOptions {
     /// rather than letting it reach the network unfiltered. Always on in
     /// Forge; only tests without a gateway turn it off.
     pub require_egress: bool,
-    /// Where to look for browsers. `None`: the process `PATH`.
-    pub path_var: Option<OsString>,
+    /// Shared with web check: one search for the program both start.
+    pub locator: Arc<BrowserLocator>,
 }
 
 impl Default for ManagerOptions {
@@ -39,7 +38,7 @@ impl Default for ManagerOptions {
         Self {
             extra_args: Vec::new(),
             require_egress: true,
-            path_var: None,
+            locator: BrowserLocator::host(),
         }
     }
 }
@@ -59,9 +58,6 @@ pub struct BrowserStatus {
 pub struct BrowserManager {
     config: Mutex<BrowserConfig>,
     options: ManagerOptions,
-    /// Discovery is a `PATH` walk: remembered per setting for a while, as
-    /// availability is asked on every model request.
-    found: Mutex<Option<(BrowserConfig, Instant, Discovered)>>,
     sessions: Mutex<HashMap<SessionId, Slot>>,
     status: Mutex<HashMap<SessionId, (BrowserStatus, u32)>>,
     /// Where screenshots go: a private directory, never the session's
@@ -71,18 +67,11 @@ pub struct BrowserManager {
 
 type Slot = Arc<tokio::sync::Mutex<Option<BrowserSession>>>;
 
-/// The browser to start, or why there is none.
-type Discovered = Result<FoundBrowser, DiscoveryError>;
-
-/// How long a discovery result is reused.
-const DISCOVERY_TTL: Duration = Duration::from_secs(30);
-
 impl BrowserManager {
     pub fn new(config: BrowserConfig, options: ManagerOptions) -> Arc<Self> {
         Arc::new(Self {
             config: Mutex::new(config),
             options,
-            found: Mutex::new(None),
             sessions: Mutex::new(HashMap::new()),
             status: Mutex::new(HashMap::new()),
             shots: Default::default(),
@@ -102,21 +91,7 @@ impl BrowserManager {
 
     /// The browser that would be started.
     pub fn found(&self) -> Result<FoundBrowser, DiscoveryError> {
-        let config = self.config();
-        let mut cache = lock(&self.found);
-        if let Some((cached_for, at, result)) = cache.as_ref() {
-            if *cached_for == config && at.elapsed() < DISCOVERY_TTL {
-                return result.clone();
-            }
-        }
-        let path_var = self
-            .options
-            .path_var
-            .clone()
-            .or_else(|| std::env::var_os("PATH"));
-        let result = discover(config.executable.as_deref(), path_var.as_deref());
-        *cache = Some((config, Instant::now(), result.clone()));
-        result
+        self.options.locator.resolve(&self.config())
     }
 
     /// Turned on, and a browser to start was found.

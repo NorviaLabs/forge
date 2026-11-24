@@ -282,6 +282,7 @@ impl AgentSession {
             verification_commands: Default::default(),
             execution_target: forge_types::ExecutionTarget::Local,
             web_app: Default::default(),
+            services: Mutex::new(None),
         })
     }
 
@@ -406,6 +407,7 @@ impl AgentSession {
             verification_commands: Default::default(),
             execution_target: forge_types::ExecutionTarget::Local,
             web_app: Default::default(),
+            services: Mutex::new(None),
         };
         session.restore_protected_facts(&state.user_messages);
         session.restore_context_state(state.context_state.as_ref());

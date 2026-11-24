@@ -41,6 +41,8 @@ pub struct SessionRuntimeSnapshot {
     /// Hosts a running command is waiting to reach: the gateway is holding
     /// its connection until [`SupervisorCommand::AnswerHostQuestion`].
     pub host_questions: Vec<forge_core::HostQuestion>,
+    /// The session's browser and screen, as the strips show them.
+    pub computer_use: crate::computer_use::ComputerUseStatus,
 }
 
 #[derive(Debug, Clone)]
@@ -438,6 +440,9 @@ struct SessionActor {
     /// Signals for the turn in progress, recorded without the session lock a
     /// running turn holds (a prompt the user sends while it runs).
     signal_inbox: forge_core::TurnSignalInbox,
+    /// Browser, desktop and web check. `None` for a session assembled
+    /// without them (tests that build an `AgentSession` directly).
+    computer_use: Option<Arc<crate::computer_use::Installed>>,
 }
 
 /// Whether `workspace` is trusted, using the injected store when present and
@@ -472,6 +477,11 @@ impl SessionActor {
         // has someone to answer.
         let host_questions = session.host_questions();
         let signal_inbox = session.turn_signal_inbox();
+        let computer_use = crate::computer_use::of_session(&session);
+        let computer_status = computer_use
+            .as_ref()
+            .map(|installed| installed.status(session_id, &session))
+            .unwrap_or_default();
         let snapshot = SessionRuntimeSnapshot {
             task,
             session: SessionSnapshot::capture(&session),
@@ -480,6 +490,7 @@ impl SessionActor {
             queued_prompts,
             interrupted_prompts,
             host_questions: Vec::new(),
+            computer_use: computer_status,
         };
         Self {
             session_id,
@@ -495,6 +506,7 @@ impl SessionActor {
             tools,
             host_questions,
             signal_inbox,
+            computer_use,
         }
     }
 
@@ -1359,6 +1371,52 @@ impl RepositorySupervisor {
         let actor = self.state.actors.read().await.get(&session_id).cloned()?;
         let snapshot = actor.snapshot.read().await.clone();
         Some(snapshot)
+    }
+
+    /// Apply saved computer-use settings to every session this supervisor
+    /// still has open.
+    pub async fn apply_computer_use(&self, settings: &forge_config::ComputerUseSettings) {
+        let actors: Vec<_> = self.state.actors.read().await.values().cloned().collect();
+        for actor in actors {
+            if let Some(installed) = &actor.computer_use {
+                installed.apply_settings(settings);
+            }
+        }
+    }
+
+    /// Close `session_id`'s browser and publish the strip without it.
+    /// `false` when that session has no browser running.
+    pub async fn close_browser(&self, session_id: SessionId) -> bool {
+        let Some(actor) = self.state.actors.read().await.get(&session_id).cloned() else {
+            return false;
+        };
+        let Some(installed) = &actor.computer_use else {
+            return false;
+        };
+        if !installed.close_browser(session_id).await {
+            return false;
+        }
+        let session = actor.session.lock().await;
+        let _ = refresh_actor(&self.state, &actor, &session).await;
+        true
+    }
+
+    /// End `session_id`'s control of the screen.
+    pub async fn stop_screen(&self, session_id: SessionId) -> bool {
+        let Some(actor) = self.state.actors.read().await.get(&session_id).cloned() else {
+            return false;
+        };
+        actor
+            .computer_use
+            .as_ref()
+            .is_some_and(|installed| installed.stop_screen(session_id))
+    }
+
+    /// Where this machine reaches the session's running app.
+    pub async fn app_url(&self, session_id: SessionId) -> Option<String> {
+        let actor = self.state.actors.read().await.get(&session_id).cloned()?;
+        let session = actor.session.lock().await;
+        crate::computer_use::app_status(&session.web_app_slot()).map(|app| app.url)
     }
 
     pub async fn selected_session_id(
@@ -4429,6 +4487,11 @@ async fn refresh_actor(
             .interrupted_prompts(session.session_id)
             .await?,
         host_questions: task_actor.pending_host_questions(),
+        computer_use: task_actor
+            .computer_use
+            .as_ref()
+            .map(|installed| installed.status(session.session_id, session))
+            .unwrap_or_default(),
     };
     *task_actor.snapshot.write().await = snapshot.clone();
     let _ = state
@@ -4539,6 +4602,7 @@ async fn snapshots(state: &SupervisorState) -> Vec<SessionRuntimeSnapshot> {
                 .await
                 .unwrap_or_default(),
             host_questions: Vec::new(),
+            computer_use: crate::computer_use::ComputerUseStatus::default(),
             task,
         });
     }

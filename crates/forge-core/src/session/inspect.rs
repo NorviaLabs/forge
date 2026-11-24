@@ -226,6 +226,24 @@ impl AgentSession {
         self.tools.clone()
     }
 
+    /// Attach `service` to this session. The assembler calls this once,
+    /// with the session's computer-use handles. Dropping the session drops
+    /// them.
+    pub fn set_service(&self, service: Arc<dyn std::any::Any + Send + Sync>) {
+        *self
+            .services
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(service);
+    }
+
+    /// The handle [`Self::set_service`] stored, when one was.
+    pub fn service(&self) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        self.services
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
     /// Shared control handles for this session's background work. The owner
     /// (the repository supervisor) keeps a clone so cancellation and subagent
     /// approvals stay reachable while a running turn holds the session lock.

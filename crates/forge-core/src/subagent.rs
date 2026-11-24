@@ -206,7 +206,11 @@ impl AgentSession {
             // A child works where its parent does, under the same rules.
             execution_target: self.execution_target.clone(),
             web_app: Default::default(),
+            services: Mutex::new(None),
         };
+        if let Some(services) = self.service() {
+            child.set_service(services);
+        }
         if !child.execution_target.is_local() {
             child.describe_target_in_prompt();
         }
@@ -371,7 +375,11 @@ impl AgentSession {
             // A child works where its parent does, under the same rules.
             execution_target: self.execution_target.clone(),
             web_app: Default::default(),
+            services: Mutex::new(None),
         };
+        if let Some(services) = self.service() {
+            child.set_service(services);
+        }
         if !child.execution_target.is_local() {
             child.describe_target_in_prompt();
         }

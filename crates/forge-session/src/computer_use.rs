@@ -1,20 +1,20 @@
-//! Browser control and desktop control, for every session this process
-//! opens.
+//! Browser control and desktop control for one opened session.
 //!
-//! Each opened session gets the `browser_*` and `desktop_*` tools, backed
-//! by a browser manager and a desktop of its own (children share them).
+//! Each session gets the `browser_*` and `desktop_*` tools, backed by a
+//! browser manager and a desktop it owns (a child shares its parent's).
 //! The tools are always registered; whether they are offered follows the
-//! live settings, so turning a feature on or off in Settings reaches every
-//! open session from its next request. This registry is how the desktop
-//! app applies settings, shows the "Browser open" and "Controlling your
-//! screen" strips, and answers Close browser and Stop.
+//! live settings, so turning a feature on or off in Settings reaches an
+//! open session from its next request. The session holds these handles.
+//! The supervisor reads them for the "Browser open" and "Controlling your
+//! screen" strips, and for Close browser and Stop.
 
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::Arc;
 
 use forge_browser::{
-    BrowserManager, BrowserStatus, ManagerOptions, WebCheckManager, WebCheckOptions,
+    BrowserLocator, BrowserManager, BrowserStatus, ManagerOptions, WebCheckManager, WebCheckOptions,
 };
 use forge_config::{ComputerUseSettings, Config};
+use forge_core::AgentSession;
 use forge_screen::{Desktop, ScreenController};
 use forge_tools::ToolRegistry;
 use forge_types::SessionId;
@@ -39,189 +39,57 @@ pub struct AppStatus {
     pub url: String,
 }
 
-/// Every open session's browser manager and desktop.
-pub struct ComputerUse {
-    sessions: Mutex<Vec<Entry>>,
-    /// Each opened session's app slot (weakly: closing the session drops it).
-    apps: Mutex<Vec<(SessionId, Weak<forge_tools::web_app::WebAppSlot>)>>,
+/// Register the computer-use tools for a session being opened with `cfg`.
+///
+/// Browser control and web check share one [`BrowserLocator`], so they
+/// start the same program. The caller stores the handles on the session.
+pub fn install(tools: &mut ToolRegistry, cfg: &Config) -> Installed {
+    let locator = BrowserLocator::host();
+    let browser = BrowserManager::new(
+        cfg.browser.clone(),
+        ManagerOptions {
+            locator: locator.clone(),
+            ..ManagerOptions::default()
+        },
+    );
+    let desktop = Desktop::new(
+        cfg.desktop.clone(),
+        ScreenController::global(),
+        Box::new(forge_screen::connect),
+        std::process::id(),
+    );
+    for tool in forge_browser::browser_tools(browser.clone()) {
+        tools.register(tool);
+    }
+    for tool in forge_screen::desktop_tools(desktop.clone()) {
+        tools.register(tool);
+    }
+    // Web check: on by default, offered where the sandbox can relay an
+    // app out. It uses the same locator as browser control.
+    let web = WebCheckManager::new(
+        cfg.web_check.clone(),
+        cfg.browser.clone(),
+        cfg.web.clone(),
+        WebCheckOptions {
+            locator,
+            ..WebCheckOptions::default()
+        },
+    );
+    for tool in forge_browser::web_tools(web.clone()) {
+        tools.register(tool);
+    }
+    Installed {
+        browser,
+        desktop,
+        web,
+    }
 }
 
-/// An opened session and its (weakly held) managers: closing the session
-/// drops them.
-type Entry = (
-    SessionId,
-    Weak<BrowserManager>,
-    Weak<Desktop>,
-    Weak<WebCheckManager>,
-);
-
-impl ComputerUse {
-    /// The process-wide registry.
-    pub fn global() -> &'static ComputerUse {
-        static GLOBAL: OnceLock<ComputerUse> = OnceLock::new();
-        GLOBAL.get_or_init(|| ComputerUse {
-            sessions: Mutex::new(Vec::new()),
-            apps: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Entry>> {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// Register the computer-use tools for a session being opened with
-    /// `cfg`. The returned handles are recorded with [`Self::register`]
-    /// once the session has an id.
-    pub fn install(&self, tools: &mut ToolRegistry, cfg: &Config) -> Installed {
-        let browser = BrowserManager::new(cfg.browser.clone(), ManagerOptions::default());
-        let desktop = Desktop::new(
-            cfg.desktop.clone(),
-            ScreenController::global(),
-            Box::new(forge_screen::connect),
-            std::process::id(),
-        );
-        for tool in forge_browser::browser_tools(browser.clone()) {
-            tools.register(tool);
-        }
-        for tool in forge_screen::desktop_tools(desktop.clone()) {
-            tools.register(tool);
-        }
-        // Web check: on by default, offered where the sandbox can relay an
-        // app out; it shares the browser program with browser control.
-        let web = WebCheckManager::new(
-            cfg.web_check.clone(),
-            cfg.browser.clone(),
-            cfg.web.clone(),
-            WebCheckOptions::default(),
-        );
-        for tool in forge_browser::web_tools(web.clone()) {
-            tools.register(tool);
-        }
-        Installed {
-            browser,
-            desktop,
-            web,
-        }
-    }
-
-    /// Remember `installed` as the opened session `session`'s (its
-    /// children's browsers live in the same manager).
-    pub fn register(
-        &self,
-        session: SessionId,
-        installed: Installed,
-        web_app: &Arc<forge_tools::web_app::WebAppSlot>,
-    ) {
-        {
-            let mut apps = self
-                .apps
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            apps.retain(|(_, slot)| slot.strong_count() > 0);
-            apps.push((session, Arc::downgrade(web_app)));
-        }
-        let mut sessions = self.lock();
-        // Sessions that closed took their managers with them.
-        sessions.retain(|(_, browser, desktop, web)| {
-            browser.strong_count() > 0 && desktop.strong_count() > 0 && web.strong_count() > 0
-        });
-        sessions.push((
-            session,
-            Arc::downgrade(&installed.browser),
-            Arc::downgrade(&installed.desktop),
-            Arc::downgrade(&installed.web),
-        ));
-    }
-
-    /// The handles registered for the opened session `session`.
-    pub fn handles(&self, session: SessionId) -> Option<Installed> {
-        self.lock()
-            .iter()
-            .rev()
-            .find(|(id, _, _, _)| *id == session)
-            .and_then(|(_, browser, desktop, web)| {
-                Some(Installed {
-                    browser: browser.upgrade()?,
-                    desktop: desktop.upgrade()?,
-                    web: web.upgrade()?,
-                })
-            })
-    }
-
-    fn live(&self) -> Vec<Installed> {
-        self.lock()
-            .iter()
-            .filter_map(|(_, browser, desktop, web)| {
-                Some(Installed {
-                    browser: browser.upgrade()?,
-                    desktop: desktop.upgrade()?,
-                    web: web.upgrade()?,
-                })
-            })
-            .collect()
-    }
-
-    /// Apply saved settings to every open session.
-    pub fn apply_settings(&self, settings: &ComputerUseSettings) {
-        for installed in self.live() {
-            installed.browser.set_config(settings.browser.clone());
-            installed.desktop.set_config(settings.desktop.clone());
-            installed
-                .web
-                .set_config(settings.web_check.clone(), settings.browser.clone());
-        }
-    }
-
-    /// What the strips show for `session` (a child's browser is found in
-    /// its parent's manager).
-    pub fn status(&self, session: SessionId) -> ComputerUseStatus {
-        let live = self.live();
-        ComputerUseStatus {
-            browser: live
-                .iter()
-                .find_map(|installed| installed.browser.status(session)),
-            controlling_screen: live
-                .first()
-                .is_some_and(|installed| installed.desktop.is_controlling(session)),
-            app: self.app(session),
-        }
-    }
-
-    /// The session's running app, when one answers.
-    fn app(&self, session: SessionId) -> Option<AppStatus> {
-        let slot = self
-            .apps
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .iter()
-            .rev()
-            .find(|(id, _)| *id == session)
-            .and_then(|(_, slot)| slot.upgrade())?;
-        let app = slot.get()?;
-        Some(AppStatus {
-            command: app.command,
-            url: format!("http://{}/", app.origin),
-        })
-    }
-
-    /// Close the session's browser. `false` when none was running.
-    pub async fn close_browser(&self, session: SessionId) -> bool {
-        for installed in self.live() {
-            if installed.browser.status(session).is_some() {
-                return installed.browser.close(session).await;
-            }
-        }
-        false
-    }
-
-    /// End the session's control of the screen.
-    pub fn stop_screen(&self, session: SessionId) -> bool {
-        self.live()
-            .into_iter()
-            .any(|installed| installed.desktop.stop(session))
-    }
+/// The handles stored on a session, when it has them.
+pub fn of_session(session: &AgentSession) -> Option<Arc<Installed>> {
+    session
+        .service()
+        .and_then(|service| service.downcast::<Installed>().ok())
 }
 
 /// The browser manager, desktop and web check of one opened session.
@@ -230,6 +98,48 @@ pub struct Installed {
     pub browser: Arc<BrowserManager>,
     pub desktop: Arc<Desktop>,
     pub web: Arc<WebCheckManager>,
+}
+
+impl Installed {
+    /// What the strips show for this session.
+    pub fn status(&self, session: SessionId, agent: &AgentSession) -> ComputerUseStatus {
+        ComputerUseStatus {
+            browser: self.browser.status(session),
+            controlling_screen: self.desktop.is_controlling(session),
+            app: app_status(&agent.web_app_slot()),
+        }
+    }
+
+    /// Apply saved settings to this session. A browser already running keeps
+    /// running until it is closed.
+    pub fn apply_settings(&self, settings: &ComputerUseSettings) {
+        self.browser.set_config(settings.browser.clone());
+        self.desktop.set_config(settings.desktop.clone());
+        self.web
+            .set_config(settings.web_check.clone(), settings.browser.clone());
+    }
+
+    /// Close this session's browser. `false` when none was running.
+    pub async fn close_browser(&self, session: SessionId) -> bool {
+        if self.browser.status(session).is_none() {
+            return false;
+        }
+        self.browser.close(session).await
+    }
+
+    /// End this session's control of the screen.
+    pub fn stop_screen(&self, session: SessionId) -> bool {
+        self.desktop.stop(session)
+    }
+}
+
+/// The session's running app, when one answers.
+pub fn app_status(slot: &forge_tools::web_app::WebAppSlot) -> Option<AppStatus> {
+    let app = slot.get()?;
+    Some(AppStatus {
+        command: app.command,
+        url: format!("http://{}/", app.origin),
+    })
 }
 
 #[cfg(test)]
@@ -270,12 +180,12 @@ mod tests {
         path.display().to_string()
     }
 
-    /// These tests change process-wide settings; one at a time.
-    static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    fn handles(opened: &crate::OpenedSession) -> Arc<super::Installed> {
+        super::of_session(&opened.session).expect("the session owns its computer-use handles")
+    }
 
     #[tokio::test]
     async fn the_tools_are_registered_but_not_offered_while_off() {
-        let _serial = SERIAL.lock().await;
         let (_temp, opened) = opened(BrowserConfig::default()).await;
         let names = offered(&opened);
         assert!(
@@ -286,13 +196,12 @@ mod tests {
             !names.iter().any(|name| name.starts_with("desktop_")),
             "{names:?}"
         );
-        let status = ComputerUse::global().status(opened.session.session_id);
+        let status = handles(&opened).status(opened.session.session_id, &opened.session);
         assert_eq!(status, ComputerUseStatus::default());
     }
 
     #[tokio::test]
     async fn a_user_config_with_browser_control_offers_the_tools() {
-        let _serial = SERIAL.lock().await;
         let dir = TempDir::new().unwrap();
         let (_temp, opened) = opened(BrowserConfig {
             enabled: true,
@@ -315,12 +224,9 @@ mod tests {
     /// Saving settings reaches a session that is already open.
     #[tokio::test]
     async fn saved_settings_reach_open_sessions() {
-        let _serial = SERIAL.lock().await;
         let (_temp, opened) = opened(BrowserConfig::default()).await;
         let dir = TempDir::new().unwrap();
-        let mine = ComputerUse::global()
-            .handles(opened.session.session_id)
-            .expect("this session's handles are registered");
+        let mine = handles(&opened);
 
         mine.browser.set_config(BrowserConfig {
             enabled: true,
@@ -329,7 +235,7 @@ mod tests {
         });
         assert!(offered(&opened).contains(&"browser_navigate".to_string()));
 
-        ComputerUse::global().apply_settings(&ComputerUseSettings {
+        mine.apply_settings(&ComputerUseSettings {
             browser: BrowserConfig::default(),
             desktop: DesktopConfig { enabled: true },
             web_check: Default::default(),
@@ -345,7 +251,6 @@ mod tests {
                 .any(|name| name.starts_with("desktop_")),
             "desktop tools need a model that sees images"
         );
-        ComputerUse::global().apply_settings(&ComputerUseSettings::default());
     }
 
     async fn opened_with(edit: impl FnOnce(&mut Config)) -> (TempDir, crate::OpenedSession) {
@@ -365,7 +270,6 @@ mod tests {
     /// gone once the user turns it off.
     #[tokio::test]
     async fn the_web_check_tools_follow_the_switch_and_the_machine() {
-        let _serial = SERIAL.lock().await;
         let dir = TempDir::new().unwrap();
         let browser = BrowserConfig {
             enabled: false,
@@ -373,12 +277,15 @@ mod tests {
             headless: true,
         };
         let (_temp, opened) = opened_with(|cfg| cfg.browser = browser.clone()).await;
-        let mine = ComputerUse::global()
-            .handles(opened.session.session_id)
-            .expect("registered");
-        assert!(
-            mine.web.browser_path().is_some(),
-            "the browser control row's program"
+        let mine = handles(&opened);
+        let program = mine
+            .web
+            .browser_path()
+            .expect("the browser control row's program");
+        assert_eq!(
+            mine.browser.found().unwrap().path,
+            program,
+            "browser control and web check share one lookup"
         );
         let supported = cfg!(target_os = "linux") && forge_tools::sandbox::relay_available();
         for tool in forge_browser::WEB_TOOL_NAMES {
@@ -388,7 +295,7 @@ mod tests {
                 "{tool}"
             );
         }
-        ComputerUse::global().apply_settings(&ComputerUseSettings {
+        mine.apply_settings(&ComputerUseSettings {
             browser,
             desktop: DesktopConfig::default(),
             web_check: forge_config::WebCheckConfig { enabled: false },
@@ -397,14 +304,12 @@ mod tests {
         for tool in forge_browser::WEB_TOOL_NAMES {
             assert!(!offered(&opened).contains(&tool.to_string()), "{tool}");
         }
-        ComputerUse::global().apply_settings(&ComputerUseSettings::default());
     }
 
     /// The project's `[web]` section reaches the session: the tools'
     /// defaults and how long an app may take to answer.
     #[tokio::test]
     async fn the_projects_web_app_reaches_the_session() {
-        let _serial = SERIAL.lock().await;
         let web = forge_config::WebConfig {
             start: Some("npm run dev".into()),
             port: Some(5173),
@@ -412,9 +317,7 @@ mod tests {
             ready_timeout_secs: Some(90),
         };
         let (_temp, opened) = opened_with(|cfg| cfg.web = web.clone()).await;
-        let mine = ComputerUse::global()
-            .handles(opened.session.session_id)
-            .expect("registered");
+        let mine = handles(&opened);
         assert_eq!(mine.web.web(), &web);
         assert_eq!(
             opened.session.web_ready_timeout(),
@@ -431,10 +334,10 @@ mod tests {
     /// Open link and the palette), and leaves it when it stops.
     #[tokio::test]
     async fn a_running_app_is_in_the_status() {
-        let _serial = SERIAL.lock().await;
         let (_temp, opened) = opened_with(|_| {}).await;
+        let mine = handles(&opened);
         let session = opened.session.session_id;
-        assert_eq!(ComputerUse::global().status(session).app, None);
+        assert_eq!(mine.status(session, &opened.session).app, None);
         let slot = opened.session.web_app_slot();
         slot.set(forge_tools::web_app::RunningApp {
             generation: 1,
@@ -443,28 +346,36 @@ mod tests {
             origin: "127.0.0.1:43817".parse().unwrap(),
         });
         assert_eq!(
-            ComputerUse::global().status(session).app,
+            mine.status(session, &opened.session).app,
             Some(AppStatus {
                 command: "npm run dev".into(),
                 url: "http://127.0.0.1:43817/".into(),
             })
         );
         slot.clear(1);
-        assert_eq!(ComputerUse::global().status(session).app, None);
-        // Another session sees nothing of it.
+        assert_eq!(mine.status(session, &opened.session).app, None);
+        // Another session does not see this one's app.
         slot.set(forge_tools::web_app::RunningApp {
             generation: 2,
             command: "npm run dev".into(),
             port: 5173,
             origin: "127.0.0.1:43817".parse().unwrap(),
         });
-        assert_eq!(ComputerUse::global().status(SessionId::new_v4()).app, None);
+        let (_temp, other) = opened_with(|_| {}).await;
+        assert_eq!(
+            handles(&other)
+                .status(other.session.session_id, &other.session)
+                .app,
+            None
+        );
     }
 
     #[tokio::test]
     async fn closing_and_stopping_an_unknown_session_do_nothing() {
+        let (_temp, opened) = opened_with(|_| {}).await;
+        let mine = handles(&opened);
         let unknown = SessionId::new_v4();
-        assert!(!ComputerUse::global().close_browser(unknown).await);
-        assert!(!ComputerUse::global().stop_screen(unknown));
+        assert!(!mine.close_browser(unknown).await);
+        assert!(!mine.stop_screen(unknown));
     }
 }

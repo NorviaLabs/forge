@@ -291,14 +291,7 @@ impl BrowserSession {
     /// Bring the tab list up to date: tabs the page opened are added (and
     /// become active), closed ones dropped. Returns how many were added.
     pub(crate) async fn sync_tabs(&mut self) -> PageResult<usize> {
-        let targets = self.cdp.call("Target.getTargets", json!({})).await?;
-        let pages: Vec<String> = targets["targetInfos"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|info| info["type"] == "page")
-            .filter_map(|info| info["targetId"].as_str().map(str::to_string))
-            .collect();
+        let pages = crate::setup::page_target_ids(&self.cdp).await?;
         let active_target = self.tabs.get(self.active).map(|tab| tab.target_id.clone());
         self.tabs.retain(|tab| pages.contains(&tab.target_id));
         let mut added = 0;
@@ -306,17 +299,7 @@ impl BrowserSession {
             if self.tabs.iter().any(|tab| tab.target_id == target) {
                 continue;
             }
-            let attached = self
-                .cdp
-                .call(
-                    "Target.attachToTarget",
-                    json!({"targetId": target, "flatten": true}),
-                )
-                .await?;
-            let session_id = attached["sessionId"]
-                .as_str()
-                .unwrap_or_default()
-                .to_string();
+            let session_id = crate::setup::attach_target(&self.cdp, &target).await?;
             let _ = self
                 .cdp
                 .call_session(&session_id, "Page.enable", json!({}))

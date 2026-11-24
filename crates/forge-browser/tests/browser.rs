@@ -37,7 +37,7 @@ async fn rig_with(require_egress: bool) -> Option<Rig> {
         ManagerOptions {
             extra_args: support::test_browser_args(),
             require_egress,
-            path_var: None,
+            ..ManagerOptions::default()
         },
     );
     let session = SessionId::new_v4();

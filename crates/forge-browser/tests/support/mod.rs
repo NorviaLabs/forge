@@ -177,7 +177,7 @@ pub fn test_browser() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    match forge_browser::discover(None, std::env::var_os("PATH").as_deref()) {
+    match forge_browser::discover(None, &forge_browser::BrowserSearch::host()) {
         Ok(found) => Some(found.path),
         Err(error) => {
             assert!(!required, "a browser is required here: {error}");
