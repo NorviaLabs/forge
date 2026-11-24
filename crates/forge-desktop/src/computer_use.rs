@@ -53,6 +53,7 @@ pub fn web_check_support(
 
 /// The URL of the session's running app, to open in the user's browser.
 /// Built from what the session recorded, never from the page.
+#[allow(unused)]
 pub fn app_url(status: &forge_session::computer_use::ComputerUseStatus) -> Result<String, String> {
     status
         .app
